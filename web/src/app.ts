@@ -101,6 +101,8 @@ function setAccess(mode: AuthMode | null, error?: unknown) {
   const denied = errorStatus(error) === 403;
   authMode = mode;
   diagnostics.setAccess(authorized);
+  clientSets.setAccess(authorized);
+  settingNavigation.setAccess(authorized);
   managedClients.setAccess(authorized);
   byId("managed-clients-view").hidden = !authorized;
   byId("devices-locked").hidden = authorized;

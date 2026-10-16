@@ -327,7 +327,7 @@ export interface paths {
         put?: never;
         /**
          * Explain a new flow for the verified LAN connection
-         * @description Read-only. Requires X-Dae-API: 1 and verified LAN ingress. Ethernet ingress requires a direct matching neighbor; IP ingress requires no MAC. Identity overrides are rejected. Request limit 64 KiB, evaluation budget five seconds. No DNS queries, connections or scripts are executed.
+         * @description Read-only; administrator access is required, including for current-device diagnostics. A configured API key requires Bearer authentication or a valid session; otherwise verified LAN connections are administrators. Also requires X-Dae-API: 1 and verified LAN ingress. Ethernet ingress requires a direct matching neighbor; IP ingress requires no MAC. Identity overrides are rejected. Request limit 64 KiB, evaluation budget five seconds. No DNS queries, connections or scripts are executed.
          */
         post: {
             parameters: {
@@ -409,7 +409,7 @@ export interface paths {
         put?: never;
         /**
          * Preview a current-device membership change
-         * @description Verified Ethernet LAN identity and X-Dae-API: 1 required. Does not change membership. Supply flow for before/after routing analysis.
+         * @description Administrator access, verified Ethernet LAN identity and X-Dae-API: 1 required. A configured API key requires Bearer authentication or a valid session; otherwise verified LAN connections are administrators. Does not change membership. Supply flow for before/after routing analysis.
          */
         post: {
             parameters: {

@@ -23,6 +23,28 @@ func (b unreadBody) Read([]byte) (int, error) {
 }
 func (unreadBody) Close() error { return nil }
 
+func TestAccessPolicyMustBeExplicit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		policy accessPolicy
+	}{
+		{"unspecified", 0},
+		{"public-admin", accessPublic | accessAdmin},
+		{"login-lan", accessLogin | accessLAN},
+		{"multiple-scopes", accessLAN | accessDevice},
+		{"unknown", 1 << 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("route accepted an unspecified or ambiguous access policy")
+				}
+			}()
+			new(handler).route(http.NewServeMux(), "GET /test", test.policy, func(http.ResponseWriter, *http.Request, caller) {})
+		})
+	}
+}
+
 func TestAccessGatePrecedesBodyAndResourceAccess(t *testing.T) {
 	// Nil stores deliberately make any premature resource access fail the test.
 	for _, group := range []struct {
@@ -41,10 +63,13 @@ func TestAccessGatePrecedesBodyAndResourceAccess(t *testing.T) {
 			"DELETE /api/clients/unknown/members/invalid", "PUT /api/devices/invalid/mitm",
 			"DELETE /api/devices/invalid/mitm",
 		}},
+		{"admin-self", 401, []string{
+			"POST /api/device/diagnostics/explain", "POST /api/device/sets/known/impact",
+			"POST /api/device/sets/unknown/impact",
+		}},
 		{"self", 403, []string{
 			"GET /api/device", "GET /api/device/status", "GET /api/device/context",
-			"POST /api/device/diagnostics/explain", "POST /api/device/sets/known/impact",
-			"POST /api/device/sets/unknown/impact", "PUT /api/device/sets/known",
+			"PUT /api/device/sets/known",
 			"PUT /api/device/sets/unknown", "DELETE /api/device/sets/known",
 			"DELETE /api/device/sets/unknown", "PUT /api/device/mitm", "DELETE /api/device/mitm",
 			"POST /api/device/certificate-tests", "GET /api/device/certificate-tests/unknown",
@@ -65,10 +90,16 @@ func TestAccessGatePrecedesBodyAndResourceAccess(t *testing.T) {
 					r.Body = unreadBody{t}
 					w := httptest.NewRecorder()
 					NewHandler(Options{APIKey: "secret", ResolveClient: rejectLANClient}).ServeHTTP(w, r)
-					if w.Code != group.status {
+					want := group.status
+					if credentials == "Bearer wrong" {
+						want = 401
+					} else if group.name == "admin-self" && credentials == "Bearer secret" {
+						want = 403 // Credentials do not supply the current device.
+					}
+					if w.Code != want {
 						t.Fatalf("got %d: %s", w.Code, w.Body.String())
 					}
-					if group.status == 401 && w.Header().Get("WWW-Authenticate") != `Bearer realm="dae"` {
+					if want == 401 && w.Header().Get("WWW-Authenticate") != `Bearer realm="dae"` {
 						t.Fatal("missing authentication challenge")
 					}
 					if strings.Contains(w.Body.String(), net.ErrClosed.Error()) {
@@ -122,7 +153,11 @@ func TestAccessGateResolvesPerRequestAndPassesIdentity(t *testing.T) {
 	request := func(method, path string, want int) {
 		t.Helper()
 		before := calls
-		w := sessionRequest(t, h, method, path, "", map[string]string{"X-Dae-API": "1"})
+		headers := map[string]string{"X-Dae-API": "1"}
+		if strings.HasSuffix(path, "/impact") {
+			headers["Authorization"] = "Bearer secret"
+		}
+		w := sessionRequest(t, h, method, path, "", headers)
 		if w.Code != want || calls != before+1 {
 			t.Fatalf("%s: status=%d resolutions=%d body=%s", path, w.Code, calls-before, w.Body.String())
 		}

@@ -156,6 +156,10 @@ const httpServer = createServer(async (req, res) => {
       res.end(await readFile(join(source, path)));
       return;
     }
+    if (url.endsWith("/diagnostics/explain") || url.endsWith("/impact")) {
+      if (fixture.mode === "denied") return json({ error: "Access denied" }, 403);
+      if (fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid")) return json({ error: "Administrator access required" }, 401);
+    }
     if (req.method !== "GET") {
       assert.equal(req.headers["x-dae-api"], "1");
       const chunks = [];
@@ -1474,13 +1478,63 @@ try {
       fixture.mode = "denied";
       await js('document.querySelector("#refresh").click()');
       await ready();
-      assert.equal(await js('document.querySelector("#diagnostic-scope").value'), "self");
-      assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
-      assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), false);
+      assert.equal(await js('document.querySelector("#diagnostic-form")'), null);
+      assert.equal(await js('document.querySelector("#setting-explain-tab")'), null);
+      assert.match(await js('document.querySelector("#diagnostic-view").textContent'), /Administrator access required/);
       held.release.resolve();
       await delay(100);
-      assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
+      assert.equal(await js('document.querySelector("#diagnostic-result")'), null);
     } finally { held.release.resolve(); }
+  });
+
+  await test("LAN guests retain device controls without diagnostic entry points", async () => {
+    fixture.mode = "api_key";
+    await page("#setting/explain");
+    assert.equal(await js('document.querySelector("#diagnostic-form")'), null);
+    assert.equal(await js('document.querySelector("#setting-explain-tab")'), null);
+    assert.match(await js('document.querySelector("#diagnostic-view").textContent'), /Administrator access required/);
+    await visit("overview");
+    assert.equal(await js('document.querySelectorAll("#sets .client-toggle").length'), 2);
+    assert.equal(await js('document.querySelectorAll("#sets .set-details").length'), 0);
+    assert.equal(await js('document.querySelector("#device-traffic").checkVisibility()'), true);
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    await until('document.querySelector("#access-title").textContent === "Administrator"');
+    assert.equal(await js('document.querySelectorAll("#sets .set-details").length'), 2);
+    await visit("explain");
+    assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
+  });
+
+  await test("logout discards pending current-device explanations and routing impact", async () => {
+    fixture.mode = "api_key";
+    await page();
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    await until('document.querySelector("#access-title").textContent === "Administrator"');
+    const explanation = { started: deferred(), release: deferred() }, impact = { started: deferred(), release: deferred() };
+    fixture.nextImpact = impact;
+    fixture.nextExplanation = explanation;
+    try {
+      await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
+      await impact.started.promise;
+      await visit("explain");
+      await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+      await explanation.started.promise;
+      assert.equal(lastRequest().path, "/api/device/diagnostics/explain");
+      await js('document.querySelector("#logout").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#diagnostic-form")'), null);
+      assert.equal(await js('document.querySelectorAll("#sets .set-details").length'), 0);
+      explanation.release.resolve(); impact.release.resolve();
+      await delay(100);
+      assert.equal(await js('document.querySelector("#diagnostic-result")'), null);
+      assert.equal(await js('document.querySelector(".impact-content")'), null);
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await ready();
+      await until('document.querySelector("#diagnostic-form") !== null');
+      assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
+      assert.equal(await js('document.querySelector(".impact-content")'), null);
+    } finally { explanation.release.resolve(); impact.release.resolve(); }
   });
 
   await test("React client impact reloads changed membership and discards the old response", async () => {

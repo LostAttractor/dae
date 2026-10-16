@@ -44,7 +44,7 @@ function ClientImpact({ set, contextKey, request, onCompare }: { set: ClientSetS
   </div>;
 }
 
-function ClientSetRow({ set, contextKey, actions }: { set: ClientSetState; contextKey: string; actions: ClientActions }) {
+function ClientSetRow({ set, contextKey, actions, allowed }: { set: ClientSetState; contextKey: string; actions: ClientActions; allowed: boolean }) {
   const [open, setOpen] = useState(false);
   const label = set.description || set.name;
   return <div className="set-row" data-name={set.name}>
@@ -53,25 +53,28 @@ function ClientSetRow({ set, contextKey, actions }: { set: ClientSetState; conte
     <Switch className="client-toggle" label={label} isLabelHidden value={set.joined} onChange={() => actions.run(async () => {
       actions.update(await actions.request<DeviceState>(`/api/device/sets/${encodeURIComponent(set.name)}`, set.joined ? "DELETE" : "PUT"));
     }, `${label} turned ${set.joined ? "off" : "on"} for this device.`)} />
-    <Collapsible className="set-details" trigger={<span className="sr-only">Routing details for {label}</span>} isOpen={open} onOpenChange={setOpen}>
+    {allowed && <Collapsible className="set-details" trigger={<span className="sr-only">Routing details for {label}</span>} isOpen={open} onOpenChange={setOpen}>
       {open && <ClientImpact key={contextKey} set={set} contextKey={contextKey} request={actions.request} onCompare={actions.onCompare} />}
-    </Collapsible>
+    </Collapsible>}
   </div>;
 }
 
-function ClientSets({ device, actions }: { device: DeviceState; actions: ClientActions }) {
+function ClientSets({ device, actions, allowed }: { device: DeviceState; actions: ClientActions; allowed: boolean }) {
   const contextKey = JSON.stringify([device.mac, device.source_ip, device.sets]);
   if (!device.sets.length) return <EmptyState isCompact title="No routing options" />;
   return <div className="client-options">{device.sets.map(set =>
-    <ClientSetRow key={set.name} set={set} contextKey={contextKey} actions={actions} />
+    <ClientSetRow key={set.name} set={set} contextKey={contextKey} actions={actions} allowed={allowed} />
   )}</div>;
 }
 
 export function createClientSets(container: HTMLElement, actions: ClientActions) {
   const render = createView(container);
+  let allowed = false, device: DeviceState | null = null;
+  const update = () => { if (device) render(<ClientSets key={`${device.mac}/${device.source_ip}/${allowed}`} device={device} actions={actions} allowed={allowed} />); };
   return {
-    show: (device: DeviceState) => render(<ClientSets key={`${device.mac}/${device.source_ip}`} device={device} actions={actions} />),
-    unavailable: (text: string, tone: "error" | "warning" = "error") => render(<Banner status={tone} title={text} />),
+    setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; update(); } },
+    show: (next: DeviceState) => { device = next; update(); },
+    unavailable: (text: string, tone: "error" | "warning" = "error") => { device = null; render(<Banner status={tone} title={text} />); },
   };
 }
 

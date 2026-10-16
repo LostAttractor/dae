@@ -9,8 +9,7 @@ import (
 	"strings"
 )
 
-// Callers choose LAN authorization before reaching key/session authentication,
-// so these paths always have a configured, nonempty API key.
+// authorize calls this only with a configured, nonempty API key.
 func (s *handler) requireAPIKey(w http.ResponseWriter, r *http.Request) bool {
 	actual, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	got, want := sha256.Sum256([]byte(actual)), sha256.Sum256([]byte(s.options.APIKey))

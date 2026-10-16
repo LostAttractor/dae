@@ -2,6 +2,8 @@
 
 `dae explain`, `dae-client explain`, and Web **Explain Decisions** analyze a hypothetical new flow using current configuration and runtime evidence. They do not connect to targets, query DNS, run scripts, refresh caches or health checks, or change settings. Existing connections and UDP source associations may retain earlier decisions.
 
+All explanations and routing impact previews require administrator access, including `--self` and diagnostic endpoints under `/api/device/...`. With `global.api_key` configured, TCP requests require the key or a valid login session; without a key, verified LAN connections are administrators. Ordinary LAN devices can still read their own state, traffic and connection context, and change their own memberships and MITM preferences.
+
 ## CLI
 
 Both executables share commands and the usual [API connection options](api-client.md):
@@ -57,7 +59,7 @@ dae client mitm reset --mac 02:00:00:00:00:10
 
 `impact` lists direct, negated and conditional membership references without saving anything. An optional target adds a same-snapshot before/after trace. Other predicates and earlier rules can still take precedence. Results include connection retention/closure behavior and ipset/nftset export names; external firewall rules are not evaluated.
 
-Web **Routing impact** loads on demand. **Compare a target** carries its proposed membership into the explanation form. Administrators can inspect arbitrary MACs and change membership/MITM through **Manage Devices by MAC**. **Administrator context** accepts explicit identity in advanced JSON; advanced fields replace corresponding top-level form fields.
+For administrators, Web **Routing impact** loads on demand. **Compare a target** carries its proposed membership into the explanation form. Administrators can inspect arbitrary MACs and change membership/MITM through **Manage Devices by MAC**. **Administrator context** accepts explicit identity in advanced JSON; advanced fields replace corresponding top-level form fields.
 
 ## API
 
@@ -66,9 +68,9 @@ The main [OpenAPI document](../../api/openapi.json) references the [diagnostics 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/device/context` | Verified inheritable context |
-| `POST /api/device/diagnostics/explain` | Self-service explanation |
+| `POST /api/device/diagnostics/explain` | Administrator explanation for this connection |
 | `POST /api/diagnostics/explain` | Administrator-supplied context |
-| `POST /api/device/sets/{name}/impact` | Self-service membership preview |
+| `POST /api/device/sets/{name}/impact` | Administrator membership preview for this device |
 | `POST /api/clients/{name}/impact` | Membership preview for a specified MAC |
 | `GET /api/clients`, `GET /api/clients/{name}` | Administrator group/member listing |
 | `PUT` / `DELETE /api/clients/{name}/members/{mac}` | Administrator membership changes |

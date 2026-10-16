@@ -38,7 +38,7 @@ function parseTarget(value: string): DiagnosticFlow {
 
 interface DiagnosticActions { invalidate: () => void }
 
-function Diagnostics({ allowed, comparisonRequest, deviceKey, ref }: { allowed: boolean; comparisonRequest: Comparison | null; deviceKey: string; ref: Ref<DiagnosticActions> }) {
+function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest: Comparison | null; deviceKey: string; ref: Ref<DiagnosticActions> }) {
   const [kind, setKind] = useState<DiagnosticKind>("flow");
   const [scope, setScope] = useState<"self" | "manual">("self");
   const [comparison, setComparison] = useState<Comparison | null>(null);
@@ -51,10 +51,6 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey, ref }: { allowed: 
   useImperativeHandle(ref, () => ({ invalidate() {
     explanation.reset(); context.reset(); setComparison(null);
   } }), [explanation.reset, context.reset]);
-
-  useLayoutEffect(() => {
-    if (!allowed && scope === "manual") { setScope("self"); explanation.reset(); }
-  }, [allowed, scope, explanation.reset]);
 
   useLayoutEffect(() => {
     explanation.reset(); context.reset(); setComparison(null);
@@ -102,7 +98,6 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey, ref }: { allowed: 
     const form = new FormData(event.currentTarget);
     const operation = explanation.start();
     try {
-      if (scope === "manual" && !allowed) throw new Error("Administrator access is required for manual identity.");
       const value = formValue(form, "target").trim();
       const payload: ExplainRequest = { kind, context: {}, flow: { destination: {}, protocol: dns || formValue(form, "protocol") === "udp" ? "udp" : "tcp" }, detail: "predicates" };
       if (kind === "outbound") payload.outbound = value;
@@ -146,7 +141,7 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey, ref }: { allowed: 
           <input id="diagnostic-sni" name="sni" placeholder="example.com" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-sni-hint" />
         </Field>
         <Field className="diagnostic-identity" label="Test as" inputID="diagnostic-scope"><select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value === "manual" ? "manual" : "self"); explanation.reset(); }}>
-          <option value="self">This device</option><option id="diagnostic-manual" value="manual" disabled={!allowed}>Custom identity (administrator)</option>
+          <option value="self">This device</option><option id="diagnostic-manual" value="manual">Custom identity</option>
         </select></Field>
         <p className="muted">{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
         <Field label="Advanced diagnostic request JSON" inputID="diagnostic-overrides">
@@ -177,14 +172,17 @@ export function createDiagnostics(container: HTMLElement) {
   let allowed = false, deviceKey = "";
   let generation = 0;
   let comparisonRequest: Comparison | null = null;
-  const update = () => render(<Diagnostics ref={actions} allowed={allowed} comparisonRequest={comparisonRequest} deviceKey={JSON.stringify([generation, deviceKey])} />);
+  const update = () => render(allowed
+    ? <Diagnostics ref={actions} comparisonRequest={comparisonRequest} deviceKey={JSON.stringify([generation, deviceKey])} />
+    : <Banner status="info" title="Administrator access required" description="Log in to inspect routing rules, DNS records and outbound nodes." />);
   update();
   return {
-    setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; update(); } },
+    setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; comparisonRequest = null; update(); } },
     setDevice: (next: string) => { if (deviceKey !== next) { deviceKey = next; update(); } },
     setGeneration: (next: number) => { if (generation !== next) { generation = next; update(); } },
     invalidate: () => actions.current?.invalidate(),
     compare: (set: ClientSetState) => {
+      if (!allowed) return;
       comparisonRequest = { sets: { [set.name]: !set.joined }, label: `${set.joined ? "Leave" : "Join"} ${set.description || set.name}` };
       update();
     },

@@ -57,7 +57,7 @@ func (s *handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request, who caller) {
-	self := who.policy != accessAdmin
+	self := who.self
 	if !s.diagnosticsAvailable(w) {
 		return
 	}
@@ -175,7 +175,7 @@ func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who c
 }
 
 func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request, who caller) {
-	self := who.policy != accessAdmin
+	self := who.self
 	if !s.diagnosticsAvailable(w) {
 		return
 	}

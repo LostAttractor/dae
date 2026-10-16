@@ -2,6 +2,8 @@
 
 `dae explain`、`dae-client explain` 和 Web 的 **Explain Decisions** 使用当前配置和运行时证据解释一个假设的新连接。它们不建立目标连接、不发送 DNS 查询、不执行脚本，也不更新缓存、节点检查或运行时设置。现有连接及 UDP 源关联可能保留先前决定。
 
+所有规则解释和路由影响预览都要求管理员权限，包括 `--self` 和 `/api/device/...` 下的诊断接口。配置 `global.api_key` 时，TCP 请求需要密钥或有效登录会话；未配置时，已验证的 LAN 连接自动具有管理员权限。普通 LAN 设备仍可读取自身状态、流量与连接上下文，并修改自身集合和 MITM 设置。
+
 ## 命令行
 
 两种程序共用命令和连接参数；以下示例也可将 `dae` 换成 `dae-client`：
@@ -57,7 +59,7 @@ dae client mitm reset --mac 02:00:00:00:00:10
 
 `impact` 不修改设置，列出直接、取反及条件引用的成员关系影响；指定目标后返回同一快照的变更前后解释。前序规则和其他条件仍可能覆盖成员变化的效果。结果也说明现有连接的保留/关闭策略，以及 ipset/nftset 导出名称；外部防火墙规则不在求值范围内。
 
-Web 集合行的 **Routing impact** 按需展开，**Compare a target** 将成员变化带入解释表单。管理员可在 **Manage Devices by MAC** 查看任意 MAC、加入/退出集合、设置/重置 MITM。解释表单的 **Administrator context** 支持通过 JSON 指定身份；高级 JSON 覆盖相应顶层字段。
+管理员可在 Web 集合行按需展开 **Routing impact**，**Compare a target** 将成员变化带入解释表单。管理员可在 **Manage Devices by MAC** 查看任意 MAC、加入/退出集合、设置/重置 MITM。解释表单的 **Administrator context** 支持通过 JSON 指定身份；高级 JSON 覆盖相应顶层字段。
 
 ## HTTP API
 
@@ -66,9 +68,9 @@ Web 集合行的 **Routing impact** 按需展开，**Compare a target** 将成�
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/device/context` | 当前设备可继承上下文 |
-| `POST /api/device/diagnostics/explain` | 当前设备解释 |
+| `POST /api/device/diagnostics/explain` | 管理员以当前设备身份解释 |
 | `POST /api/diagnostics/explain` | 管理员指定上下文解释 |
-| `POST /api/device/sets/{name}/impact` | 当前设备成员影响预览 |
+| `POST /api/device/sets/{name}/impact` | 管理员预览当前设备成员影响 |
 | `POST /api/clients/{name}/impact` | 指定 MAC 的成员影响预览 |
 | `GET /api/clients`、`GET /api/clients/{name}` | 管理员查看集合及成员 |
 | `PUT` / `DELETE /api/clients/{name}/members/{mac}` | 管理员加入/退出集合 |

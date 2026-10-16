@@ -9,20 +9,22 @@ export function createSettingNavigation(container: HTMLElement, onChange: (secti
   const render = createView(container);
   const desktop = matchMedia("(min-width: 960px)");
   let value: SettingSection = "devices";
+  let allowed = false;
   function show(next: SettingSection) {
     value = next;
     for (const panel of document.querySelectorAll<HTMLElement>("[data-setting-section]")) {
       panel.hidden = panel.dataset.settingSection !== value;
       panel.setAttribute("role", desktop.matches ? "region" : "tabpanel");
     }
+    const visible = sections.filter(([key]) => key !== "explain" || allowed);
     render(desktop.matches ? <SideNav className="setting-sidebar" aria-label="Setting sections">
-      {sections.map(([key, label]) => <SideNavItem key={key} label={label} id={`setting-${key}-tab`} href={`#setting/${key}`} isSelected={key === value}
+      {visible.map(([key, label]) => <SideNavItem key={key} label={label} id={`setting-${key}-tab`} href={`#setting/${key}`} isSelected={key === value}
         onClick={event => {
           if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
           event.preventDefault(); onChange(key);
         }} />)}
-    </SideNav> : <TabList value={value} onChange={next => { if (sections.some(([key]) => key === next)) onChange(next as SettingSection); }} role="tablist" aria-label="Setting sections" hasDivider>
-      {sections.map(([key, label]) => <Tab key={key} value={key} label={label} id={`setting-${key}-tab`} panelId={`setting-${key}`} onFocus={() => onChange(key)} />)}
+    </SideNav> : <TabList value={value} onChange={next => { if (visible.some(([key]) => key === next)) onChange(next as SettingSection); }} role="tablist" aria-label="Setting sections" hasDivider>
+      {visible.map(([key, label]) => <Tab key={key} value={key} label={label} id={`setting-${key}-tab`} panelId={`setting-${key}`} onFocus={() => onChange(key)} />)}
     </TabList>);
   }
   desktop.addEventListener("change", () => {
@@ -30,5 +32,5 @@ export function createSettingNavigation(container: HTMLElement, onChange: (secti
     show(value);
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
   });
-  return { show };
+  return { show, setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; show(value); } } };
 }
