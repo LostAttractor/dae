@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -83,11 +82,7 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 	if !options.AutoCookie {
 		requestClient.Jar = nil
 	}
-	if !options.AutoRedirect {
-		requestClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	} else if options.Fetch {
-		requestClient.CheckRedirect = fetchRedirectPolicy(client.CheckRedirect)
-	}
+	requestClient.CheckRedirect = options.redirectPolicy(client.CheckRedirect)
 	resp, err := requestClient.Do(req)
 	if err != nil {
 		return "", membuffer.Reservation{}, err
@@ -176,55 +171,6 @@ func scriptHTTPResponse(ctx context.Context, req *http.Request, resp *http.Respo
 		return "", membuffer.Reservation{}, err
 	}
 	return event, memory, nil
-}
-
-// fetchRedirectPolicy corrects net/http's 301/302 method rewrite while retaining
-// its cookie handling, sensitive-header filtering and client redirect policy.
-func fetchRedirectPolicy(check func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
-	return func(req *http.Request, via []*http.Request) error {
-		previous := via[len(via)-1]
-		status := req.Response.StatusCode
-		dropBody := (status == 301 || status == 302) && previous.Method == http.MethodPost ||
-			status == 303 && previous.Method != http.MethodGet && previous.Method != http.MethodHead
-
-		// Derive each hop from the preceding request: net/http permanently drops
-		// its replay body after any 301/302, even when Fetch preserves the method.
-		// A body removed by a POST rewrite or 303 must stay removed on later hops.
-		if req.Body != nil {
-			req.Body.Close()
-		}
-		req.Method, req.Body, req.GetBody, req.ContentLength = previous.Method, nil, nil, 0
-		if dropBody {
-			req.Method = http.MethodGet
-		} else {
-			req.GetBody, req.ContentLength = previous.GetBody, previous.ContentLength
-			if req.GetBody != nil {
-				var err error
-				req.Body, err = req.GetBody()
-				if err != nil {
-					return err
-				}
-			}
-		}
-		for _, name := range []string{"Content-Encoding", "Content-Language", "Content-Location", "Content-Type"} {
-			req.Header.Del(name)
-			if !dropBody {
-				if values := previous.Header.Values(name); len(values) != 0 {
-					req.Header[name] = slices.Clone(values)
-				}
-			}
-		}
-		var err error
-		if check != nil {
-			err = check(req, via)
-		} else if len(via) >= 10 {
-			err = errors.New("stopped after 10 redirects")
-		}
-		if err != nil && req.Body != nil {
-			req.Body.Close()
-		}
-		return err
-	}
 }
 
 type scriptPolicyTransport struct {

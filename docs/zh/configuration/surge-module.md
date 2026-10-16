@@ -226,6 +226,8 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 
 `$httpClient` 和基础 `fetch` 使用宿主路由、正常 TLS 校验及共享正文预算。`policy` 可填 `DIRECT`、`REJECT` 或当前已加载的 dae 出站组名；仅由脚本使用的组须在插件设置中写 `http_policies: proxy,api`，否则未被路由引用的组不会加载。它仅覆盖主动请求的出站，保留目的地址规则、客户端身份及 mark，并在重定向时沿用。未知或不可用的组返回错误。`policy-descriptor` 和 `insecure: true` 会明确报错；`insecure: false` 保持正常 TLS 校验。
 
+自动重定向逐跳禁止 HTTPS 降级到 HTTP，包括 HTTP 升级到 HTTPS 后再跳回 HTTP；拒绝时通过原有回调或 Promise 返回错误。跨域重定向、直接 HTTP 请求及 HTTP 升级到 HTTPS 均可用。`$httpClient` 的 `auto-redirect: false` 和 fetch 的 `redirect: "manual"` 仍返回原始 30x 响应。
+
 ```javascript
 (async () => {
   const response = await fetch("https://api.example.com/data", { policy: "DIRECT" });
