@@ -28,7 +28,7 @@ global {
 
     # Device settings, selectors and certificate downloads. Zero disables the HTTP page/API.
     api_port: 0
-    # CA tests share api_port's TLS branch. MITM tests answer virtual IP:443 locally.
+    # api_port also serves HTTPS with the shared local CA. MITM tests answer virtual IP:443 locally.
     # Choose unused addresses routed through dae, outside local subnets and other Fake IP pools.
     # No extra listening ports, interface addresses, or upstream services are needed.
     #api_mitm_test_ipv4: '203.0.113.254'
@@ -341,16 +341,21 @@ client {
 
 # Optional HTTP/HTTPS processing. Disabled until CA, client selection and modules are ready.
 # Copy examples/surge/{demo.sgmodule,request.js,response.js} to $DAE_LOCATION_CACHE/modules/.
-# Generate a CA with "dae mitm ca generate" and install/trust it on the selected clients before enabling.
+# The local CA is generated automatically. Install/trust it on selected clients before enabling interception.
 # Capture retains each scope's hostname/IP and port constraints; unrelated direct stays in eBPF.
 # Domain capture needs DNS mappings. Literal IP scopes do not; final HTTP matching still uses Host/SNI.
 # Request-transforming modules run before final upstream routing, including block.
 # Pure inspection retains the kernel route. Excluded clients follow ordinary routing.
 # See docs/zh/configuration/mitm-plugins.md and docs/zh/configuration/surge-module.md.
+# Optional explicit CA shared by API HTTPS and MITM. Omit for the persistent
+# automatically generated CA in $DAE_LOCATION_CACHE/pki (default /var/lib/dae/pki).
+# certificate {
+#     ca_cert: '/path/to/ca.pem'
+#     ca_key: '/path/to/ca.key'
+# }
+
 mitm {
     enabled: false
-    ca_cert: 'mitm-ca.pem'
-    ca_key: 'mitm-ca.key'
     # Replace with a client MAC, IP or CIDR. Omitted/unmatched clients bypass HTTP processing.
     # The page/API can override this selection per device; use 'all' to explicitly select all clients.
     client_source_address: '02:00:00:00:00:50'

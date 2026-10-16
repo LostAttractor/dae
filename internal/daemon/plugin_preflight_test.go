@@ -21,7 +21,8 @@ func TestPluginPreflightBeforeStartupResources(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("DAE_LOCATION_CACHE", dir)
 			// Both the first module and the CA would need resource preparation.
-			conf := mitmConfigForTest(t, `mitm { enabled:true ca_cert:absent.pem ca_key:absent.key }
+			conf := mitmConfigForTest(t, `certificate { ca_cert:absent.pem ca_key:absent.key }
+mitm { enabled:true }
 plugins { surge { module { 'https://invalid.example/module' } } `+last+` }`)
 			definition := surge.Plugin
 			definition.Configure = func(spec plugin.Spec) (plugin.Factory, error) {
@@ -73,7 +74,8 @@ func TestPluginRuntimePreflightBeforeResources(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("DAE_LOCATION_CACHE", dir)
-			conf := mitmConfigForTest(t, `mitm { enabled:true ca_cert:absent.pem ca_key:absent.key }
+			conf := mitmConfigForTest(t, `certificate { ca_cert:absent.pem ca_key:absent.key }
+mitm { enabled:true }
 plugins { fixture {} }`)
 			unavailable := errors.New("runtime unavailable")
 			definitions := map[string]plugin.Definition{"fixture": {

@@ -11,20 +11,17 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-
 	localca "github.com/daeuniverse/dae/component/ca"
-	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/spf13/cobra"
 )
 
-func newMITMCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
+func newCACommand() *cobra.Command {
 	var certPath, keyPath string
-	mitm := &cobra.Command{Use: "mitm", Short: "Manage MITM certificates."}
-	ca := &cobra.Command{Use: "ca", Short: "Generate, inspect and export the local MITM CA."}
-	caDir := common.CacheDirectory()
-	ca.PersistentFlags().StringVar(&certPath, "cert", filepath.Join(caDir, "mitm-ca.pem"), "CA certificate path (PEM or DER); default directory: DAE_LOCATION_CACHE or /var/lib/dae")
-	ca.PersistentFlags().StringVar(&keyPath, "key", filepath.Join(caDir, "mitm-ca.key"), "CA private key path (PEM); default directory: DAE_LOCATION_CACHE or /var/lib/dae")
-	mitm.AddCommand(ca)
+	ca := &cobra.Command{Use: "ca", Short: "Generate, inspect and export the local CA shared by API HTTPS and MITM."}
+	caDir := filepath.Join(common.CacheDirectory(), localca.ManagedDirectory)
+	defaultCert, defaultKey := localca.ManagedPaths(caDir)
+	ca.PersistentFlags().StringVar(&certPath, "cert", defaultCert, "CA certificate path (PEM or DER); state directory: DAE_LOCATION_CACHE or /var/lib/dae; managed store: pki")
+	ca.PersistentFlags().StringVar(&keyPath, "key", defaultKey, "CA private key path (PEM); state directory: DAE_LOCATION_CACHE or /var/lib/dae; managed store: pki")
 
 	var commonName string
 	var validDays int
@@ -34,7 +31,16 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 			if validDays < 1 || validDays > 36500 {
 				return fmt.Errorf("--valid-days must be between 1 and 36500")
 			}
-			if err := localca.Generate(certPath, keyPath, commonName, time.Duration(validDays)*24*time.Hour); err != nil {
+			var err error
+			validity := time.Duration(validDays) * 24 * time.Hour
+			if !cmd.Flags().Changed("cert") && !cmd.Flags().Changed("key") {
+				err = localca.Initialize(caDir, commonName, validity)
+			} else if !cmd.Flags().Changed("cert") || !cmd.Flags().Changed("key") {
+				return fmt.Errorf("generate requires both --cert and --key when selecting explicit paths")
+			} else {
+				err = localca.Generate(certPath, keyPath, commonName, validity)
+			}
+			if err != nil {
 				return err
 			}
 			cert, err := localca.ReadCertificate(certPath)
@@ -42,10 +48,10 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 				return err
 			}
 			cmd.Printf("Created CA certificate: %s\nPrivate key: %s (keep on the dae host)\n", certPath, keyPath)
-			return printMITMCAInfo(cmd.OutOrStdout(), cert)
+			return printCAInfo(cmd.OutOrStdout(), cert)
 		},
 	}
-	generate.Flags().StringVar(&commonName, "name", "dae MITM CA", "CA display name")
+	generate.Flags().StringVar(&commonName, "name", localca.DefaultName, "CA display name")
 	generate.Flags().IntVar(&validDays, "valid-days", 3650, "CA validity in days")
 	ca.AddCommand(generate)
 	ca.AddCommand(&cobra.Command{
@@ -55,7 +61,7 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 			if err != nil {
 				return err
 			}
-			return printMITMCAInfo(cmd.OutOrStdout(), cert)
+			return printCAInfo(cmd.OutOrStdout(), cert)
 		},
 	})
 	var format, output string
@@ -98,16 +104,10 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 	export.Flags().StringVar(&format, "format", "pem", "export format: pem, der, mobileconfig")
 	export.Flags().StringVarP(&output, "output", "o", "-", "new output file, or - for stdout")
 	ca.AddCommand(export)
-	return mitm
+	return ca
 }
 
-func newPluginsCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
-	command := &cobra.Command{Use: "plugins", Short: "Manage plugins and inspect their reports."}
-	addMITMCommands(command, definitions, services)
-	return command
-}
-
-func printMITMCAInfo(w io.Writer, cert *x509.Certificate) error {
+func printCAInfo(w io.Writer, cert *x509.Certificate) error {
 	status := "valid"
 	now := time.Now()
 	if now.Before(cert.NotBefore) {

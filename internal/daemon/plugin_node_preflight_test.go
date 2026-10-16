@@ -41,7 +41,8 @@ func TestNodeRuntimePreflightBeforeStartup(t *testing.T) {
 			if test.name != "missing from PATH" {
 				setting = fmt.Sprintf("node_path: '%s'", path)
 			}
-			conf := mitmConfigForTest(t, `mitm { enabled:true ca_cert:absent.pem ca_key:absent.key }
+			conf := mitmConfigForTest(t, `certificate { ca_cert:absent.pem ca_key:absent.key }
+mitm { enabled:true }
 plugins { surge { `+setting+` module { 'https://invalid.example/module' } } }`)
 			err := Run(conf, nil, map[string]plugin.Definition{"surge": surge.Plugin}, &netutils.InternalResolver{}, Options{})
 			if err == nil || !strings.Contains(err.Error(), "plugins.surge preflight") || !strings.Contains(err.Error(), test.want) {

@@ -10,11 +10,10 @@ import (
 	"testing"
 
 	localca "github.com/daeuniverse/dae/component/ca"
-	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func runMITMCommand(args ...string) (string, error) {
-	command := newMITMCommand(nil, plugin.CommandServices{})
+func runCACommand(args ...string) (string, error) {
+	command := newCACommand()
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
@@ -23,17 +22,17 @@ func runMITMCommand(args ...string) (string, error) {
 	return output.String(), err
 }
 
-func TestMITMCAGenerateInspectAndExport(t *testing.T) {
-	if _, err := runMITMCommand("ca", "generate", "--valid-days", "0"); err == nil {
+func TestCAGenerateInspectAndExport(t *testing.T) {
+	if _, err := runCACommand("generate", "--valid-days", "0"); err == nil {
 		t.Fatal("accepted nonpositive certificate validity")
 	}
 	dir := t.TempDir()
 	certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	output, err := runMITMCommand("ca", "generate", "--cert", certPath, "--key", keyPath, "--name", "CLI test CA", "--valid-days", "1")
+	output, err := runCACommand("generate", "--cert", certPath, "--key", keyPath, "--name", "CLI test CA", "--valid-days", "1")
 	if err != nil || !strings.Contains(output, "SHA-256:") {
 		t.Fatalf("generate: %v\n%s", err, output)
 	}
-	if _, err := runMITMCommand("ca", "generate", "--cert", certPath, "--key", keyPath); err == nil {
+	if _, err := runCACommand("generate", "--cert", certPath, "--key", keyPath); err == nil {
 		t.Fatal("CLI silently replaced existing CA")
 	}
 	cert, err := localca.ReadCertificate(certPath)
@@ -43,16 +42,16 @@ func TestMITMCAGenerateInspectAndExport(t *testing.T) {
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatal(err)
 	}
-	output, err = runMITMCommand("ca", "info", "--cert", certPath)
+	output, err = runCACommand("info", "--cert", certPath)
 	if err != nil || !strings.Contains(output, "CLI test CA") || !strings.Contains(output, localca.Fingerprint(cert)) {
 		t.Fatalf("info required private key or lacked metadata: %v\n%s", err, output)
 	}
-	output, err = runMITMCommand("ca", "export", "--cert", certPath, "--format", "der")
+	output, err = runCACommand("export", "--cert", certPath, "--format", "der")
 	if err != nil || !bytes.Equal([]byte(output), cert.Raw) {
 		t.Fatalf("DER export: %v", err)
 	}
 	exportPath := filepath.Join(dir, "ca.mobileconfig")
-	_, err = runMITMCommand("ca", "export", "--cert", certPath, "--format", "mobileconfig", "--output", exportPath)
+	_, err = runCACommand("export", "--cert", certPath, "--format", "mobileconfig", "--output", exportPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,22 +59,22 @@ func TestMITMCAGenerateInspectAndExport(t *testing.T) {
 	if err != nil || !bytes.Equal(profile, localca.MobileConfig(cert)) {
 		t.Fatalf("profile export: %v", err)
 	}
-	if _, err := runMITMCommand("ca", "export", "--cert", certPath, "--output", exportPath); err == nil {
+	if _, err := runCACommand("export", "--cert", certPath, "--output", exportPath); err == nil {
 		t.Fatal("export overwrote existing file")
 	}
-	if _, err := runMITMCommand("ca", "export", "--cert", certPath, "--format", "pkcs12"); err == nil {
+	if _, err := runCACommand("export", "--cert", certPath, "--format", "pkcs12"); err == nil {
 		t.Fatal("export accepted private-key format")
 	}
 }
 
-func TestMITMCAEnvironmentDirectoryDefaults(t *testing.T) {
+func TestCAEnvironmentDirectoryDefaults(t *testing.T) {
 	caDir := filepath.Join(t.TempDir(), "surge")
 	t.Setenv("DAE_LOCATION_CACHE", caDir)
-	output, err := runMITMCommand("ca", "generate", "--name", "Environment CA", "--valid-days", "1")
+	output, err := runCACommand("generate", "--name", "Environment CA", "--valid-days", "1")
 	if err != nil {
 		t.Fatalf("generate with environment defaults: %v\n%s", err, output)
 	}
-	certPath, keyPath := filepath.Join(caDir, "mitm-ca.pem"), filepath.Join(caDir, "mitm-ca.key")
+	certPath, keyPath := localca.ManagedPaths(filepath.Join(caDir, localca.ManagedDirectory))
 	if _, err := localca.Load(certPath, keyPath); err != nil {
 		t.Fatalf("CA pair was not generated in environment directory: %v", err)
 	}
@@ -83,17 +82,17 @@ func TestMITMCAEnvironmentDirectoryDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err = runMITMCommand("ca", "info")
+	output, err = runCACommand("info")
 	if err != nil || !strings.Contains(output, localca.Fingerprint(cert)) {
 		t.Fatalf("info did not use environment certificate: %v\n%s", err, output)
 	}
-	output, err = runMITMCommand("ca", "export")
+	output, err = runCACommand("export")
 	if err != nil || !bytes.Equal([]byte(output), localca.CertificatePEM(cert)) {
 		t.Fatalf("export did not use environment certificate: %v", err)
 	}
 }
 
-func TestMITMCAHelpDefaultsDoNotCreateDirectories(t *testing.T) {
+func TestCAHelpDefaultsDoNotCreateDirectories(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		value string
@@ -124,13 +123,13 @@ func TestMITMCAHelpDefaultsDoNotCreateDirectories(t *testing.T) {
 			_, directoryBefore := os.Stat(wantDirectory)
 			_, etcBefore := os.Stat("/etc/dae")
 			for _, command := range []string{"generate", "info", "export"} {
-				output, err := runMITMCommand("ca", command, "--help")
+				output, err := runCACommand(command, "--help")
 				if err != nil {
 					t.Fatalf("%s help: %v\n%s", command, err, output)
 				}
 				for _, expected := range []string{
-					filepath.Join(wantDirectory, "mitm-ca.pem"),
-					filepath.Join(wantDirectory, "mitm-ca.key"),
+					filepath.Join(wantDirectory, "pki", "ca.pem"),
+					filepath.Join(wantDirectory, "pki", "ca.key"),
 					"DAE_LOCATION_CACHE or /var/lib/dae",
 				} {
 					if !strings.Contains(output, expected) {
@@ -147,7 +146,7 @@ func TestMITMCAHelpDefaultsDoNotCreateDirectories(t *testing.T) {
 				}
 			}
 			if value != "" {
-				if _, err := runMITMCommand("ca", "info"); err == nil {
+				if _, err := runCACommand("info"); err == nil {
 					t.Fatal("info succeeded without a certificate")
 				}
 				if _, err := os.Stat(wantDirectory); !os.IsNotExist(err) {
@@ -158,7 +157,7 @@ func TestMITMCAHelpDefaultsDoNotCreateDirectories(t *testing.T) {
 	}
 }
 
-func TestMITMCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
+func TestCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		certFlag bool
@@ -174,8 +173,8 @@ func TestMITMCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
 			caDir, cwd := t.TempDir(), t.TempDir()
 			t.Setenv("DAE_LOCATION_CACHE", caDir)
 			t.Chdir(cwd)
-			certPath, keyPath := filepath.Join(caDir, "mitm-ca.pem"), filepath.Join(caDir, "mitm-ca.key")
-			args := []string{"ca", "generate", "--name", "Explicit paths CA", "--valid-days", "1"}
+			certPath, keyPath := localca.ManagedPaths(filepath.Join(caDir, localca.ManagedDirectory))
+			args := []string{"generate", "--name", "Explicit paths CA", "--valid-days", "1"}
 			if test.certFlag {
 				flag := "explicit-cert.pem"
 				certPath = filepath.Join(cwd, flag)
@@ -192,7 +191,13 @@ func TestMITMCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
 				}
 				args = append(args, "--key", flag)
 			}
-			output, err := runMITMCommand(args...)
+			output, err := runCACommand(args...)
+			if test.certFlag != test.keyFlag {
+				if err == nil {
+					t.Fatal("accepted incomplete explicit paths")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("explicit path generation: %v\n%s", err, output)
 			}
@@ -203,8 +208,8 @@ func TestMITMCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
 				explicit    bool
 				defaultName string
 			}{
-				{test.certFlag, "mitm-ca.pem"},
-				{test.keyFlag, "mitm-ca.key"},
+				{test.certFlag, "pki/ca.pem"},
+				{test.keyFlag, "pki/ca.key"},
 			} {
 				if entry.explicit {
 					if _, err := os.Stat(filepath.Join(caDir, entry.defaultName)); !os.IsNotExist(err) {

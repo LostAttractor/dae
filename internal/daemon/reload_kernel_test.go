@@ -121,7 +121,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.plane, err = newControlPlane(t.Context(), datapath, conf, app.inputs, store, func(download *http.Client) (control.PreparedMITM, error) {
-		return loadMITM(t.Context(), conf, download, client, plugins, nil, nil, datapath)
+		return loadMITM(t.Context(), conf, app.certificates.Authority(), download, client, plugins, nil, nil, datapath)
 	})
 	if err != nil {
 		t.Fatal(err)

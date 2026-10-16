@@ -16,24 +16,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func (c *ControlPlane) APIHandler(version string, operations apiserver.OperationStore) http.Handler {
-	return c.apiHandler(version, c.resolveAPIClient, operations)
+func (c *ControlPlane) APIHandler(version string, operations apiserver.OperationStore, certificates *apiserver.Certificates) http.Handler {
+	return c.apiHandler(version, c.resolveAPIClient, operations, certificates)
 }
 
-func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, operations apiserver.OperationStore) http.Handler {
+func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, operations apiserver.OperationStore, certificates *apiserver.Certificates) http.Handler {
 	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Operations: operations, Diagnostics: c}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
 	options.DeviceStatus = c.DeviceStatus
 	if host := c.MITMHost(); host != nil {
 		options.Scripts = host
 	}
-	if authority := c.mitmAuthority(); authority != nil {
-		options.Certificates = &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()}
-		if tests := c.CertificateTests(); tests != nil {
-			options.CertificateTests = tests
-			options.Certificates.Identity.TestAvailable = true
-			options.Certificates.Identity.TestGeneration = tests.Generation()
-			options.Certificates.Identity.TestMITMOrigins = tests.Origins()
+	options.Certificates = certificates
+	if tests := c.MITMTests(); tests != nil {
+		options.MITMTests = tests
+		if certificates != nil {
+			copy := *certificates
+			copy.Identity.MITMTestGeneration = tests.Generation()
+			copy.Identity.MITMTestOrigins = tests.Origins()
+			options.Certificates = &copy
 		}
 	}
 	return apiserver.NewHandler(options)

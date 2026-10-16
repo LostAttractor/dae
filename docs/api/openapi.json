@@ -121,50 +121,53 @@
           "name": {
             "type": "string"
           },
-          "test_available": {
-            "type": "boolean"
-          },
-          "test_generation": {
+          "mitm_test_generation": {
             "type": "string",
-            "description": "Current diagnostic generation. Discard browser test results when this changes."
+            "description": "Current MITM verification generation; present only when interception tests are available. Discard only MITM results when it changes. HTTPS acceptance depends on the CA fingerprint."
           },
-          "test_mitm_origins": {
+          "mitm_test_origins": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Exact virtual HTTPS origins allowed for MITM challenges. CA challenges use HTTPS on the current API socket."
+            "description": "Exact virtual HTTPS origins allowed for MITM challenges. CA trust is checked independently with a fresh-leaf challenge on the current API socket."
           }
         },
         "required": [
           "name",
-          "fingerprint",
-          "test_available"
+          "fingerprint"
         ],
         "type": "object"
       },
       "CertificateTest": {
         "type": "object",
-        "description": "A one-minute browser challenge bound to the verified caller and current configuration. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification.",
+        "description": "A one-minute CA trust challenge bound to the source IP, router IP and initiating page origin. A POST response is not proof; GET requires a TLS handshake using a leaf issued after challenge creation.",
+        "properties": {
+          "id": { "type": "string" },
+          "ca_fingerprint": { "type": "string" },
+          "expires_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "ca_fingerprint", "expires_at"]
+      },
+      "MITMTest": {
+        "type": "object",
+        "description": "A one-minute transparent MITM challenge bound to the verified caller and current interception configuration. At most 8 challenges and observations are retained per verified MAC and 256 globally; excess creation requests return 503. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification.",
         "properties": {
           "id": { "type": "string" },
           "ca_fingerprint": { "type": "string" },
           "started_at": { "type": "string", "format": "date-time" },
           "expires_at": { "type": "string", "format": "date-time" },
-          "trust_url": { "type": "string" },
           "mitm_url": { "type": "string" },
           "mitm_enabled": { "type": "boolean" },
-          "trust_observed": { "type": "boolean" },
           "mitm_observed": { "type": "boolean" }
         },
-        "required": ["id", "ca_fingerprint", "started_at", "expires_at", "trust_url", "mitm_url", "mitm_enabled", "trust_observed", "mitm_observed"]
+        "required": ["id", "ca_fingerprint", "started_at", "expires_at", "mitm_url", "mitm_enabled", "mitm_observed"]
       },
-      "CertificateTestProof": {
+      "MITMTestProof": {
         "type": "object",
         "properties": {
           "id": { "type": "string" },
-          "stage": { "type": "string", "enum": ["trust", "mitm"] },
           "ca_fingerprint": { "type": "string" }
         },
-        "required": ["id", "stage", "ca_fingerprint"]
+        "required": ["id", "ca_fingerprint"]
       },
       "DeviceStatus": {
         "type": "object",
@@ -1321,7 +1324,7 @@
     }
   },
   "info": {
-    "description": "Status schema 12. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 12. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests, except HTTPS certificate challenge proofs may be read by the initiating HTTP setup page on the same IP and port; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },
@@ -1337,9 +1340,35 @@
     "/api/clients/{name}/members/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1members~1{mac}"},
     "/api/devices/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}"},
     "/api/devices/{mac}/mitm": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}~1mitm"},
+    "/api/certificate/tests": {
+      "post": {
+        "operationId": "startCertificateTest",
+        "summary": "Start a browser CA trust test",
+        "description": "Public, same-origin, empty body, requires X-Dae-API: 1. Issues a fresh temporary leaf and key held only in memory. Challenges expire after one minute; certificate validity includes five additional minutes for client clock skew, capped by CA expiry. At most 8 pending challenges per source IP and 64 globally; excess requests return 429. Only new TLS connections from the initiating source IP to the connected router IP use pending challenge leaves; the persistent management leaf, CA and MITM cache stay unchanged. Clients sharing a source IP share this temporary selection. Does not require MITM or a device MAC. GET the returned id over HTTPS on the same socket with credentials omitted and redirects rejected.",
+        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
+        "responses": {
+          "201": { "description": "Test created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/certificate/tests/{id}": {
+      "get": {
+        "operationId": "verifyCertificateTest",
+        "summary": "Prove browser trust using a fresh TLS handshake",
+        "description": "HTTPS only. Permits the initiating HTTP setup origin at the same literal IP and port. Requires a temporary leaf issued for this source/router IP pair at or after challenge creation. Connections using the management leaf or an older challenge leaf receive 409 and Connection: close; retry to establish a new handshake. Validate the returned id and ca_fingerprint. Success consumes the challenge. Completion or expiry discards its temporary leaf; after the last pending challenge for the pair, new connections use the persistent management leaf again. 404 means consumed, expired, replaced CA, or different source/router IP. Browser TLS failure does not distinguish an untrusted CA from network or browser-policy failure.",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Fresh-handshake proof", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
+          "409": { "description": "Retry on a new TLS connection" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/certificate": {
       "get": {
         "operationId": "getCertificate",
+        "description": "Public same-origin CA metadata on HTTP and HTTPS. This endpoint is not a trust test: existing TLS connections and certificate exceptions can permit access. Use certificate/tests to verify browser CA trust. mitm_test_generation belongs only to interception tests.",
         "responses": {
           "200": {
             "content": {
@@ -1389,25 +1418,25 @@
         }
       }
     },
-    "/api/device/certificate-tests": {
+    "/api/device/mitm-tests": {
       "post": {
-        "operationId": "startCertificateTest",
-        "summary": "Create a current-browser CA and transparent MITM challenge (direct LAN only)",
-        "description": "Empty body. Does not change the device's MITM setting. GET trust_url and, when enabled, mitm_url from the browser with credentials omitted and redirects rejected. CA challenges share the API listener's TLS branch; virtual IP:443 targets are answered locally by the interception plugin without an upstream service. Both accept only the original page's Origin and return CertificateTestProof. A failed virtual-target request cannot distinguish bypass from unreachable traffic. These exact-origin diagnostics are the only cross-origin browser endpoints.",
+        "operationId": "startMITMTest",
+        "summary": "Create a current-browser transparent MITM challenge (direct LAN only)",
+        "description": "Empty body. Does not change the device's MITM setting. Verify browser CA trust independently with a fresh-leaf certificate/tests challenge on the API socket. When MITM is enabled, GET mitm_url with credentials omitted and redirects rejected. Virtual IP:443 targets return MITMTestProof locally through interception, without an upstream service, and accept only the initiating page's exact HTTP or HTTPS Origin. A failed virtual-target request cannot distinguish bypass from unreachable traffic.",
         "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
         "responses": {
-          "201": { "description": "Challenge created, expires in one minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
+          "201": { "description": "Challenge created, expires in one minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MITMTest" } } } },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
     },
-    "/api/device/certificate-tests/{id}": {
+    "/api/device/mitm-tests/{id}": {
       "get": {
-        "operationId": "getCertificateTest",
+        "operationId": "getMITMTest",
         "summary": "Read this device's challenge observations",
         "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": {
-          "200": { "description": "Current observation; 404 for expired, replaced or foreign challenges", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
+          "200": { "description": "Current observation; 404 for expired, replaced or foreign challenges", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MITMTest" } } } },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }

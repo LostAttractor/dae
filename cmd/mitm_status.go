@@ -10,6 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func newPluginsCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
+	command := &cobra.Command{Use: "plugins", Short: "Manage plugins and inspect their reports."}
+	addMITMCommands(command, definitions, services)
+	return command
+}
+
 func addMITMCommands(command *cobra.Command, definitions map[string]plugin.Definition, services plugin.CommandServices) {
 	var instance string
 	aggregate := cli.NewMITMStatusCommand(cli.SelectMITM(services.Status, "", &instance), func(name string, fetch cli.MITMSource) (*cobra.Command, bool) {

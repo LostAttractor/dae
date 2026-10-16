@@ -19,11 +19,15 @@ import (
 // reach the runtime store, regardless of which request guard rejects them.
 type rejectedDeviceMutations struct {
 	DeviceStore
-	t *testing.T
+	t           *testing.T
+	fingerprint string
 }
 
 func (s rejectedDeviceMutations) DeviceState(netip.Addr, [6]byte) api.DeviceState {
-	return api.DeviceState{}
+	if s.fingerprint == "" {
+		return api.DeviceState{}
+	}
+	return api.DeviceState{MITM: &api.MITMState{CAFingerprint: s.fingerprint}}
 }
 
 func (s rejectedDeviceMutations) UpdateMITM(netip.Addr, [6]byte, *bool) (api.DeviceState, error) {
@@ -34,7 +38,7 @@ func (s rejectedDeviceMutations) UpdateMITM(netip.Addr, [6]byte, *bool) (api.Dev
 func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	const fingerprint = "current CA fingerprint"
 	options := Options{
-		Devices: rejectedDeviceMutations{t: t},
+		Devices: rejectedDeviceMutations{t: t, fingerprint: fingerprint},
 		Certificates: &Certificates{
 			Identity: api.Certificate{Name: "device API", Fingerprint: fingerprint},
 			Handler:  http.NotFoundHandler(),
@@ -43,8 +47,10 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	for _, test := range []struct {
 		name, method, body, origin, site, contentType, marker, query, host string
 		status                                                             int
+		disabled                                                           bool
 	}{
 		{name: "status", method: "GET", status: 200},
+		{name: "API certificate without MITM", method: "PUT", body: `{"enabled":true}`, contentType: "application/json", marker: fingerprint, status: 404, disabled: true},
 		{name: "foreign origin", method: "PUT", body: `{"enabled":true}`, contentType: "application/json", marker: fingerprint, origin: "http://evil.example", status: 403},
 		{name: "foreign status", method: "GET", origin: "http://evil.example", status: 403},
 		{name: "null origin", method: "GET", origin: "null", status: 403},
@@ -70,6 +76,10 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 		{name: "DELETE body", method: "DELETE", marker: fingerprint, body: `{"mac":"00:11:22:33:44:55"}`, status: 400},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			options := options
+			if test.disabled {
+				options.Devices = rejectedDeviceMutations{t: t}
+			}
 			called := false
 			options.ResolveClient = func(peer, _ netip.AddrPort) (ClientIdentity, error) {
 				ip := peer.Addr()

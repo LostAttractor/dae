@@ -29,9 +29,6 @@ type DialContext func(context.Context, string, string) (net.Conn, error)
 // Load prepares plugin instances independently of the protocol host. The prior
 // host is read-only during preparation; unchanged instances retain their state.
 func Load(ctx context.Context, configuration *pluginhost.Configuration, options Options, services plugin.Services, previous *Host) (*Host, error) {
-	if previous != nil && options.Authority != nil && previous.Authority() != nil && options.Authority.Fingerprint() == previous.Authority().Fingerprint() {
-		options.Authority = previous.Authority()
-	}
 	services.BodyMemory = options.bodyMemory()
 	instances, err := configuration.Prepare(ctx, services, previous.Instances())
 	if err != nil {
@@ -45,7 +42,7 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance.Instance, resources: instance.Resources, resourcesPending: true})
 	}
 	if options.Diagnostic != nil {
-		local = append([]Instance{{ID: "dae-certificate-test", Type: "certificate-test", Plugin: options.Diagnostic}}, local...)
+		local = append([]Instance{{ID: "dae-mitm-test", Type: "mitm-test", Plugin: options.Diagnostic}}, local...)
 	}
 	host, err := New(options, local...)
 	if err != nil {
@@ -225,7 +222,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		h.plan.Routes = append(h.plan.Routes, instance.plan.Routes...)
 	}
 	if len(h.plan.Scopes) > 0 && options.Authority == nil {
-		return nil, errors.New("mitm: HTTPS scopes require ca_cert and ca_key")
+		return nil, errors.New("mitm: HTTPS scopes require a certificate authority")
 	}
 	registry := prometheus.NewRegistry()
 	h.metrics = registry

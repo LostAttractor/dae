@@ -17,7 +17,6 @@ import (
 
 	apiclient "github.com/daeuniverse/dae/api/client"
 	localca "github.com/daeuniverse/dae/component/ca"
-	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
@@ -38,8 +37,8 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("socket permissions", info, err)
 	}
-	local.SetHandler(plane.APIHandler("integration-test", nil))
-	server := httptest.NewServer(plane.apiHandler("integration-test", testClientIngress, nil))
+	local.SetHandler(plane.APIHandler("integration-test", nil, nil))
+	server := httptest.NewServer(plane.apiHandler("integration-test", testClientIngress, nil, nil))
 	defer server.Close()
 	for _, endpoint := range []string{server.URL, "unix://" + socket} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -88,7 +87,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 				if unavailable, ok := errors.AsType[*apiclient.Error](err); !ok || unavailable.StatusCode != 503 {
 					t.Fatalf("reload: %v", err)
 				}
-				local.SetHandler(plane.APIHandler("integration-test", nil))
+				local.SetHandler(plane.APIHandler("integration-test", nil, nil))
 				if _, err := client.Status(ctx); err != nil {
 					t.Fatal("client did not recover after reload", err)
 				}
@@ -117,7 +116,7 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", testClientIngress, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil, nil)
 	for _, test := range []struct {
 		token string
 		want  int
@@ -128,11 +127,11 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		}
 	}
 	plane.apiKey = ""
-	handler = plane.apiHandler("test", testClientIngress, nil)
+	handler = plane.apiHandler("test", testClientIngress, nil, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 200 {
 		t.Fatal("verified LAN client could not read status without an API key", w.Code, w.Body.String())
 	}
-	handler = plane.APIHandler("test", nil)
+	handler = plane.APIHandler("test", nil, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 403 {
 		t.Fatal("status exposed without configured API key or LAN identity")
 	}
@@ -163,13 +162,8 @@ func TestCertificateAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := mitm.New(mitm.Options{Authority: authority})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-	plane := &ControlPlane{mitmHost: host}
-	handler := plane.APIHandler("test", nil)
+	plane := &ControlPlane{}
+	handler := plane.APIHandler("test", nil, &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()})
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	client, err := apiclient.New(apiclient.Options{Endpoint: server.URL})

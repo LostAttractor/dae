@@ -1,12 +1,12 @@
-import type { DeviceState, CertificateMetadata, CertificateTest } from "./types.ts";
-import { request, challengeRequest, errorMessage } from "./api.ts";
+import type { DeviceState, CertificateMetadata, MITMTest } from "./types.ts";
+import { request, certificateRequest, challengeRequest, errorMessage } from "./api.ts";
 import { byId } from "./dom.ts";
 
 let identity = "";
 let fingerprint = "";
-let available = false;
 let enabled = false;
-let generation = 0;
+let caVersion = 0;
+let mitmVersion = 0;
 let serverGeneration = "";
 let mitmOrigins: string[] = [];
 
@@ -18,82 +18,108 @@ function state(id: string, text: string, tone: "neutral" | "pending" | "success"
   node.dataset.tone = tone;
 }
 
-function invalidate() {
-  generation++;
-  state("certificate-trust-result", "Not tested");
+function invalidateMITM() {
+  mitmVersion++;
   state("certificate-mitm-result", "Not tested");
+}
+
+function invalidateCA() {
+  caVersion++;
+  state("certificate-trust-result", "Not tested");
+  invalidateMITM();
   byId("certificate-test-info").textContent = "Results apply to this browser only.";
+  byId("certificate-http-setup").hidden = true;
 }
 
 export function certificateDevice(device: DeviceState | null) {
   const next = device ? `${device.source_ip}/${device.mac}` : "";
   const nextEnabled = device?.mitm?.enabled || false;
-  if (identity !== next || enabled !== nextEnabled || device?.mitm && device.mitm.ca_fingerprint !== fingerprint) invalidate();
+  if (identity !== next || enabled !== nextEnabled) invalidateMITM();
   identity = next;
   enabled = nextEnabled;
-  byId<HTMLButtonElement>("test-certificate").disabled = !identity || !available;
 }
 
 export function certificateIdentity(certificate: CertificateMetadata | null) {
   const next = certificate?.fingerprint || "";
-  const nextGeneration = certificate?.test_generation || "";
-  if (next !== fingerprint || nextGeneration !== serverGeneration) invalidate();
+  const nextGeneration = certificate?.mitm_test_generation || "";
+  if (next !== fingerprint) invalidateCA();
+  else if (nextGeneration !== serverGeneration) invalidateMITM();
   serverGeneration = nextGeneration;
-  mitmOrigins = certificate?.test_mitm_origins || [];
+  mitmOrigins = certificate?.mitm_test_origins || [];
   fingerprint = next;
-  available = Boolean(certificate?.test_available);
-  byId("certificate-test-panel").hidden = !available;
-  byId<HTMLButtonElement>("test-certificate").disabled = !identity || !available;
+  byId("certificate-test-panel").hidden = !fingerprint;
+  byId<HTMLButtonElement>("test-certificate").disabled = !fingerprint;
 }
 
 export async function testCertificate(): Promise<TestFeedback | undefined> {
-  const version = ++generation;
+  const caAttempt = ++caVersion, mitmAttempt = ++mitmVersion;
+  const currentMITM = () => caAttempt === caVersion && mitmAttempt === mitmVersion;
   state("certificate-trust-result", "Testing…", "pending");
-  state("certificate-mitm-result", "Waiting for CA test");
-  let test: CertificateTest;
-  try { test = await request<CertificateTest>("/api/device/certificate-tests", "POST"); }
+  state("certificate-mitm-result", "Waiting for CA trust test");
+  byId("certificate-http-setup").hidden = true;
+  let accepted = false;
+  try {
+    const certificate = await certificateRequest();
+    accepted = certificate.ca_fingerprint === fingerprint;
+  } catch { /* Browsers do not expose the TLS/network failure reason. */ }
+  if (caAttempt !== caVersion) return;
+  state("certificate-trust-result", accepted ? "CA trusted by this browser" : "Verification incomplete", accepted ? "success" : "warning");
+  byId("certificate-test-info").textContent = `${new Date().toLocaleString()} · This browser only · SHA-256: ${fingerprint}\nThis test does not check other applications or the system trust store.`;
+  if (!currentMITM()) return;
+  if (!accepted) {
+    state("certificate-mitm-result", "CA trust test required", "warning");
+    byId("certificate-test-info").textContent += "\nCheck certificate installation and full trust, network connectivity and browser policy.";
+    if (location.protocol === "https:") {
+      const setup = new URL(location.href), port = location.port || "443";
+      setup.protocol = "http:";
+      setup.port = port;
+      const link = byId<HTMLAnchorElement>("certificate-http-setup");
+      link.href = setup.href;
+      link.hidden = false;
+    }
+    return { tone: "warning", text: "CA trust could not be verified. See the results below." };
+  }
+  if (!serverGeneration || !identity || !enabled) {
+    const reason = !serverGeneration ? "MITM is unavailable" : !identity ? "Device identity unavailable" : "MITM is disabled";
+    state("certificate-mitm-result", reason);
+    return { tone: "success", text: `CA trust verified. ${reason}.` };
+  }
+  state("certificate-mitm-result", "Testing…", "pending");
+  let test: MITMTest;
+  try { test = await request<MITMTest>("/api/device/mitm-tests", "POST"); }
   catch (error) {
-    state("certificate-trust-result", "Test unavailable", "error");
-    state("certificate-mitm-result", "Not tested");
+    if (!currentMITM()) return;
+    state("certificate-mitm-result", "Test unavailable", "error");
     throw error;
   }
-  if (version !== generation) return;
+  if (!currentMITM()) return;
   if (test.ca_fingerprint !== fingerprint) {
-    invalidate();
+    invalidateCA();
     throw new Error("The CA changed. Refresh the page and test the current certificate.");
   }
-  const proof = async (url: string, stage: "trust" | "mitm") => {
-    const result = await challengeRequest(url, stage === "mitm" ? mitmOrigins : undefined);
-    if (result.id !== test.id || result.ca_fingerprint !== test.ca_fingerprint) throw new Error("Unexpected challenge response");
-    return result.stage === stage;
-  };
-  let trust = false;
+  if (!test.mitm_enabled) {
+    state("certificate-mitm-result", "MITM is disabled");
+    return { tone: "success", text: "CA trust verified. MITM is disabled." };
+  }
   let intercepted = false;
-  try { trust = await proof(test.trust_url, "trust"); } catch { /* The browser does not expose the TLS/network failure reason. */ }
-  if (version !== generation) return;
-  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "warning");
-  if (trust && test.mitm_enabled) {
-    state("certificate-mitm-result", "Testing…", "pending");
-    try { intercepted = await proof(test.mitm_url, "mitm"); } catch { /* Confirm observations using the same-origin API below. */ }
-  }
-  if (version !== generation) return;
-  let observation: CertificateTest;
-  try { observation = await request<CertificateTest>(`/api/device/certificate-tests/${encodeURIComponent(test.id)}`); }
+  try {
+    const proof = await challengeRequest(test.mitm_url, mitmOrigins);
+    intercepted = proof.id === test.id && proof.ca_fingerprint === test.ca_fingerprint;
+  } catch { /* Confirm observations using the same-origin API below. */ }
+  if (!currentMITM()) return;
+  let observation: MITMTest;
+  try { observation = await request<MITMTest>(`/api/device/mitm-tests/${encodeURIComponent(test.id)}`); }
   catch (error) {
-    invalidate();
-    throw new Error(`Test is no longer current: ${errorMessage(error)}`);
+    if (!currentMITM()) return;
+    invalidateMITM();
+    throw new Error(`MITM test is no longer current: ${errorMessage(error)}`);
   }
-  if (version !== generation) return;
-  trust = trust && observation.trust_observed;
+  if (!currentMITM()) return;
   intercepted = intercepted && observation.mitm_observed;
-  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "warning");
-  state("certificate-mitm-result", !test.mitm_enabled ? "MITM is disabled" : !trust ? "CA test required" : intercepted ? "Transparent MITM verified" : "Verification incomplete", !test.mitm_enabled ? "neutral" : intercepted ? "success" : "warning");
-  let detail = "";
-  if (!trust) detail = "\nCheck certificate installation and full trust. Browsers do not distinguish certificate rejection from network or browser-policy failures here.";
-  else if (test.mitm_enabled && !intercepted) detail = "\nThe virtual target did not complete a verified MITM challenge. Check that its traffic reaches dae; it has no upstream service.";
-  byId("certificate-test-info").textContent = `${new Date().toLocaleString()} · This browser only · SHA-256: ${test.ca_fingerprint}${detail}`;
-  if (!trust) return { tone: "warning", text: "Certificate trust could not be verified. See the results below." };
-  if (!test.mitm_enabled) return { tone: "success", text: "Certificate trusted by this browser. HTTPS interception is disabled." };
-  if (!intercepted) return { tone: "warning", text: "Certificate trusted, but HTTPS interception could not be verified. See the results below." };
-  return { tone: "success", text: "Certificate trusted and HTTPS interception verified." };
+  state("certificate-mitm-result", intercepted ? "Transparent MITM verified" : "Verification incomplete", intercepted ? "success" : "warning");
+  if (!intercepted) {
+    byId("certificate-test-info").textContent += "\nThe virtual target did not complete a verified MITM challenge. Check that its traffic reaches dae; it has no upstream service.";
+    return { tone: "warning", text: "CA trust verified, but interception could not be verified. See the results below." };
+  }
+  return { tone: "success", text: "CA trust and interception verified." };
 }

@@ -43,7 +43,9 @@ func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request, who cal
 }
 
 func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) {
-	if s.options.Certificates == nil {
+	ip, mac := who.ip, who.identity.MAC
+	device := s.options.Devices.DeviceState(ip, mac)
+	if device.MITM == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
 	}
@@ -52,7 +54,7 @@ func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) 
 		apiError(w, 403, "MITM changes require X-Dae-MITM containing the CA SHA-256 fingerprint")
 		return
 	}
-	if fingerprint != s.options.Certificates.Identity.Fingerprint {
+	if fingerprint != device.MITM.CAFingerprint {
 		apiError(w, 409, "the CA certificate changed; reload the page and verify the certificate")
 		return
 	}
@@ -70,7 +72,6 @@ func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) 
 	} else if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac := who.ip, who.identity.MAC
 	state, err := s.options.Devices.UpdateMITM(ip, mac, enabled)
 	if err != nil {
 		apiSaveError(w, err)

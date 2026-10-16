@@ -95,7 +95,7 @@ func TestRuntimeSettingsReload(t *testing.T) {
 	check(false)
 
 	// API writes have already been applied and must not trigger a second reload.
-	if w := apiTestRequest(plane.apiHandler("test", testClientIngress, nil), "PUT", "/api/device/sets/gaming", "", ""); w.Code != 200 {
+	if w := apiTestRequest(plane.apiHandler("test", testClientIngress, nil, nil), "PUT", "/api/device/sets/gaming", "", ""); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	if changed, err := plane.ReloadRuntimeSettings(); changed || err != nil {
@@ -203,7 +203,7 @@ func TestRuntimeSettingsReloadSerializesAPIWrites(t *testing.T) {
 			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
 			handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
 				return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
-			}, nil)
+			}, nil, nil)
 			for _, method := range []string{"PUT", "DELETE", "PUT", "PUT"} {
 				if w := apiTestRequest(handler, method, "/api/device/sets/gaming", "", ""); w.Code != 200 {
 					t.Error(w.Code, w.Body.String())

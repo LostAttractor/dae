@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package certtest
+package mitmverify
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json/v2"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -19,40 +16,6 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-// Endpoint serves only CA challenges on the API listener's HTTPS branch.
-// A positive MITM witness is produced exclusively by Wrap at a virtual target.
-type Endpoint struct {
-	Service *Service
-}
-
-func (e Endpoint) TLSGeneration() string { return e.Service.Generation() }
-
-func (e Endpoint) TLSConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-	local, ok := hello.Conn.LocalAddr().(*net.TCPAddr)
-	if !ok || !slices.Contains(e.Service.hosts, local.AddrPort().Addr().Unmap()) {
-		return nil, fmt.Errorf("certificate test requires a local IP")
-	}
-	configuration := e.Service.authority.TLSConfig(local.AddrPort().Addr().Unmap().String())
-	configuration.SessionTicketsDisabled = true
-	return configuration, nil
-}
-
-func (e Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
-	if r.TLS == nil || !ok {
-		http.Error(w, "certificate test requires TLS", http.StatusForbidden)
-		return
-	}
-	source, _ := netip.ParseAddrPort(r.RemoteAddr)
-	response := e.Service.respond(r, plugin.Flow{Source: source, Destination: local.AddrPort()}, "trust")
-	defer response.Body.Close()
-	for key, values := range response.Header {
-		w.Header()[key] = values
-	}
-	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
-}
-
 func (s *Service) Wrap(flow plugin.Flow, _ plugin.Handler) plugin.Handler {
 	return func(exchange *plugin.Exchange) (*http.Response, error) {
 		// Matching a Host header alone cannot produce an interception witness.
@@ -60,7 +23,7 @@ func (s *Service) Wrap(flow plugin.Flow, _ plugin.Handler) plugin.Handler {
 			flow.Host != flow.Destination.Addr().Unmap().String() || exchange.Request.URL.Scheme != "https" {
 			return response(http.StatusForbidden, nil, "invalid test destination"), nil
 		}
-		return s.respond(exchange.Request, flow, "mitm"), nil
+		return s.respond(exchange.Request, flow), nil
 	}
 }
 
@@ -75,7 +38,7 @@ func response(code int, header http.Header, body string) *http.Response {
 	return &http.Response{StatusCode: code, Header: header, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Close: true}
 }
 
-func (s *Service) respond(r *http.Request, flow plugin.Flow, stage string) *http.Response {
+func (s *Service) respond(r *http.Request, flow plugin.Flow) *http.Response {
 	if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		return response(http.StatusBadRequest, nil, "expected an empty GET challenge request")
 	}
@@ -87,13 +50,10 @@ func (s *Service) respond(r *http.Request, flow plugin.Flow, stage string) *http
 	defer s.mu.Unlock()
 	s.prune(time.Now())
 	test := s.tests[id]
-	if test == nil || stage == "trust" && flow.Source.Addr().Unmap() != test.ip || stage == "mitm" && (flow.SourceMAC == [6]byte{} || flow.SourceMAC != test.mac) {
+	if test == nil || !test.MITMEnabled || flow.SourceMAC == [6]byte{} || flow.SourceMAC != test.mac {
 		return response(http.StatusNotFound, nil, "test expired or belongs to another device")
 	}
 	want := test.mitm
-	if stage == "trust" {
-		want = test.trust
-	}
 	destination, err := netip.ParseAddrPort(r.Host)
 	if err != nil {
 		ip, _ := netip.ParseAddr(strings.Trim(r.Host, "[]"))
@@ -103,13 +63,8 @@ func (s *Service) respond(r *http.Request, flow plugin.Flow, stage string) *http
 	if actual != want || destination != want || r.Header.Get("Origin") != test.origin {
 		return response(http.StatusForbidden, nil, "test origin or destination does not match")
 	}
-	switch stage {
-	case "trust":
-		test.TrustObserved = true
-	case "mitm":
-		test.MITMObserved = true
-	}
-	data, err := json.Marshal(api.CertificateTestProof{ID: id, Stage: stage, CAFingerprint: test.CAFingerprint})
+	test.MITMObserved = true
+	data, err := json.Marshal(api.MITMTestProof{ID: id, CAFingerprint: test.CAFingerprint})
 	if err != nil {
 		return response(http.StatusInternalServerError, nil, "encode test proof")
 	}

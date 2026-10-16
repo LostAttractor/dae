@@ -12,7 +12,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/certtest"
+	"github.com/daeuniverse/dae/component/mitm/verify"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/config"
@@ -40,45 +40,32 @@ func logStartupMITMStatus(instances []plugin.InstanceStatus) {
 
 func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*pluginhost.Configuration, error) {
 	for _, spec := range configuredPluginSpecs(conf) {
-		if spec.ID == certtest.InstanceID {
-			return nil, fmt.Errorf("plugin ID %q is reserved for certificate diagnostics", spec.ID)
+		if spec.ID == mitmverify.InstanceID {
+			return nil, fmt.Errorf("plugin ID %q is reserved for MITM verification", spec.ID)
 		}
 	}
-	if conf.MITM.Enabled && conf.MITM.CACert != "" {
-		if _, err := certtest.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6); err != nil {
+	if conf.MITM.Enabled && conf.Global.APIPort != 0 {
+		if _, err := mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6); err != nil {
 			return nil, err
 		}
 	}
 	return pluginhost.Configure(definitions, configuredPluginSpecs(conf))
 }
 
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string, runtime *control.Runtime) (control.PreparedMITM, error) {
+func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Authority, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string, runtime *control.Runtime) (control.PreparedMITM, error) {
 	m := conf.MITM
-	if len(conf.Plugins) == 0 && !(m.Enabled && m.CACert != "" && conf.Global.APIPort != 0) {
+	if len(conf.Plugins) == 0 && !(m.Enabled && conf.Global.APIPort != 0) {
 		return control.PreparedMITM{}, nil
 	}
 	base := common.CacheDirectory()
-	resolve := func(path string) string {
-		if path == "" || filepath.IsAbs(path) {
-			return path
-		}
-		return filepath.Join(base, path)
+	if !m.Enabled {
+		authority = nil
 	}
-	var authority *localca.Authority
 	var err error
-	if m.Enabled && m.CACert != "" {
-		authority, err = localca.Load(resolve(m.CACert), resolve(m.CAKey))
-		if err != nil {
-			return control.PreparedMITM{}, fmt.Errorf("mitm CA: %w", err)
-		}
-	}
-	if authority != nil {
-		log.WithField("fingerprint", authority.Fingerprint()).Info("Loaded MITM CA")
-	}
 
 	options := mitm.Options{DisableHTTP: !m.Enabled, BufferMemoryLimit: m.BufferMemoryLimit, Authority: authority, HTTPClient: background, Logger: log.NewEntry(log.StandardLogger()), Metrics: &pluginMetrics}
 	if authority != nil && conf.Global.APIPort != 0 {
-		targets, err := certtest.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6)
+		targets, err := mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6)
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}
@@ -86,7 +73,7 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}
-		options.Diagnostic, err = certtest.New(authority, conf.Global.APIPort, targets, addresses)
+		options.Diagnostic, err = mitmverify.New(authority.Fingerprint(), targets, addresses)
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}

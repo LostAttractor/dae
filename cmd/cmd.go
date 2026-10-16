@@ -50,9 +50,9 @@ func Execute() error {
 	definitions := compiledplugins.Definitions()
 	var connection cli.Connection
 	services := plugin.CommandServices{BaseDir: common.CacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
-	mitm := newMITMCommand(definitions, services)
+	ca := newCACommand()
 	plugins := newPluginsCommand(definitions, services)
 	connection.Bind(plugins.PersistentFlags())
-	rootCmd.AddCommand(newRunCommand(definitions), mitm, plugins)
+	rootCmd.AddCommand(newRunCommand(definitions), ca, plugins)
 	return rootCmd.Execute()
 }

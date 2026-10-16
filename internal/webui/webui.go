@@ -27,9 +27,9 @@ func Handler(directory string, testTargets ...netip.AddrPort) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		connect := "'self'"
-		if local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr); ok && len(testTargets) != 0 {
+		if local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr); ok {
 			targets := append([]netip.AddrPort{local.AddrPort()}, testTargets...)
-			for _, target := range targets {
+			for i, target := range targets {
 				ip, port := target.Addr().Unmap(), target.Port()
 				address := netip.AddrPortFrom(ip, port).String()
 				// Chromium rejects IPv6 literals in CSP host sources. Constrain
@@ -38,7 +38,11 @@ func Handler(directory string, testTargets ...netip.AddrPort) http.Handler {
 				if ip.Is6() {
 					address = "*:" + strconv.Itoa(int(port))
 				}
-				connect += " https://" + address + "/test/"
+				path := "/test/"
+				if i == 0 {
+					path = "/api/certificate/tests/"
+				}
+				connect += " https://" + address + path
 			}
 		}
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src "+connect+"; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")

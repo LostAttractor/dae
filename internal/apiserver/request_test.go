@@ -61,3 +61,43 @@ func TestMITMOriginHandlesDefaultPortAndIPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPSOriginAndCertificateBootstrap(t *testing.T) {
+	for _, test := range []struct {
+		url, local, origin string
+		same, bootstrap    bool
+	}{
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1:443", true, false},
+		{"https://192.0.2.1:443/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1", true, false},
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1:443", false, true},
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1", false, false},
+		{"https://192.0.2.1:80/api/certificate/tests/proof", "192.0.2.1:80", "http://192.0.2.1", false, true},
+		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "https://[2001:db8::1]:9080", true, false},
+		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "http://[2001:db8::1]:9080", false, true},
+		{"https://192.0.2.1:9080/api/status", "192.0.2.1:9080", "http://192.0.2.1:9080", false, false},
+		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://192.0.2.1:9081", false, false},
+		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://evil.example:9080", false, false},
+		{"http://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "https://192.0.2.1:9080", false, false},
+	} {
+		t.Run(test.url+"/"+test.origin, func(t *testing.T) {
+			r := httptest.NewRequest("GET", test.url, nil)
+			r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(test.local))))
+			r.Header.Set("Origin", test.origin)
+			if !localIPHost(r) {
+				t.Fatal("literal listener address rejected")
+			}
+			if sameOrigin(r) != test.same {
+				t.Fatal("incorrect same-origin decision")
+			}
+			if certificateBootstrap(httptest.NewRecorder(), r) != test.bootstrap {
+				t.Fatal("incorrect bootstrap decision")
+			}
+			if test.bootstrap {
+				r.Method = "POST"
+				if certificateBootstrap(httptest.NewRecorder(), r) {
+					t.Fatal("bootstrap allowed a mutation")
+				}
+			}
+		})
+	}
+}

@@ -1,5 +1,5 @@
 // HTTP boundary shared by browser clients. All paths are relative to the API origin.
-import type { CertificateTestProof } from "./types.ts";
+import type { MITMTestProof, CertificateTest } from "./types.ts";
 
 export type HTTPMethod = "GET" | "POST" | "PUT" | "DELETE";
 
@@ -28,21 +28,47 @@ export async function request<T = unknown>(path: string, method: HTTPMethod = "G
   return response.status === 204 ? undefined as T : response.json();
 }
 
-// CA tests use HTTPS on the exact API socket. MITM tests use the virtual origins
-// advertised by the daemon's certificate metadata.
-// Never send management cookies/headers, follow redirects, or accept opaque data.
-export async function challengeRequest(address: string, allowedOrigins?: string[]): Promise<CertificateTestProof> {
-  const url = new URL(address);
-  const allowed = allowedOrigins === undefined
-    ? url.hostname === location.hostname && Number(url.port || 443) === Number(location.port || 80)
-    : allowedOrigins.includes(url.origin);
-  if (url.protocol !== "https:" || !allowed || url.username || url.password || url.search || url.hash || !url.pathname.startsWith("/test/")) {
-    throw new Error("Invalid certificate test address");
+// A temporary leaf excludes previously accepted certificate warnings without
+// replacing the persistent management leaf. The proof consumes the challenge.
+export async function certificateRequest(): Promise<CertificateTest> {
+  const test = await request<CertificateTest>("/api/certificate/tests", "POST");
+  const url = new URL(`/api/certificate/tests/${encodeURIComponent(test.id)}`, location.href);
+  const port = location.port || (location.protocol === "https:" ? "443" : "80");
+  url.protocol = "https:";
+  url.port = port;
+  const signal = AbortSignal.timeout(10000);
+  // Retire pooled connections individually; management requests on other
+  // connections remain usable. The server never returns proof over an old leaf.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const proof = await verifiedHTTPS<CertificateTest>(url, signal);
+      if (proof.id !== test.id || proof.ca_fingerprint !== test.ca_fingerprint) throw new Error("Certificate proof does not match the test");
+      return proof;
+    } catch (error) {
+      if (!(error instanceof HTTPError) || error.status !== 409) throw error;
+    }
   }
+  throw new Error("Could not establish a fresh TLS connection");
+}
+
+// MITM proofs may come only from the daemon's advertised virtual destinations.
+export function challengeRequest(address: string, allowedOrigins: string[]): Promise<MITMTestProof> {
+  const url = new URL(address);
+  if (url.protocol !== "https:" || !allowedOrigins.includes(url.origin) || url.username || url.password || url.search || url.hash || !url.pathname.startsWith("/test/")) {
+    throw new Error("Invalid MITM test address");
+  }
+  return verifiedHTTPS<MITMTestProof>(url);
+}
+
+// Never send management cookies/headers, follow redirects, or accept opaque data.
+async function verifiedHTTPS<T>(url: URL, signal = AbortSignal.timeout(10000)): Promise<T> {
   const response = await fetch(url, {
     mode: "cors", credentials: "omit", cache: "no-store", redirect: "error",
-    signal: AbortSignal.timeout(10000),
+    signal,
   });
-  if (!response.ok) throw new Error(`Certificate test failed (${response.status})`);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new HTTPError(`Certificate test failed (${response.status})`, response.status);
+  }
   return response.json();
 }

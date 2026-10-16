@@ -74,40 +74,41 @@ function Shell() {
                       <span id="mitm-summary" className="mitm-summary"></span>
                     </div>
                     <div id="mitm" className="mitm-state"></div>
-                    <div id="certificate-panel" className="certificate-panel" hidden>
-                      <CertificatePanel>
-                        <div className="certificate-content">
-                          <section className="certificate-install" aria-label="Certificate installation">
-                            <div id="certificate" className="certificate-identity">
-                              <strong id="certificate-name"></strong>
-                              <span className="certificate-fingerprint-label">SHA-256 fingerprint</span>
-                              <code id="certificate-fingerprint"></code>
+                  </section>
+                  <section id="certificate-panel" className="setting-subsection certificate-panel" hidden>
+                    <CertificatePanel>
+                      <div className="certificate-content">
+                        <section className="certificate-install" aria-label="Certificate installation">
+                          <div id="certificate" className="certificate-identity">
+                            <strong id="certificate-name"></strong>
+                            <span className="certificate-fingerprint-label">SHA-256 fingerprint</span>
+                            <code id="certificate-fingerprint"></code>
+                          </div>
+                          <p>Verify this fingerprint on your router, then install and trust the local CA for API HTTPS and enabled HTTPS modules.</p>
+                          <div className="download-links" role="group" aria-label="Download certificate">
+                            <Button label="iOS Profile" href="/ca.mobileconfig" aria-label="Download iOS certificate profile" />
+                            <Button label="DER" href="/ca.cer" aria-label="Download DER certificate" />
+                            <Button label="PEM" href="/ca.pem" aria-label="Download PEM certificate" />
+                          </div>
+                        </section>
+                        <section id="certificate-test-panel" aria-labelledby="certificate-test-title" hidden>
+                          <div className="certificate-test-heading">
+                            <div className="certificate-test-copy">
+                              <h4 id="certificate-test-title">Browser verification</h4>
+                              {import.meta.env.DEV && <p>Certificate and interception checks require this browser to connect directly to dae.</p>}
                             </div>
-                            <p>Verify this fingerprint on your router, then install and trust the certificate.</p>
-                            <div className="download-links" role="group" aria-label="Download certificate">
-                              <Button label="iOS Profile" href="/ca.mobileconfig" aria-label="Download iOS certificate profile" />
-                              <Button label="DER" href="/ca.cer" aria-label="Download DER certificate" />
-                              <Button label="PEM" href="/ca.pem" aria-label="Download PEM certificate" />
-                            </div>
-                          </section>
-                          <section id="certificate-test-panel" aria-labelledby="certificate-test-title" hidden>
-                            <div className="certificate-test-heading">
-                              <div className="certificate-test-copy">
-                                <h4 id="certificate-test-title">Browser verification</h4>
-                                {import.meta.env.DEV && <p>Certificate and interception checks require this browser to connect directly to dae.</p>}
-                              </div>
-                              <Button label="Test Certificate" id="test-certificate" type="button" hidden={import.meta.env.DEV} />
-                              {import.meta.env.DEV && <Button label="Open dae to verify" href={`${__DAE_DEV_API_URL__}/#overview`} target="_blank" rel="noreferrer" />}
-                            </div>
-                            <dl className="certificate-results" hidden={import.meta.env.DEV} aria-live="polite">
-                              <div><dt>Certificate trust</dt><dd><span id="certificate-trust-result" className="verification-result">Not tested</span></dd></div>
-                              <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="verification-result">Not tested</span></dd></div>
-                            </dl>
-                            <p id="certificate-test-info" hidden={import.meta.env.DEV}>Results apply to this browser only.</p>
-                          </section>
-                        </div>
-                      </CertificatePanel>
-                    </div>
+                            <Button label="Test Certificate" id="test-certificate" type="button" hidden={import.meta.env.DEV} />
+                            {import.meta.env.DEV && <Button label="Open dae to verify" href={`${__DAE_DEV_API_URL__}/#overview`} target="_blank" rel="noreferrer" />}
+                          </div>
+                          <dl className="certificate-results" hidden={import.meta.env.DEV} aria-live="polite">
+                            <div><dt>CA trust</dt><dd><span id="certificate-trust-result" className="verification-result">Not tested</span></dd></div>
+                            <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="verification-result">Not tested</span></dd></div>
+                          </dl>
+                          <p id="certificate-test-info" hidden={import.meta.env.DEV}>Results apply to this browser only.</p>
+                          <a id="certificate-http-setup" hidden>Return to HTTP setup to install and trust the CA</a>
+                        </section>
+                      </div>
+                    </CertificatePanel>
                   </section>
                 </section>
               </div>

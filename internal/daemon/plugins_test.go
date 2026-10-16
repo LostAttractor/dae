@@ -24,7 +24,11 @@ func loadTestMITM(ctx context.Context, conf *config.Config, client, background *
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := loadMITM(ctx, conf, client, background, plugins, nil, nil, nil)
+	certificates, err := prepareCertificates(conf, nil)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := loadMITM(ctx, conf, certificates.Authority(), client, background, plugins, nil, nil, nil)
 	return prepared.Host, err
 }
 
@@ -47,7 +51,7 @@ func TestLoadMITMInstances(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "host.sgmodule"), []byte("[Host]\napi.example.com = 198.51.100.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	body := `mitm { enabled: false ca_cert: 'absent.pem' ca_key: 'absent.key' }
+	body := `mitm { enabled: false }
 plugins {
  first { type: surge module { 'file:host.sgmodule' } }
  disabled { type: unavailable enabled: false token: 'private' }
@@ -104,7 +108,8 @@ func TestMITMInstancesDefaultStoreIsolation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "count.js"), []byte(`const n=Number($persistentStore.read("counter")||0)+1;$persistentStore.write(String(n),"counter");$done({response:{status:200,body:String(n)}});`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	conf := mitmConfigForTest(t, `mitm { enabled: true ca_cert: 'ca.pem' ca_key: 'ca.key' }
+	conf := mitmConfigForTest(t, `certificate { ca_cert: 'ca.pem' ca_key: 'ca.key' }
+mitm { enabled: true }
 plugins {
  first {type:surge module {'file:first.sgmodule'}}
  second {type:surge module {'file:second.sgmodule'}}

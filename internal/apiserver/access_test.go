@@ -72,7 +72,7 @@ func TestAccessGatePrecedesBodyAndResourceAccess(t *testing.T) {
 			"PUT /api/device/sets/known",
 			"PUT /api/device/sets/unknown", "DELETE /api/device/sets/known",
 			"DELETE /api/device/sets/unknown", "PUT /api/device/mitm", "DELETE /api/device/mitm",
-			"POST /api/device/certificate-tests", "GET /api/device/certificate-tests/unknown",
+			"POST /api/device/mitm-tests", "GET /api/device/mitm-tests/unknown",
 		}},
 	} {
 		for _, route := range group.routes {

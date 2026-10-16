@@ -17,8 +17,6 @@ type MITM struct {
 	BufferMemoryLimit   int64    `mapstructure:"buffer_memory_limit" default:"0"`
 	Enabled             bool     `mapstructure:"enabled" default:"false"`
 	ClientSourceAddress []string `mapstructure:"client_source_address"`
-	CACert              string   `mapstructure:"ca_cert"`
-	CAKey               string   `mapstructure:"ca_key"`
 }
 
 type Plugins []PluginSpec
@@ -31,7 +29,7 @@ type PluginSpec struct {
 }
 
 var mitmHostKeys = map[string]bool{
-	"enabled": true, "client_source_address": true, "ca_cert": true, "ca_key": true, "buffer_memory_limit": true,
+	"enabled": true, "client_source_address": true, "buffer_memory_limit": true,
 }
 
 var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
@@ -59,9 +57,6 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 	}
 	if to.BufferMemoryLimit < 0 || bufferLimitSet && to.BufferMemoryLimit == 0 {
 		return fmt.Errorf("mitm.buffer_memory_limit: expected a positive byte count")
-	}
-	if (to.CACert == "") != (to.CAKey == "") {
-		return fmt.Errorf("mitm: ca_cert and ca_key must be configured together")
 	}
 	if _, err := clientmatch.Parse(to.ClientSourceAddress); err != nil {
 		return fmt.Errorf("mitm.client_source_address: %w", err)
@@ -128,12 +123,6 @@ func (m *Marshaller) marshalMITM(conf MITM, depth int) error {
 	}
 	for _, value := range conf.ClientSourceAddress {
 		m.writeLine(depth, "client_source_address:"+strconv.Quote(value))
-	}
-	if conf.CACert != "" {
-		m.writeLine(depth, "ca_cert:"+strconv.Quote(conf.CACert))
-	}
-	if conf.CAKey != "" {
-		m.writeLine(depth, "ca_key:"+strconv.Quote(conf.CAKey))
 	}
 	return nil
 }

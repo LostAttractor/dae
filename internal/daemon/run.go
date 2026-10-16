@@ -59,6 +59,10 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	if err := control.CheckKernelFeatures(ctx); err != nil {
 		return err
 	}
+	certificates, err := prepareCertificates(conf, nil)
+	if err != nil {
+		return err
+	}
 	stopWatchdog := watchShutdown(ctx, shutdownTimeout, func() {
 		log.WithField("timeout", shutdownTimeout).Error("Shutdown timed out; forcing process exit")
 		os.Exit(1)
@@ -89,7 +93,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	var plane *control.ControlPlane
 	if err == nil {
 		plane, err = newControlPlane(loadCtx, datapath, conf, inputs, runtimeSettings, func(client *http.Client) (control.PreparedMITM, error) {
-			return loadMITM(loadCtx, conf, client, worker, plugins, nil, geoDirs, datapath)
+			return loadMITM(loadCtx, conf, certificates.Authority(), client, worker, plugins, nil, geoDirs, datapath)
 		})
 	}
 	if err == nil && ctx.Err() != nil {
@@ -124,6 +128,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		geoDirs: geoDirs, localAPI: local, managementAPI: management,
 		resources: resources, operations: newOperations(),
 	}
+	app.setCertificates(certificates)
 	local.SetOperations(app.operations)
 	stopOperations := context.AfterFunc(ctx, app.operations.stop)
 	defer stopOperations()

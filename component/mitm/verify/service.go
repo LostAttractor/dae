@@ -1,49 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package certtest provides browser challenges using the API's direct TLS branch
-// and virtual HTTPS destinations answered locally by the interception plugin.
-package certtest
+// Package mitmverify verifies transparent MITM using virtual HTTPS destinations
+// answered locally by the interception plugin, without an upstream service.
+package mitmverify
 
 import (
 	"crypto/rand"
 	"fmt"
 	"net"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-const InstanceID = "dae-certificate-test"
+const InstanceID = "dae-mitm-test"
 
 const DefaultIPv4 = "203.0.113.254"
 const DefaultIPv6 = "2001:db8:ffff::254"
 
 const testLifetime = time.Minute
 const maxTests = 256
+const maxTestsPerDevice = 8
 
 type challenge struct {
-	api.CertificateTest
+	api.MITMTest
 	ip     netip.Addr
 	mac    [6]byte
-	trust  netip.AddrPort
 	mitm   netip.AddrPort
 	origin string
 }
 
 type Service struct {
-	generation string
-	authority  *localca.Authority
-	apiPort    uint16
-	targets    [2]netip.Addr
-	hosts      []netip.Addr
-	mu         sync.Mutex
-	tests      map[string]*challenge
+	generation  string
+	fingerprint string
+	targets     [2]netip.Addr
+	mu          sync.Mutex
+	tests       map[string]*challenge
 }
 
 func ParseTargets(ip4, ip6 string) ([2]netip.Addr, error) {
@@ -64,8 +60,8 @@ func ParseTargets(ip4, ip6 string) ([2]netip.Addr, error) {
 	return targets, nil
 }
 
-func New(authority *localca.Authority, apiPort uint16, targets [2]netip.Addr, addresses []net.Addr) (*Service, error) {
-	s := &Service{generation: rand.Text(), authority: authority, apiPort: apiPort, targets: targets,
+func New(fingerprint string, targets [2]netip.Addr, addresses []net.Addr) (*Service, error) {
+	s := &Service{generation: rand.Text(), fingerprint: fingerprint, targets: targets,
 		tests: make(map[string]*challenge)}
 	for _, address := range addresses {
 		prefix, err := netip.ParsePrefix(address.String())
@@ -76,10 +72,6 @@ func New(authority *localca.Authority, apiPort uint16, targets [2]netip.Addr, ad
 			if prefix.Contains(target) {
 				return nil, fmt.Errorf("MITM test target %s overlaps local subnet %s; select an unused routed address with api_mitm_test_ipv4/api_mitm_test_ipv6", target, prefix)
 			}
-		}
-		ip := prefix.Addr().Unmap()
-		if (ip.IsGlobalUnicast() || ip.IsLoopback()) && !slices.Contains(s.hosts, ip) {
-			s.hosts = append(s.hosts, ip)
 		}
 	}
 	return s, nil
@@ -130,46 +122,44 @@ func (s *Service) prune(now time.Time) {
 	}
 }
 
-func (s *Service) Start(ip netip.Addr, mac [6]byte, local netip.AddrPort, enabled bool) (api.CertificateTest, error) {
-	if local.Port() != s.apiPort || !slices.Contains(s.hosts, local.Addr().Unmap()) {
-		return api.CertificateTest{}, fmt.Errorf("certificate tests require a current local IPv4 or non-link-local IPv6 address; reload after changing router addresses")
-	}
+func (s *Service) Start(ip netip.Addr, mac [6]byte, local netip.AddrPort, origin string, enabled bool) (api.MITMTest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
 	s.prune(now)
-	if len(s.tests) >= maxTests {
-		return api.CertificateTest{}, fmt.Errorf("too many certificate tests; retry in one minute")
+	retained := 0
+	for _, test := range s.tests {
+		if test.mac == mac {
+			retained++
+		}
+	}
+	if retained >= maxTestsPerDevice || len(s.tests) >= maxTests {
+		return api.MITMTest{}, fmt.Errorf("too many MITM tests; retry in one minute")
 	}
 	id := rand.Text()
 	host := local.Addr().Unmap()
-	local = netip.AddrPortFrom(host, local.Port())
-	origin := "http://" + local.String()
-	if local.Port() == 80 {
-		origin = "http://" + strings.TrimSuffix(local.String(), ":80")
-	}
 	target := s.targets[0]
 	if host.Is6() {
 		target = s.targets[1]
 	}
 	intercept := netip.AddrPortFrom(target, 443)
 	test := &challenge{
-		ID: id, CAFingerprint: s.authority.Fingerprint(),
+		ID: id, CAFingerprint: s.fingerprint,
 		StartedAt: now, ExpiresAt: now.Add(testLifetime),
-		TrustURL: httpsOrigin(local) + "/test/" + id, MITMURL: httpsOrigin(intercept) + "/test/" + id, MITMEnabled: enabled,
-		ip: ip.Unmap(), mac: mac, trust: local, mitm: intercept, origin: origin,
+		MITMURL: httpsOrigin(intercept) + "/test/" + id, MITMEnabled: enabled,
+		ip: ip.Unmap(), mac: mac, mitm: intercept, origin: origin,
 	}
 	s.tests[id] = test
-	return test.CertificateTest, nil
+	return test.MITMTest, nil
 }
 
-func (s *Service) Get(id string, ip netip.Addr, mac [6]byte) (api.CertificateTest, bool) {
+func (s *Service) Get(id string, ip netip.Addr, mac [6]byte) (api.MITMTest, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prune(time.Now())
 	test := s.tests[id]
 	if test == nil || test.ip != ip.Unmap() || test.mac != mac {
-		return api.CertificateTest{}, false
+		return api.MITMTest{}, false
 	}
-	return test.CertificateTest, true
+	return test.MITMTest, true
 }

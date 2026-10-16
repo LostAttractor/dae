@@ -16,18 +16,18 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/component/mitm/certtest"
+	"github.com/daeuniverse/dae/component/mitm/verify"
 )
 
 func TestCertificateDiagnosticThroughProductionTCPAdmission(t *testing.T) {
 	authority, roots := mitmQUICTestAuthority(t)
-	for _, scenario := range []string{"trusted", "trusted IPv6 alternate source", "untrusted", "device disabled"} {
+	for _, scenario := range []string{"trusted", "trusted HTTPS page", "trusted IPv6 alternate source", "untrusted", "device disabled"} {
 		t.Run(scenario, func(t *testing.T) {
-			targets, err := certtest.ParseTargets("", "")
+			targets, err := mitmverify.ParseTargets("", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			service, err := certtest.New(authority, 9080, targets, []net.Addr{
+			service, err := mitmverify.New(authority.Fingerprint(), targets, []net.Addr{
 				&net.IPNet{IP: net.ParseIP("192.0.2.20"), Mask: net.CIDRMask(24, 32)},
 				&net.IPNet{IP: net.ParseIP("fd00::20"), Mask: net.CIDRMask(64, 128)},
 			})
@@ -53,8 +53,12 @@ func TestCertificateDiagnosticThroughProductionTCPAdmission(t *testing.T) {
 				param.Dest = netip.AddrPortFrom(targets[1], 443)
 				param.Src = netip.MustParseAddrPort("[2001:db8:1::2]:40000")
 			}
-			wantProof := scenario == "trusted" || scenario == "trusted IPv6 alternate source"
-			test, err := service.Start(source, param.routingResult.Mac, local, scenario != "device disabled")
+			wantProof := scenario == "trusted" || scenario == "trusted HTTPS page" || scenario == "trusted IPv6 alternate source"
+			origin := "http://" + local.String()
+			if scenario == "trusted HTTPS page" {
+				origin = "https://" + local.String()
+			}
+			test, err := service.Start(source, param.routingResult.Mac, local, origin, scenario != "device disabled")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,16 +80,16 @@ func TestCertificateDiagnosticThroughProductionTCPAdmission(t *testing.T) {
 			transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: trusted}, DialContext: func(context.Context, string, string) (net.Conn, error) { return client, nil }}
 			defer transport.CloseIdleConnections()
 			r, _ := http.NewRequestWithContext(t.Context(), "GET", test.MITMURL, nil)
-			r.Header.Set("Origin", "http://"+local.String())
+			r.Header.Set("Origin", origin)
 			response, err := (&http.Client{Transport: transport, Timeout: 3 * time.Second}).Do(r)
 			if wantProof {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var proof api.CertificateTestProof
+				var proof api.MITMTestProof
 				decodeErr := json.UnmarshalRead(response.Body, &proof)
 				response.Body.Close()
-				if decodeErr != nil || response.StatusCode != 200 || proof.Stage != "mitm" || proof.ID != test.ID {
+				if decodeErr != nil || response.StatusCode != 200 || proof.ID != test.ID {
 					t.Fatalf("invalid interception witness: %+v, %v", proof, decodeErr)
 				}
 				if !response.Close || response.ProtoMajor != 1 {

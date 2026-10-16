@@ -15,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
@@ -42,6 +41,7 @@ type application struct {
 	progress                func(string)
 	resources               resource.RefreshStore
 	operations              *operations
+	certificates            *certificates
 }
 
 // A failed attachment replacement is distinct from a rejected candidate.
@@ -54,18 +54,16 @@ func (a *application) report(message string) {
 }
 
 func (a *application) publishAPI() {
-	if tests := a.plane.CertificateTests(); tests != nil {
+	if tests := a.plane.MITMTests(); tests != nil {
 		tests.Invalidate()
 	}
-	handler := a.plane.APIHandler(a.options.Version, a.operations)
+	handler := a.plane.APIHandler(a.options.Version, a.operations, a.certificates.Public())
 	a.localAPI.SetHandler(handler)
 	var targets []netip.AddrPort
-	var secure apiserver.TLSHandler
-	if tests := a.plane.CertificateTests(); tests != nil {
+	if tests := a.plane.MITMTests(); tests != nil {
 		targets = tests.Targets()
-		secure = certtest.Endpoint{Service: tests}
 	}
-	a.managementAPI.SetHandlers(daemonAPIHandler(handler, targets...), secure)
+	a.managementAPI.Configure(daemonAPIHandler(handler, targets...), a.certificates.Authority(), filepath.Join(common.CacheDirectory(), "api-tls"))
 }
 
 func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool) {
@@ -123,6 +121,13 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 			return "", err
 		}
 	}
+	certificates := a.certificates
+	if !suspend {
+		certificates, err = prepareCertificates(next, a.certificates)
+		if err != nil {
+			return "", err
+		}
+	}
 	inputs := a.inputs
 	if !suspend {
 		a.report("Refreshing configuration resources...")
@@ -134,7 +139,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	previous := a.plane.MITMHost()
 	var prepared control.PreparedMITM
 	load := func(client *http.Client) (control.PreparedMITM, error) {
-		return loadMITM(ctx, next, client, a.workerClient, plugins, previous, a.geoDirs, a.datapath)
+		return loadMITM(ctx, next, certificates.Authority(), client, a.workerClient, plugins, previous, a.geoDirs, a.datapath)
 	}
 	takePrepared := func(*http.Client) (control.PreparedMITM, error) {
 		host := prepared
@@ -185,7 +190,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		}
 		unchanged := previous.SameRuntime(prepared.Host)
 		if a.plane.CanReplaceMITM(prepared) {
-			if !unchanged || a.conf.Global.APIKey != next.Global.APIKey {
+			if !unchanged || a.certificates != certificates || a.conf.Global.APIKey != next.Global.APIKey {
 				pauseAPI()
 			}
 			if !unchanged {
@@ -195,9 +200,10 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 				prepared = control.PreparedMITM{} // The plane now owns this host.
 			}
 			result := "Updated runtime services"
-			if unchanged && reflect.DeepEqual(a.conf, next) {
+			if unchanged && a.certificates == certificates && reflect.DeepEqual(a.conf, next) {
 				result = "No changes"
 			}
+			a.setCertificates(certificates)
 			a.accept(next, inputs, server, false)
 			if unchanged {
 				prepared.Host.CommitResources()
@@ -237,6 +243,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		a.managementAPI.Close()
 	}
 	a.managementAPI = api
+	a.setCertificates(certificates)
 	a.accept(next, inputs, server, true)
 	if !suspend {
 		refresh.Commit()

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -24,20 +25,17 @@ type Server struct {
 	cancel        context.CancelFunc
 	mu            sync.RWMutex
 	handler       http.Handler
-	secure        TLSHandler
+	tls           *apiTLSIdentity
 	daemonMu      sync.RWMutex
 	daemonHandler http.Handler
 }
 
-// TLSHandler serves only the HTTPS branch of a shared TCP API listener.
-type TLSHandler interface {
-	http.Handler
-	TLSConfig(*tls.ClientHelloInfo) (*tls.Config, error)
-	TLSGeneration() string
-}
-
 type tlsGenerationKey struct{}
-type tlsConnectionGeneration struct{ value string }
+type tlsConnectionGeneration struct {
+	identity    *apiTLSIdentity
+	certificate uint64
+}
+type tlsIdentityKey struct{}
 
 // Listen reserves the address immediately. Requests return 503 until SetHandler.
 func Listen(network, address string) (*Server, error) {
@@ -74,16 +72,15 @@ func Listen(network, address string) (*Server, error) {
 func (s *Server) tlsConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	provider := s.secure
-	if provider == nil {
-		return nil, fmt.Errorf("certificate test is starting or reloading")
+	if s.tls == nil {
+		return nil, fmt.Errorf("API HTTPS is unavailable")
 	}
 	generation, ok := hello.Context().Value(tlsGenerationKey{}).(*tlsConnectionGeneration)
 	if !ok {
-		return nil, fmt.Errorf("missing certificate test connection context")
+		return nil, fmt.Errorf("missing API connection context")
 	}
-	generation.value = provider.TLSGeneration()
-	return provider.TLSConfig(hello)
+	generation.identity = s.tls
+	return s.tls.config, nil
 }
 
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
@@ -104,21 +101,35 @@ func (s *Server) SetOperations(store OperationStore) {
 }
 
 // SetHandler waits for all requests using the previous handler to finish.
-// Passing nil drains the control plane before the daemon closes it.
+// Passing nil drains the control plane before the daemon closes it, preserving
+// the TLS identity and pending certificate challenges until Configure or Close.
 func (s *Server) SetHandler(handler http.Handler) {
-	s.SetHandlers(handler, nil)
-}
-
-// SetHandlers publishes both protocol branches atomically after draining their
-// prior requests. A nil TLS handler rejects HTTPS while retaining ordinary HTTP.
-func (s *Server) SetHandlers(handler http.Handler, secure TLSHandler) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handler = handler
-	s.secure = secure
+}
+
+// Configure publishes one handler for HTTP and HTTPS after draining prior
+// requests. A nil authority disables HTTPS; changing its identity retires old TLS
+// connections so a previous CA handshake cannot authenticate new CA metadata.
+// directory owns persistent API leaves, partitioned by CA and connected IP.
+func (s *Server) Configure(handler http.Handler, authority *localca.Authority, directory string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handler = handler
+	if authority == nil {
+		s.tls.retire()
+		s.tls = nil
+	} else if s.tls == nil || s.tls.authority.Fingerprint() != authority.Fingerprint() || s.tls.directory != directory {
+		s.tls.retire()
+		s.tls = newAPITLSIdentity(authority, directory)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -134,14 +145,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.RUnlock()
 	if r.TLS != nil {
 		generation, ok := r.Context().Value(tlsGenerationKey{}).(*tlsConnectionGeneration)
-		if !ok || s.secure == nil || generation.value == "" || generation.value != s.secure.TLSGeneration() {
+		if !ok || s.tls == nil || generation.identity != s.tls {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Connection", "close")
-			http.Error(w, "certificate test configuration changed; start a new connection", http.StatusServiceUnavailable)
+			http.Error(w, "API configuration changed; start a new connection", http.StatusServiceUnavailable)
 			return
 		}
-		s.secure.ServeHTTP(w, r)
-		return
 	}
 	if s.handler == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -150,7 +159,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"API is starting or reloading"}`))
 		return
 	}
-	s.handler.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tlsIdentityKey{}, s.tls)))
 }
 
 // Stop closes ingress and cancels requests. Close joins their state mutations
@@ -170,6 +179,6 @@ func (s *Server) Stop() {
 
 func (s *Server) Close() {
 	s.Stop()
-	s.SetHandler(nil)
+	s.Configure(nil, nil, "")
 	s.SetOperations(nil)
 }

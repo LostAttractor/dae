@@ -18,7 +18,7 @@ import (
 func TestDiagnosticsAPIAndClientAdministration(t *testing.T) {
 	c := diagnosticPlane(t, "client(work) -> block", "")
 	c.apiKey = "secret"
-	server := httptest.NewServer(c.apiHandler("test", testClientIngress, nil))
+	server := httptest.NewServer(c.apiHandler("test", testClientIngress, nil, nil))
 	defer server.Close()
 	admin, err := apiclient.New(apiclient.Options{Endpoint: server.URL, APIKey: "secret"})
 	if err != nil {
@@ -90,7 +90,7 @@ func TestDiagnosticsAPIProtectsGlobalEvidence(t *testing.T) {
 	c.apiKey = "secret"
 	ip := netip.MustParseAddr("203.0.113.77")
 	c.core.domainRegistry.ObserveDNS([]domainObservation{{name: "other-device.example.", ips: []netip.Addr{ip}, bitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap("other-device.example"), ttl: 120}}, time.Now())
-	h := c.apiHandler("test", testClientIngress, nil)
+	h := c.apiHandler("test", testClientIngress, nil, nil)
 	for _, query := range []struct{ path, body, evidence string }{
 		{"/api/device/diagnostics/explain", `{"flow":{"destination":{"ip":"203.0.113.77","port":443}}}`, "other-device.example"},
 		{"/api/device/diagnostics/explain", `{"kind":"domain","flow":{"destination":{"domain":"other-device.example"}}}`, "other-device.example"},

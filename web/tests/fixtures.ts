@@ -7,7 +7,7 @@ type ExplainRequest = Schema<"ExplainRequest">;
 type ExplainResponse = Schema<"ExplainResponse">;
 type GlobalStatus = Schema<"StatusSnapshot">;
 type CertificateMetadata = Schema<"Certificate">;
-type CertificateTest = Schema<"CertificateTest">;
+type MITMTest = Schema<"MITMTest">;
 type DeviceState = Schema<"DeviceState">;
 type ManagedDevice = Schema<"ManagedDevice">;
 type SelectorState = Schema<"SelectorState">;
@@ -51,6 +51,7 @@ export interface Fixture {
   nextExplanation?: DeferredRead | null;
   nextManagedDevice?: DeferredRead | null;
   certificate: CertificateMetadata | null;
+  caTest?: Schema<"CertificateTest">;
   groups: FixtureGroup[];
   tables: Pick<GlobalStatus["tables"][number], "name" | "used" | "limit">[];
   plugins: Pick<NonNullable<GlobalStatus["plugins"]>[number], "id" | "type" | "state">[];
@@ -59,7 +60,7 @@ export interface Fixture {
   device: DeviceState;
   explanation?: (Omit<ExplainResponse, "current"> & { current: FixtureResult }) | null;
   managed?: ManagedDevice;
-  testData?: Omit<CertificateTest, "started_at" | "expires_at">;
+  testData?: Omit<MITMTest, "started_at" | "expires_at">;
   l3?: boolean;
   bypass?: boolean;
   untrusted?: boolean;

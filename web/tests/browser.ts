@@ -1,4 +1,5 @@
 import type { Socket } from "node:net";
+import type { TLSSocket } from "node:tls";
 import type { Protocol } from "devtools-protocol";
 import { cdp } from "./cdp.ts";
 import { serverPort } from "./server.ts";
@@ -43,6 +44,9 @@ let chartResponse: { release: ReturnType<typeof deferred>; fail?: boolean } | nu
 const tlsServers: Partial<Record<"trust" | "mitm" | "untrusted", ReturnType<typeof createTLSServer>>> = {};
 const mitmOrigins = ["https://203.0.113.254", "https://[2001:db8:ffff::254]"];
 let proxy: ReturnType<typeof createServer> | undefined;
+let caGeneration = 0;
+const handshakeGeneration = new WeakMap<TLSSocket, number>();
+let renewAPILeaf: () => Promise<void>;
 
 // Optional real browser trust-store checks. HOME and the NSS database belong to
 // this temporary profile; no system/browser certificate store is modified.
@@ -61,15 +65,25 @@ if (process.env.CERTUTIL) {
   await mkdir(database, { recursive: true });
   await exec(process.env.CERTUTIL, ["-N", "--empty-password", "-d", `sql:${database}`]);
   await exec(process.env.CERTUTIL, ["-A", "-d", `sql:${database}`, "-n", "dae-browser-test", "-t", "C,,", "-i", root]);
+  renewAPILeaf = async () => {
+    const cert = join(profile, "renewed.pem");
+    await exec("openssl", ["x509", "-req", "-in", csr, "-CA", fixture.untrusted ? untrusted : root, "-CAkey", fixture.untrusted ? untrustedKey : rootKey, "-set_serial", String(++caGeneration + 100), "-out", cert, "-days", "1", "-extfile", extensions]);
+    tlsServers[fixture.untrusted ? "untrusted" : "trust"]!.setSecureContext({ cert: await readFile(cert), key: await readFile(leafKey) });
+  };
   for (const kind of ["trust", "mitm", "untrusted"] as const) {
     const server = createTLSServer({ cert: await readFile(kind === "untrusted" ? untrusted : leaf), key: await readFile(kind === "untrusted" ? untrustedKey : leafKey) }, (req, res) => {
-      if (req.headers.origin !== origin || req.url !== "/test/browser-proof") return res.writeHead(403).end();
-      const stage = kind === "mitm" ? "mitm" : "trust";
-      assert.ok(fixture.testData);
-      fixture.testData[`${stage}_observed`] = true;
+      const mitm = kind === "mitm";
+      if (!mitm && req.url !== `/api/certificate/tests/${fixture.caTest?.id}`) return void httpServer.emit("request", req, res);
+      if ((req.headers.origin && req.headers.origin !== origin) || req.url !== (mitm ? "/test/browser-proof" : `/api/certificate/tests/${fixture.caTest?.id}`)) return res.writeHead(403).end();
+      if (!mitm && (handshakeGeneration.get(req.socket as TLSSocket) ?? 0) < caGeneration) return res.writeHead(409, { "Access-Control-Allow-Origin": origin, Connection: "close" }).end();
+      if (mitm) {
+        assert.ok(fixture.testData);
+        fixture.testData.mitm_observed = true;
+      }
       res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": origin, "Cache-Control": "no-store", Connection: "close" });
-      res.end(JSON.stringify({ id: "browser-proof", ca_fingerprint: "browser-ca", stage }));
+      res.end(JSON.stringify(mitm ? { id: "browser-proof", ca_fingerprint: "browser-ca" } : fixture.caTest));
     });
+    server.on("secureConnection", socket => handshakeGeneration.set(socket, caGeneration));
     tlsServers[kind] = server;
   }
   // A minimal local tunnel carries the virtual origins in this browser fixture.
@@ -151,7 +165,7 @@ const httpServer = createServer(async (req, res) => {
       const types: Record<string, string> = { html: "text/html", js: "text/javascript", css: "text/css" };
       res.writeHead(200, {
         "Content-Type": types[path.split(".").at(-1)!], "Cache-Control": "no-store",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://${new URL(origin).hostname.includes(":") ? "*" : new URL(origin).hostname}:${serverPort(server)}/test/ https://203.0.113.254:443/test/ https://*:443/test/; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://${new URL(origin).hostname.includes(":") ? "*" : new URL(origin).hostname}:${serverPort(server)}/api/certificate/tests/ https://203.0.113.254:443/test/ https://*:443/test/; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
       });
       res.end(await readFile(join(source, path)));
       return;
@@ -166,6 +180,12 @@ const httpServer = createServer(async (req, res) => {
       for await (const chunk of req) chunks.push(chunk);
       const body: FixtureBody = JSON.parse(Buffer.concat(chunks).toString() || "{}");
       fixture.requests.push({ method: req.method || "GET", path: url, body });
+      if (url === "/api/certificate/tests") {
+        await renewAPILeaf();
+        fixture.caTest = { id: `ca-test-${caGeneration}`, ca_fingerprint: fixture.certificate!.fingerprint, expires_at: new Date(Date.now() + 60000).toISOString() };
+        res.setHeader("Connection", "close");
+        return json(fixture.caTest, 201);
+      }
       if (url === "/api/session") {
         if (req.method === "PUT" && req.headers.authorization !== "Bearer test-key") return json({ error: "Incorrect API key" }, 401);
         res.setHeader("Set-Cookie", req.method === "PUT" ? "session=valid; Path=/api; HttpOnly; SameSite=Strict" : "session=; Path=/api; Max-Age=0");
@@ -209,11 +229,10 @@ const httpServer = createServer(async (req, res) => {
         fixture.device.mitm.enabled = fixture.device.mitm.override ?? false;
         return json(fixture.device);
       }
-      if (url === "/api/device/certificate-tests") {
+      if (url === "/api/device/mitm-tests") {
         assert.ok(fixture.device.mitm);
         fixture.testData = { id: "browser-proof", ca_fingerprint: "browser-ca", mitm_enabled: fixture.device.mitm.enabled,
-          trust_url: `${origin.replace("http:", "https:")}/test/browser-proof`,
-          mitm_url: `${mitmOrigins[new URL(origin).hostname.includes(":") ? 1 : 0]}/test/browser-proof`, trust_observed: false, mitm_observed: false };
+          mitm_url: `${mitmOrigins[new URL(origin).hostname.includes(":") ? 1 : 0]}/test/browser-proof`, mitm_observed: false };
         return json(fixture.testData, 201);
       }
       const selector = fixture.selectors.find((entry) => entry.name === decodeURIComponent(url.slice("/api/selectors/".length)));
@@ -245,7 +264,7 @@ const httpServer = createServer(async (req, res) => {
       if (override?.release) await override.release.promise;
       return json(override?.status ? { error: "Device unavailable" } : snapshot, override?.status || 200);
     }
-    if (url === "/api/device/certificate-tests/browser-proof") return json(fixture.testData);
+    if (url === "/api/device/mitm-tests/browser-proof") return json(fixture.testData);
     if (url === "/api/status") {
       const override = fixture.nextGlobalRead;
       fixture.nextGlobalRead = null;
@@ -481,25 +500,26 @@ try {
   });
 
   if (process.env.CERTUTIL) await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
-    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", test_available: true, test_generation: "browser-one", test_mitm_origins: mitmOrigins };
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "browser-one", mitm_test_origins: mitmOrigins };
     fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "browser-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
     await js('document.querySelector("#test-certificate").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
     assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
     fixture.bypass = true;
     await js('document.querySelector("#test-certificate").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
     fixture.untrusted = true;
+    const previousTest = fixture.testData;
     await js('document.querySelector("#test-certificate").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
     assert.ok(fixture.testData);
-    assert.equal(fixture.testData.trust_observed, false);
     assert.equal(fixture.testData.mitm_observed, false);
+    assert.equal(fixture.testData, previousTest, "failed CA verification creates no MITM challenge");
     const ipv4Origin = origin;
     try {
       origin = `http://[::1]:${serverPort(server)}`;
@@ -508,11 +528,63 @@ try {
       await page();
       await js('document.querySelector("#test-certificate").click()');
       await ready();
-      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser", "IPv6 browser CA test");
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser", "IPv6 browser CA test");
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified", "IPv6 virtual target test");
+      origin = `https://127.0.0.1:${serverPort(server)}`;
+      await page();
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser", "HTTPS page CA test");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified", "HTTPS page MITM test");
+      fixture.device.mitm.enabled = false;
+      fixture.testData = undefined;
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "MITM is disabled");
+      assert.equal(fixture.testData, undefined, "disabled devices need no MITM challenge");
+      fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca" };
+      fixture.device.mitm = undefined;
+      fixture.l3 = true;
+      await page();
+      assert.equal(await js('document.querySelector("#test-certificate").disabled'), false, "HTTPS verification needs neither MITM nor device identity");
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "MITM is unavailable");
+      assert.equal(fixture.testData, undefined);
     } finally { origin = ipv4Origin; }
   });
   else console.log("SKIP real browser CA trust-store checks (set CERTUTIL to an NSS certutil executable)");
+
+  if (process.env.CERTUTIL) await test("real browser TLS warning does not establish CA trust", async () => {
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca" };
+    fixture.untrusted = true;
+    // Switching this fixture's CA must retire pooled connections from earlier
+    // cases, or navigation can still use their already trusted TLS handshake.
+    for (const socket of sockets) socket.destroy();
+    const httpOrigin = origin;
+    try {
+      origin = origin.replace("http:", "https:");
+      await call("Page.navigate", { url: "about:blank" });
+      await call("Page.navigate", { url: origin });
+      await until('document.querySelector("#details-button") !== null');
+      await js('document.querySelector("#details-button").click()');
+      await until('document.querySelector("#proceed-link")?.checkVisibility()');
+      await js('document.querySelector("#proceed-link").click()');
+      await ready();
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete", "an HTTPS warning override is not CA trust");
+      origin = httpOrigin;
+      await page();
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete", "HTTP setup must not reuse the HTTPS exception");
+    } finally { origin = httpOrigin; }
+  });
 
   await test("Recharts shows rate history, keyboard tooltips and stable live updates", async () => {
     const chart = 'document.querySelector("#device-traffic .recharts-surface")';
@@ -838,7 +910,7 @@ try {
   });
 
   await test("certificate UI requires both browser proof and interception observation", async () => {
-    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", test_available: true, test_generation: "one", test_mitm_origins: mitmOrigins };
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
     fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
@@ -848,16 +920,17 @@ try {
       window.fetch = async (url, options) => {
         const address = String(url);
         const reply = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-        if (address === "/api/device/certificate-tests") {
+        if (address === "/api/certificate/tests") return reply({ id: "ca-challenge", ca_fingerprint: "test-ca" });
+        if (address === "/api/device/mitm-tests") {
           if (testMode === "unavailable") return new Response(JSON.stringify({ error: "Certificate testing unavailable" }), { status: 503 });
-          return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: testMode !== "disabled", trust_url: location.origin.replace("http:", "https:") + "/test/challenge", mitm_url: "https://203.0.113.254/test/challenge" });
+          return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: testMode !== "disabled", mitm_url: "https://203.0.113.254/test/challenge" });
         }
-        if (address === "/api/device/certificate-tests/challenge") return reply({ trust_observed: true, mitm_observed: testMode === "mitm" });
+        if (address === "/api/device/mitm-tests/challenge") return reply({ mitm_observed: testMode === "mitm" });
         if (address.startsWith("https://")) {
           if (options.credentials !== "omit" || options.redirect !== "error" || options.mode !== "cors") throw Error("unsafe challenge request");
           if (testMode === "tls-error") throw new TypeError("Failed to fetch");
           if (testMode === "bypass" && address.includes("203.0.113.254")) throw new TypeError("Failed to fetch");
-          return reply({ id: "challenge", ca_fingerprint: "test-ca", stage: address.includes("203.0.113.254") ? "mitm" : "trust" });
+          return reply(address.includes("203.0.113.254") ? { id: "challenge", ca_fingerprint: "test-ca" } : { id: "ca-challenge", ca_fingerprint: testMode === "wrong-ca" ? "other-ca" : "test-ca" });
         }
         return originalFetch(url, options);
       };
@@ -881,9 +954,9 @@ try {
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       await js('testMode = "mitm"; document.querySelector("#test-certificate").click()');
       await ready();
-      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
-      assert.equal(await js('document.querySelector("#message").textContent'), "Certificate trusted and HTTPS interception verified.");
+      assert.equal(await js('document.querySelector("#message").textContent'), "CA trust and interception verified.");
       await feedback("success", "success", "success");
       if (process.env.SCREENSHOT_DIR) {
         await js('document.querySelector("#certificate-test-panel").scrollIntoView({ block: "center" })');
@@ -894,7 +967,7 @@ try {
       await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
       await ready();
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
-      assert.match(await js('document.querySelector("#message").textContent'), /HTTPS interception could not be verified/);
+      assert.match(await js('document.querySelector("#message").textContent'), /interception could not be verified/);
       await feedback("warning", "success", "warning");
       if (process.env.SCREENSHOT_DIR) {
         await delay(250);
@@ -904,19 +977,28 @@ try {
       await js('testMode = "tls-error"; document.querySelector("#test-certificate").click()');
       await ready();
       assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
-      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "CA test required");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "CA trust test required");
       await feedback("warning", "warning", "warning");
       await js('testMode = "disabled"; document.querySelector("#test-certificate").click()');
       await ready();
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "MITM is disabled");
-      assert.match(await js('document.querySelector("#message").textContent'), /HTTPS interception is disabled/);
+      assert.match(await js('document.querySelector("#message").textContent'), /MITM is disabled/);
       await feedback("success", "success", "neutral");
       await js('testMode = "unavailable"; document.querySelector("#test-certificate").click()');
       await ready();
-      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Test unavailable");
-      await feedback("error", "error", "neutral");
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Test unavailable");
+      await feedback("error", "success", "error");
     }
+    await js('testMode = "wrong-ca"; document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "CA trust test required");
+    await js('testMode = "stale-generation"; document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser", "MITM generation does not determine HTTPS acceptance");
     await call("Emulation.setDeviceMetricsOverride", { width: 320, height: 568, deviceScaleFactor: 1, mobile: true });
+    await until('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "false"');
     await setDisclosure(".certificate-disclosure");
     await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
     await ready();
@@ -928,12 +1010,13 @@ try {
       const image = await call("Page.captureScreenshot");
       await writeFile(join(process.env.SCREENSHOT_DIR, "dae-certificate-warning-mobile.png"), Buffer.from(image.data, "base64"));
     }
-    fixture.certificate.test_generation = "two";
-    await until('document.querySelector("#certificate-trust-result").textContent === "Not tested"');
+    fixture.certificate.mitm_test_generation = "two";
+    await until('document.querySelector("#certificate-mitm-result").textContent === "Not tested"');
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser", "MITM reload preserves HTTPS result");
   });
 
   await test("certificate disclosure adapts to available space and preserves manual choices", async () => {
-    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", test_available: true, test_generation: "disclosure" };
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "disclosure" };
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-name").textContent'), "Test CA");
@@ -1731,7 +1814,7 @@ try {
 
   await test("larger text reflows every page and keeps controls readable", async () => {
     fixture.groups = statusGroups(fixture.stats);
-    fixture.certificate = { name: "Test CA", fingerprint: "12:34:".repeat(16), test_available: true, test_generation: "large-text" };
+    fixture.certificate = { name: "Test CA", fingerprint: "12:34:".repeat(16), mitm_test_generation: "large-text" };
     await js('document.querySelector("#refresh").click()');
     await ready();
     // Text-only zoom exercises user font preferences independently of viewport zoom.
@@ -1792,7 +1875,7 @@ try {
     fixture.groups = statusGroups(fixture.stats);
     fixture.tables = [{ name: "resolved_domains", used: 128, limit: 4096 }];
     fixture.plugins = [{ id: "request_rules", type: "http", state: "ready" }];
-    fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", test_available: true, test_generation: "layout" };
+    fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", mitm_test_generation: "layout" };
     fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: fixture.certificate.fingerprint };
     fixture.selectors[0].name = "Long outbound group name · " + "subscription ".repeat(6);
     fixture.stats.history = {

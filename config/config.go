@@ -201,6 +201,7 @@ type RoutingInterface struct {
 
 type Config struct {
 	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
+	Certificate  Certificate    `mapstructure:"certificate" desc:"CertificateDesc"`
 	MITM         MITM           `mapstructure:"mitm" desc:"MITMDesc"`
 	Plugins      Plugins        `mapstructure:"plugins"`
 	Subscription []Subscription `mapstructure:"subscription"`
@@ -274,6 +275,10 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 		if !section.Parsed {
 			return nil, fmt.Errorf("unknown section: %v", name)
 		}
+	}
+
+	if (conf.Certificate.CACert == "") != (conf.Certificate.CAKey == "") {
+		return nil, fmt.Errorf("certificate: ca_cert and ca_key must be configured together")
 	}
 
 	if err = validateClients(conf.Client); err != nil {

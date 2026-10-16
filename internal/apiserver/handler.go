@@ -29,18 +29,18 @@ type ClientIdentity struct {
 // configuration changes; stores continue to provide live runtime state.
 // Status, Selectors, Probes, Devices and ResolveClient are required dependencies.
 type Options struct {
-	Status           func() *contract.StatusSnapshot
-	Selectors        SelectorStore
-	Probes           ProbeStore
-	Scripts          ScriptStore
-	Operations       OperationStore
-	Devices          DeviceStore
-	DeviceStatus     func(netip.Addr, [6]byte) contract.DeviceStatus
-	ResolveClient    ClientResolver
-	Certificates     *Certificates
-	CertificateTests CertificateTestStore
-	Diagnostics      DiagnosticStore
-	APIKey           string
+	Status        func() *contract.StatusSnapshot
+	Selectors     SelectorStore
+	Probes        ProbeStore
+	Scripts       ScriptStore
+	Operations    OperationStore
+	Devices       DeviceStore
+	DeviceStatus  func(netip.Addr, [6]byte) contract.DeviceStatus
+	ResolveClient ClientResolver
+	Certificates  *Certificates
+	MITMTests     MITMTestStore
+	Diagnostics   DiagnosticStore
+	APIKey        string
 }
 
 type handler struct{ options Options }
@@ -58,6 +58,8 @@ func NewHandler(options Options) http.Handler {
 		}
 	})
 	if options.Certificates != nil {
+		s.route(mux, "POST /api/certificate/tests", accessPublic, s.serveCertificateTest)
+		s.route(mux, "GET /api/certificate/tests/{id}", accessPublic, s.serveCertificateTest)
 		certificates := options.Certificates.Handler
 		s.route(mux, "GET /api/certificate", accessPublic, func(w http.ResponseWriter, r *http.Request, _ caller) {
 			if apiBody(w, r, nil) {
@@ -93,8 +95,8 @@ func NewHandler(options Options) http.Handler {
 		s.route(mux, method+" /api/clients/{name}/members/{mac}", accessAdmin, s.serveManagedMembership)
 		s.route(mux, method+" /api/devices/{mac}/mitm", accessAdmin, s.serveManagedMITM)
 	}
-	s.route(mux, "POST /api/device/certificate-tests", accessDevice, s.serveCertificateTest)
-	s.route(mux, "GET /api/device/certificate-tests/{id}", accessDevice, s.serveCertificateTest)
+	s.route(mux, "POST /api/device/mitm-tests", accessDevice, s.serveMITMTest)
+	s.route(mux, "GET /api/device/mitm-tests/{id}", accessDevice, s.serveMITMTest)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		s.route(mux, method+" /api/device/sets/{name}", accessDevice, s.serveClientSet)
 		s.route(mux, method+" /api/device/mitm", accessDevice, s.serveMITM)
@@ -105,7 +107,7 @@ func NewHandler(options Options) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if (!localAPISocket(r) && !localIPHost(r)) || !sameOrigin(r) {
+			if (!localAPISocket(r) && !localIPHost(r)) || (!sameOrigin(r) && !certificateBootstrap(w, r)) {
 				apiError(w, 403, "open the API directly using the router IP address and port; cross-origin access is not allowed")
 				return
 			}

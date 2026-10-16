@@ -8,7 +8,8 @@ package config
 type Desc map[string]string
 
 var SectionSummaryDesc = Desc{
-	"mitm":         "Shared HTTP/TLS certificates, client selection and body memory settings.",
+	"certificate":  "Persistent local CA shared by API HTTPS and MITM. Empty paths select automatic initialization in DAE_LOCATION_CACHE/pki.",
+	"mitm":         "HTTP/TLS interception, client selection and body memory settings.",
 	"plugins":      "Ordered, statically compiled Go plugin instances, including HTTP and DNS processing.",
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
@@ -40,10 +41,11 @@ interface: Match the interface that received the traffic.`,
 }
 
 var SectionDescription = map[string]Desc{
-	"MITMDesc":   MITMDesc,
-	"GlobalDesc": GlobalDesc,
-	"GroupDesc":  GroupDesc,
-	"ClientDesc": ClientDesc,
+	"CertificateDesc": CertificateDesc,
+	"MITMDesc":        MITMDesc,
+	"GlobalDesc":      GlobalDesc,
+	"GroupDesc":       GroupDesc,
+	"ClientDesc":      ClientDesc,
 }
 
 var ClientDesc = Desc{
@@ -52,11 +54,14 @@ var ClientDesc = Desc{
 	"nftset":      "Export members to a dedicated ether_addr nftables set, specified as family/table/set. Missing tables and sets are created; existing members are replaced. Requires kernel support and CAP_NET_ADMIN.",
 }
 
+var CertificateDesc = Desc{
+	"ca_cert": "Local CA certificate shared by API HTTPS and MITM. Omit both paths to use the persistent automatically generated CA.",
+	"ca_key":  "Matching CA private key. Explicit paths are only loaded, never created or replaced. Relative paths use DAE_LOCATION_CACHE.",
+}
+
 var MITMDesc = Desc{
 	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Plugins handle denied reservations according to their body processing policy. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
 	"enabled":               "Enable HTTP/TLS interception. DNS plugins, routing contributions and background tasks are configured independently in plugins{}.",
-	"ca_cert":               "Shared PEM CA certificate path; required by HTTPS plugins. Destination-only plugins need no CA.",
-	"ca_key":                "Shared PEM CA private key path.",
 	"client_source_address": "HTTP/MITM client selection; per-device settings take precedence. Does not gate destination rules.",
 	"_":                     "Ordered named plugin instances. The section name is the instance ID; type defaults to that name. Each plugin decodes its own settings.",
 }
@@ -69,7 +74,7 @@ var GlobalDesc = Desc{
 	"resource_update_interval":     "Automatic refresh interval for remote subscriptions, modules and dependencies. Defaults to 24h; 0 disables these automatic checks. Plugins may refresh individual resources on their own schedules. Reload and the resource refresh API always attempt downloads.",
 	"dns_resolver":                 "Optional DNS server for dae's internal lookups: IP or IP:port (default port 53). Empty uses Go's system resolver. Bootstrap is direct; once ready, DNS transports follow routing rules. Proxy-server names use direct bootstrap to avoid circular dependencies. Supports reload.",
 	"dns_retention_window":         "Sliding retention policy for observed domain-IP evidence, not a measured client cache lifetime. Defaults to 168h (seven days); must be positive. Delivered DNS uses max(TTL, window); observed traffic refreshes existing pairs by this window. Uncaptured kernel-direct traffic is not observed.",
-	"api_port":                     "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
+	"api_port":                     "Shared HTTP/HTTPS port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
 	"api_mitm_test_ipv4":           "Virtual IPv4 destination for transparent-MITM browser tests on port 443. Defaults to 203.0.113.254. Choose an unused address routed through dae, outside local subnets and other Fake IP pools. No upstream service or extra listener is needed.",
 	"api_mitm_test_ipv6":           "Virtual IPv6 destination for transparent-MITM browser tests on port 443. Defaults to 2001:db8:ffff::254. Choose an unused address routed through dae, outside local subnets and other Fake IP pools.",
 	"api_key":                      "Optional administrator API key. Empty grants full management to verified LAN ingress: direct Ethernet peers or IP links on lan_interface, including tunnel-routed subnets. When configured, administration requires the key or a browser session. Device self-service always requires a verified Ethernet MAC. HTTP requires a trusted or independently encrypted network path.",

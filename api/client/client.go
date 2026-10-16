@@ -162,14 +162,14 @@ func (c *Client) DeviceStatus(ctx context.Context) (*api.DeviceStatus, error) {
 	return c.request[api.DeviceStatus](ctx, "GET", "/api/device/status", nil, "")
 }
 
-// StartCertificateTest creates browser challenge URLs; it does not perform the
+// StartMITMTest creates a browser MITM challenge URL; it does not perform the
 // test on behalf of the client device or alter its MITM setting.
-func (c *Client) StartCertificateTest(ctx context.Context) (*api.CertificateTest, error) {
-	return c.requestStatus[api.CertificateTest](ctx, "POST", "/api/device/certificate-tests", nil, "", http.StatusCreated)
+func (c *Client) StartMITMTest(ctx context.Context) (*api.MITMTest, error) {
+	return c.requestStatus[api.MITMTest](ctx, "POST", "/api/device/mitm-tests", nil, "", http.StatusCreated)
 }
 
-func (c *Client) CertificateTest(ctx context.Context, id string) (*api.CertificateTest, error) {
-	return c.request[api.CertificateTest](ctx, "GET", "/api/device/certificate-tests/"+url.PathEscape(id), nil, "")
+func (c *Client) MITMTest(ctx context.Context, id string) (*api.MITMTest, error) {
+	return c.request[api.MITMTest](ctx, "GET", "/api/device/mitm-tests/"+url.PathEscape(id), nil, "")
 }
 
 func (c *Client) Status(ctx context.Context) (*api.StatusSnapshot, error) {

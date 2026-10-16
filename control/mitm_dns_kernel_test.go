@@ -13,7 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitm/certtest"
+	"github.com/daeuniverse/dae/component/mitm/verify"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/dae/plugins/surge"
@@ -98,11 +98,11 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)},
 		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
 	}
-	targets, err := certtest.ParseTargets("", "")
+	targets, err := mitmverify.ParseTargets("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	diagnostics, err := certtest.New(nil, 9080, targets, addresses)
+	diagnostics, err := mitmverify.New("", targets, addresses)
 	if err != nil {
 		t.Fatal(err)
 	}

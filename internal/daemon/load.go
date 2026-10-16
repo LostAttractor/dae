@@ -170,7 +170,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 		value := *conf
 		value.Plugins, value.Subscription, value.Node = nil, nil, nil
 		value.Routing = config.Routing{}
-		value.MITM.CACert, value.MITM.CAKey = "", ""
+		value.Certificate = config.Certificate{}
 		value.MITM.BufferMemoryLimit = 0
 		value.Global.LogLevel, value.Global.APIKey = "", ""
 		value.Global.PprofPort, value.Global.MetricsPort = 0, 0

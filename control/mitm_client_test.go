@@ -58,7 +58,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		}
 		return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, resolveError
 	}
-	handler := plane.apiHandler("test", resolve, nil)
+	handler := plane.apiHandler("test", resolve, nil, nil)
 	endpoint := "http://192.0.2.1:8081/api/device/mitm"
 	request := func(method, path, body string, code int) api.MITMState {
 		t.Helper()
@@ -98,11 +98,11 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	// The production resolver must reject every device endpoint when no LAN is
 	// configured, even if the caller knows the CA fingerprint.
-	handler = plane.APIHandler("test", nil)
+	handler = plane.APIHandler("test", nil, nil)
 	request("GET", endpoint, "", 403)
 	request("PUT", endpoint, `{"enabled":true}`, 403)
 	request("DELETE", endpoint, "", 403)
-	handler = plane.apiHandler("test", resolve, nil)
+	handler = plane.apiHandler("test", resolve, nil, nil)
 	if state := request("GET", endpoint, "", 200); state.Enabled || state.Override != nil {
 		t.Fatalf("default state: %+v", state)
 	}
@@ -115,7 +115,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	// A new plane shares live settings while changing configured defaults.
 	reloaded := makePlane([]string{"all"})
-	handler = reloaded.apiHandler("test", resolve, nil)
+	handler = reloaded.apiHandler("test", resolve, nil, nil)
 	state = request("PUT", endpoint, `{"enabled":false}`, 200)
 	if state.Enabled || state.Override == nil || *state.Override || selected(reloaded, mac) || !selected(reloaded, other) || selected(plane, mac) {
 		t.Fatalf("device disable did not override all across reload: %+v", state)

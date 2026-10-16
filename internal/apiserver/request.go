@@ -29,7 +29,11 @@ func localIPHost(r *http.Request) bool {
 		if err != nil {
 			return false
 		}
-		host = netip.AddrPortFrom(ip, 80)
+		port := uint16(80)
+		if r.TLS != nil {
+			port = 443
+		}
+		host = netip.AddrPortFrom(ip, port)
 	}
 	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
 	if !ok {
@@ -44,6 +48,27 @@ func sameOrigin(r *http.Request) bool {
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 		return false
 	}
+	return originMatches(r, requestScheme(r))
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func requestOrigin(r *http.Request) string {
+	host := r.Host
+	if r.TLS != nil {
+		host = strings.TrimSuffix(host, ":443")
+	} else {
+		host = strings.TrimSuffix(host, ":80")
+	}
+	return requestScheme(r) + "://" + host
+}
+
+func originMatches(r *http.Request, scheme string) bool {
 	origins := r.Header.Values("Origin")
 	if len(origins) == 0 {
 		return true // Non-browser clients can use the API without Origin.
@@ -59,12 +84,29 @@ func sameOrigin(r *http.Request) bool {
 	port, expectedPort := origin.Port(), expected.Port()
 	if port == "" {
 		port = "80"
+		if origin.Scheme == "https" {
+			port = "443"
+		}
 	}
 	if expectedPort == "" {
 		expectedPort = "80"
+		if r.TLS != nil {
+			expectedPort = "443"
+		}
 	}
-	return origin.Scheme == "http" && strings.EqualFold(origin.Hostname(), expected.Hostname()) && port == expectedPort &&
+	return origin.Scheme == scheme && strings.EqualFold(origin.Hostname(), expected.Hostname()) && port == expectedPort &&
 		origin.User == nil && origin.Path == "" && origin.RawQuery == "" && origin.Fragment == ""
+}
+
+// The HTTP setup page may read its certificate proof over HTTPS on the same
+// socket. All other API requests retain the normal same-origin policy.
+func certificateBootstrap(w http.ResponseWriter, r *http.Request) bool {
+	if r.TLS == nil || r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/api/certificate/tests/") || r.Header.Get("Origin") == "" || !originMatches(r, "http") {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+	w.Header().Add("Vary", "Origin")
+	return true
 }
 
 func apiError(w http.ResponseWriter, status int, message string) {

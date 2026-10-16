@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -144,11 +145,12 @@ func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who c
 	if !ok {
 		return
 	}
-	if s.options.Certificates == nil {
+	device := s.options.Devices.DeviceState(netip.Addr{}, mac)
+	if device.MITM == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
 	}
-	if r.Header.Get("X-Dae-MITM") != s.options.Certificates.Identity.Fingerprint {
+	if r.Header.Get("X-Dae-MITM") != device.MITM.CAFingerprint {
 		apiError(w, 409, "MITM changes require the current CA fingerprint in X-Dae-MITM")
 		return
 	}

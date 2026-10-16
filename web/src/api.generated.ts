@@ -7,8 +7,51 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read public CA identity */
+        /**
+         * Read public CA identity
+         * @description Public same-origin CA metadata on HTTP and HTTPS. This endpoint is not a trust test: existing TLS connections and certificate exceptions can permit access. Use certificate/tests to verify browser CA trust. mitm_test_generation belongs only to interception tests.
+         */
         get: operations["getCertificate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/certificate/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a browser CA trust test
+         * @description Public, same-origin, empty body, requires X-Dae-API: 1. Issues a fresh temporary leaf and key held only in memory. Challenges expire after one minute; certificate validity includes five additional minutes for client clock skew, capped by CA expiry. At most 8 pending challenges per source IP and 64 globally; excess requests return 429. Only new TLS connections from the initiating source IP to the connected router IP use pending challenge leaves; the persistent management leaf, CA and MITM cache stay unchanged. Clients sharing a source IP share this temporary selection. Does not require MITM or a device MAC. GET the returned id over HTTPS on the same socket with credentials omitted and redirects rejected.
+         */
+        post: operations["startCertificateTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/certificate/tests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Prove browser trust using a fresh TLS handshake
+         * @description HTTPS only. Permits the initiating HTTP setup origin at the same literal IP and port. Requires a temporary leaf issued for this source/router IP pair at or after challenge creation. Connections using the management leaf or an older challenge leaf receive 409 and Connection: close; retry to establish a new handshake. Validate the returned id and ca_fingerprint. Success consumes the challenge. Completion or expiry discards its temporary leaf; after the last pending challenge for the pair, new connections use the persistent management leaf again. 404 means consumed, expired, replaced CA, or different source/router IP. Browser TLS failure does not distinguish an untrusted CA from network or browser-policy failure.
+         */
+        get: operations["verifyCertificateTest"];
         put?: never;
         post?: never;
         delete?: never;
@@ -242,43 +285,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/device/certificate-tests": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create a current-browser CA and transparent MITM challenge (direct LAN only)
-         * @description Empty body. Does not change the device's MITM setting. GET trust_url and, when enabled, mitm_url from the browser with credentials omitted and redirects rejected. CA challenges share the API listener's TLS branch; virtual IP:443 targets are answered locally by the interception plugin without an upstream service. Both accept only the original page's Origin and return CertificateTestProof. A failed virtual-target request cannot distinguish bypass from unreachable traffic. These exact-origin diagnostics are the only cross-origin browser endpoints.
-         */
-        post: operations["startCertificateTest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/device/certificate-tests/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read this device's challenge observations */
-        get: operations["getCertificateTest"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/device/context": {
         parameters: {
             query?: never;
@@ -373,6 +379,43 @@ export interface paths {
         post?: never;
         /** Restore this device's HTTPS configuration (TCP only) */
         delete: operations["resetMITM"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/device/mitm-tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a current-browser transparent MITM challenge (direct LAN only)
+         * @description Empty body. Does not change the device's MITM setting. Verify browser CA trust independently with a fresh-leaf certificate/tests challenge on the API socket. When MITM is enabled, GET mitm_url with credentials omitted and redirects rejected. Virtual IP:443 targets return MITMTestProof locally through interception, without an upstream service, and accept only the initiating page's exact HTTP or HTTPS Origin. A failed virtual-target request cannot distinguish bypass from unreachable traffic.
+         */
+        post: operations["startMITMTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/device/mitm-tests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read this device's challenge observations */
+        get: operations["getMITMTest"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1025,32 +1068,18 @@ export interface components {
         };
         Certificate: {
             fingerprint: string;
+            /** @description Current MITM verification generation; present only when interception tests are available. Discard only MITM results when it changes. HTTPS acceptance depends on the CA fingerprint. */
+            mitm_test_generation?: string;
+            /** @description Exact virtual HTTPS origins allowed for MITM challenges. CA trust is checked independently with a fresh-leaf challenge on the current API socket. */
+            mitm_test_origins?: string[];
             name: string;
-            test_available: boolean;
-            /** @description Current diagnostic generation. Discard browser test results when this changes. */
-            test_generation?: string;
-            /** @description Exact virtual HTTPS origins allowed for MITM challenges. CA challenges use HTTPS on the current API socket. */
-            test_mitm_origins?: string[];
         };
-        /** @description A one-minute browser challenge bound to the verified caller and current configuration. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification. */
+        /** @description A one-minute CA trust challenge bound to the source IP, router IP and initiating page origin. A POST response is not proof; GET requires a TLS handshake using a leaf issued after challenge creation. */
         CertificateTest: {
             ca_fingerprint: string;
             /** Format: date-time */
             expires_at: string;
             id: string;
-            mitm_enabled: boolean;
-            mitm_observed: boolean;
-            mitm_url: string;
-            /** Format: date-time */
-            started_at: string;
-            trust_observed: boolean;
-            trust_url: string;
-        };
-        CertificateTestProof: {
-            ca_fingerprint: string;
-            id: string;
-            /** @enum {string} */
-            stage: "trust" | "mitm";
         };
         ClientGroup: {
             description: string;
@@ -1386,6 +1415,22 @@ export interface components {
             ca_fingerprint: string;
             enabled: boolean;
             override: boolean | null;
+        };
+        /** @description A one-minute transparent MITM challenge bound to the verified caller and current interception configuration. At most 8 challenges and observations are retained per verified MAC and 256 globally; excess creation requests return 503. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification. */
+        MITMTest: {
+            ca_fingerprint: string;
+            /** Format: date-time */
+            expires_at: string;
+            id: string;
+            mitm_enabled: boolean;
+            mitm_observed: boolean;
+            mitm_url: string;
+            /** Format: date-time */
+            started_at: string;
+        };
+        MITMTestProof: {
+            ca_fingerprint: string;
+            id: string;
         };
         NodeAnnotationStatus: {
             add_latency?: string;
@@ -1768,6 +1813,59 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    startCertificateTest: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Dae-API": "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CertificateTest"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    verifyCertificateTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Fresh-handshake proof */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CertificateTest"];
+                };
+            };
+            /** @description Retry on a new TLS connection */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getDevice: {
         parameters: {
             query?: never;
@@ -1784,52 +1882,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeviceState"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    startCertificateTest: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Dae-API": "1";
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Challenge created, expires in one minute */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CertificateTest"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getCertificateTest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current observation; 404 for expired, replaced or foreign challenges */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CertificateTest"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1884,6 +1936,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeviceState"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startMITMTest: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Dae-API": "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Challenge created, expires in one minute */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MITMTest"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getMITMTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current observation; 404 for expired, replaced or foreign challenges */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MITMTest"];
                 };
             };
             default: components["responses"]["Error"];

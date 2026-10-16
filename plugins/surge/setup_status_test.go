@@ -49,7 +49,7 @@ use-local-host-item-for-proxy = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "surge", Plugin: engine}); err == nil || !strings.Contains(err.Error(), "ca_cert") {
+	if _, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "surge", Plugin: engine}); err == nil || !strings.Contains(err.Error(), "certificate authority") {
 		t.Fatalf("MITM must still require a CA: %v", err)
 	}
 }
