@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/daeuniverse/dae/pkg/outbound/common/url"
 	"github.com/daeuniverse/dae/pkg/proxylink"
 )
 
@@ -25,7 +24,7 @@ func NewFromLink(link string) (Builder, *Property, error) {
 	/// Get overwritten name.
 	overwrittenName, linklike := proxylink.SplitTag(link)
 	linklike = strings.TrimSpace(linklike)
-	u, err := url.Parse(linklike)
+	u, err := proxylink.ParseURL(linklike)
 	if err != nil {
 		// Both the outer URL error and its cause can contain credentials:
 		// malformed delimiters can make a password look like an invalid port.

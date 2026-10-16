@@ -10,12 +10,13 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/pkg/outbound/common/bandwidth"
-	"github.com/daeuniverse/dae/pkg/outbound/common/url"
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/client"
+	"github.com/daeuniverse/dae/pkg/proxylink"
+	"net/url"
 )
 
 func init() {
@@ -114,9 +115,9 @@ func normalizeCertHash(hash string) string {
 
 // ref: https://v2.hysteria.network/zh/docs/developers/URI-Scheme/
 func ParseHysteria2URL(link string) (*Hysteria2, error) {
-	u, err := url.Parse(link)
+	u, err := proxylink.ParseURL(link)
 	if err != nil {
-		return nil, fmt.Errorf("parse Hysteria2 proxy URL: %w", err.(*url.Error).Err)
+		return nil, fmt.Errorf("parse Hysteria2 proxy URL: %w", dialer.InvalidParameterErr)
 	}
 	q := u.Query()
 	if q.Get("obfs") != "" || q.Get("obfs-password") != "" {
