@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/internal/routingabi"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
 
 const (
@@ -154,8 +153,6 @@ func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 	}
 	panic("unsupported ipversion")
 }
-
-var MinimumKernelVersion = internal.Version{6, 13, 0}
 
 var (
 	TproxyMark      uint32 = 0x08000000

@@ -138,7 +138,7 @@ int main(void) {
 		t.Fatal(err)
 	}
 	var event traceEvent
-	if err := binary.Read(bytes.NewReader(record.RawSample), nativeEndian, &event); err != nil {
+	if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &event); err != nil {
 		t.Fatal(err)
 	}
 	if event.Generation != 1 || event.Flags != eventFlagTerminal|eventFlagDrop|eventFlagDropReason || event.DropReason != 9 {

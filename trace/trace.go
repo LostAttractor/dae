@@ -23,34 +23,17 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/ringbuf"
-	"github.com/daeuniverse/dae/common/consts"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/internal/kernel"
 	log "github.com/sirupsen/logrus"
 )
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS -mcpu=v3" -tags trace -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I../kern
 //go:generate go run ../cmd/dae-bpf-pack bpf_*_bpf*.go
-
-var nativeEndian binary.ByteOrder
-
-func init() {
-	buf := [2]byte{}
-	*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xABCD)
-
-	switch buf {
-	case [2]byte{0xCD, 0xAB}:
-		nativeEndian = binary.LittleEndian
-	case [2]byte{0xAB, 0xCD}:
-		nativeEndian = binary.BigEndian
-	default:
-		panic("Could not determine native endianness.")
-	}
-}
 
 type traceEvent struct {
 	Pc         uint64
@@ -229,11 +212,11 @@ func writeTraceEvents(writer io.Writer, trace accumulatedTrace, dropReasons map[
 				return err
 			}
 		} else if event.L3Proto == syscall.ETH_P_IP {
-			if _, err := fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(event.Saddr[:4]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:4]).String(), Ntohs(event.Dport)); err != nil {
+			if _, err := fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(event.Saddr[:4]).String(), common.Ntohs(event.Sport), net.IP(event.Daddr[:4]).String(), common.Ntohs(event.Dport)); err != nil {
 				return err
 			}
 		} else {
-			if _, err := fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(event.Saddr[:]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:]).String(), Ntohs(event.Dport)); err != nil {
+			if _, err := fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(event.Saddr[:]).String(), common.Ntohs(event.Sport), net.IP(event.Daddr[:]).String(), common.Ntohs(event.Dport)); err != nil {
 				return err
 			}
 		}
@@ -290,24 +273,16 @@ func writeTraceEvents(writer io.Writer, trace accumulatedTrace, dropReasons map[
 }
 
 func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, dropOnly bool, outputFile string) (err error) {
-	kernelVersion, err := internal.KernelVersion()
-	if err != nil {
-		return fmt.Errorf("failed to get kernel version: %w", err)
+	if err := kernel.CheckVersion(); err != nil {
+		return err
 	}
-	if requirement := consts.MinimumKernelVersion; kernelVersion.Less(requirement) {
-		return fmt.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
-			kernelVersion.String(),
-			requirement.String())
-	}
-	useKprobeMulti := supportsKprobeMulti(kernelVersion)
 	targets, dropReasons, reasonConfig, useKfreeReason, err := searchAvailableTargets()
 	if err != nil {
 		return
 	}
 	discoveredTargets := len(targets)
 
-	var multiProgramsLoaded bool
-	objs, multiProgramsLoaded, err := rewriteAndLoadBpf(ipVersion, l4ProtoNo, port, reasonConfig, useKprobeMulti)
+	objs, useKprobeMulti, err := rewriteAndLoadBpf(ipVersion, l4ProtoNo, port, reasonConfig, true)
 	if err != nil {
 		return
 	}
@@ -317,7 +292,6 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 			_ = objs.Close()
 		}
 	}()
-	useKprobeMulti = useKprobeMulti && multiProgramsLoaded
 	if err := setTraceProducers(objs.control, true); err != nil {
 		return err
 	}
@@ -351,10 +325,6 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 		return
 	}
 	return
-}
-
-func supportsKprobeMulti(kernelVersion internal.Version) bool {
-	return !kernelVersion.Less(internal.Version{5, 18, 0})
 }
 
 func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int, reasons dropReasonConfig, useKprobeMulti bool) (*traceObjects, bool, error) {
@@ -404,7 +374,7 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 	if err := tracingCfg.Set(bpfTracingConfig{
 		NotDroppedReason: reasons.notDropped,
 		ConsumedReason:   reasons.consumed,
-		Port:             Htons(uint16(port)),
+		Port:             common.Htons(uint16(port)),
 		L4Proto:          uint16(l4ProtoNo),
 		IpVsn:            uint8(ipVersion),
 		NapiReason:       reasons.napiReason,
@@ -863,7 +833,7 @@ func readTraceEvents(ctx context.Context, runtime traceRuntime, eventsReader tra
 		}
 
 		var event traceEvent
-		if err = binary.Read(bytes.NewBuffer(rec.RawSample), nativeEndian, &event); err != nil {
+		if err = binary.Read(bytes.NewBuffer(rec.RawSample), binary.NativeEndian, &event); err != nil {
 			log.Debugf("failed to parse ringbuf event: %+v", err)
 			decodeLoss++
 			continue

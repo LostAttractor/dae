@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
 
 func ARangeU32(n uint32) []uint32 {
@@ -32,7 +31,7 @@ func ARangeU32(n uint32) []uint32 {
 
 func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	for j := 0; j < 16; j += 4 {
-		ip[j/4] = internal.NativeEndian.Uint32(_ip[j : j+4])
+		ip[j/4] = binary.NativeEndian.Uint32(_ip[j : j+4])
 	}
 	return ip
 }
@@ -226,11 +225,16 @@ func NewGcm(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// Htons converts the unsigned short integer hostshort from host byte order to network byte order.
+// Htons converts a uint16 from host byte order to network byte order.
 func Htons(i uint16) uint16 {
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], i)
-	return internal.NativeEndian.Uint16(b[:])
+	return binary.NativeEndian.Uint16(b[:])
+}
+
+// Ntohs converts a uint16 from network byte order to host byte order.
+func Ntohs(i uint16) uint16 {
+	return Htons(i)
 }
 
 const InternalSoMarkFromDae uint32 = 0x100

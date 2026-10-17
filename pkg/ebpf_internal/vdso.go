@@ -66,7 +66,7 @@ func vdsoMemoryAddress(r io.Reader) (uint64, error) {
 	// the address of a page containing the virtual Dynamic Shared Object (vDSO).
 	aux := struct{ Tag, Val uint64 }{}
 	for {
-		if err := binary.Read(r, NativeEndian, &aux); err != nil {
+		if err := binary.Read(r, binary.NativeEndian, &aux); err != nil {
 			return 0, fmt.Errorf("reading auxv entry: %w", err)
 		}
 

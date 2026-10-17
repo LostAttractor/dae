@@ -20,7 +20,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common/consts"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/dae/internal/kernel"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -45,17 +45,6 @@ func runKernelChecks(ctx context.Context, checks ...kernelCheck) error {
 	return errors.Join(append(failures, ctx.Err())...)
 }
 
-func checkKernelVersion() error {
-	version, err := internal.KernelVersion()
-	if err != nil {
-		return fmt.Errorf("get kernel version: %w", err)
-	}
-	if version.Less(consts.MinimumKernelVersion) {
-		return fmt.Errorf("kernel %s requires an upgrade to Linux %s or newer", version, consts.MinimumKernelVersion)
-	}
-	return nil
-}
-
 // CheckKernelFeatures verifies the running kernel before startup resources are
 // prepared. It loads the production collection with private, unpinned maps, then
 // probes attachment APIs. Network probes live in an unnamed network namespace;
@@ -67,7 +56,7 @@ func CheckKernelFeatures(ctx context.Context) error {
 func checkKernelFeatures(ctx context.Context, addLink func(netlink.Link) error) error {
 	started := time.Now()
 	if err := runKernelChecks(ctx,
-		kernelCheck{"kernel version", checkKernelVersion},
+		kernelCheck{"kernel version", kernel.CheckVersion},
 		kernelCheck{"BPF memory limit", rlimit.RemoveMemlock},
 		kernelCheck{"kernel BTF (CONFIG_DEBUG_INFO_BTF)", func() error {
 			_, err := btf.LoadKernelSpec()

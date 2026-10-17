@@ -23,7 +23,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/dae/common"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -140,7 +140,7 @@ func TestTraceBPFSpec(t *testing.T) {
 	if err := variable.Set(bpfTracingConfig{
 		NotDroppedReason: 0,
 		ConsumedReason:   1,
-		Port:             Htons(53),
+		Port:             common.Htons(53),
 		L4Proto:          syscall.IPPROTO_UDP,
 		IpVsn:            6,
 	}); err != nil {
@@ -503,7 +503,7 @@ func TestWriteTraceEventsTupleUnavailableAndRetainedReason(t *testing.T) {
 				Flags:   eventFlagTerminal | eventFlagTupleValid,
 				L3Proto: syscall.ETH_P_IP, L4Proto: syscall.IPPROTO_UDP,
 				Saddr: [16]byte{192, 0, 2, 1}, Daddr: [16]byte{198, 51, 100, 2},
-				Sport: Htons(1000), Dport: Htons(53), PayloadLen: 10,
+				Sport: common.Htons(1000), Dport: common.Htons(53), PayloadLen: 10,
 			},
 		},
 	}
@@ -1040,15 +1040,6 @@ func TestAttachProbeGroupClosesFailedMultiBeforeFallback(t *testing.T) {
 	)
 	if err == nil || len(attached) != 0 || attachedSymbols != 0 || singleCalls != 0 {
 		t.Fatalf("fallback proceeded after failed cleanup: attached:%d symbols:%d calls:%d err:%v", len(attached), attachedSymbols, singleCalls, err)
-	}
-}
-
-func TestKprobeMultiVersionBoundary(t *testing.T) {
-	if supportsKprobeMulti(internal.Version{5, 17, 99}) {
-		t.Fatal("Linux 5.17 incorrectly enables kprobe-multi")
-	}
-	if !supportsKprobeMulti(internal.Version{5, 18, 0}) {
-		t.Fatal("Linux 5.18 did not enable kprobe-multi")
 	}
 }
 
