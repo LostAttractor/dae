@@ -48,6 +48,8 @@ Each `node` entry must contain one share link. Compose proxy paths with group pa
 
   [SIP008](https://shadowsocks.org/doc/sip008.html)
 
+  An unsupported SIP003 plugin rejects node construction. Plain Shadowsocks transport is used only when no plugin is specified.
+
   SIP002 links describe only standard Shadowsocks connection information. Keep the link unchanged and use node options for dae-specific features:
 
   ```shell

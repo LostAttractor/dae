@@ -109,6 +109,11 @@ func (s *Shadowsocks) Build(option *dialer.ExtraOption, upstream dialer.Upstream
 			err = fmt.Errorf("unsupported mode %v of plugin %v", opts.Obfs, s.Plugin.Name)
 			return
 		}
+	case "":
+		// No optional transport requested.
+	default:
+		err = fmt.Errorf("unsupported shadowsocks plugin %q", s.Plugin.Name)
+		return
 	}
 
 	var typeName string

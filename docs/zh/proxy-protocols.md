@@ -48,6 +48,8 @@
 
   [SIP008](https://shadowsocks.org/doc/sip008.html)
 
+  链接声明不支持的 SIP003 插件时，节点构建返回错误；只有省略插件才使用基础 Shadowsocks 传输。
+
   SIP002 链接只描述标准 Shadowsocks 连接信息。需要启用 dae 专属功能时，应保持链接不变并使用节点选项：
 
   ```shell

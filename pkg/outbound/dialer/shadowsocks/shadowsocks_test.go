@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
@@ -38,5 +39,26 @@ func TestNonSIP002MultiplexQueryIsIgnored(t *testing.T) {
 	defer built.Close()
 	if _, ok := built.Data.(*smux.Smux); ok {
 		t.Fatal("non-SIP002 multiplex query enabled smux")
+	}
+}
+
+func TestShadowsocksPluginMustBeSupported(t *testing.T) {
+	for _, plugin := range []string{"", "shadow-tls;host=example.test", "unknown", "simple-obfs;obfs=http", "obfs-local;obfs=tls", "v2ray-plugin;tls"} {
+		t.Run(plugin, func(t *testing.T) {
+			server, err := ParseSSURL("ss://YWVzLTEyOC1nY206cGFzcw@proxy.example:443?plugin=" + url.QueryEscape(plugin))
+			if err != nil {
+				t.Fatal(err)
+			}
+			layer, err := server.Build(new(dialer.ExtraOption), dialer.NewUpstream(direct.NewDirectDialer(direct.Option{})))
+			defer layer.Close()
+			unsupported := strings.HasPrefix(plugin, "shadow-tls") || plugin == "unknown"
+			if unsupported {
+				if err == nil || !strings.Contains(err.Error(), "unsupported shadowsocks plugin") || layer.Data != nil {
+					t.Fatalf("unsupported plugin produced a layer: %+v, %v", layer, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
