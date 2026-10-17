@@ -18,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
@@ -94,17 +93,18 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	defer datapath.Close()
 	worker, closeWorker := datapath.NewWorkerClient()
 	defer closeWorker()
-	var resources resource.RefreshStore
-	loadCtx, refresh := resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
+	app := &application{
+		options: options, conf: conf, datapath: datapath,
+		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
+		geoDirs: geoDirs, operations: newOperations(),
+	}
+	loadCtx, refresh := app.resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
 	inputs, err := loadControlInputs(loadCtx, conf, false, geoDirs, options.ConfigFile, nil)
-	var plane *control.ControlPlane
+	var candidate *preparedPlane
 	if err == nil {
-		plane, err = newControlPlane(loadCtx, datapath, conf, inputs, runtimeSettings, func(client *http.Client) (control.PreparedMITM, error) {
+		candidate, err = app.preparePlane(loadCtx, conf, inputs, func(client *http.Client) (control.PreparedMITM, error) {
 			return loadMITM(loadCtx, conf, certificates.Authority(), client, worker, plugins, nil, geoDirs, datapath)
 		})
-	}
-	if err == nil && ctx.Err() != nil {
-		err = errors.Join(ctx.Err(), plane.Close())
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -113,28 +113,18 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		}
 		return err
 	}
-	management, err := prepareAPIServer(nil, conf.Global.APIPort)
-	if err != nil {
-		return errors.Join(err, plane.Close())
-	}
 	local, err := apiserver.Listen("unix", StatusSocketPath)
 	if err != nil {
-		management.Close()
-		return errors.Join(fmt.Errorf("local API: %w", err), plane.Close())
+		return errors.Join(fmt.Errorf("local API: %w", err), candidate.discard())
 	}
-	if err := datapath.Publish(plane, false); err != nil {
+	if err := app.publishPlane(candidate, false); err != nil {
 		local.Close()
-		management.Close()
-		return errors.Join(err, datapath.Close(), plane.Close())
+		return errors.Join(err, datapath.Close(), candidate.plane.Close())
 	}
+	app.localAPI, app.inputs = local, inputs
+	plane, management := app.plane, app.managementAPI
 	datapath.RefreshTCPIdleTimeouts()
 	refresh.Commit()
-	app := &application{
-		options: options, conf: conf, inputs: inputs, plane: plane, datapath: datapath,
-		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
-		geoDirs: geoDirs, localAPI: local, managementAPI: management,
-		resources: resources, operations: newOperations(),
-	}
 	app.setCertificates(certificates)
 	local.SetOperations(app.operations)
 	stopOperations := context.AfterFunc(ctx, app.operations.stop)

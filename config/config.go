@@ -19,45 +19,45 @@ var (
 )
 
 type Global struct {
-	ResourceCache             bool                   `mapstructure:"resource_cache" default:"true"`
-	ResourceUpdateInterval    time.Duration          `mapstructure:"resource_update_interval" default:"24h"`
-	APIPort                   uint16                 `mapstructure:"api_port" default:"0"`
-	APIMITMTestIPv4           string                 `mapstructure:"api_mitm_test_ipv4" default:"203.0.113.254"`
-	APIMITMTestIPv6           string                 `mapstructure:"api_mitm_test_ipv6" default:"2001:db8:ffff::254"`
-	APIKey                    string                 `mapstructure:"api_key"`
-	TproxyPort                uint16                 `mapstructure:"tproxy_port" default:"12345"`
-	SoMarkFromDae             uint32                 `mapstructure:"so_mark_from_dae" default:"0x100"`
-	LogLevel                  string                 `mapstructure:"log_level" default:"info"`
-	UdpCheckDns               []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
-	CheckInterval             time.Duration          `mapstructure:"check_interval" default:"3m"`
-	CheckIntervalMax          time.Duration          `mapstructure:"check_interval_max" default:"1h"`
-	CheckTolerance            time.Duration          `mapstructure:"check_tolerance" default:"0"`
-	LanInterface              []string               `mapstructure:"lan_interface"`
-	WanInterface              []string               `mapstructure:"wan_interface"`
-	AllowInsecure             bool                   `mapstructure:"allow_insecure" default:"false"`
-	DialTargetOverride        bool                   `mapstructure:"dial_target_override" default:"true"`
-	RerouteMode               consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_needed"`
-	SniffVerifyMode           consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose"`
-	SniffingTimeout           time.Duration          `mapstructure:"sniffing_timeout" default:"100ms"`
-	DNSRetentionWindow        time.Duration          `mapstructure:"dns_retention_window" default:"168h"`
-	DNSResolver               string                 `mapstructure:"dns_resolver"`
-	DisableWaitingNetwork     bool                   `mapstructure:"disable_waiting_network" default:"false"`
-	AutoConfigKernelParameter bool                   `mapstructure:"auto_config_kernel_parameter" default:"false"`
-	TlsImplementation         string                 `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate               string                 `mapstructure:"utls_imitate" default:"chrome_auto"`
-	TlsFragment               bool                   `mapstructure:"tls_fragment" default:"false"`
-	TlsFragmentLength         string                 `mapstructure:"tls_fragment_length" default:"50-100"`
-	TlsFragmentInterval       string                 `mapstructure:"tls_fragment_interval" default:"10-20"`
-	PprofPort                 uint16                 `mapstructure:"pprof_port" default:"0"`
-	MetricsPort               uint16                 `mapstructure:"metrics_port" default:"0"`
-	Mptcp                     bool                   `mapstructure:"mptcp" default:"false"`
-	BandwidthMaxTx            string                 `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx            string                 `mapstructure:"bandwidth_max_rx" default:"0"`
-	NoConnectivityTrySniff    bool                   `mapstructure:"no_connectivity_try_sniff" default:"true"`
+	ResourceCache             bool                   `mapstructure:"resource_cache" default:"true" reload:"services"`
+	ResourceUpdateInterval    time.Duration          `mapstructure:"resource_update_interval" default:"24h" reload:"services"`
+	APIPort                   uint16                 `mapstructure:"api_port" default:"0" reload:"plane"`
+	APIMITMTestIPv4           string                 `mapstructure:"api_mitm_test_ipv4" default:"203.0.113.254" reload:"plane"`
+	APIMITMTestIPv6           string                 `mapstructure:"api_mitm_test_ipv6" default:"2001:db8:ffff::254" reload:"plane"`
+	APIKey                    string                 `mapstructure:"api_key" reload:"services"`
+	TproxyPort                uint16                 `mapstructure:"tproxy_port" default:"12345" reload:"restart"`
+	SoMarkFromDae             uint32                 `mapstructure:"so_mark_from_dae" default:"0x100" reload:"plane"`
+	LogLevel                  string                 `mapstructure:"log_level" default:"info" reload:"services"`
+	UdpCheckDns               []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888" reload:"plane"`
+	CheckInterval             time.Duration          `mapstructure:"check_interval" default:"3m" reload:"plane"`
+	CheckIntervalMax          time.Duration          `mapstructure:"check_interval_max" default:"1h" reload:"plane"`
+	CheckTolerance            time.Duration          `mapstructure:"check_tolerance" default:"0" reload:"plane"`
+	LanInterface              []string               `mapstructure:"lan_interface" reload:"plane"`
+	WanInterface              []string               `mapstructure:"wan_interface" reload:"plane"`
+	AllowInsecure             bool                   `mapstructure:"allow_insecure" default:"false" reload:"plane"`
+	DialTargetOverride        bool                   `mapstructure:"dial_target_override" default:"true" reload:"plane"`
+	RerouteMode               consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_needed" reload:"plane"`
+	SniffVerifyMode           consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose" reload:"plane"`
+	SniffingTimeout           time.Duration          `mapstructure:"sniffing_timeout" default:"100ms" reload:"plane"`
+	DNSRetentionWindow        time.Duration          `mapstructure:"dns_retention_window" default:"168h" reload:"plane"`
+	DNSResolver               string                 `mapstructure:"dns_resolver" reload:"plane"`
+	DisableWaitingNetwork     bool                   `mapstructure:"disable_waiting_network" default:"false" reload:"startup"`
+	AutoConfigKernelParameter bool                   `mapstructure:"auto_config_kernel_parameter" default:"false" reload:"plane"`
+	TlsImplementation         string                 `mapstructure:"tls_implementation" default:"tls" reload:"plane"`
+	UtlsImitate               string                 `mapstructure:"utls_imitate" default:"chrome_auto" reload:"plane"`
+	TlsFragment               bool                   `mapstructure:"tls_fragment" default:"false" reload:"plane"`
+	TlsFragmentLength         string                 `mapstructure:"tls_fragment_length" default:"50-100" reload:"plane"`
+	TlsFragmentInterval       string                 `mapstructure:"tls_fragment_interval" default:"10-20" reload:"plane"`
+	PprofPort                 uint16                 `mapstructure:"pprof_port" default:"0" reload:"services"`
+	MetricsPort               uint16                 `mapstructure:"metrics_port" default:"0" reload:"services"`
+	Mptcp                     bool                   `mapstructure:"mptcp" default:"false" reload:"plane"`
+	BandwidthMaxTx            string                 `mapstructure:"bandwidth_max_tx" default:"0" reload:"plane"`
+	BandwidthMaxRx            string                 `mapstructure:"bandwidth_max_rx" default:"0" reload:"plane"`
+	NoConnectivityTrySniff    bool                   `mapstructure:"no_connectivity_try_sniff" default:"true" reload:"plane"`
 	// TODO: skip?
-	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block"`
-	RouteChangeBehavior    string        `mapstructure:"route_change_behavior" default:"keep"`
-	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block" reload:"plane"`
+	RouteChangeBehavior    string        `mapstructure:"route_change_behavior" default:"keep" reload:"plane"`
+	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s" reload:"plane"`
 }
 
 type Utls struct {

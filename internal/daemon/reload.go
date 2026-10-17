@@ -109,12 +109,11 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	if err != nil {
 		return "", err
 	}
-	if next.Global.TproxyPort != a.conf.Global.TproxyPort {
-		return "", fmt.Errorf("tproxy_port (%v -> %v) cannot be changed by reload; restart dae to apply it", a.conf.Global.TproxyPort, next.Global.TproxyPort)
+	if err := a.conf.Global.CheckReload(next.Global); err != nil {
+		return "", err
 	}
-	oldMark, nextMark := common.EffectiveSoMarkFromDae(a.conf.Global.SoMarkFromDae), common.EffectiveSoMarkFromDae(next.Global.SoMarkFromDae)
-	if oldMark != nextMark {
-		return "", fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot be changed by reload; restart dae to apply it", oldMark, nextMark)
+	if err := a.datapath.CheckSocketMark(next.Global.SoMarkFromDae); err != nil {
+		return "", err
 	}
 	if !suspend {
 		if err := plugins.Preflight(ctx); err != nil {
@@ -188,69 +187,64 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		unchanged := previous.SameRuntime(prepared.Host)
-		if a.plane.CanReplaceMITM(prepared) {
-			if !unchanged || a.certificates != certificates || a.conf.Global.APIKey != next.Global.APIKey {
-				pauseAPI()
+		if result, err := a.replaceServices(next, inputs, server, certificates, &prepared, pauseAPI); result != "" || err != nil {
+			if err == nil {
+				refresh.Commit()
 			}
-			if !unchanged {
-				if err := a.plane.ReplaceMITM(prepared); err != nil {
-					return "", err
-				}
-				prepared = control.PreparedMITM{} // The plane now owns this host.
-			}
-			result := "Updated runtime services"
-			if unchanged && a.certificates == certificates && reflect.DeepEqual(a.conf, next) {
-				result = "No changes"
-			}
-			a.setCertificates(certificates)
-			a.accept(next, inputs, server, false)
-			if unchanged {
-				prepared.Host.CommitResources()
-			}
-			refresh.Commit()
-			return result, nil
+			return result, err
 		}
 		load = takePrepared
 	}
 
 	a.report("Preparing affected services and routing...")
-	candidate, err := newControlPlane(ctx, a.datapath, next, inputs, a.settings, load)
+	candidate, err := a.preparePlane(ctx, next, inputs, load)
 	if err != nil {
-		return "", fmt.Errorf("prepare control plane: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return "", errors.Join(err, candidate.Close())
-	}
-	api, err := prepareAPIServer(a.managementAPI, next.Global.APIPort)
-	if err != nil {
-		return "", errors.Join(err, candidate.Close())
+		return "", err
 	}
 	a.report("Publishing replacement routing...")
 	pauseAPI()
-	if err := a.datapath.Publish(candidate, abort); err != nil {
-		if api != a.managementAPI {
-			api.Close()
+	if err := a.publishPlane(candidate, abort); err != nil {
+		if _, fatal := errors.AsType[*activationError](err); fatal {
+			paused = false // Partially replaced attachments require terminal shutdown.
 		}
-		if errors.Is(err, control.ErrPublicationRejected) {
-			return "", errors.Join(err, candidate.Close())
-		}
-		paused = false // Partially replaced attachments require terminal shutdown.
-		return "", &activationError{err}
+		return "", err
 	}
-	a.plane = candidate
-	if a.managementAPI != api {
-		a.managementAPI.Close()
-	}
-	a.managementAPI = api
 	a.setCertificates(certificates)
 	a.accept(next, inputs, server, true)
 	if !suspend {
 		refresh.Commit()
 	}
-	logStartupNodeStatus(candidate.GroupsStatus())
+	logStartupNodeStatus(a.plane.GroupsStatus())
 	if suspend {
 		return "Suspended traffic interception", nil
 	}
 	return "Updated routing and affected services", nil
+}
+
+// replaceServices returns an empty result when changed plugin capture rules
+// require a new control plane. Otherwise it commits the in-place service update.
+func (a *application) replaceServices(next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func()) (string, error) {
+	if !a.plane.CanReplaceMITM(*prepared) {
+		return "", nil
+	}
+	unchanged := a.plane.MITMHost().SameRuntime(prepared.Host)
+	if !unchanged || a.certificates != certificates || a.conf.Global.APIKey != next.Global.APIKey {
+		pauseAPI()
+	}
+	if !unchanged {
+		if err := a.plane.ReplaceMITM(*prepared); err != nil {
+			return "", err
+		}
+		*prepared = control.PreparedMITM{} // The plane now owns this host.
+	}
+	result := "Updated runtime services"
+	if unchanged && a.certificates == certificates && reflect.DeepEqual(a.conf, next) {
+		result = "No changes"
+	}
+	a.setCertificates(certificates)
+	a.accept(next, inputs, server, false)
+	if unchanged {
+		prepared.Host.CommitResources()
+	}
+	return result, nil
 }

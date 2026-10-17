@@ -17,6 +17,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/internal/kernel"
 	log "github.com/sirupsen/logrus"
@@ -48,6 +49,7 @@ func PrepareControlPlane(
 }
 
 func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ *BPFState, err error) {
+	soMarkFromDae = common.EffectiveSoMarkFromDae(soMarkFromDae)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -61,8 +63,8 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		return nil, net.ErrClosed
 	default:
 	}
-	if len(runtime.shared) != 0 && runtime.soMarkFromDae != soMarkFromDae {
-		return nil, fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot change on reload; restart dae to apply it", runtime.soMarkFromDae, soMarkFromDae)
+	if err := runtime.checkSocketMark(soMarkFromDae); err != nil {
+		return nil, err
 	}
 	if err := kernel.CheckVersion(); err != nil {
 		return nil, err

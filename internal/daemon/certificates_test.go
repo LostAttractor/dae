@@ -109,7 +109,7 @@ func TestAPIOnlyHTTPSAndFailedCertificateReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &application{conf: conf, certificates: certificates, plane: &control.ControlPlane{}, managementAPI: server}
+	app := &application{datapath: control.NewRuntime(), conf: conf, certificates: certificates, plane: &control.ControlPlane{}, managementAPI: server}
 	app.publishAPI()
 	root, err := localca.ReadCertificate(filepath.Join(os.Getenv("DAE_LOCATION_CACHE"), "pki", "ca.pem"))
 	if err != nil {

@@ -172,11 +172,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 		value.Routing = config.Routing{}
 		value.Certificate = config.Certificate{}
 		value.MITM.BufferMemoryLimit = 0
-		value.Global.LogLevel, value.Global.APIKey = "", ""
-		value.Global.PprofPort, value.Global.MetricsPort = 0, 0
-		value.Global.ResourceCache, value.Global.DisableWaitingNetwork = false, false
-		value.Global.ResourceUpdateInterval = 0
-		value.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(value.Global.SoMarkFromDae)
+		value.Global = value.Global.ControlPlaneConfig()
 		return value
 	}
 	return reflect.DeepEqual(project(previous), project(next))

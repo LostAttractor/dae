@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"github.com/daeuniverse/dae/control"
 	"net/http"
 	"os"
 	"strings"
@@ -93,7 +94,7 @@ plugins { fixture {} }`)
 			}}
 			var err error
 			if reload {
-				app := application{conf: conf, definitions: definitions}
+				app := application{datapath: control.NewRuntime(), conf: conf, definitions: definitions}
 				_, err = app.apply(t.Context(), conf, false, false, false)
 			} else {
 				err = Run(conf, nil, definitions, &netutils.InternalResolver{}, Options{})

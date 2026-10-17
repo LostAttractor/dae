@@ -119,13 +119,13 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.plane, err = newControlPlane(t.Context(), datapath, conf, app.inputs, store, func(download *http.Client) (control.PreparedMITM, error) {
+	candidate, err := app.preparePlane(t.Context(), conf, app.inputs, func(download *http.Client) (control.PreparedMITM, error) {
 		return loadMITM(t.Context(), conf, app.certificates.Authority(), download, client, plugins, nil, nil, datapath)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := datapath.Publish(app.plane, false); err != nil {
+	if err := app.publishPlane(candidate, false); err != nil {
 		t.Fatal(err)
 	}
 	original, host := app.plane, app.plane.MITMHost()
