@@ -263,7 +263,7 @@ func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uin
 	copy(value.Routing[:], routing)
 
 	ip6 := ip.As16()
-	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
+	key := ipv6BytesToWords(ip6[:])
 	if err := c.bpf.DomainRoutingMap.Update(key, value, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update domain bitmap %s: %w", ip, err)
 	}
@@ -275,7 +275,7 @@ func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uin
 // state is already reached); other failures retain the installed record.
 func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) error {
 	ip6 := ip.As16()
-	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
+	key := ipv6BytesToWords(ip6[:])
 	if err := c.bpf.DomainRoutingMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("delete domain bitmap %s: %w", ip, err)
 	}

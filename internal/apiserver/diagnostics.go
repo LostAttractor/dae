@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/macaddr"
 )
 
 type DiagnosticStore interface {
@@ -80,12 +81,12 @@ func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request, who calle
 }
 
 func managedMAC(w http.ResponseWriter, r *http.Request) ([6]byte, bool) {
-	parsed, err := net.ParseMAC(r.PathValue("mac"))
-	if err != nil || len(parsed) != 6 || parsed[0]&1 != 0 || [6]byte(parsed) == [6]byte{} {
-		apiError(w, 400, "expected a nonzero unicast Ethernet MAC")
+	parsed, err := macaddr.ParseClient(r.PathValue("mac"))
+	if err != nil {
+		apiError(w, 400, err.Error())
 		return [6]byte{}, false
 	}
-	return [6]byte(parsed), true
+	return parsed, true
 }
 
 func (s *handler) serveClients(w http.ResponseWriter, r *http.Request, who caller) {

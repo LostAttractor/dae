@@ -4,11 +4,11 @@
 package settings
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net"
 	"os"
@@ -17,8 +17,11 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/daeuniverse/dae/common/fileio"
+	"github.com/daeuniverse/dae/common/macaddr"
 	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/common/selector"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -58,24 +61,17 @@ func Open(path string) (*Store, error) {
 
 func readState(path string) (Snapshot, error) {
 	var value Snapshot
-	f, err := os.Open(path)
+	f, _, err := fileio.OpenRegular(path)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return Snapshot{}, fmt.Errorf("runtime settings must be a regular file")
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if len(data) > maxFileSize {
+	data, err := fileio.ReadBounded(context.Background(), f, maxFileSize)
+	if errors.Is(err, fileio.ErrTooLarge) {
 		return Snapshot{}, fmt.Errorf("runtime settings exceed %d bytes", maxFileSize)
+	}
+	if err != nil {
+		return Snapshot{}, err
 	}
 	// JSON null must not become an explicit false runtime preference.
 	booleans := json.UnmarshalFunc(func(data []byte, value *bool) error {
@@ -162,11 +158,10 @@ func (s *Store) Update(edit func(*Snapshot) error, apply func(previous, next Sna
 	return nil
 }
 
-func validMAC(mac [6]byte) bool    { return mac != [6]byte{} && mac[0]&1 == 0 }
 func macString(mac [6]byte) string { return net.HardwareAddr(mac[:]).String() }
 func validateMAC(text string) error {
-	mac, err := net.ParseMAC(text)
-	if err != nil || len(mac) != 6 || !validMAC([6]byte(mac)) || mac.String() != text {
+	mac, err := macaddr.ParseClient(text)
+	if err != nil || macString(mac) != text {
 		return fmt.Errorf("invalid client MAC %q: expected a canonical unicast Ethernet address", text)
 	}
 	return nil
@@ -223,20 +218,6 @@ func (s *Store) Selection(group string) *selector.Path {
 	return s.state.Selectors[group].Clone()
 }
 
-func (s *Store) SetSelection(group string, path *selector.Path) error {
-	if group == "" {
-		return fmt.Errorf("selector name must not be empty")
-	}
-	return s.Update(func(next *Snapshot) error {
-		if path == nil {
-			delete(next.Selectors, group)
-		} else {
-			next.Selectors[group] = path.Clone()
-		}
-		return nil
-	}, nil)
-}
-
 func (s *Store) Members(name string) [][6]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -246,41 +227,10 @@ func (s *Store) Members(name string) [][6]byte {
 func (s Snapshot) Members(name string) [][6]byte {
 	members := make([][6]byte, 0, len(s.Clients[name]))
 	for _, text := range s.Clients[name] {
-		mac, _ := net.ParseMAC(text) // Stored addresses have already been validated.
-		members = append(members, [6]byte(mac))
+		mac, _ := macaddr.ParseClient(text) // Stored addresses have already been validated.
+		members = append(members, mac)
 	}
 	return members
-}
-
-// SetMembers saves a complete set. Callers serialize read-modify-write operations.
-func (s *Store) SetMembers(name string, macs [][6]byte) error {
-	if name == "" {
-		return fmt.Errorf("client set name must not be empty")
-	}
-	if len(macs) > maxClients {
-		return fmt.Errorf("client set %q exceeds %d devices", name, maxClients)
-	}
-	members := make([]string, len(macs))
-	for i, mac := range macs {
-		if !validMAC(mac) {
-			return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
-		}
-		members[i] = macString(mac)
-	}
-	slices.Sort(members)
-	for i := 1; i < len(members); i++ {
-		if members[i] == members[i-1] {
-			return fmt.Errorf("duplicate client MAC %q", members[i])
-		}
-	}
-	return s.Update(func(next *Snapshot) error {
-		if len(members) == 0 {
-			delete(next.Clients, name)
-		} else {
-			next.Clients[name] = members
-		}
-		return nil
-	}, nil)
 }
 
 func (s *Store) MITM(mac [6]byte) (enabled, exists bool) {
@@ -300,26 +250,10 @@ func (s *Store) MITMOverrides() map[[6]byte]bool {
 func (s Snapshot) MITMOverrides() map[[6]byte]bool {
 	values := make(map[[6]byte]bool, len(s.MITM))
 	for text, enabled := range s.MITM {
-		mac, _ := net.ParseMAC(text) // Snapshot validation owns canonical identities.
-		values[[6]byte(mac)] = enabled
+		mac, _ := macaddr.ParseClient(text) // Snapshot validation owns canonical identities.
+		values[mac] = enabled
 	}
 	return values
-}
-
-// SetMITM saves a per-device override; nil restores the configuration.
-func (s *Store) SetMITM(mac [6]byte, enabled *bool) error {
-	if !validMAC(mac) {
-		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
-	}
-	return s.Update(func(next *Snapshot) error {
-		key := macString(mac)
-		if enabled == nil {
-			delete(next.MITM, key)
-		} else {
-			next.MITM[key] = *enabled
-		}
-		return nil
-	}, nil)
 }
 
 // The caller holds mu. Readers only see the next state after atomic replacement.
@@ -336,25 +270,16 @@ func (s *Store) save(next Snapshot) error {
 	if err := persist.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".runtime-state-*")
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil {
+	directory := os.NewFile(uintptr(fd), dir)
+	defer directory.Close()
+	if err := persist.ReplaceFile(context.Background(), directory, filepath.Base(s.path), data); err != nil {
 		return err
 	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err := os.Rename(f.Name(), s.path); err != nil {
-		return err
-	}
+
 	s.state = next
 	s.pendingSync = true
 	return s.syncPublished()

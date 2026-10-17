@@ -47,7 +47,7 @@ func TestClientExportAPIAndReload(t *testing.T) {
 	conn := &nftables.Conn{}
 	t.Cleanup(func() { conn.DelTable(table); _ = conn.Flush() })
 	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
-	if err := store.SetMembers("external", [][6]byte{mac}); err != nil {
+	if err := setTestClientMembers(store, "external", [][6]byte{mac}); err != nil {
 		t.Fatal(err)
 	}
 	if err := plane.restoreRuntimeSettings(false); err != nil {
@@ -133,7 +133,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 	})
 	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	previous := [6]byte{2, 0, 0, 0, 0, 1}
-	if err := store.SetMembers("gaming", [][6]byte{previous}); err != nil {
+	if err := setTestClientMembers(store, "gaming", [][6]byte{previous}); err != nil {
 		t.Fatal(err)
 	}
 	if err := plane.syncClientExports(); err != nil {

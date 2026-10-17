@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/proxylink"
@@ -241,7 +242,7 @@ func readSubscriptionFile(ctx context.Context, f *os.File) (b []byte, err error)
 		}
 	}
 
-	b, err = resource.ReadBounded(ctx, fReader, maxRemoteSubscriptionSize)
+	b, err = fileio.ReadBounded(ctx, fReader, maxRemoteSubscriptionSize)
 	if err != nil {
 		return nil, err
 	}

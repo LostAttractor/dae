@@ -406,14 +406,6 @@ func (m *RoutingMatcher) profileForInterface(index uint32) uint32 {
 	return m.defaultProfileID
 }
 
-func diagnosticMAC(text string) ([6]byte, error) {
-	parsed, err := net.ParseMAC(text)
-	if err != nil || len(parsed) != 6 || parsed[0]&1 != 0 || [6]byte(parsed) == [6]byte{} {
-		return [6]byte{}, fmt.Errorf("expected a nonzero unicast Ethernet MAC")
-	}
-	return [6]byte(parsed), nil
-}
-
 func diagnosticAddress(text string) (netip.Addr, error) {
 	ip, err := netip.ParseAddr(text)
 	if err != nil || ip.Zone() != "" {

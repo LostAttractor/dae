@@ -3,16 +3,16 @@
 package pluginhost
 
 import (
-	"crypto/rand"
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
@@ -151,18 +151,15 @@ func (s *fileStorage) Get(key string) ([]byte, error) {
 	}
 	f := os.NewFile(uintptr(fd), key)
 	defer f.Close()
-	info, err := f.Stat()
+	info, err := fileio.StatRegular(f)
 	if err != nil {
 		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fs.ErrInvalid
 	}
 	if info.Size() > maxStorageValueSize {
 		return nil, errStorageTooLarge
 	}
-	value, err := io.ReadAll(io.LimitReader(f, maxStorageValueSize+1))
-	if len(value) > maxStorageValueSize {
+	value, err := fileio.ReadBounded(context.Background(), f, maxStorageValueSize)
+	if errors.Is(err, fileio.ErrTooLarge) {
 		return nil, errStorageTooLarge
 	}
 	return value, err
@@ -177,24 +174,15 @@ func (s *fileStorage) Put(key string, value []byte) error {
 		return err
 	}
 	defer root.Close()
-	tmp := ".tmp-" + rand.Text()
-	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	dir, err := root.Open(".")
 	if err != nil {
 		return err
 	}
-	defer root.Remove(tmp)
-	_, err = f.Write(value)
-	if err == nil {
-		err = f.Sync()
-	}
-	err = errors.Join(err, f.Close())
-	if err != nil {
+	defer dir.Close()
+	if err := persist.ReplaceFile(context.Background(), dir, key, value); err != nil {
 		return err
 	}
-	if err := root.Rename(tmp, key); err != nil {
-		return err
-	}
-	return persist.AfterPublish(syncStorageDir(root))
+	return persist.AfterPublish(dir.Sync())
 }
 
 func (s *fileStorage) Delete(key string) error {

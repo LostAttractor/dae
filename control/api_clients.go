@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/macaddr"
 )
 
 func (c *ControlPlane) clientGroup(name string) api.ClientGroup {
@@ -68,7 +69,7 @@ func (c *ControlPlane) UpdateManagedMITM(mac [6]byte, enabled *bool) (api.Manage
 
 func (c *ControlPlane) DiagnosticDeviceContext(input api.DiagnosticContext) api.DeviceContext {
 	ip, _ := diagnosticAddress(input.SourceIP)
-	mac, _ := diagnosticMAC(input.MAC)
+	mac, _ := macaddr.ParseClient(input.MAC)
 	result := api.DeviceContext{Generation: c.routingGeneration, Context: input, Fields: []api.DiagnosticField{{Name: "source_ip", Value: input.SourceIP, Source: "request"}, {Name: "link_type", Value: input.LinkType, Source: "request"}}}
 	if input.MAC != "" {
 		result.Device = new(c.DeviceState(ip, mac))
@@ -87,7 +88,7 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 	if request.Joined == nil {
 		return nil, fmt.Errorf("joined is required")
 	}
-	mac, err := diagnosticMAC(request.Context.MAC)
+	mac, err := macaddr.ParseClient(request.Context.MAC)
 	if err != nil {
 		return nil, err
 	}

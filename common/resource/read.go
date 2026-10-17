@@ -6,13 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/fileio"
 )
 
 type ReadOptions struct {
@@ -48,7 +47,7 @@ func Read(ctx context.Context, client *http.Client, source Source, opts ReadOpti
 	if info.Size() > opts.MaxBytes {
 		return Result{}, fmt.Errorf("resource file exceeds %d bytes", opts.MaxBytes)
 	}
-	data, err := ReadBounded(ctx, f, opts.MaxBytes)
+	data, err := fileio.ReadBounded(ctx, f, opts.MaxBytes)
 	if err != nil {
 		return Result{}, err
 	}
@@ -113,24 +112,9 @@ func readRemote(ctx context.Context, client *http.Client, source Source, opts Re
 	if strings.HasPrefix(source.Location, "https://") && !strings.HasPrefix(final.Location, "https://") {
 		return Result{}, errors.New("HTTPS resource response cannot downgrade to HTTP")
 	}
-	data, err := ReadBounded(ctx, response.Body, opts.MaxBytes)
+	data, err := fileio.ReadBounded(ctx, response.Body, opts.MaxBytes)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{Data: data, Location: final.Location}, nil
-}
-
-// ReadBounded reads at most limit bytes and rejects longer input.
-func ReadBounded(ctx context.Context, reader io.Reader, limit int64) ([]byte, error) {
-	if limit <= 0 || limit == math.MaxInt64 {
-		return nil, errors.New("resource byte limit must be positive and less than MaxInt64")
-	}
-	data, err := io.ReadAll(io.LimitReader(common.NewContextReader(ctx, reader), limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("resource source exceeds %d bytes", limit)
-	}
-	return data, ctx.Err()
 }

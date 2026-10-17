@@ -6,11 +6,11 @@
 package control
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 
 	"github.com/cilium/ebpf"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	log "github.com/sirupsen/logrus"
 )
@@ -56,7 +56,7 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 	ip := prefix.Addr().As16()
 	return _bpfLpmKey{
 		PrefixLen: uint32(bits),
-		Data:      common.Ipv6ByteSliceToUint32Array(ip[:]),
+		Data:      ipv6BytesToWords(ip[:]),
 	}
 }
 
@@ -116,7 +116,10 @@ func (m *RoutingMatcher) uploadLPMTries() error {
 }
 
 func (m *RoutingMatcher) uploadRoutingPool() error {
-	keys := common.ARangeU32(uint32(m.routing.end))
+	keys := make([]uint32, m.routing.end)
+	for i := range keys {
+		keys[i] = uint32(i)
+	}
 	if _, err := m.bpf.RoutingMap.BatchUpdate(keys, m.matches[:m.routing.end], &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
@@ -133,4 +136,11 @@ func (m *RoutingMatcher) uploadRoutingProfiles() error {
 		return fmt.Errorf("batch update routing profiles: %w", err)
 	}
 	return nil
+}
+
+func ipv6BytesToWords(_ip []byte) (ip [4]uint32) {
+	for j := 0; j < 16; j += 4 {
+		ip[j/4] = binary.NativeEndian.Uint32(_ip[j : j+4])
+	}
+	return ip
 }

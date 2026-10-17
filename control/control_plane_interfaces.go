@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
 	log "github.com/sirupsen/logrus"
@@ -17,7 +16,7 @@ import (
 )
 
 func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
-	for _, ifname := range common.Deduplicate(ifnames) {
+	for _, ifname := range uniqueInterfaceNames(ifnames) {
 		if ifname == "auto" {
 			auto = true
 			continue
@@ -187,4 +186,20 @@ func (c *ControlPlane) runHostReconciler() {
 			reconcile()
 		}
 	}
+}
+
+func uniqueInterfaceNames(list []string) []string {
+	if list == nil {
+		return nil
+	}
+	res := make([]string, 0, len(list))
+	m := make(map[string]struct{})
+	for _, v := range list {
+		if _, ok := m[v]; ok {
+			continue
+		}
+		m[v] = struct{}{}
+		res = append(res, v)
+	}
+	return res
 }

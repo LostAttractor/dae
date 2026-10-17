@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/andybalholm/brotli"
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
@@ -38,7 +38,7 @@ func decodeBodyView(ctx context.Context, view *membuffer.View, encoding string, 
 		}
 		var reader io.Reader
 		var closer io.Closer
-		source := common.NewContextReader(ctx, bytes.NewReader(view.Bytes()))
+		source := fileio.NewContextReader(ctx, bytes.NewReader(view.Bytes()))
 		switch strings.TrimSpace(encodings[i]) {
 		case "", "identity":
 			continue
@@ -51,7 +51,7 @@ func decodeBodyView(ctx context.Context, view *membuffer.View, encoding string, 
 		case "deflate":
 			r, err := zlib.NewReader(source)
 			if err != nil {
-				r = flate.NewReader(common.NewContextReader(ctx, bytes.NewReader(view.Bytes())))
+				r = flate.NewReader(fileio.NewContextReader(ctx, bytes.NewReader(view.Bytes())))
 			}
 			reader, closer = r, r
 		case "br":
@@ -61,7 +61,7 @@ func decodeBodyView(ctx context.Context, view *membuffer.View, encoding string, 
 		}
 		// Check both compressed input and decoded output: a decoder can consume
 		// many empty gzip members or expand buffered input without another read.
-		decoded, err := membuffer.Read(common.NewContextReader(ctx, reader), limit, budget)
+		decoded, err := membuffer.Read(fileio.NewContextReader(ctx, reader), limit, budget)
 		if closer != nil {
 			_ = closer.Close()
 		}

@@ -72,7 +72,7 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		noConnectivityOutbound:    noConnectivityOutbound,
 		noConnectivityTrySniff:    global.NoConnectivityTrySniff,
-		lanInterface:              common.Deduplicate(global.LanInterface),
+		lanInterface:              uniqueInterfaceNames(global.LanInterface),
 		wanInterface:              wanInterface,
 		autoWan:                   autoWan,
 		autoConfigKernelParameter: global.AutoConfigKernelParameter,

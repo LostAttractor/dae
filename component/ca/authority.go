@@ -5,6 +5,7 @@ package ca
 
 import (
 	"container/list"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -14,7 +15,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/common/persist"
-	"golang.org/x/sys/unix"
 )
 
 // Authority holds a root CA and a bounded signing cache of short-lived leaves.
@@ -165,33 +165,20 @@ func parseCertificate(data []byte) (*x509.Certificate, error) {
 }
 
 func readFile(path string, private bool) ([]byte, error) {
-	// A FIFO must not block open before its type can be checked. Check and read
-	// the same descriptor so a path replacement cannot bypass the regular-file rule.
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	f, info, err := fileio.OpenRegular(path)
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
 	if private && info.Mode().Perm()&0077 != 0 {
 		return nil, fmt.Errorf("CA private key %s must not be accessible to group or others (use chmod 600)", path)
 	}
 	const maxFileSize = 1 << 20
-	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxFileSize {
+	data, err := fileio.ReadBounded(context.Background(), f, maxFileSize)
+	if errors.Is(err, fileio.ErrTooLarge) {
 		return nil, fmt.Errorf("certificate/key file exceeds 1 MiB")
 	}
-	return data, nil
+	return data, err
 }
 
 // Load loads and validates a root CA and its matching private key. It refuses

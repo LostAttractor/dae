@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/macaddr"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -154,7 +155,7 @@ func (c *ControlPlane) updateClientSet(name string, ip netip.Addr, mac [6]byte, 
 	if !c.HasClientSet(name) {
 		return fmt.Errorf("client set not found")
 	}
-	if mac == [6]byte{} || mac[0]&1 != 0 {
+	if !macaddr.ValidClient(mac) {
 		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
 	}
 	changed := false
@@ -202,7 +203,7 @@ func (c *ControlPlane) UpdateMITM(ip netip.Addr, mac [6]byte, enabled *bool) (ap
 
 // Caller holds settingsMu; every device API publishes the same runtime policy.
 func (c *ControlPlane) updateMITMSettings(mac [6]byte, enabled *bool) error {
-	if mac == [6]byte{} || mac[0]&1 != 0 {
+	if !macaddr.ValidClient(mac) {
 		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
 	}
 	return c.settings.Update(func(next *settings.Snapshot) error {

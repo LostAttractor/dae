@@ -285,7 +285,7 @@ func TestCacheConcurrentPublicationAndPrune(t *testing.T) {
 		t.Fatalf("prune removed active/unrelated entries: %v", entries)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".resource-") {
+		if strings.HasPrefix(entry.Name(), ".dae-") {
 			t.Fatal("temporary file leak")
 		}
 	}

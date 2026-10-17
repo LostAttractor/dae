@@ -83,7 +83,7 @@ func TestPreparedGenerationRefreshesLatestKernelMembership(t *testing.T) {
 		}
 	}
 	run(^uint32(0))
-	if err := c.settings.SetMembers("gaming", [][6]byte{mac}); err != nil {
+	if err := setTestClientMembers(c.settings, "gaming", [][6]byte{mac}); err != nil {
 		t.Fatal(err)
 	}
 	run(^uint32(0)) // the running API changed preferences, not candidate maps
@@ -106,7 +106,7 @@ func BenchmarkRuntimeKernelRefresh(b *testing.B) {
 				if changed {
 					b.StopTimer()
 					mac[5] ^= 1
-					if err := c.settings.SetMembers("gaming", [][6]byte{mac}); err != nil {
+					if err := setTestClientMembers(c.settings, "gaming", [][6]byte{mac}); err != nil {
 						b.Fatal(err)
 					}
 					b.StartTimer()

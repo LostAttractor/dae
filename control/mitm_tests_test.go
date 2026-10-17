@@ -43,7 +43,7 @@ func TestCertificateDiagnosticThroughProductionTCPAdmission(t *testing.T) {
 			plane.sniffingTimeout = time.Second
 			plane.deviceRoutes = new(deviceRoutes)
 			plane.soMarkFromDae = 37
-			if err := plane.settings.SetMITM(param.routingResult.Mac, new(scenario != "device disabled")); err != nil {
+			if err := setTestMITM(plane.settings, param.routingResult.Mac, new(scenario != "device disabled")); err != nil {
 				t.Fatal(err)
 			}
 			if err := plane.restoreHTTPClients(); err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/macaddr"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
 )
@@ -359,7 +360,7 @@ func TestDiagnosticsConcurrentMembershipSnapshot(t *testing.T) {
 	c := diagnosticPlane(t, "client(work) -> block", "")
 	request := diagnosticRequest()
 	request.Compare = &api.DiagnosticAssumptions{ClientSets: map[string]bool{"work": true}}
-	mac, _ := diagnosticMAC(request.Context.MAC)
+	mac, _ := macaddr.ParseClient(request.Context.MAC)
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for i := range 30 {

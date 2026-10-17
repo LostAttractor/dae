@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
@@ -113,7 +113,7 @@ func scriptHTTPRequestBody(options scriptHTTPOptions, limit int64, budget *membu
 
 func scriptHTTPResponse(ctx context.Context, req *http.Request, resp *http.Response, maxBody int64, budget *membuffer.Budget, fullHeaders bool) (string, membuffer.Reservation, error) {
 	defer resp.Body.Close()
-	raw, err := membuffer.Read(common.NewContextReader(ctx, resp.Body), maxBody, budget)
+	raw, err := membuffer.Read(fileio.NewContextReader(ctx, resp.Body), maxBody, budget)
 	defer raw.Close()
 	if err != nil {
 		return "", membuffer.Reservation{}, err

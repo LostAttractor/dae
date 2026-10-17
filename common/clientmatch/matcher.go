@@ -7,9 +7,10 @@ package clientmatch
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
+
+	"github.com/daeuniverse/dae/common/macaddr"
 )
 
 const MaxRules = 4096
@@ -87,11 +88,8 @@ func parseRule(entry string) (rule, error) {
 		}
 		return rule{prefix: prefix.Masked()}, nil
 	}
-	if mac, err := net.ParseMAC(entry); err == nil {
-		if len(mac) != 6 {
-			return rule{}, fmt.Errorf("MAC address must contain exactly 6 bytes")
-		}
-		return rule{mac: [6]byte(mac), isMAC: true}, nil
+	if mac, err := macaddr.Parse(entry); err == nil {
+		return rule{mac: mac, isMAC: true}, nil
 	}
 	return rule{}, fmt.Errorf("expected all, an IP address, CIDR prefix, or 6-byte Ethernet MAC address")
 }

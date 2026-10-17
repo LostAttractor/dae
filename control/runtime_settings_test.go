@@ -155,7 +155,7 @@ func TestRuntimePublishRejectsSettingsFailureBeforeHandoff(t *testing.T) {
 	old := newAPITestPlane(t, store)
 	next := newAPITestPlane(t, store)
 	selected := old.outbounds[0].Dialers[1]
-	if err := store.SetSelection("proxy", selected.SelectionReference()); err != nil {
+	if err := setTestSelection(store, "proxy", selected.SelectionReference()); err != nil {
 		t.Fatal(err)
 	}
 	if err := old.restoreRuntimeSettings(false); err != nil {

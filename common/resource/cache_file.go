@@ -4,10 +4,10 @@ package resource
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"os"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/common/persist"
 	"golang.org/x/sys/unix"
 )
@@ -49,31 +49,11 @@ func readCacheFile(ctx context.Context, dir *os.File, name string, limit int64) 
 	if stat.Uid != uint32(os.Geteuid()) || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0077 != 0 || stat.Size > limit {
 		return nil, errors.New("resource cache must be an owned, private regular file within the size limit")
 	}
-	return ReadBounded(ctx, f, limit)
+	return fileio.ReadBounded(ctx, f, limit)
 }
 
 func writeCacheFile(ctx context.Context, dir *os.File, name string, data []byte) error {
-	temporary := ".resource-" + rand.Text()
-	fd, err := unix.Openat(int(dir.Fd()), temporary, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-	if err != nil {
-		return err
-	}
-	f := os.NewFile(uintptr(fd), temporary)
-	defer f.Close()
-	defer unix.Unlinkat(int(dir.Fd()), temporary, 0)
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := unix.Renameat(int(dir.Fd()), temporary, int(dir.Fd()), name); err != nil {
+	if err := persist.ReplaceFile(ctx, dir, name, data); err != nil {
 		return err
 	}
 	return persist.AfterPublish(dir.Sync())

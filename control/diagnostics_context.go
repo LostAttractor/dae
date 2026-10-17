@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/macaddr"
 	dns "github.com/miekg/dns"
 )
 
@@ -63,7 +64,7 @@ func prepareDiagnosticRequest(request *api.ExplainRequest) error {
 		return fmt.Errorf("process_name must fit Linux comm (15 bytes)")
 	}
 	if request.Context.MAC != "" {
-		mac, err := diagnosticMAC(request.Context.MAC)
+		mac, err := macaddr.ParseClient(request.Context.MAC)
 		if err != nil {
 			return err
 		}
@@ -208,7 +209,7 @@ func diagnosticInput(request api.ExplainRequest, matcher *RoutingMatcher) (routi
 		input.src = netip.AddrPortFrom(src, uint16(*request.Context.SourcePort))
 	}
 	if request.Context.MAC != "" {
-		input.mac, _ = diagnosticMAC(request.Context.MAC)
+		input.mac, _ = macaddr.ParseClient(request.Context.MAC)
 	}
 	if request.Context.IfIndex != nil {
 		input.ifindex = *request.Context.IfIndex

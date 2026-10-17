@@ -9,57 +9,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
-	"path/filepath"
-	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
 )
-
-func ARangeU32(n uint32) []uint32 {
-	ret := make([]uint32, n)
-	for i := range n {
-		ret[i] = i
-	}
-	return ret
-}
-
-func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
-	for j := 0; j < 16; j += 4 {
-		ip[j/4] = binary.NativeEndian.Uint32(_ip[j : j+4])
-	}
-	return ip
-}
-
-func Deduplicate(list []string) []string {
-	if list == nil {
-		return nil
-	}
-	res := make([]string, 0, len(list))
-	m := make(map[string]struct{})
-	for _, v := range list {
-		if _, ok := m[v]; ok {
-			continue
-		}
-		m[v] = struct{}{}
-		res = append(res, v)
-	}
-	return res
-}
-
-func EnsureFileInSubDir(filePath string, dir string) (err error) {
-	fileDir := filepath.Dir(filePath)
-	if len(dir) == 0 {
-		return fmt.Errorf("bad dir: %v", dir)
-	}
-	rel, err := filepath.Rel(dir, fileDir)
-	if err != nil {
-		return err
-	}
-	if strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("file is out of scope: %v", rel)
-	}
-	return nil
-}
 
 func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 	if addrPort.Addr().Is4In6() {

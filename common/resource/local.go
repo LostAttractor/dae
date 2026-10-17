@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/fileio"
 	"golang.org/x/sys/unix"
 )
 
@@ -28,27 +28,17 @@ func OpenLocalFile(path, root string) (*os.File, os.FileInfo, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		if err = common.EnsureFileInSubDir(path, root); err != nil {
+		if err = ensureFileInSubDir(path, root); err != nil {
 			return nil, nil, err
 		}
 		file, err = openRootedFile(root, path)
 	} else {
-		// Fstat and reads use this descriptor even if a secret symlink rotates.
-		var fd int
-		fd, err = unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
-		if err != nil {
-			err = &os.PathError{Op: "open resource", Path: path, Err: err}
-		} else {
-			file = os.NewFile(uintptr(fd), path)
-		}
+		return fileio.OpenRegular(path)
 	}
 	if err != nil {
 		return nil, nil, err
 	}
-	info, err := file.Stat()
-	if err == nil && !info.Mode().IsRegular() {
-		err = fmt.Errorf("resource source must be a regular file: %s", path)
-	}
+	info, err := fileio.StatRegular(file)
 	if err != nil {
 		_ = file.Close()
 		return nil, nil, err
@@ -104,4 +94,19 @@ func localFileOpenError(dirFd int, name, path string, err error) error {
 		}
 	}
 	return &os.PathError{Op: "open resource path", Path: path, Err: err}
+}
+
+func ensureFileInSubDir(filePath string, dir string) (err error) {
+	fileDir := filepath.Dir(filePath)
+	if len(dir) == 0 {
+		return fmt.Errorf("bad dir: %v", dir)
+	}
+	rel, err := filepath.Rel(dir, fileDir)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("file is out of scope: %v", rel)
+	}
+	return nil
 }

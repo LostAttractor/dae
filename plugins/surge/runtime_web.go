@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/fileio"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 	"golang.org/x/net/idna"
@@ -132,12 +132,12 @@ func runtimeUngzip(ctx context.Context, encoded string, limit int64) (string, er
 	if err != nil {
 		return "", err
 	}
-	zr, err := gzip.NewReader(common.NewContextReader(ctx, bytes.NewReader(data)))
+	zr, err := gzip.NewReader(fileio.NewContextReader(ctx, bytes.NewReader(data)))
 	if err != nil {
 		return "", fmt.Errorf("$utils.ungzip: %w", err)
 	}
 	defer zr.Close()
-	out, err := io.ReadAll(io.LimitReader(common.NewContextReader(ctx, zr), limit+1))
+	out, err := io.ReadAll(io.LimitReader(fileio.NewContextReader(ctx, zr), limit+1))
 	if err != nil {
 		return "", fmt.Errorf("$utils.ungzip: %w", err)
 	}
@@ -202,7 +202,7 @@ func (d *runtimeDOM) call(op, first, second string) (any, error) {
 		if err := z.Err(); err != io.EOF {
 			return nil, err
 		}
-		doc, err := html.Parse(common.NewContextReader(d.ctx, strings.NewReader(first)))
+		doc, err := html.Parse(fileio.NewContextReader(d.ctx, strings.NewReader(first)))
 		if err != nil {
 			return nil, err
 		}

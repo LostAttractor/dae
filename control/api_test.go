@@ -306,7 +306,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	}
 	removed := active.outbounds[0].Dialers[1].SelectionReference()
 	removed.Nodes[0].Name = "removed-node"
-	if err := store.SetSelection("proxy", removed); err != nil {
+	if err := setTestSelection(store, "proxy", removed); err != nil {
 		t.Fatal(err)
 	}
 	if err := candidate.restoreRuntimeSettings(false); err != nil {
@@ -424,7 +424,7 @@ func TestManagedMITMRequiresMITMAuthority(t *testing.T) {
 				}
 				mac := [6]byte{2, 0, 0, 0, 0, 10}
 				if change.method == "DELETE" {
-					if err := store.SetMITM(mac, new(true)); err != nil {
+					if err := setTestMITM(store, mac, new(true)); err != nil {
 						t.Fatal(err)
 					}
 				}

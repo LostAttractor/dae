@@ -196,7 +196,7 @@ func TestStoreSaveFailurePreservesState(t *testing.T) {
 		}
 		assertOriginal(s)
 	}
-	temps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".runtime-state-*"))
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".dae-*"))
 	if err != nil || len(temps) != 0 {
 		t.Fatalf("failed save left temporary files: %v, %v", temps, err)
 	}

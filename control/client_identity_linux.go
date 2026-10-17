@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/daeuniverse/dae/common/macaddr"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -105,7 +106,7 @@ func validateLANClientMAC(source netip.Addr, mac [6]byte) error {
 	source = source.Unmap()
 	if !source.IsValid() || source.IsLoopback() ||
 		(!source.IsGlobalUnicast() && !source.IsLinkLocalUnicast()) ||
-		mac == [6]byte{} || mac[0]&1 != 0 {
+		!macaddr.ValidClient(mac) {
 		return fmt.Errorf("client is not a unicast Ethernet peer")
 	}
 	if source.Is6() && source.IsLinkLocalUnicast() && source.Zone() == "" {
