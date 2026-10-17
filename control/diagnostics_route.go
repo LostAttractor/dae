@@ -25,7 +25,7 @@ func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagno
 	verificationKnown := true
 	key := hostname + "."
 	if hostname != "" && c.sniffVerifyMode != consts.SniffVerifyMode_None {
-		verified = s.registered[key] && (c.sniffVerifyMode == consts.SniffVerifyMode_Loose || s.paired[key][ingress.Addr()])
+		verified = s.registered[key] && (c.sniffVerifyMode == consts.SniffVerifyMode_Loose || s.paired[key][ingress.Addr()].Paired)
 		if c.sniffVerifyMode == consts.SniffVerifyMode_Loose && !s.registered[key] {
 			verified, verificationKnown = s.verifiedName, s.verifiedName
 		}
@@ -33,7 +33,7 @@ func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagno
 	if request.Context.Origin == "daemon" {
 		verified, verificationKnown = hostname != "", true
 	}
-	covered := s.paired[key][ingress.Addr()] && (s.domains[ingress.Addr()].resident || domainBitmapAllZero(s.matcher.domainMatcher.MatchDomainBitmap(hostname)))
+	covered := s.paired[key][ingress.Addr()].KernelCovered
 	facts.shouldReroute = routingTruth(hostname != "" && !covered)
 	facts.verified = routingTruth(verified)
 	if !verificationKnown {

@@ -37,7 +37,7 @@ type diagnosticState struct {
 	registered        map[string]bool
 	registeredCount   map[string]int
 	registryIPv4      bool
-	paired            map[string]map[netip.Addr]bool
+	paired            map[string]map[netip.Addr]DomainVerification
 	clientSets        map[string]bool
 	mitmEnabled       bool
 	mitmKnown         bool
@@ -63,7 +63,7 @@ func diagnosticNetwork(request api.ExplainRequest, destination netip.Addr) (comm
 
 func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routingInput, matcher *RoutingMatcher) (*diagnosticState, error) {
 	s := &diagnosticState{matcher: matcher, names: make(map[uint8]string), outbounds: make(map[uint8]api.ExplainOutbound), usable: make(map[uint8]bool),
-		domains: make(map[netip.Addr]diagnosticDomain), evidence: []api.DomainEvidence{}, registered: make(map[string]bool), paired: make(map[string]map[netip.Addr]bool), clientSets: make(map[string]bool)}
+		domains: make(map[netip.Addr]diagnosticDomain), evidence: []api.DomainEvidence{}, registered: make(map[string]bool), paired: make(map[string]map[netip.Addr]DomainVerification), clientSets: make(map[string]bool)}
 	s.registeredCount, s.registryIPv4 = make(map[string]int), input.dst.Addr().Is4()
 	network, err := diagnosticNetwork(request, input.dst.Addr())
 	if err != nil {
@@ -129,9 +129,6 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 	}
 	matcher.httpClientAllowed = func(netip.Addr, [6]byte) bool { return !s.mitmKnown || s.mitmEnabled }
 	if c.core != nil && c.core.domainRegistry != nil {
-		g := c.core.domainRegistry
-		g.mu.Lock()
-		defer g.mu.Unlock()
 		wanted := map[netip.Addr]bool{input.dst.Addr(): true}
 		if request.Compare != nil {
 			for _, binding := range request.Compare.Bindings {
@@ -145,27 +142,20 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 			}
 		}
 		host := strings.TrimSuffix(strings.ToLower(cmp.Or(request.Flow.Destination.Domain, diagnosticHostname(request))), ".") + "."
-		for name, record := range g.byName {
-			for ip, pair := range record.addresses {
-				if ip.Is4() == input.dst.Addr().Is4() {
-					s.registered[name] = true
-					s.registeredCount[name]++
-				}
-				if !wanted[ip] && name != host {
-					continue
-				}
+		snapshot := c.core.domainRegistry.Snapshot(slices.Collect(maps.Keys(wanted)), host)
+		for name, record := range snapshot.names {
+			s.registeredCount[name] = record.families[domainFamily(input.dst.Addr())]
+			s.registered[name] = s.registeredCount[name] > 0
+			for ip, pair := range record.pairs {
 				if s.paired[name] == nil {
-					s.paired[name] = make(map[netip.Addr]bool)
+					s.paired[name] = make(map[netip.Addr]DomainVerification)
 				}
-				s.paired[name][ip] = true
-				_, resident := g.kernel.resident[ip]
-				s.evidence = append(s.evidence, api.DomainEvidence{Domain: name, IP: ip.String(), Resident: resident, RetainUntil: pair.retainUntil, Source: "registry"})
+				s.paired[name][ip] = pair.verification
+				s.evidence = append(s.evidence, api.DomainEvidence{Domain: name, IP: ip.String(), Resident: pair.resident, RetainUntil: pair.retainUntil, Source: "registry"})
 			}
 		}
-		for ip := range wanted {
-			if record, resident := g.kernel.resident[ip]; resident {
-				s.domains[ip] = diagnosticDomain{resident: true, bump: slices.Clone(record.bump), routing: slices.Clone(record.routing)}
-			}
+		for ip, record := range snapshot.kernel {
+			s.domains[ip] = diagnosticDomain{resident: true, bump: record.bump, routing: record.routing}
 		}
 	}
 	slices.SortFunc(s.evidence, func(a, b api.DomainEvidence) int {
@@ -249,7 +239,7 @@ func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]
 		domain := diagnosticDomain{resident: len(binding.Domains) != 0}
 		next.evidence = slices.DeleteFunc(next.evidence, func(e api.DomainEvidence) bool { return e.IP == ip.String() })
 		for name, pairs := range next.paired {
-			if pairs[ip] {
+			if pairs[ip].Paired {
 				pairs = maps.Clone(pairs)
 				delete(pairs, ip)
 				next.paired[name] = pairs
@@ -273,13 +263,13 @@ func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]
 			next.evidence = append(next.evidence, api.DomainEvidence{Domain: name, IP: ip.String(), Resident: true, Source: "assumption"})
 			pairs := maps.Clone(next.paired[name])
 			if pairs == nil {
-				pairs = make(map[netip.Addr]bool)
+				pairs = make(map[netip.Addr]DomainVerification)
 			}
-			if !pairs[ip] && ip.Is4() == next.registryIPv4 {
+			if !pairs[ip].Paired && ip.Is4() == next.registryIPv4 {
 				next.registeredCount[name]++
 				next.registered[name] = true
 			}
-			pairs[ip] = true
+			pairs[ip] = DomainVerification{Registered: true, Paired: true, KernelCovered: true}
 			next.paired[name] = pairs
 		}
 		next.domains[ip] = domain

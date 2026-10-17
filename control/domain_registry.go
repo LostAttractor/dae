@@ -177,7 +177,10 @@ type DomainVerification struct {
 func (g *DomainRegistry) Verify(name string, ip netip.Addr) (result DomainVerification) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	ip = ip.Unmap()
+	return g.verifyLocked(name, ip.Unmap())
+}
+
+func (g *DomainRegistry) verifyLocked(name string, ip netip.Addr) (result DomainVerification) {
 	r := g.byName[name]
 	if r == nil {
 		return result
