@@ -13,7 +13,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
-	gotls "crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -23,11 +22,8 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
 	"net/url"
 	"reflect"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +33,6 @@ import (
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/net/http2"
 )
 
 var (
@@ -57,7 +52,7 @@ type RealityUConn struct {
 	Verified   bool
 }
 
-var p, _ = reflect.TypeOf((*utls.Conn)(nil)).Elem().FieldByName("peerCertificates")
+var p, _ = reflect.TypeFor[utls.Conn]().FieldByName("peerCertificates")
 
 func (c *RealityUConn) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	certs := *(*[]*x509.Certificate)(unsafe.Add(unsafe.Pointer(c.Conn), p.Offset))
@@ -85,13 +80,17 @@ func (c *RealityUConn) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [
 type Reality struct {
 	infoWriter io.Writer
 
-	nextDialer  netproxy.Dialer
-	serverName  string
-	fingerprint *utls.ClientHelloID
-	shortId     [8]byte
-	publicKey   *ecdh.PublicKey
-	spiderX     string
-	spiderY     []int64
+	nextDialer    netproxy.Dialer
+	serverName    string
+	fingerprint   *utls.ClientHelloID
+	shortId       [8]byte
+	publicKey     *ecdh.PublicKey
+	spiderX       string
+	spider        realitySpiderConfig
+	spiderMu      sync.Mutex
+	spiderCancel  context.CancelFunc
+	spiderClosed  bool
+	spiderWorkers sync.WaitGroup
 }
 
 func NewReality(s string, d netproxy.Dialer) (*Reality, error) {
@@ -121,7 +120,10 @@ func NewReality(s string, d netproxy.Dialer) (*Reality, error) {
 	if err != nil {
 		return nil, fmt.Errorf("REALITY: publicKey == nil: %w", err)
 	}
-	x.spiderX, _ = url.QueryUnescape(query.Get("spx"))
+	x.spiderX, err = url.QueryUnescape(query.Get("spx"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid REALITY spider path: %w", err)
+	}
 	_fingerprint := query.Get("fp")
 
 	if x.serverName == "" {
@@ -135,39 +137,21 @@ func NewReality(s string, d netproxy.Dialer) (*Reality, error) {
 		return nil, fmt.Errorf("failed to get fingerprint: %w", err)
 	}
 
-	if x.spiderX == "" {
-		x.spiderX = "/"
+	x.spiderX, x.spider, err = parseRealitySpider(x.spiderX)
+	if err != nil {
+		return nil, err
 	}
-	if x.spiderX[0] != '/' {
-		return nil, fmt.Errorf(`invalid "spiderX": %v`, x.spiderX)
-	}
-	x.spiderY = make([]int64, 10)
-	tmpU, _ := url.Parse(x.spiderX)
-	q := tmpU.Query()
-	parse := func(param string, index int) {
-		if q.Get(param) != "" {
-			s := strings.Split(q.Get(param), "-")
-			if len(s) == 1 {
-				x.spiderY[index], _ = strconv.ParseInt(s[0], 10, 64)
-				x.spiderY[index+1], _ = strconv.ParseInt(s[0], 10, 64)
-			} else {
-				x.spiderY[index], _ = strconv.ParseInt(s[0], 10, 64)
-				x.spiderY[index+1], _ = strconv.ParseInt(s[1], 10, 64)
-			}
-		}
-		q.Del(param)
-	}
-	parse("p", 0) // padding
-	parse("c", 2) // concurrency
-	parse("t", 4) // times
-	parse("i", 6) // interval
-	parse("r", 8) // return
-	u.RawQuery = q.Encode()
-	x.spiderX = tmpU.String()
+
 	return x, nil
 }
 
 func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.Conn, err error) {
+	x.spiderMu.Lock()
+	closed := x.spiderClosed
+	x.spiderMu.Unlock()
+	if closed {
+		return nil, net.ErrClosed
+	}
 	switch network {
 	case "tcp":
 		c, err := x.nextDialer.DialContext(ctx, network, addr)
@@ -234,82 +218,10 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 			return nil, err
 		}
 		if !uConn.Verified {
-			closeConn = false
-			// Trigger spider.
-			go func() {
-				client := &http.Client{
-					Transport: &http2.Transport{
-						DialTLSContext: func(ctx context.Context, network, addr string, cfg *gotls.Config) (net.Conn, error) {
-							return uConn, nil
-						},
-					},
-				}
-				prefix := []byte("https://" + uConn.ServerName)
-				maps.Lock()
-				if maps.maps == nil {
-					maps.maps = make(map[string]map[string]bool)
-				}
-				paths := maps.maps[uConn.ServerName]
-				if paths == nil {
-					paths = make(map[string]bool)
-					paths[x.spiderX] = true
-					maps.maps[uConn.ServerName] = paths
-				}
-				firstURL := string(prefix) + getPathLocked(paths)
-				maps.Unlock()
-				get := func(first bool) {
-					var (
-						req  *http.Request
-						resp *http.Response
-						err  error
-						body []byte
-					)
-					if first {
-						req, _ = http.NewRequest("GET", firstURL, nil)
-					} else {
-						maps.Lock()
-						req, _ = http.NewRequest("GET", string(prefix)+getPathLocked(paths), nil)
-						maps.Unlock()
-					}
-					req.Header.Set("User-Agent", x.fingerprint.Client) // TODO: User-Agent map
-					times := 1
-					if !first {
-						times = int(randBetween(x.spiderY[4], x.spiderY[5]))
-					}
-					for j := 0; j < times; j++ {
-						if !first && j == 0 {
-							req.Header.Set("Referer", firstURL)
-						}
-						req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(randBetween(x.spiderY[0], x.spiderY[1])))})
-						if resp, err = client.Do(req); err != nil {
-							break
-						}
-						req.Header.Set("Referer", req.URL.String())
-						if body, err = io.ReadAll(resp.Body); err != nil {
-							break
-						}
-						maps.Lock()
-						for _, m := range href.FindAllSubmatch(body, -1) {
-							m[1] = bytes.TrimPrefix(m[1], prefix)
-							if !bytes.Contains(m[1], dot) {
-								paths[string(m[1])] = true
-							}
-						}
-						req.URL.Path = getPathLocked(paths)
-						maps.Unlock()
-						if !first {
-							time.Sleep(time.Duration(randBetween(x.spiderY[6], x.spiderY[7])) * time.Millisecond) // interval
-						}
-					}
-				}
-				get(true)
-				concurrency := int(randBetween(x.spiderY[2], x.spiderY[3]))
-				for i := 0; i < concurrency; i++ {
-					go get(false)
-				}
-				// Do not close the connection
-			}()
-			time.Sleep(time.Duration(randBetween(x.spiderY[8], x.spiderY[9])) * time.Millisecond) // return
+			// Successful admission transfers this invalid connection to the spider.
+			// Dial cancellation does not cancel camouflage; the owner and deadline do.
+			closeConn = !x.startSpider(uConn)
+			waitRealitySpider(ctx, time.Duration(randBetween(x.spider.returnDelay.min, x.spider.returnDelay.max))*time.Millisecond)
 			return nil, errors.New("REALITY: processed invalid connection")
 		}
 		closeConn = false
@@ -327,32 +239,17 @@ func (x *Reality) ListenPacket(context.Context, string) (net.PacketConn, error) 
 	return nil, fmt.Errorf("%w: Reality+udp", netproxy.UnsupportedTunnelTypeError)
 }
 
-var (
-	href = regexp.MustCompile(`href="([/h].*?)"`)
-	dot  = []byte(".")
-)
-
-var maps struct {
-	sync.Mutex
-	maps map[string]map[string]bool
-}
-
-func getPathLocked(paths map[string]bool) string {
-	stopAt := int(randBetween(0, int64(len(paths)-1)))
-	i := 0
-	for s := range paths {
-		if i == stopAt {
-			return s
-		}
-		i++
-	}
-	return "/"
-}
-
+// randBetween samples [left, right); equal or inverted bounds return left.
 func randBetween(left int64, right int64) int64 {
-	if left == right {
+	if right <= left {
 		return left
 	}
-	bigInt, _ := rand.Int(rand.Reader, big.NewInt(right-left))
-	return left + bigInt.Int64()
+	// Subtract as big integers so even the full int64 range cannot overflow.
+	lower := big.NewInt(left)
+	span := new(big.Int).Sub(big.NewInt(right), lower)
+	value, err := rand.Int(rand.Reader, span)
+	if err != nil {
+		return left
+	}
+	return value.Add(value, lower).Int64()
 }

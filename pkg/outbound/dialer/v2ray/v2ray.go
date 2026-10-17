@@ -163,7 +163,12 @@ func (s *V2Ray) Build(option *dialer.ExtraOption, upstream dialer.Upstream) (lay
 						"spx": []string{s.SpiderX},
 					}.Encode(),
 				}
-				layer.Data, err = tls.NewReality(u.String(), layer.Data)
+				var reality *tls.Reality
+				reality, err = tls.NewReality(u.String(), layer.Data)
+				if err == nil {
+					layer.Data = reality
+					layer.Resources = append(layer.Resources, reality)
+				}
 			} else {
 				tlsConfig := tls.TLSConfig{
 					Host:          proxyAddress,

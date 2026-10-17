@@ -33,6 +33,10 @@
 
   [DuckSoft URI Schema](https://github.com/XTLS/Xray-core/discussions/716)
 
+  REALITY `spx` 的爬取参数接受单个非负整数或升序范围；`p`（填充字节）上限 4096，`c`（并发）和 `t`（每个 worker 的请求数）上限 8，`i`（间隔毫秒）上限 60000，`r`（返回延迟毫秒）上限 5000。省略时为 0，格式错误、重复或越界参数会拒绝节点构建。
+
+  回退爬取每个节点至多运行一个任务，全进程至多 8 个；每个任务最多运行 10 秒，响应体上限 1 MiB。发现的路径仅保留到本次任务结束，最多 256 条、合计 256 KiB，单条及初始 `spx` 上限 4096 字节。任务完成、超时或节点释放时关闭连接。
+
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers

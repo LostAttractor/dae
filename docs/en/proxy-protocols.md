@@ -33,6 +33,10 @@ Each `node` entry must contain one share link. Compose proxy paths with group pa
 
   [DuckSoft URI Schema](https://github.com/XTLS/Xray-core/discussions/716)
 
+  REALITY `spx` crawler parameters accept a nonnegative integer or an ordered range. Limits are 4096 for `p` (padding bytes), 8 for `c` (concurrency) and `t` (requests per worker), 60000 for `i` (interval milliseconds), and 5000 for `r` (return delay milliseconds). Omitted values default to zero; malformed, duplicate, or out-of-range parameters reject node construction.
+
+  Camouflage crawling runs at most one task per node and eight across the process. Each task lasts at most ten seconds and reads response bodies up to 1 MiB. Discovered paths live only for that task: at most 256 paths and 256 KiB in total, with a 4096-byte limit on each path and the initial `spx`. Completion, timeout, or node release closes the connection.
+
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Stream Ciphers

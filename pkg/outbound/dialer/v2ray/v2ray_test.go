@@ -10,6 +10,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	protocolhttp "github.com/daeuniverse/dae/pkg/outbound/protocol/http"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/tls"
 )
 
 type testParentDialer struct {
@@ -72,5 +73,35 @@ func TestV2RayClosesConstructedHTTPTransportOnProtocolError(t *testing.T) {
 	}
 	if parent.closeCalls != 0 {
 		t.Fatalf("parent close calls = %d, want 0", parent.closeCalls)
+	}
+}
+
+func TestV2RayOwnsRealityLifecycle(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		parent := new(testParentDialer)
+		var reality *tls.Reality
+		wantErr := errors.New("protocol construction failed")
+		setProtocolCreator(t, "vless", func(next netproxy.Dialer, _ protocol.Header) (netproxy.Layer, error) {
+			reality = next.(*tls.Reality)
+			if fail {
+				return netproxy.Layer{}, wantErr
+			}
+			return netproxy.Layer{Data: testProtocolDialer{}}, nil
+		})
+		config := V2Ray{Add: "proxy.example", Port: "443", Net: "tcp", Protocol: "vless", TLS: "reality", Fingerprint: "chrome", PublicKey: "YAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ShortId: "0123456789abcdef"}
+		layer, err := config.Build(new(dialer.ExtraOption), dialer.NewUpstream(parent))
+		if fail != errors.Is(err, wantErr) || !fail && err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if !fail && len(layer.Resources) != 1 {
+			t.Fatal("REALITY not registered with layer owner")
+		}
+		layer.Close()
+		if _, err := reality.DialContext(t.Context(), "tcp", "target.example:443"); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("REALITY remained open: %v", err)
+		}
+		if parent.closeCalls != 0 {
+			t.Fatal("REALITY closed borrowed upstream")
+		}
 	}
 }
