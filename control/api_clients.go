@@ -49,14 +49,11 @@ func (c *ControlPlane) ManagedDevice(mac [6]byte) api.ManagedDevice {
 }
 
 func (c *ControlPlane) UpdateManagedMembership(name string, mac [6]byte, joined bool) (api.ClientGroup, error) {
-	if !c.HasClientSet(name) {
-		return api.ClientGroup{}, fmt.Errorf("client set not found")
-	}
-	if _, err := c.UpdateClientSet(name, netip.Addr{}, mac, joined); err != nil {
-		return api.ClientGroup{}, err
-	}
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
+	if err := c.updateClientSet(name, netip.Addr{}, mac, joined); err != nil {
+		return api.ClientGroup{}, err
+	}
 	return c.clientGroup(name), nil
 }
 

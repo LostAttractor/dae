@@ -143,6 +143,20 @@ func (c *ControlPlane) DeviceState(ip netip.Addr, mac [6]byte) api.DeviceState {
 func (c *ControlPlane) UpdateClientSet(name string, ip netip.Addr, mac [6]byte, joined bool) (api.DeviceState, error) {
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
+	if err := c.updateClientSet(name, ip, mac, joined); err != nil {
+		return api.DeviceState{}, err
+	}
+	return c.deviceState(ip, mac), nil
+}
+
+// Caller holds settingsMu through both the edit and its response snapshot.
+func (c *ControlPlane) updateClientSet(name string, ip netip.Addr, mac [6]byte, joined bool) error {
+	if !c.HasClientSet(name) {
+		return fmt.Errorf("client set not found")
+	}
+	if mac == [6]byte{} || mac[0]&1 != 0 {
+		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
+	}
 	changed := false
 	err := c.settings.Update(func(next *settings.Snapshot) error {
 		members := next.Clients[name]
@@ -166,12 +180,12 @@ func (c *ControlPlane) UpdateClientSet(name string, ip netip.Addr, mac [6]byte, 
 		return nil
 	}, c.applyRuntimeSettings)
 	if err != nil {
-		return api.DeviceState{}, err
+		return err
 	}
 	if changed {
 		log.WithFields(log.Fields{"event": "client_set_update", "set": name, "mac": net.HardwareAddr(mac[:]).String(), "source_ip": ip.String(), "joined": joined}).Info("API settings changed")
 	}
-	return c.deviceState(ip, mac), nil
+	return nil
 }
 
 func (c *ControlPlane) UpdateMITM(ip netip.Addr, mac [6]byte, enabled *bool) (api.DeviceState, error) {
