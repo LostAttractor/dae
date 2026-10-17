@@ -285,22 +285,3 @@ func (b *RoutingMatcherBuilder) addFallback(fallback bpfMatchSet) (span routingS
 	b.fallbackSpans[fallback] = span
 	return span, nil
 }
-
-// NewRoutingMatcherBuilder compiles an already prepared rule sequence as a
-// single default policy. Control-plane preparation uses compileRouting to add
-// named policies, interface bindings and shared feature fragments.
-func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outbounds map[string]uint8, bpf *BPFState, fallback config.FunctionOrString, ifmgr *network.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (*RoutingMatcherBuilder, error) {
-	fallbackFunction, err := config.ParseFunctionOrString(fallback)
-	if err != nil {
-		return nil, err
-	}
-	statements := make([]config.RoutingStatement, 0, len(rules))
-	for _, rule := range rules {
-		statements = append(statements, config.RoutingStatement{Kind: config.RoutingStatementRule, Rule: rule})
-	}
-	prepared := preparedRules{
-		routing: &config.Routing{Policies: []config.RoutingPolicy{{Statements: statements, Fallback: fallbackFunction}}},
-		capture: capture, destinations: destinations,
-	}
-	return prepared.compileRouting(outbounds, bpf, ifmgr)
-}

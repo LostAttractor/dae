@@ -33,7 +33,7 @@ func BenchmarkExchangeTCP(b *testing.B) {
 		Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53")}}
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := Exchange(b.Context(), request, upstream); err != nil {
+		if _, err := exchangeForTest(b.Context(), request, upstream); err != nil {
 			b.Fatal(err)
 		}
 	}

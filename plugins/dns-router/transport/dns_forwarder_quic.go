@@ -162,15 +162,6 @@ func packDoqQuery(msg *dnsmessage.Msg) (*dnsmessage.Msg, []byte, error) {
 	return paddedQuery, frame, nil
 }
 
-func resolveDoQ(stream doqStream, msg *dnsmessage.Msg) error {
-	query, frame, err := packDoqQuery(msg)
-	if err != nil {
-		stream.CancelWrite(doqRequestCancelled)
-		return err
-	}
-	return resolvePreparedDoQ(stream, msg, query, frame)
-}
-
 func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []byte) error {
 	n, err := stream.Write(frame)
 	if err != nil || n != len(frame) {

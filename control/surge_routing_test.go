@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package surge_test
+package control
 
 import (
 	"slices"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/dae/plugins/surge"
@@ -43,13 +42,13 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 	return engine
 }
 
-func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_parser.RoutingRule) *control.RoutingMatcher {
+func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_parser.RoutingRule) *RoutingMatcher {
 	t.Helper()
 	plan := engine.Plan()
 	rules := slices.Concat(plan.EarlyRoutes, userRules, plan.Routes)
-	builder, err := control.NewRoutingMatcherBuilder(rules, map[string]uint8{
+	builder, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules, "proxy")}, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock), "proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "proxy", nil, nil, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +120,7 @@ func TestSurgeModulePreRejectPrecedesUserDirect(t *testing.T) {
 	}
 }
 
-func matchRoute(t *testing.T, matcher *control.RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
+func matchRoute(t *testing.T, matcher *RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
 	t.Helper()
 	address := make([]byte, 16)
 	outbound, mark, must, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, proto, host, [16]uint8{}, 0, 0, address)

@@ -57,11 +57,6 @@ func RedactURL(subscription string) string {
 	return resource.RedactURL(subscription)
 }
 
-func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
-	nodes, _ = resolveSubscriptionAsBase64(b)
-	return nodes
-}
-
 func resolveSubscriptionAsBase64(b []byte) (nodes []string, err error) {
 	// base64 decode
 	raw, e := proxylink.DecodeBase64(string(b))

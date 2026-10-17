@@ -30,7 +30,7 @@ func normalizeAnyfromPoolTTL(ttl time.Duration) time.Duration {
 }
 
 type Anyfrom struct {
-	*net.UDPConn
+	conn           *net.UDPConn
 	idleMu         sync.Mutex
 	idleEvictTimer *time.Timer
 	idleTTL        time.Duration
@@ -45,73 +45,19 @@ func (a *Anyfrom) refreshIdleDeadline() {
 	a.idleDeadline = time.Now().Add(a.idleTTL)
 }
 
-func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.ReadFrom(b)
-}
-func (a *Anyfrom) ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.ReadFromUDP(b)
-}
-func (a *Anyfrom) ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.ReadFromUDPAddrPort(b)
-}
-func (a *Anyfrom) ReadMsgUDP(b []byte, oob []byte) (n int, oobn int, flags int, addr *net.UDPAddr, err error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.ReadMsgUDP(b, oob)
-}
-func (a *Anyfrom) ReadMsgUDPAddrPort(b []byte, oob []byte) (n int, oobn int, flags int, addr netip.AddrPort, err error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.ReadMsgUDPAddrPort(b, oob)
-}
-func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.SyscallConn()
-}
-func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.WriteMsgUDP(b, oob, addr)
-}
-func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
-}
-func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.WriteTo(b, addr)
-}
-func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	defer a.refreshIdleDeadline()
-	return a.UDPConn.WriteToUDP(b, addr)
-}
-func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	return a.writeToUDPAddrPort(b, addr)
-}
+// Close can interrupt an in-flight write without waiting for its deadline.
+func (a *Anyfrom) Close() error { return a.conn.Close() }
 
 func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
-	if err := a.UDPConn.SetWriteDeadline(deadline); err != nil {
+	if err := a.conn.SetWriteDeadline(deadline); err != nil {
 		return 0, err
 	}
-	defer a.UDPConn.SetWriteDeadline(time.Time{})
-	return a.writeToUDPAddrPort(b, addr)
-}
+	defer a.conn.SetWriteDeadline(time.Time{})
 
-func (a *Anyfrom) writeToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
 	defer a.refreshIdleDeadline()
-	return a.UDPConn.WriteToUDPAddrPort(b, addr)
+	return a.conn.WriteToUDPAddrPort(b, addr)
 }
 
 // AnyfromPool is a full-cone udp listener pool
@@ -170,7 +116,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	uConn := pc.(*net.UDPConn)
 	af = &Anyfrom{
-		UDPConn:      uConn,
+		conn:         uConn,
 		idleTTL:      ttl,
 		idleDeadline: time.Now().Add(ttl),
 	}

@@ -67,13 +67,6 @@ func BytesIncLittleEndian(b []byte) {
 	}
 }
 
-func Abs64(a int64) int64 {
-	if a < 0 {
-		return -a
-	}
-	return a
-}
-
 func Min(a, b int) int {
 	if a < b {
 		return a
@@ -109,25 +102,3 @@ func StringToUUID5(str string) string {
 	hex.Encode(buf[24:], u[10:])
 	return string(buf)
 }
-
-func StringsHas(strs []string, str string) bool {
-	for _, s := range strs {
-		if s == str {
-			return true
-		}
-	}
-	return false
-}
-
-func HeadOverlap(p, b []byte) bool {
-	return len(p) > 0 && len(b) > 0 && &p[0] == &b[0]
-}
-
-// // MultiWrite uses io.Copy to try to avoid seperated packets.
-// func MultiWrite(dst io.Writer, bs ...[]byte) (int64, error) {
-// 	readers := make([]io.Reader, 0, len(bs))
-// 	for _, b := range bs {
-// 		readers = append(readers, bytes.NewReader(b))
-// 	}
-// 	return io.Copy(dst, io.MultiReader(readers...))
-// }

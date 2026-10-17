@@ -84,7 +84,7 @@ func TestHTTPAgeCannotReviveCacheEntries(t *testing.T) {
 					return (&net.ListenConfig{}).ListenPacket(ctx, "udp", "127.0.0.1:0")
 				}
 				handler := c.WrapDNS(func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
-					return Exchange(ctx, request, upstream)
+					return exchangeForTest(ctx, request, upstream)
 				})
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 				defer cancel()

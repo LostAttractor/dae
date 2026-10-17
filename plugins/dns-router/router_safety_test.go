@@ -65,7 +65,7 @@ func TestTCPFallbackReservesCallerBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Exchange(ctx, q, upstream)
+	_, err = exchangeForTest(ctx, q, upstream)
 	if err != nil || !tcp.Load() {
 		t.Fatalf("TCP fallback not reached: %v %v", tcp.Load(), err)
 	}
@@ -107,7 +107,7 @@ func TestAddressFallbackReservesCallerBudget(t *testing.T) {
 				Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53"), Ip6: netip.MustParseAddr("2001:db8::53")}}
 			ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
 			defer cancel()
-			response, err := Exchange(ctx, q, upstream)
+			response, err := exchangeForTest(ctx, q, upstream)
 			if err != nil || response == nil {
 				t.Fatalf("reachable IPv6 fallback was starved: attempts=%v err=%v", attempts, err)
 			}

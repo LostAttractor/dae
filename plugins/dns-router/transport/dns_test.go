@@ -303,3 +303,12 @@ func TestPackDoqQueryUsesAvailableNearLimitPadding(t *testing.T) {
 		t.Fatalf("near-limit padding = %#v, want 20 bytes", opt.Option[0])
 	}
 }
+
+func resolveDoQ(stream doqStream, msg *dnsmessage.Msg) error {
+	query, frame, err := packDoqQuery(msg)
+	if err != nil {
+		stream.CancelWrite(doqRequestCancelled)
+		return err
+	}
+	return resolvePreparedDoQ(stream, msg, query, frame)
+}

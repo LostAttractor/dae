@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/daeuniverse/dae/pkg/outbound/common"
 )
 
 type InvalidPortError struct {
@@ -50,30 +48,6 @@ func (a *UDPHopAddr) addrs() ([]net.Addr, error) {
 		addrs = append(addrs, addr)
 	}
 	return addrs, nil
-}
-
-func ResolveUDPHopAddr(addr string) (*UDPHopAddr, error) {
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	ip, err := common.ResolveIPAddrWithResolver(common.BootstrapResolver, host)
-	if err != nil {
-		return nil, err
-	}
-	result := &UDPHopAddr{
-		IP:      ip.IP,
-		Zone:    ip.Zone,
-		PortStr: portStr,
-	}
-
-	pu := ParsePortUnion(portStr)
-	if pu == nil {
-		return nil, InvalidPortError{portStr}
-	}
-	result.Ports = pu.Ports()
-
-	return result, nil
 }
 
 // PortUnion is a collection of multiple port ranges.

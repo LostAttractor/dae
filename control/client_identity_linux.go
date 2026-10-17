@@ -58,12 +58,6 @@ func validateClientScope(source, destination netip.Addr, ingress int, listLinks 
 	return nil
 }
 
-// Traverse only the receive direction: port -> master and lower -> VLAN.
-// Walking back down to a common parent would incorrectly trust sibling links.
-func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
-	return clientReceiveTopology(links, ingress)[scope]
-}
-
 func clientReceiveTopology(links []netlink.Link, ingress int) map[int]bool {
 	byIndex := make(map[int]netlink.Link, len(links))
 	for _, link := range links {

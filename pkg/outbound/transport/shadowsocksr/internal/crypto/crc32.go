@@ -45,8 +45,3 @@ func DoSetCRC32(buffer []byte, index int, length int) {
 func SetCRC32(buffer []byte, length int) {
 	DoSetCRC32(buffer, 0, length)
 }
-
-func CheckCRC32(buffer []byte, length int) bool {
-	crc := CalcCRC32(buffer, length, 0xFFFFFFFF)
-	return crc == 0xFFFFFFFF
-}

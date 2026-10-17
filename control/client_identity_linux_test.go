@@ -151,3 +151,9 @@ func TestClientScopeSharesOneTopologySnapshot(t *testing.T) {
 		t.Fatalf("global endpoints requested topology: %d %v", calls, err)
 	}
 }
+
+// Traverse only the receive direction: port -> master and lower -> VLAN.
+// Walking back down to a common parent would incorrectly trust sibling links.
+func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
+	return clientReceiveTopology(links, ingress)[scope]
+}

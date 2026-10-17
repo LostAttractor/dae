@@ -87,7 +87,7 @@ func TestExchangeWireTransports(t *testing.T) {
 					return &exchangeCountPacket{PacketConn: conn, closed: &closes}, nil
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-				response, err := Exchange(ctx, request, upstream)
+				response, err := exchangeForTest(ctx, request, upstream)
 				cancel()
 				if err != nil {
 					t.Fatal(err)
@@ -160,7 +160,7 @@ func TestExchangeHTTPConfiguredEndpoint(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 				defer cancel()
-				response, err := Exchange(ctx, request, upstream)
+				response, err := exchangeForTest(ctx, request, upstream)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -342,7 +342,7 @@ func TestExchangeTCPCorrelationRetryAndEOF(t *testing.T) {
 		}
 		upstream := &policy.Upstream{Scheme: "tcp", Hostname: "192.0.2.53", Port: 53, Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53")}}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-		response, err := Exchange(ctx, request, upstream)
+		response, err := exchangeForTest(ctx, request, upstream)
 		cancel()
 		if err != nil || response.MessageCopy().Rcode != dns.RcodeRefused || response.MessageCopy().Id != request.MessageCopy().Id {
 			t.Fatalf("response lost: %+v %v", response, err)
@@ -388,7 +388,7 @@ func TestExchangeCancellationDoesNotWaitForClose(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { _, err := Exchange(ctx, request, upstream); done <- err }()
+			go func() { _, err := exchangeForTest(ctx, request, upstream); done <- err }()
 			select {
 			case err := <-done:
 				if !errors.Is(err, context.DeadlineExceeded) {
@@ -417,3 +417,7 @@ type exchangeBlockingPacketClose struct {
 }
 
 func (c *exchangeBlockingPacketClose) Close() error { <-c.release; return c.PacketConn.Close() }
+
+func exchangeForTest(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream) (*plugin.DNSResponse, error) {
+	return exchange(ctx, request, upstream, nil, "", "")
+}

@@ -238,7 +238,7 @@ func TestDNSUDPReplyRestoresOriginalDestination(t *testing.T) {
 	// the daemon's network namespace. Kernel port-53 admission is tested separately.
 	pool := DefaultAnyfromPool
 	DefaultAnyfromPool = NewAnyfromPool()
-	DefaultAnyfromPool.pool[dst] = &Anyfrom{UDPConn: original, idleTTL: time.Second}
+	DefaultAnyfromPool.pool[dst] = &Anyfrom{conn: original, idleTTL: time.Second}
 	defer func() { DefaultAnyfromPool = pool }()
 	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, fmt.Sprintf("dip(127.0.0.53) -> dnat('%s')", upstream.LocalAddr()), ""))
 	group := downloadTestGroup(t, "direct", func(ctx context.Context, network, target string) (net.Conn, error) {

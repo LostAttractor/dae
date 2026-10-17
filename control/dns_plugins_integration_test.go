@@ -19,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	cache "github.com/daeuniverse/dae/plugins/dns-cache"
 	router "github.com/daeuniverse/dae/plugins/dns-router"
-	policy "github.com/daeuniverse/dae/plugins/dns-router/policy"
 	dns "github.com/miekg/dns"
 )
 
@@ -146,7 +145,7 @@ func TestDNSPreferenceProbeLeavesDeliveryBudget(t *testing.T) {
 	}
 }
 
-func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
+func TestDNSDialEndpointHostnameEnforcesBlock(t *testing.T) {
 	for _, seeded := range []bool{false, true} {
 		directCalled := false
 		direct := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
@@ -166,13 +165,17 @@ func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
 		if err != nil || outbound != consts.OutboundBlock {
 			t.Fatalf("fixture route: %v %v", outbound, err)
 		}
-		for _, scheme := range []policy.UpstreamScheme{policy.UpstreamScheme_UDP, policy.UpstreamScheme_TCP} {
+		for _, scheme := range []string{"udp", "tcp", "packet"} {
 			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
 			if err != nil {
 				t.Fatal(err)
 			}
-			upstream := &policy.Upstream{Scheme: scheme, Hostname: "dns.example", Port: 53, Ip46: &netutils.Ip46{Ip4: target.Addr()}}
-			_, err = router.Exchange(t.Context(), q, upstream)
+			if scheme == "packet" {
+				_, err = q.ListenPacket(t.Context(), target.String(), "dns.example")
+			} else {
+				_, err = q.DialContext(t.Context(), scheme, target.String(), "dns.example")
+			}
+
 			if directCalled || err == nil {
 				t.Fatalf("hostname block bypassed: seeded=%v err=%v", seeded, err)
 			}

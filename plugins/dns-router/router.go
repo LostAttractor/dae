@@ -339,12 +339,6 @@ func (d requestDialer) ListenPacket(ctx context.Context, target string) (net.Pac
 	return d.request.ListenPacket(ctx, target, d.hostname)
 }
 
-// Exchange is also available to plugins implementing server assignments. Every
-// exchange is routed with the original client's identity by dae's dial services.
-func Exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream) (*plugin.DNSResponse, error) {
-	return exchange(ctx, request, upstream, nil, "", "")
-}
-
 func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream, metrics *routerMetrics, name, purpose string) (*plugin.DNSResponse, error) {
 	query := request.MessageCopy()
 	versions, protocols := upstream.SupportedNetworks()

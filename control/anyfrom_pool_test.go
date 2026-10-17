@@ -13,7 +13,7 @@ func TestAnyfromRefreshSurvivesPendingExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer udp.Close()
-	conn := &Anyfrom{UDPConn: udp, idleTTL: time.Minute}
+	conn := &Anyfrom{conn: udp, idleTTL: time.Minute}
 	conn.idleEvictTimer = time.AfterFunc(time.Hour, func() {})
 	defer conn.idleEvictTimer.Stop()
 	p := NewAnyfromPool()
@@ -25,7 +25,7 @@ func TestAnyfromRefreshSurvivesPendingExpiry(t *testing.T) {
 	if p.pool[addr] != conn {
 		t.Fatal("pending expiry removed a recently active reply socket")
 	}
-	if _, err := conn.WriteToUDPAddrPort([]byte("reply"), addr); err != nil {
+	if _, err := conn.WriteToUDPAddrPortWithDeadline([]byte("reply"), addr, time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("reply socket was closed: %v", err)
 	}
 	conn.idleMu.Lock()
@@ -44,7 +44,7 @@ func TestAnyfromTimerFollowsActivity(t *testing.T) {
 	}
 	defer udp.Close()
 	synctest.Test(t, func(t *testing.T) {
-		conn := &Anyfrom{UDPConn: udp, idleTTL: 10 * time.Second}
+		conn := &Anyfrom{conn: udp, idleTTL: 10 * time.Second}
 		p := NewAnyfromPool()
 		addr := udp.LocalAddr().(*net.UDPAddr).AddrPort()
 		p.pool[addr] = conn
