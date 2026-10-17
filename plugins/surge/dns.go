@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/netutils"
@@ -173,10 +172,7 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 		}
 		// A plain per-domain server assignment just redirects the intercepted
 		// request. More advanced transports are provided by the resolver plugin.
-		target, err := netip.ParseAddrPort(servers[0])
-		if ip, ipErr := netip.ParseAddr(servers[0]); ipErr == nil {
-			target, err = netip.AddrPortFrom(ip, 53), nil
-		}
+		target, err := netip.ParseAddrPort(plugin.NormalizeDNSServer(servers[0]))
 		if err == nil {
 			redirected := request.Copy()
 			redirected.Destination = target
@@ -189,10 +185,7 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 		if len(servers) > 1 {
 			targets := make([]netip.AddrPort, 0, len(servers))
 			for _, server := range servers {
-				target, err := netip.ParseAddrPort(server)
-				if ip, ipErr := netip.ParseAddr(server); ipErr == nil {
-					target, err = netip.AddrPortFrom(ip, 53), nil
-				}
+				target, err := netip.ParseAddrPort(plugin.NormalizeDNSServer(server))
 				if err != nil {
 					return nil, fmt.Errorf("Host server assignment requires a DNS resolver plugin")
 				}
@@ -206,61 +199,21 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 }
 
 func resolvePlainDNSServers(ctx context.Context, request *plugin.DNSExchange, targets []netip.AddrPort, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	type result struct {
-		response *plugin.DNSResponse
-		err      error
+	servers := make([]string, len(targets))
+	for i, target := range targets {
+		servers[i] = target.String()
 	}
-	results := make(chan result, len(targets))
-	var workers sync.WaitGroup
-	defer func() { cancel(); workers.Wait() }()
-	for _, target := range targets {
-		workers.Go(func() {
-			query := request.Fork()
-			query.Destination, query.ServerAssigned = target, true
-			query.ContextKey += "/surge-server/" + target.String()
-			response, err := next(ctx, query)
-			if err == nil {
-				if response == nil {
-					err = errors.New("DNS server returned an empty response")
-				} else {
-					err = query.ValidateResponse(response.DNSPacket, true)
-				}
-			}
-			results <- result{response, err}
-		})
-	}
-	var failure error
-	var negative *plugin.DNSResponse
-	for range targets {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case result := <-results:
-			var rcode int
-			if result.response != nil {
-				header, _ := result.response.Header()
-				rcode = header.Rcode
-			}
-			if result.err != nil {
-				failure = errors.Join(failure, result.err)
-			} else if rcode == dns.RcodeSuccess {
-				return result.response, nil
-			} else if negative == nil || rcode == dns.RcodeNameError {
-				// A definitive negative answer outranks transient server failures,
-				// regardless of which concurrent query finishes last.
-				negative = result.response
-			}
+	return plugin.RaceDNSServers(ctx, request, servers, func(ctx context.Context, query *plugin.DNSExchange, server string) (*plugin.DNSResponse, error) {
+		target, err := netip.ParseAddrPort(server)
+		if err != nil {
+			return nil, err
 		}
-	}
-	if negative != nil {
-		return negative, nil
-	}
-	return nil, failure
+		query.Destination, query.ServerAssigned = target, true
+		query.ContextKey += "/surge-server/" + target.String()
+		return next(ctx, query)
+	})
 }
 
-// Go's system resolver handles address lookups (including /etc/hosts). Other
-// record types use the configured OS nameserver with the same marked Dial hook.
 func resolveSystemDNS(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 	conf, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil {

@@ -175,48 +175,20 @@ func (r *Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, se
 	defer func(parent context.Context, started time.Time) {
 		r.metrics.request(parent, "resolver", false, err, started)
 	}(ctx, time.Now())
-	if len(servers) == 0 || len(servers) > 16 {
-		return nil, fmt.Errorf("expected 1..16 DNS servers")
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	type result struct {
-		response *plugin.DNSResponse
-		err      error
-	}
-	results := make(chan result, len(servers))
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	for _, server := range servers {
-		wg.Go(func() {
-			if !strings.Contains(server, "://") {
-				if ip, err := netip.ParseAddr(server); err == nil {
-					server = netip.AddrPortFrom(ip, 53).String()
-				}
-				server = "udp://" + server
-			}
-			raw, err := url.Parse(server)
-			var response *plugin.DNSResponse
-			if err == nil {
-				var upstream *policy.Upstream
-				upstream, err = policy.NewUpstream(ctx, raw)
-				if err == nil {
-					response, err = exchange(ctx, request, upstream, r.metrics, "explicit", "explicit")
-				}
-			}
-			results <- result{response, err}
-		})
-	}
-	var failures error
-	for range servers {
-		result := <-results
-		if result.err == nil && result.response != nil {
-			cancel()
-			return result.response, nil
+	return plugin.RaceDNSServers(ctx, request, servers, func(ctx context.Context, query *plugin.DNSExchange, server string) (*plugin.DNSResponse, error) {
+		if !strings.Contains(server, "://") {
+			server = "udp://" + server
 		}
-		failures = errors.Join(failures, result.err)
-	}
-	return nil, failures
+		raw, err := url.Parse(server)
+		if err != nil {
+			return nil, err
+		}
+		upstream, err := policy.NewUpstream(ctx, raw)
+		if err != nil {
+			return nil, err
+		}
+		return exchange(ctx, query, upstream, r.metrics, "explicit", "explicit")
+	})
 }
 
 func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
