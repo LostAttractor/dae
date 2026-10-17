@@ -4,7 +4,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -274,7 +273,7 @@ func decodedSurge(t *testing.T, conf *config.Config) Config {
 func TestSurgePluginDefaultsAndLimits(t *testing.T) {
 	c := parseConfig(t, `global {} plugins { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
 	s := decodedSurge(t, c)
-	if !s.Store || s.ScriptTimeout != 5*time.Second || s.MaxBodySize != 32<<20 || s.MemoryLimit != 128<<20 || s.MaxConcurrentScripts != 16 {
+	if !s.Store || s.ScriptTimeout != DefaultScriptTimeout || s.MaxBodySize != defaultMaxBodySize || s.MemoryLimit != defaultMemoryLimit || s.MaxConcurrentScripts != defaultMaxConcurrentScripts {
 		t.Fatalf("defaults: %+v", s)
 	}
 	for _, limit := range []string{"script_timeout: 0s", "script_timeout: 61s", "memory_limit: 1", "memory_limit: 1073741825", "max_body_size: 0", "max_body_size: 268435457", "max_concurrent_scripts: 0", "max_concurrent_scripts: 257", "ca_cert: 'x'", "client_source_address: all", "store: 'old-store.json'", "store: ''"} {

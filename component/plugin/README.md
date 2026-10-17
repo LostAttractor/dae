@@ -18,8 +18,16 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 }
 ```
 
-Decode settings in `Configure` (`DecodeSettings` handles scalar fields), implement
-`Plan` and optional protocol interfaces. Copy
+Decode settings in `Configure`. Declare scalar configuration names and defaults
+on struct fields with `mapstructure:"name"` and `default:"value"` tags, then pass
+the struct pointer to `DecodeSettings`. It applies defaults before user values,
+so explicit `false`, `0` and empty strings override defaults. Fields without a
+`default` tag use Go zero values. Use `mapstructure:"_"` for fields parsed separately,
+such as module sections; keep conditional defaults and validation in the plugin.
+The decoder rejects duplicate and unknown settings without including values
+in errors.
+
+Implement `Plan` and optional protocol interfaces. Copy
 [plugins.cfg.example](../../plugins.cfg.example) to local `plugins.cfg`, add
 `type:Go/import/path`, then run `make`. The local selection and generated registry
 are ignored by Git.

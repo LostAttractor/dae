@@ -24,14 +24,14 @@ type ModuleSource struct {
 
 // Config configures modules for HTTP processing, routing and IP rewrites. Sizes are bytes.
 type Config struct {
-	Modules              []ModuleSource
-	Store                bool
-	NodePath             string
-	ScriptTimeout        time.Duration
-	MemoryLimit          int64
-	MaxBodySize          int64
-	MaxConcurrentScripts int
-	HTTPPolicies         []string
+	Modules              []ModuleSource `mapstructure:"_"`
+	Store                bool           `mapstructure:"store" default:"true"`
+	NodePath             string         `mapstructure:"node_path" default:"node"`
+	ScriptTimeout        time.Duration  `mapstructure:"script_timeout" default:"5s"`
+	MemoryLimit          int64          `mapstructure:"memory_limit" default:"134217728"`
+	MaxBodySize          int64          `mapstructure:"max_body_size" default:"33554432"`
+	MaxConcurrentScripts int            `mapstructure:"max_concurrent_scripts" default:"16"`
+	HTTPPolicies         []string       `mapstructure:"http_policies"`
 }
 
 const (
@@ -42,12 +42,15 @@ const (
 
 // ParseConfig interprets only the settings owned by a Surge instance.
 func ParseConfig(section *config_parser.Section) (Config, error) {
-	c := Config{Store: true, NodePath: "node", ScriptTimeout: DefaultScriptTimeout, MemoryLimit: defaultMemoryLimit, MaxBodySize: defaultMaxBodySize, MaxConcurrentScripts: defaultMaxConcurrentScripts}
+	var c Config
 	if section == nil {
 		return c, fmt.Errorf("surge configuration is required")
 	}
 	settings := &config_parser.Section{Name: section.Name}
 	for _, item := range section.Items {
+		if p, ok := item.Value.(*config_parser.Param); ok && p.Key == "node_path" && compiledJSRuntime != "nodejs" {
+			return c, fmt.Errorf("unknown setting %q", p.Key)
+		}
 		if child, ok := item.Value.(*config_parser.Section); ok && child.Name == "module" {
 			if err := parseModuleSources(&c.Modules, child); err != nil {
 				return c, err
@@ -58,16 +61,7 @@ func ParseConfig(section *config_parser.Section) (Config, error) {
 			settings.Items = append(settings.Items, item)
 		}
 	}
-	fields := map[string]any{
-		"store": &c.Store, "script_timeout": &c.ScriptTimeout,
-		"memory_limit": &c.MemoryLimit, "max_body_size": &c.MaxBodySize,
-		"max_concurrent_scripts": &c.MaxConcurrentScripts,
-		"http_policies":          &c.HTTPPolicies,
-	}
-	if compiledJSRuntime == "nodejs" {
-		fields["node_path"] = &c.NodePath
-	}
-	err := plugin.DecodeSettings(settings, fields)
+	err := plugin.DecodeSettings(settings, &c)
 	if err != nil {
 		return c, err
 	}
