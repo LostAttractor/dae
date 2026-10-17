@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	dns "github.com/miekg/dns"
 )
@@ -51,7 +52,7 @@ func (s *dnsStream) read() {
 		s.onClose()
 	}()
 	for {
-		wire, err := readDNSFrame(s.conn)
+		wire, err := netutils.ReadDNSFrame(s.conn)
 		if err != nil {
 			s.err = err
 			return
@@ -131,7 +132,7 @@ func (s *dnsStream) exchange(ctx context.Context, request *plugin.DNSExchange) (
 	s.mu.Lock()
 	s.pending[id] = append(s.pending[id], waiter)
 	s.mu.Unlock()
-	err = writeDNSFrame(s.conn, wire)
+	err = netutils.WriteDNSFrame(s.conn, wire)
 	s.writeMu.Unlock()
 	defer func() {
 		s.mu.Lock()

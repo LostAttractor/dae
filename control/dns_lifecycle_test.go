@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -27,7 +28,7 @@ func TestDNSStreamHeaderOnlyErrors(t *testing.T) {
 			q := dnsTestRequest(t, "error.example.", 123)
 			go func() {
 				for range 2 {
-					wire, err := readDNSFrame(peer)
+					wire, err := netutils.ReadDNSFrame(peer)
 					if err != nil {
 						return
 					}
@@ -37,7 +38,7 @@ func TestDNSStreamHeaderOnlyErrors(t *testing.T) {
 						response.Question, response.Rcode = nil, rcode
 					}
 					wire, _ = response.Pack()
-					if writeDNSFrame(peer, wire) != nil {
+					if netutils.WriteDNSFrame(peer, wire) != nil {
 						return
 					}
 				}
@@ -72,7 +73,7 @@ func TestDNSStreamHeaderOnlyErrorWithRepeatedID(t *testing.T) {
 	}
 	requests := make([]*dns.Msg, 2)
 	for i := range requests {
-		wire, err := readDNSFrame(peer)
+		wire, err := netutils.ReadDNSFrame(peer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +82,7 @@ func TestDNSStreamHeaderOnlyErrorWithRepeatedID(t *testing.T) {
 	bad := new(dns.Msg).SetReply(requests[0])
 	bad.Question, bad.Rcode = nil, dns.RcodeFormatError
 	wire, _ := bad.Pack()
-	if err := writeDNSFrame(peer, wire); err != nil {
+	if err := netutils.WriteDNSFrame(peer, wire); err != nil {
 		t.Fatal(err)
 	}
 	<-unsolicited
@@ -92,7 +93,7 @@ func TestDNSStreamHeaderOnlyErrorWithRepeatedID(t *testing.T) {
 	}
 	for _, request := range requests {
 		wire, _ := new(dns.Msg).SetReply(request).Pack()
-		if err := writeDNSFrame(peer, wire); err != nil {
+		if err := netutils.WriteDNSFrame(peer, wire); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -133,27 +134,27 @@ func dnsTCPTestClient(t *testing.T, server func(net.Conn)) net.Conn {
 
 func TestDNSTCPUpstreamEOFDrainsLastResponse(t *testing.T) {
 	client := dnsTCPTestClient(t, func(peer net.Conn) {
-		wire, err := readDNSFrame(peer)
+		wire, err := netutils.ReadDNSFrame(peer)
 		if err != nil {
 			return
 		}
 		message := unpackDNSMessage(wire)
 		message.Response = true
 		wire, _ = message.Pack()
-		_ = writeDNSFrame(peer, wire)
+		_ = netutils.WriteDNSFrame(peer, wire)
 	})
 	query := dnsTestRequest(t, "eof.example.", 1)
-	if err := writeDNSFrame(client, dnsTestWire(t, query)); err != nil {
+	if err := netutils.WriteDNSFrame(client, dnsTestWire(t, query)); err != nil {
 		t.Fatal(err)
 	}
 	// Give the upstream time to close while delivery is blocked on this client.
 	time.Sleep(20 * time.Millisecond)
-	wire, err := readDNSFrame(client)
+	wire, err := netutils.ReadDNSFrame(client)
 	if err != nil || !dnsResponseMatches(query.MessageCopy(), unpackDNSMessage(wire)) {
 		t.Fatalf("lost last response: %v", err)
 	}
 	_ = client.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	if _, err := readDNSFrame(client); !errors.Is(err, io.EOF) {
+	if _, err := netutils.ReadDNSFrame(client); !errors.Is(err, io.EOF) {
 		t.Fatalf("upstream EOF not propagated: %v", err)
 	}
 }
@@ -163,7 +164,7 @@ func TestDNSTCPActiveTransferAndIdleExpiry(t *testing.T) {
 		t.Run(dns.TypeToString[qtype], func(t *testing.T) {
 			const frames = 60
 			client := dnsTCPTestClient(t, func(peer net.Conn) {
-				wire, err := readDNSFrame(peer)
+				wire, err := netutils.ReadDNSFrame(peer)
 				if err != nil {
 					return
 				}
@@ -171,7 +172,7 @@ func TestDNSTCPActiveTransferAndIdleExpiry(t *testing.T) {
 				message.Response = true
 				for range frames {
 					wire, _ = message.Pack()
-					if writeDNSFrame(peer, wire) != nil {
+					if netutils.WriteDNSFrame(peer, wire) != nil {
 						return
 					}
 					message.Question = nil
@@ -184,16 +185,16 @@ func TestDNSTCPActiveTransferAndIdleExpiry(t *testing.T) {
 			message := query.MessageCopy()
 			message.Question[0].Qtype = qtype
 			query.DNSPacket = plugin.DNSMessage(message)
-			if err := writeDNSFrame(client, dnsTestWire(t, query)); err != nil {
+			if err := netutils.WriteDNSFrame(client, dnsTestWire(t, query)); err != nil {
 				t.Fatal(err)
 			}
 			for i := range frames {
-				if _, err := readDNSFrame(client); err != nil {
+				if _, err := netutils.ReadDNSFrame(client); err != nil {
 					t.Fatalf("active transfer stopped at frame %d: %v", i, err)
 				}
 			}
 			_ = client.SetReadDeadline(time.Now().Add(time.Second))
-			if _, err := readDNSFrame(client); !errors.Is(err, io.EOF) {
+			if _, err := netutils.ReadDNSFrame(client); !errors.Is(err, io.EOF) {
 				t.Fatalf("idle connection not collected: %v", err)
 			}
 		})

@@ -202,7 +202,7 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 		go func() {
 			defer p.Close()
 			for {
-				wire, err := readDNSFrame(p)
+				wire, err := netutils.ReadDNSFrame(p)
 				if err != nil {
 					return
 				}
@@ -213,7 +213,7 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 				m := new(dns.Msg).SetReply(q)
 				m.Answer = []dns.RR{testARecord("test.example.", "192.0.2.66")}
 				wire, _ = m.Pack()
-				if writeDNSFrame(p, wire) != nil {
+				if netutils.WriteDNSFrame(p, wire) != nil {
 					return
 				}
 			}
@@ -232,10 +232,10 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 	for id := range uint16(2) {
 		q := dnsTestRequest(t, "test.example.", id)
-		if err := writeDNSFrame(client, dnsTestWire(t, q)); err != nil {
+		if err := netutils.WriteDNSFrame(client, dnsTestWire(t, q)); err != nil {
 			t.Fatal(err)
 		}
-		wire, err := readDNSFrame(client)
+		wire, err := netutils.ReadDNSFrame(client)
 		m := unpackDNSMessage(wire)
 		if err != nil || !dnsResponseMatches(q.MessageCopy(), m) || len(m.Answer) != 1 {
 			t.Fatalf("client stream lost after probe cancellation: %v", err)

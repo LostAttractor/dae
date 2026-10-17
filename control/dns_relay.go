@@ -4,7 +4,6 @@ package control
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	dns "github.com/miekg/dns"
@@ -295,36 +295,6 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSR
 	return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire[:n]), ReceivedAt: time.Now(), Origin: "relay"}, nil
 }
 
-func readDNSFrame(conn io.Reader) ([]byte, error) {
-	var prefix [2]byte
-	if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-		return nil, err
-	}
-	wire := make([]byte, int(binary.BigEndian.Uint16(prefix[:])))
-	_, err := io.ReadFull(conn, wire)
-	return wire, err
-}
-
-func writeDNSFrame(conn io.Writer, wire []byte) error {
-	if len(wire) > 65535 {
-		return errors.New("DNS frame exceeds 65535 bytes")
-	}
-	frame := make([]byte, 2+len(wire))
-	binary.BigEndian.PutUint16(frame, uint16(len(wire)))
-	copy(frame[2:], wire)
-	for len(frame) > 0 {
-		n, err := conn.Write(frame)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		frame = frame[n:]
-	}
-	return nil
-}
-
 func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, identity routingResult) error {
 	r := c.dnsRelay
 	if r == nil || !r.admit() {
@@ -370,7 +340,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(consts.DefaultDNSTimeout))
-		if err := writeDNSFrame(conn, wire); err != nil {
+		if err := netutils.WriteDNSFrame(conn, wire); err != nil {
 			return err
 		}
 		refreshRead()
@@ -421,7 +391,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 	concurrency := make(chan struct{}, 32)
 	refreshRead()
 	for {
-		wire, err := readDNSFrame(conn)
+		wire, err := netutils.ReadDNSFrame(conn)
 		if err != nil {
 			// Upstream EOF can race finalization of its last correlated response.
 			// Each worker already has its own bounded, cancellable deadline.

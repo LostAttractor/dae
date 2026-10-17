@@ -165,29 +165,15 @@ func resolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, skipInvalid bool) 
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
 	}
-	buf := pool.GetBytesBuffer()
-	defer pool.PutBytesBuffer(buf)
-	// DNS over TCP and TLS use a two-byte message length.
-	binary.Write(buf, binary.BigEndian, uint16(len(data)))
-	buf.Write(data)
-	n, err := stream.Write(buf.Bytes())
-	if err != nil {
+	if err := WriteDNSFrame(stream, data); err != nil {
 		return fmt.Errorf("failed to write DNS req: %w", err)
-	}
-	if n != buf.Len() {
-		return fmt.Errorf("failed to write DNS req: %w", io.ErrShortWrite)
 	}
 
 	for {
-		var prefix [2]byte
-		if _, err := io.ReadFull(stream, prefix[:]); err != nil {
-			return fmt.Errorf("read DNS response length: %w", err)
-		}
-		wire := pool.GetBuffer(int(binary.BigEndian.Uint16(prefix[:])))
-		_, err := io.ReadFull(stream, wire)
+		wire, err := readDNSFrame(stream, pool.GetBuffer)
 		if err != nil {
 			pool.PutBuffer(wire)
-			return fmt.Errorf("read DNS response: %w", err)
+			return err
 		}
 		var response dnsmessage.Msg
 		err = UnpackDnsMessage(wire, &response)

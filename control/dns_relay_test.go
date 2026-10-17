@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -285,11 +286,11 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	last.Question = nil
 	lastWire, _ := last.Pack()
 	go func() {
-		if _, err := readDNSFrame(peer); err != nil {
+		if _, err := netutils.ReadDNSFrame(peer); err != nil {
 			return
 		}
-		_ = writeDNSFrame(peer, firstWire)
-		_ = writeDNSFrame(peer, lastWire)
+		_ = netutils.WriteDNSFrame(peer, firstWire)
+		_ = netutils.WriteDNSFrame(peer, lastWire)
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -330,7 +331,7 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 			requests := make([][]byte, count)
 			for i := range requests {
 				var err error
-				requests[i], err = readDNSFrame(server)
+				requests[i], err = netutils.ReadDNSFrame(server)
 				if err != nil {
 					upstreamErrors <- err
 					return
@@ -348,7 +349,7 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 				message.Answer[0].Header().Ttl = 17
 				wire, _ := message.Pack()
 				var frame bytes.Buffer
-				_ = writeDNSFrame(&frame, wire)
+				_ = netutils.WriteDNSFrame(&frame, wire)
 				// Fragment both the size prefix and message body.
 				for _, b := range frame.Bytes() {
 					if _, err := server.Write([]byte{b}); err != nil {
@@ -372,13 +373,13 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
 	}()
 	for i := range count {
-		if err := writeDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)))); err != nil {
+		if err := netutils.WriteDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	seen := make(map[uint16]bool)
 	for range count {
-		wire, err := readDNSFrame(client)
+		wire, err := netutils.ReadDNSFrame(client)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -436,7 +437,7 @@ func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 	go func() {
 		var frames [][]byte
 		for range requests {
-			wire, err := readDNSFrame(peer)
+			wire, err := netutils.ReadDNSFrame(peer)
 			if err != nil {
 				return
 			}
@@ -448,7 +449,7 @@ func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 				m.Response = true
 				frames[i], _ = m.Pack()
 			}
-			_ = writeDNSFrame(peer, frames[i])
+			_ = netutils.WriteDNSFrame(peer, frames[i])
 		}
 	}()
 	var wg sync.WaitGroup
