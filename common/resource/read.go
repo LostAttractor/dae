@@ -88,6 +88,9 @@ func readRemote(ctx context.Context, client *http.Client, source Source, opts Re
 				return err
 			}
 		}
+		// Resource URLs can contain credentials in both the path and query.
+		// net/http derives this header on every hop; callbacks may also set it.
+		next.Header.Del("Referer")
 		return validate()
 	}
 	response, err := boundedClient.Do(req)

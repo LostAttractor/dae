@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -175,5 +176,34 @@ func TestReadRedirectCallbackCannotChangeTransportBoundary(t *testing.T) {
 	_, err := Read(t.Context(), client, Source{Location: "https://example.com/source"}, ReadOptions{MaxBytes: 128})
 	if err == nil || requests != 1 {
 		t.Fatalf("callback sent a downgraded request: requests=%d err=%v", requests, err)
+	}
+}
+
+func TestReadRedirectDoesNotDiscloseSourceURL(t *testing.T) {
+	for _, callback := range []bool{false, true} {
+		t.Run(fmt.Sprint(callback), func(t *testing.T) {
+			locations := []string{"https://provider.test/private-token?key=secret", "https://mirror.test/resource", "https://cdn.test/resource"}
+			requests := 0
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() != locations[requests] || req.Referer() != "" {
+					t.Errorf("unexpected resource request: url=%s referer=%q", req.URL, req.Referer())
+				}
+				requests++
+				if requests < len(locations) {
+					return &http.Response{StatusCode: 302, Header: http.Header{"Location": {locations[requests]}}, Body: http.NoBody}, nil
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("resource")), Request: req}, nil
+			})}
+			if callback {
+				client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+					next.Header.Set("Referer", via[0].URL.String())
+					return nil
+				}
+			}
+			result, err := Read(t.Context(), client, Source{Location: locations[0]}, ReadOptions{MaxBytes: 100})
+			if err != nil || string(result.Data) != "resource" || requests != len(locations) {
+				t.Fatalf("redirected read: %+v, %v; requests=%d", result, err, requests)
+			}
+		})
 	}
 }

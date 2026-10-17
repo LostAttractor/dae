@@ -19,6 +19,8 @@
 
 ## 全局资源缓存
 
+订阅、模块及依赖的 HTTP(S) 下载在每次重定向时清除 `Referer`，避免来源 URL 中的路径或查询凭据传递给重定向目标。跨站重定向仍可用，HTTPS 不允许降级至 HTTP。此规则属于资源下载，不改变脚本 `$httpClient` / Fetch 的请求头行为。
+
 ```text
 global {
   resource_cache: true
