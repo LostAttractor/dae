@@ -30,7 +30,7 @@ type Definition struct {
 // Status is scoped by type and --instance. BaseDir resolves local resources.
 type CommandServices struct {
 	BaseDir       string
-	Status        func(context.Context) ([]InstanceStatus, error)
+	Status        func(context.Context) (api.PluginStatus, error)
 	TriggerScript func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
 }
 

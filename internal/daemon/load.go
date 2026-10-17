@@ -210,7 +210,7 @@ func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *confi
 		return nil, errors.Join(err, c.Close())
 	}
 	log.WithField("duration", time.Since(assemblyStarted)).Debug("Assembled control plane")
-	logStartupMITMStatus(c.MITMStatus())
+	logStartupMITMStatus(c.MITMStatus().Plugins)
 	return c, nil
 }
 

@@ -79,6 +79,7 @@ function StatusDetails({ snapshot, global, prefix }: { prefix: string } & ({ sna
         {!snapshot.tables.length && <p className="muted">No domain tables configured.</p>}
       </StatusSection>
       <StatusSection className="plugins-section" title="Plugins" count={snapshot.plugins?.length || 0}>
+        <p className="buffer-memory">Body buffers (process): {bytes(snapshot.buffer_memory.used)} / {bytes(snapshot.buffer_memory.limit)}; peak: {bytes(snapshot.buffer_memory.peak)}; denied: {snapshot.buffer_memory.denied.toLocaleString()}</p>
         <dl className="status-records">{snapshot.plugins?.map(plugin => <div key={plugin.id}>
           <dt>{plugin.id}</dt><dd className="status-record-meta"><span>{plugin.type}</span><span>{plugin.state}</span></dd>
         </div>)}</dl>

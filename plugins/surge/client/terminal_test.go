@@ -26,8 +26,8 @@ func TestSurgeTextSinksRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fetch := func(context.Context) ([]api.PluginInstanceStatus, error) {
-		return []api.PluginInstanceStatus{{ID: "surge", Type: "surge", Details: details}}, nil
+	fetch := func(context.Context) (api.PluginStatus, error) {
+		return api.PluginStatus{Plugins: []api.PluginInstanceStatus{{ID: "surge", Type: "surge", Details: details}}}, nil
 	}
 	trigger := func(_ context.Context, _ string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
 		if request.Module != payload {

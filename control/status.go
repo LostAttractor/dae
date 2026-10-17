@@ -239,7 +239,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 		Tables:                    c.tableStatuses(),
 		Groups:                    c.groupStatuses(paths),
 	}
-	snapshot.Plugins = c.MITMStatus()
+	snapshot.PluginStatus = c.MITMStatus()
 	return snapshot
 }
 

@@ -36,12 +36,12 @@ func (c *Connection) Status(ctx context.Context) (*api.StatusSnapshot, error) {
 	return remote.Status(ctx)
 }
 
-func (c *Connection) MITM(ctx context.Context) ([]api.PluginInstanceStatus, error) {
+func (c *Connection) MITM(ctx context.Context) (api.PluginStatus, error) {
 	snapshot, err := c.Status(ctx)
 	if err != nil {
-		return nil, err
+		return api.PluginStatus{}, err
 	}
-	return snapshot.Plugins, nil
+	return snapshot.PluginStatus, nil
 }
 
 func (c *Connection) TriggerScript(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {

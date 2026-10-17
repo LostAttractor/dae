@@ -1509,8 +1509,6 @@ export interface components {
             upload_bytes: number;
         };
         PluginInstanceStatus: {
-            /** @description Optional process-wide budget snapshot, repeated on each instance. Do not sum it across instances. */
-            buffer_memory?: components["schemas"]["BufferMemoryStatus"];
             /** Format: int64 */
             destination_rules: number;
             /** @description Opaque plugin-defined JSON report. Its schema belongs to the plugin; reports exclude configuration credentials. */
@@ -1696,6 +1694,8 @@ export interface components {
             enabled: boolean;
         };
         StatusSnapshot: {
+            /** @description Process-wide body buffer budget, present even when no plugin instances are active. */
+            buffer_memory: components["schemas"]["BufferMemoryStatus"];
             /**
              * Format: int64
              * @description Process-lifetime count of established no-connectivity fallbacks to direct; preserved across reloads. Not a per-path or per-node counter.
@@ -1711,7 +1711,7 @@ export interface components {
              * Format: int64
              * @constant
              */
-            schema: 12;
+            schema: 13;
             /** Format: date-time */
             started_at: string;
             stats: components["schemas"]["PathStats"];

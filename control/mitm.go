@@ -7,18 +7,18 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *ControlPlane) MITMStatus() []plugin.InstanceStatus {
+func (c *ControlPlane) MITMStatus() api.PluginStatus {
 	host := c.MITMHost()
 	if host == nil {
-		return nil
+		return api.PluginStatus{BufferMemory: mitm.BodyBufferStatus()}
 	}
 	return host.Status()
 }

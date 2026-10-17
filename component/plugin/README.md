@@ -448,7 +448,9 @@ daemon or fetch remote resources. Perform command work in `RunE`, using Cobra's
 context and input/output streams.
 
 `services.Status(cmd.Context())` reads the running daemon's reports, already
-filtered by plugin type and `--instance`. `services.BaseDir` is the local cache
+filtered by plugin type and `--instance` in `PluginStatus.Plugins`.
+`PluginStatus.BufferMemory` is a single process-wide snapshot, retained even when
+the selection contains no instances. `services.BaseDir` is the local cache
 base directory for commands such as Surge's interactive module configurator.
 A plugin can define its own `status`; otherwise the host provides generic status.
 `dae plugins status [--instance ID]` shows an overview. `--verbose` (`-v`) runs

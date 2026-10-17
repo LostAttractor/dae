@@ -231,7 +231,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 		}
 		synctest.Wait()
 		var status surgeapi.SurgeStatus
-		if err := json.Unmarshal(host.Status()[0].Details, &status); err != nil {
+		if err := json.Unmarshal(host.Status().Plugins[0].Details, &status); err != nil {
 			t.Fatal(err)
 		}
 		if len(status.Notifications) != 4 {

@@ -21,15 +21,15 @@ func TestStatusWireRoundTrip(t *testing.T) {
 		Tracking: "standby", Degraded: true, RecoveryElapsed: 5 * time.Second, FailureRecovery: 30 * time.Second,
 		Priority: 10, Score: -time.Second, MeasuredAt: time.Unix(100, 0).UTC(),
 	}
-	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active",
-		BufferMemory: &BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}}}
+	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active"}}
+	want.BufferMemory = BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}
 	want.Tables = []TableUsage{{Name: "domain-registry", Used: 8,
 		Breakdown: &TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: ^uint64(0)}}}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":12`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":13`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}

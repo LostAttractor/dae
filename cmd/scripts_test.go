@@ -48,7 +48,9 @@ func TestSurgeRunCommandSelection(t *testing.T) {
 				return nil, nil
 			}
 			command := newPluginsCommand(map[string]plugin.Definition{"surge": definition}, plugin.CommandServices{
-				Status: func(context.Context) ([]plugin.InstanceStatus, error) { return snapshot, test.fetchErr },
+				Status: func(context.Context) (api.PluginStatus, error) {
+					return api.PluginStatus{Plugins: snapshot}, test.fetchErr
+				},
 				TriggerScript: func(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
 					calls++
 					if ctx != t.Context() || instance != test.instance || request.Module != test.module || request.Script != test.script {
@@ -125,12 +127,12 @@ func TestSurgeListCommandDiscovery(t *testing.T) {
 				return nil, nil
 			}
 			command := newPluginsCommand(map[string]plugin.Definition{"surge": definition}, plugin.CommandServices{
-				Status: func(ctx context.Context) ([]plugin.InstanceStatus, error) {
+				Status: func(ctx context.Context) (api.PluginStatus, error) {
 					queries++
 					if ctx != t.Context() {
 						t.Error("list lost the caller context")
 					}
-					return snapshot, test.fetchErr
+					return api.PluginStatus{Plugins: snapshot}, test.fetchErr
 				},
 				TriggerScript: func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
 					t.Fatal("list triggered a script")

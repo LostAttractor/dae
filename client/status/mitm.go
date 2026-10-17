@@ -12,14 +12,13 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
-func RenderMITM(instances []api.PluginInstanceStatus, withSummary bool) string {
+func RenderMITM(snapshot api.PluginStatus, withSummary bool) string {
+	instances := snapshot.Plugins
+	memory := snapshot.BufferMemory
+	memorySummary := fmt.Sprintf("Body buffers (process): %.2f / %.2f MiB; peak=%.2f MiB; denied=%d\n\n",
+		float64(memory.Used)/(1<<20), float64(memory.Limit)/(1<<20), float64(memory.Peak)/(1<<20), memory.Denied)
 	if len(instances) == 0 {
-		return "MITM: no active plugin instances"
-	}
-	var memorySummary string
-	if memory := instances[0].BufferMemory; memory != nil {
-		memorySummary = fmt.Sprintf("Body buffers (process): %.2f / %.2f MiB; peak=%.2f MiB; denied=%d\n\n",
-			float64(memory.Used)/(1<<20), float64(memory.Limit)/(1<<20), float64(memory.Peak)/(1<<20), memory.Denied)
+		return memorySummary + "MITM: no active plugin instances"
 	}
 	rows := make([]table.Row, 0, len(instances))
 	var details strings.Builder

@@ -18,8 +18,8 @@ func Commands(fetch cli.MITMSource, trigger cli.ScriptTrigger) []*cobra.Command 
 
 func NewSurgeStatusCommand(fetch cli.MITMSource) *cobra.Command {
 	var verbose bool
-	command := cli.NewReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
-		report, err := Surge(instances)
+	command := cli.NewReportCommand(fetch, func(cmd *cobra.Command, instances api.PluginStatus) error {
+		report, err := Surge(instances.Plugins)
 		if err != nil {
 			return err
 		}

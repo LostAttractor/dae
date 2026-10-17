@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type MITMSource func(context.Context) ([]api.PluginInstanceStatus, error)
+type MITMSource func(context.Context) (api.PluginStatus, error)
 
 // MITMCommandFactory builds a fresh plugin command group from a scoped snapshot.
 // The bool reports whether the group has a runnable custom status command.
@@ -28,21 +28,22 @@ type MITMCommandFactory func(kind string, fetch MITMSource) (*cobra.Command, boo
 // SelectMITM scopes both built-in status commands and plugin-provided commands.
 // The instance flag is read at execution time, after Cobra parses arguments.
 func SelectMITM(fetch MITMSource, kind string, instance *string) MITMSource {
-	return func(ctx context.Context) ([]api.PluginInstanceStatus, error) {
+	return func(ctx context.Context) (api.PluginStatus, error) {
 		instances, err := fetch(ctx)
 		if err != nil {
-			return nil, err
+			return api.PluginStatus{}, err
 		}
 		selected := make([]api.PluginInstanceStatus, 0)
-		for _, value := range instances {
+		for _, value := range instances.Plugins {
 			if (kind == "" || value.Type == kind) && (*instance == "" || value.ID == *instance) {
 				selected = append(selected, value)
 			}
 		}
 		if *instance != "" && len(selected) == 0 {
-			return nil, fmt.Errorf("plugin instance %q is not active for this command", *instance)
+			return api.PluginStatus{}, fmt.Errorf("plugin instance %q is not active for this command", *instance)
 		}
-		return selected, nil
+		instances.Plugins = selected
+		return instances, nil
 	}
 }
 
@@ -95,11 +96,11 @@ func NewMITMPluginCommand(name string, fetch MITMSource, commands func(MITMSourc
 
 func NewMITMStatusCommand(fetch MITMSource, commands MITMCommandFactory) *cobra.Command {
 	var verbose bool
-	command := NewReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
+	command := NewReportCommand(fetch, func(cmd *cobra.Command, instances api.PluginStatus) error {
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), status.RenderMITM(instances, !verbose)); err != nil {
 			return err
 		}
-		if verbose && len(instances) > 0 {
+		if verbose && len(instances.Plugins) > 0 {
 			return renderMITMReports(cmd, commands, instances)
 		}
 		return nil
@@ -108,13 +109,13 @@ func NewMITMStatusCommand(fetch MITMSource, commands MITMCommandFactory) *cobra.
 	return command
 }
 
-// NewReportCommand preserves the opaque instance array for JSON output.
-func NewReportCommand(fetch MITMSource, render func(*cobra.Command, []api.PluginInstanceStatus) error) *cobra.Command {
+// NewReportCommand preserves process statistics and opaque reports for JSON output.
+func NewReportCommand(fetch MITMSource, render func(*cobra.Command, api.PluginStatus) error) *cobra.Command {
 	var raw bool
 	command := &cobra.Command{
 		Use: "status", Short: "Show plugin instances and their reports.", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			instances, err := WithProgress(cmd, "Fetching plugin status...", func() ([]api.PluginInstanceStatus, error) {
+			instances, err := WithProgress(cmd, "Fetching plugin status...", func() (api.PluginStatus, error) {
 				return fetch(cmd.Context())
 			})
 			if err != nil {
@@ -132,9 +133,9 @@ func NewReportCommand(fetch MITMSource, render func(*cobra.Command, []api.Plugin
 
 // Use fresh commands and one daemon snapshot, preserving each plugin's command
 // lifecycle without sharing flags or invoking runtime Setup.
-func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses []api.PluginInstanceStatus) error {
+func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses api.PluginStatus) error {
 	byType := make(map[string][]api.PluginInstanceStatus)
-	for _, status := range statuses {
+	for _, status := range statuses.Plugins {
 		byType[status.Type] = append(byType[status.Type], status)
 	}
 	var failures error
@@ -146,8 +147,8 @@ func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses
 		var group *cobra.Command
 		var custom bool
 		if commands != nil {
-			group, custom = commands(name, func(ctx context.Context) ([]api.PluginInstanceStatus, error) {
-				return instances, ctx.Err()
+			group, custom = commands(name, func(ctx context.Context) (api.PluginStatus, error) {
+				return api.PluginStatus{Plugins: instances, BufferMemory: statuses.BufferMemory}, ctx.Err()
 			})
 		}
 		var output bytes.Buffer

@@ -165,9 +165,9 @@ MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状�
 
 Surge 的 `plugins[].details.notifications` 包含每个实例按脚本各保留的最近 50 条 `$notification.post` 通知，最新在前，没有通知时省略。脚本身份由 `module`、`script` 和 `script_type` 共同确定。字段为 `id`、`created_at`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。记录独立于日志级别和脚本成功与否，重载后清空。`dae plugins surge status` 默认每脚本显示 3 条；`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
 
-daemon 的状态 schema 为 12，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且成功建立的连接；路径、组和节点统计不含 fallback 字段。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 13，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且成功建立的连接；路径、组和节点统计不含 fallback 字段。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
 
-`dae plugins status --json` 输出完整 `plugins`；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
+`dae plugins status --json` 输出进程级 `buffer_memory` 和完整 `plugins`，没有活动实例时仍保留内存统计；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
 
 通知另受每实例 1 MiB 保守 JSON 编码预算限制，文本按最坏转义长度计费。超限时先从记录最多的脚本删除最旧记录，数量相同时删除最旧的一条，因此每脚本实际保留数量可能少于 50 条。verbose/JSON 返回预算内全部记录。
 

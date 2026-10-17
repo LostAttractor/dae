@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/api"
 	"strings"
 	"testing"
 
@@ -18,13 +19,13 @@ import (
 
 func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 	var queried bool
-	services := plugin.CommandServices{Status: func(ctx context.Context) ([]plugin.InstanceStatus, error) {
+	services := plugin.CommandServices{Status: func(ctx context.Context) (api.PluginStatus, error) {
 		queried = true
-		return []plugin.InstanceStatus{
+		return api.PluginStatus{Plugins: []plugin.InstanceStatus{
 			{ID: "personal", Type: "custom", State: "active", Details: json.RawMessage(`{"running":1}`)},
 			{ID: "work", Type: "custom", State: "active", Details: json.RawMessage(`{"running":2}`)},
 			{ID: "other", Type: "demo", State: "active"},
-		}, nil
+		}}, nil
 	}}
 	definitions := map[string]plugin.Definition{
 		"surge": surge.Plugin,
@@ -74,8 +75,8 @@ func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 
 func TestMITMStatusAggregationAndErrors(t *testing.T) {
 	for _, args := range [][]string{{"status", "--json"}, {"demo", "status", "--json"}, {"status", "--instance", "missing"}} {
-		command := newPluginsCommand(map[string]plugin.Definition{"demo": {}}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
-			return []plugin.InstanceStatus{{ID: "demo", Type: "demo", State: "active", Details: json.RawMessage(`{"running":1}`)}}, nil
+		command := newPluginsCommand(map[string]plugin.Definition{"demo": {}}, plugin.CommandServices{Status: func(context.Context) (api.PluginStatus, error) {
+			return api.PluginStatus{Plugins: []plugin.InstanceStatus{{ID: "demo", Type: "demo", State: "active", Details: json.RawMessage(`{"running":1}`)}}}, nil
 		}})
 		var output bytes.Buffer
 		command.SetOut(&output)
@@ -88,13 +89,13 @@ func TestMITMStatusAggregationAndErrors(t *testing.T) {
 			}
 			continue
 		}
-		var got []plugin.InstanceStatus
-		if err != nil || json.Unmarshal(output.Bytes(), &got) != nil || len(got) != 1 || got[0].ID != "demo" {
+		var got api.PluginStatus
+		if err != nil || json.Unmarshal(output.Bytes(), &got) != nil || len(got.Plugins) != 1 || got.Plugins[0].ID != "demo" {
 			t.Fatalf("bad JSON: %v %s", err, output.String())
 		}
 	}
 	sentinel := errors.New("daemon unavailable")
-	command := cli.NewMITMStatusCommand(func(context.Context) ([]plugin.InstanceStatus, error) { return nil, sentinel }, nil)
+	command := cli.NewMITMStatusCommand(func(context.Context) (api.PluginStatus, error) { return api.PluginStatus{}, sentinel }, nil)
 	if err := command.Execute(); !errors.Is(err, sentinel) {
 		t.Fatalf("lost status failure: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 								if _, err := services.Status(cmd.Context()); err != nil {
 									return err
 								}
-								for _, instance := range instances {
+								for _, instance := range instances.Plugins {
 									if instance.Type != "custom" {
 										t.Fatal("plugin received another type's report")
 									}
@@ -166,9 +167,9 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 					},
 				},
 			}
-			command := newPluginsCommand(definitions, plugin.CommandServices{BaseDir: "/unused/cache", Status: func(ctx context.Context) ([]plugin.InstanceStatus, error) {
+			command := newPluginsCommand(definitions, plugin.CommandServices{BaseDir: "/unused/cache", Status: func(ctx context.Context) (api.PluginStatus, error) {
 				queries++
-				return statuses, nil
+				return api.PluginStatus{Plugins: statuses}, nil
 			}})
 			var output bytes.Buffer
 			command.SetOut(&output)
@@ -191,8 +192,8 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 				}
 			}
 			if test.json {
-				var got []plugin.InstanceStatus
-				if json.Unmarshal(output.Bytes(), &got) != nil || len(got) != len(statuses) {
+				var got api.PluginStatus
+				if json.Unmarshal(output.Bytes(), &got) != nil || len(got.Plugins) != len(statuses) {
 					t.Fatalf("verbose altered JSON output: %s", output.String())
 				}
 			}
@@ -201,12 +202,12 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 }
 
 func TestMITMVerboseStatusKeepsReportsAfterRendererFailure(t *testing.T) {
-	command := newPluginsCommand(map[string]plugin.Definition{"surge": surge.Plugin}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
-		return []plugin.InstanceStatus{
+	command := newPluginsCommand(map[string]plugin.Definition{"surge": surge.Plugin}, plugin.CommandServices{Status: func(context.Context) (api.PluginStatus, error) {
+		return api.PluginStatus{Plugins: []plugin.InstanceStatus{
 			{ID: "broken", Type: "surge", Details: json.RawMessage(`{"enabled":"invalid"}`)},
 			{ID: "healthy", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"kept-module"}]}`)},
 			{ID: "later", Type: "zeta", Details: json.RawMessage(`{"nested":{"message":"still shown"}}`)},
-		}, nil
+		}}, nil
 	}})
 	var output bytes.Buffer
 	command.SetOut(&output)

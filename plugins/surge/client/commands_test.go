@@ -30,16 +30,13 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 		{ID: "native", Type: "demo", State: "active", Details: jsonv1.RawMessage(`{"running":7,"tasks":[{"name":"hidden-in-summary"}]}`)},
 	}
 	memory := api.BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}
-	for i := range instances {
-		instances[i].BufferMemory = &memory
-	}
 	var queries atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries.Add(1)
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer report-secret" {
 			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: instances})
+		_ = json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: instances, BufferMemory: memory})
 	}))
 	defer server.Close()
 	for _, test := range []struct {
@@ -91,14 +88,12 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 				t.Fatalf("unexpected report: %s", output.String())
 			}
 			if test.count > 0 {
-				var reports []api.PluginInstanceStatus
-				if err := json.Unmarshal(output.Bytes(), &reports); err != nil || len(reports) != test.count || len(reports[0].Details) == 0 {
+				var reports api.PluginStatus
+				if err := json.Unmarshal(output.Bytes(), &reports); err != nil || len(reports.Plugins) != test.count || len(reports.Plugins[0].Details) == 0 {
 					t.Fatalf("raw reports lost details: %v %s", err, output.String())
 				}
-				for _, report := range reports {
-					if report.BufferMemory == nil || *report.BufferMemory != memory {
-						t.Fatalf("raw report lost buffer memory statistics: %+v", report.BufferMemory)
-					}
+				if reports.BufferMemory != memory {
+					t.Fatalf("raw report lost buffer memory statistics: %+v", reports.BufferMemory)
 				}
 			} else if test.args[0] == "status" {
 				const summary = "Body buffers (process): 1.00 / 64.00 MiB; peak=2.00 MiB; denied=3"
@@ -113,7 +108,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 func TestReportCommandsPreserveCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fetch := func(ctx context.Context) ([]api.PluginInstanceStatus, error) { return nil, ctx.Err() }
+	fetch := func(ctx context.Context) (api.PluginStatus, error) { return api.PluginStatus{}, ctx.Err() }
 	for _, command := range []*cobra.Command{cli.NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch)} {
 		command.SetContext(ctx)
 		command.SetArgs(nil)
@@ -150,9 +145,9 @@ func TestSurgeNotificationVerbosity(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			queries := 0
-			command := NewSurgeStatusCommand(func(ctx context.Context) ([]api.PluginInstanceStatus, error) {
+			command := NewSurgeStatusCommand(func(ctx context.Context) (api.PluginStatus, error) {
 				queries++
-				return []api.PluginInstanceStatus{{ID: "personal", Type: "surge", Details: details}}, ctx.Err()
+				return api.PluginStatus{Plugins: []api.PluginInstanceStatus{{ID: "personal", Type: "surge", Details: details}}}, ctx.Err()
 			})
 			var output bytes.Buffer
 			command.SetOut(&output)
@@ -165,12 +160,12 @@ func TestSurgeNotificationVerbosity(t *testing.T) {
 				t.Fatalf("wrong notification selection: %s", &output)
 			}
 			if test.raw {
-				var instances []api.PluginInstanceStatus
-				if err := json.Unmarshal(output.Bytes(), &instances); err != nil || len(instances) != 1 {
+				var instances api.PluginStatus
+				if err := json.Unmarshal(output.Bytes(), &instances); err != nil || len(instances.Plugins) != 1 {
 					t.Fatalf("invalid JSON report: %s %v", &output, err)
 				}
 				var detail surgeapi.SurgeStatus
-				if err := json.Unmarshal(instances[0].Details, &detail); err != nil || len(detail.Notifications) != 7 {
+				if err := json.Unmarshal(instances.Plugins[0].Details, &detail); err != nil || len(detail.Notifications) != 7 {
 					t.Fatalf("JSON lost retained notifications: %+v %v", detail, err)
 				}
 			} else if strings.Contains(output.String(), "3 older notifications hidden") == test.all {

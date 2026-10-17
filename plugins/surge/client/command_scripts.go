@@ -113,7 +113,7 @@ func surgeScriptTasks(ctx context.Context, fetch cli.MITMSource, module string) 
 	if err != nil {
 		return nil, err
 	}
-	report, err := Surge(instances)
+	report, err := Surge(instances.Plugins)
 	if err != nil {
 		return nil, err
 	}

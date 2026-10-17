@@ -269,7 +269,7 @@ const httpServer = createServer(async (req, res) => {
       const override = fixture.nextGlobalRead;
       fixture.nextGlobalRead = null;
       const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
-      const snapshot = { version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, plugins: fixture.plugins };
+      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, plugins: fixture.plugins };
       override?.started.resolve();
       if (override?.release) await override.release.promise;
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
@@ -2004,6 +2004,7 @@ try {
       }
       await visit("overview");
       for (const section of ["connection-details", "outbounds-section", "tables-section", "plugins-section"]) await setDisclosure(`#global-traffic .${section}`);
+      assert.match(await js<string>('document.querySelector("#global-traffic .buffer-memory").textContent'), /Body buffers \(process\):.*denied: 3/);
       await setDisclosure('#global-groups .status-entry[data-name="proxy_jp"]');
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `expanded status fits at ${width}px`);
       if (process.env.SCREENSHOT_DIR && height >= 600) {

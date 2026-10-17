@@ -172,7 +172,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
 	}
 	sdnotify.Ready()
-	log.WithFields(log.Fields{"duration": time.Since(started), "targets": len(plane.GroupsStatus()), "plugins": len(plane.MITMStatus())}).Info("Startup completed")
+	log.WithFields(log.Fields{"duration": time.Since(started), "targets": len(plane.GroupsStatus()), "plugins": len(plane.MITMStatus().Plugins)}).Info("Startup completed")
 	if !options.DisablePidFile {
 		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 	}

@@ -12,7 +12,21 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
+
+func TestStatusWithoutInstancesKeepsBodyBudget(t *testing.T) {
+	budget := membuffer.NewBudget(4096)
+	host, err := New(Options{BodyMemory: budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	status := host.Status()
+	if len(status.Plugins) != 0 || status.BufferMemory != api.BufferMemoryStatus(budget.Status()) {
+		t.Fatalf("empty host lost process budget: %+v", status)
+	}
+}
 
 type reportingPlugin struct {
 	testPlugin
@@ -50,10 +64,10 @@ func TestLoadIndependentFactoriesAndReports(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := host.Status()
-			if len(status) != 1 || status[0].State != state || string(status[0].Details) != `{"label":"`+label+`"}` {
+			if len(status.Plugins) != 1 || status.Plugins[0].State != state || string(status.Plugins[0].Details) != `{"label":"`+label+`"}` {
 				t.Fatalf("incorrect instance status: %+v", status)
 			}
-			if memory := status[0].BufferMemory; memory == nil || *memory != api.BufferMemoryStatus(bodyMemory.Status()) {
+			if memory := status.BufferMemory; memory != api.BufferMemoryStatus(bodyMemory.Status()) {
 				t.Fatalf("lost process buffer budget: %+v", memory)
 			}
 			wire, err := json.Marshal(status)
