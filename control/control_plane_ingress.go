@@ -17,7 +17,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"golang.org/x/sys/unix"
 )
@@ -212,7 +211,7 @@ func (r *Runtime) ListenAndServe(readyChan chan<- bool, port uint16) (listener *
 	// Listen.
 	var listenConfig = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
-			return dialer.TproxyControl(c)
+			return tproxyControl(c)
 		},
 	}
 	listenAddr := net.JoinHostPort("", strconv.Itoa(int(port)))

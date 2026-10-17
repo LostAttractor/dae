@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // DefaultAnyfromCacheTTL is the eviction interval when GetOrCreate is called with ttl <= 0.
@@ -150,11 +150,11 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	lc := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
-			if err := dialer.TransparentControl(c); err != nil {
+			if err := transparentControl(c); err != nil {
 				return err
 			}
 			if mark := anyfromSoMark.Load(); mark != 0 {
-				return dialer.SoMarkControl(c, int(mark))
+				return netproxy.SoMarkControl(c, int(mark))
 			}
 			return nil
 		},

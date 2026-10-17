@@ -3,44 +3,16 @@
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-package dialer
+package control
 
 import (
 	"fmt"
-	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-var fwmarkIoctl int
-
-func init() {
-	switch runtime.GOOS {
-	case "linux", "android":
-		fwmarkIoctl = 36 /* unix.SO_MARK */
-	case "freebsd":
-		fwmarkIoctl = 0x1015 /* unix.SO_USER_COOKIE */
-	case "openbsd":
-		fwmarkIoctl = 0x1021 /* unix.SO_RTABLE */
-	}
-}
-
-func SoMarkControl(c syscall.RawConn, mark int) error {
-	var sockOptErr error
-	controlErr := c.Control(func(fd uintptr) {
-		err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, fwmarkIoctl, mark)
-		if err != nil {
-			sockOptErr = fmt.Errorf("error setting SO_MARK socket option: %w", err)
-		}
-	})
-	if controlErr != nil {
-		return fmt.Errorf("error invoking socket control function: %w", controlErr)
-	}
-	return sockOptErr
-}
-
-func TproxyControl(c syscall.RawConn) error {
+func tproxyControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
 		// - https://www.kernel.org/doc/Documentation/networking/tproxy.txt
@@ -71,7 +43,7 @@ func TproxyControl(c syscall.RawConn) error {
 	return sockOptErr
 }
 
-func TransparentControl(c syscall.RawConn) error {
+func transparentControl(c syscall.RawConn) error {
 	var sockOptErr error
 	controlErr := c.Control(func(fd uintptr) {
 		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {

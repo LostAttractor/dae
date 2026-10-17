@@ -20,7 +20,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -206,7 +205,7 @@ func configureDatapathTestNamespace(t *testing.T) {
 }
 
 func internalLinkListenerConfig() net.ListenConfig {
-	return net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error { return dialer.TproxyControl(raw) }}
+	return net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error { return tproxyControl(raw) }}
 }
 
 func testInternalLinkTCP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family string, target netip.AddrPort) {
