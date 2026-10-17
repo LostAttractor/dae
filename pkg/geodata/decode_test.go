@@ -96,3 +96,43 @@ func TestUnmarshalGeodataFallsBackForReorderedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGeodataLoadersShareFastAndFallbackPaths(t *testing.T) {
+	for _, loader := range []struct {
+		name string
+		data proto.Message
+		load func(string, string) (string, error)
+	}{
+		{"GeoIP", &GeoIPList{Entry: []*GeoIP{{CountryCode: "cn"}}}, func(path, code string) (string, error) {
+			v, err := UnmarshalGeoIp(path, code)
+			return v.GetCountryCode(), err
+		}},
+		{"GeoSite", &GeoSiteList{Entry: []*GeoSite{{CountryCode: "cn"}}}, func(path, code string) (string, error) {
+			v, err := UnmarshalGeoSite(path, code)
+			return v.GetCountryCode(), err
+		}},
+	} {
+		t.Run(loader.name, func(t *testing.T) {
+			raw, err := proto.Marshal(loader.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, fallback := range []bool{false, true} {
+				data := raw
+				if fallback {
+					data = append([]byte{0x10, 1}, raw...)
+				} // Valid unknown list field before entries.
+				path := filepath.Join(t.TempDir(), "geo.dat")
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if code, err := loader.load(path, "CN"); err != nil || code != "cn" {
+					t.Fatalf("fallback=%v code=%s error=%v", fallback, code, err)
+				}
+				if _, err := loader.load(path, "missing"); err == nil || err.Error() != "code missing not found in "+path {
+					t.Fatalf("fallback=%v missing code: %v", fallback, err)
+				}
+			}
+		})
+	}
+}

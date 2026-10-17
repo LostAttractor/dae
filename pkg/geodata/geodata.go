@@ -17,75 +17,51 @@ import (
 )
 
 func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
-	geoipBytes, err := Decode(filepath, code)
-	switch err {
-	case nil:
-		var geoip GeoIP
-		if err := proto.Unmarshal(geoipBytes, &geoip); err != nil {
-			return nil, fmt.Errorf("decode GeoIP entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
-		}
-		return &geoip, nil
-
-	case errCodeNotFound:
-		return nil, fmt.Errorf("country code %v not found in %v", code, filepath)
-
-	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
-		errInvalidGeodataFile, errInvalidGeodataVarintLength:
-		log.WithError(err).WithField("file", filepath).Debug("Reading geodata with the full protobuf decoder")
-		geoipBytes, err = os.ReadFile(filepath)
-		if err != nil {
-			return nil, err
-		}
-		var geoipList GeoIPList
-		if err := proto.Unmarshal(geoipBytes, &geoipList); err != nil {
-			return nil, fmt.Errorf("decode GeoIP entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
-		}
-		for _, geoip := range geoipList.GetEntry() {
-			if strings.EqualFold(code, geoip.GetCountryCode()) {
-				return geoip, nil
-			}
-		}
-
-	default:
-		return nil, err
-	}
-
-	return nil, fmt.Errorf("code %v not found in %v", code, filepath)
+	return unmarshalGeodata(filepath, code, "GeoIP", new(GeoIP), new(GeoIPList))
 }
 
 func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
-	geositeBytes, err := Decode(filepath, code)
+	return unmarshalGeodata(filepath, code, "GeoSite", new(GeoSite), new(GeoSiteList))
+}
+
+func unmarshalGeodata[E interface {
+	proto.Message
+	GetCountryCode() string
+}, L interface {
+	proto.Message
+	GetEntry() []E
+}](filepath, code, kind string, entry E, list L) (E, error) {
+	var zero E
+	decode := func(data []byte, target proto.Message) error {
+		if err := proto.Unmarshal(data, target); err != nil {
+			return fmt.Errorf("decode %s entry %q from %q: invalid protobuf data (check file format and download integrity): %w", kind, code, filepath, err)
+		}
+		return nil
+	}
+	data, err := Decode(filepath, code)
 	switch err {
 	case nil:
-		var geosite GeoSite
-		if err := proto.Unmarshal(geositeBytes, &geosite); err != nil {
-			return nil, fmt.Errorf("decode GeoSite entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
+		if err := decode(data, entry); err != nil {
+			return zero, err
 		}
-		return &geosite, nil
-
+		return entry, nil
 	case errCodeNotFound:
-		return nil, fmt.Errorf("code %v not found in %v", code, filepath)
-
-	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
-		errInvalidGeodataFile, errInvalidGeodataVarintLength:
+	case errFailedToReadBytes, errFailedToReadExpectedLenBytes, errInvalidGeodataFile, errInvalidGeodataVarintLength:
 		log.WithError(err).WithField("file", filepath).Debug("Reading geodata with the full protobuf decoder")
-		geositeBytes, err = os.ReadFile(filepath)
+		data, err = os.ReadFile(filepath)
 		if err != nil {
-			return nil, err
+			return zero, err
 		}
-		var geositeList GeoSiteList
-		if err := proto.Unmarshal(geositeBytes, &geositeList); err != nil {
-			return nil, fmt.Errorf("decode GeoSite entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
+		if err := decode(data, list); err != nil {
+			return zero, err
 		}
-		for _, geosite := range geositeList.GetEntry() {
-			if strings.EqualFold(code, geosite.GetCountryCode()) {
-				return geosite, nil
+		for _, entry := range list.GetEntry() {
+			if strings.EqualFold(code, entry.GetCountryCode()) {
+				return entry, nil
 			}
 		}
-
 	default:
-		return nil, err
+		return zero, err
 	}
-
-	return nil, fmt.Errorf("code %v not found in %v", code, filepath)
+	return zero, fmt.Errorf("code %v not found in %v", code, filepath)
 }
