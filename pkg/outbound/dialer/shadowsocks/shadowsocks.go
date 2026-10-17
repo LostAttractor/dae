@@ -135,20 +135,28 @@ func ParseSSURL(ssurl string) (data *Shadowsocks, err error) {
 	// parse attempts to parse ss:// links
 	parse := func(content string) (v *Shadowsocks, ok bool) {
 		// semicolon is not allowed in query, otherwise u.Query() will return empty map.
-		content = strings.Replace(content, ";", "%3B", -1)
+		content = strings.ReplaceAll(content, ";", "%3B")
 		// try to parse in the format of ss://BASE64(method:password)@server:port/?plugin=xxxx#name
 		u, err := url.Parse(content)
 		if err != nil {
 			return nil, false
 		}
-		username := u.User.String()
-		username, _ = proxylink.DecodeBase64URL(username)
-		arr := strings.SplitN(username, ":", 2)
-		if len(arr) != 2 {
+		if u.User == nil {
 			return nil, false
 		}
-		cipher := arr[0]
-		password := arr[1]
+		cipher := u.User.Username()
+		password, plain := u.User.Password()
+		if !plain {
+			credentials, err := proxylink.DecodeBase64URL(cipher)
+			if err != nil {
+				return nil, false
+			}
+			var ok bool
+			cipher, password, ok = strings.Cut(credentials, ":")
+			if !ok {
+				return nil, false
+			}
+		}
 		var sip003 Sip003
 		plugin := u.Query().Get("plugin")
 		if len(plugin) > 0 {
@@ -242,14 +250,14 @@ func ParseSip003Opts(opts string) Sip003Opts {
 }
 func ParseSip003(plugin string) Sip003 {
 	var sip003 Sip003
-	fields := strings.SplitN(plugin, ";", 2)
-	switch fields[0] {
+	name, options, _ := strings.Cut(plugin, ";")
+	switch name {
 	case "obfs-local", "simpleobfs", "obfs":
 		sip003.Name = "simple-obfs"
 	default:
-		sip003.Name = fields[0]
+		sip003.Name = name
 	}
-	sip003.Opts = ParseSip003Opts(fields[1])
+	sip003.Opts = ParseSip003Opts(options)
 	return sip003
 }
 

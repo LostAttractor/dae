@@ -219,7 +219,7 @@ func TestQUICProtocolsUseEntryResolverOnReconnect(t *testing.T) {
 		"hysteria2://pass@[::1]",
 	} {
 		t.Run(link, func(t *testing.T) {
-			builder, _, err := parseNodeLink(link)
+			builder, _, err := D.NewFromLink(link)
 			if err != nil {
 				t.Fatal(err)
 			}
