@@ -450,18 +450,36 @@ func TestFastConnectFailurePublishesTransitions(t *testing.T) {
 		t.Fatalf("Connect error = %v, want %v", err, establishErr)
 	}
 
-	want := []netproxy.SessionState{netproxy.SessionConnecting, netproxy.SessionDisconnected}
-	for _, state := range want {
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	var connecting *netproxy.StateEvent
+	for {
 		select {
 		case event := <-events:
-			if event.State != state {
-				t.Fatalf("state event = %s, want %s", event.State, state)
+			switch event.State {
+			case netproxy.SessionConnecting:
+				// The slot watcher can report the failure before Connect returns
+				// to the pool. This enriches the pending attempt's cause without
+				// changing readiness or losing the subsequent disconnected event.
+				if connecting != nil {
+					if event.ReadinessVersion != connecting.ReadinessVersion || event.Seq <= connecting.Seq || !errors.Is(event.Cause, establishErr) {
+						t.Fatalf("unexpected connecting metadata update: %+v after %+v", event, *connecting)
+					}
+				}
+				connecting = &event
+			case netproxy.SessionDisconnected:
+				if connecting == nil {
+					t.Fatal("disconnected event arrived without a connecting transition")
+				}
+				if !errors.Is(event.Cause, establishErr) {
+					t.Fatalf("disconnect cause = %v, want %v", event.Cause, establishErr)
+				}
+				return
+			default:
+				t.Fatalf("unexpected state event: %+v", event)
 			}
-			if state == netproxy.SessionDisconnected && !errors.Is(event.Cause, establishErr) {
-				t.Fatalf("disconnect cause = %v, want %v", event.Cause, establishErr)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for %s state", state)
+		case <-deadline.C:
+			t.Fatal("timed out waiting for connecting and disconnected transitions")
 		}
 	}
 }
@@ -620,6 +638,7 @@ func TestProtocolErrorPublishesState(t *testing.T) {
 func TestPoolEpisodeUsesBoundedSlotGenerationWatermarks(t *testing.T) {
 	p := newSmuxPool(&Smux{}, 2)
 	defer p.Close()
+	initial := p.Snapshot()
 	first, second := netproxy.NewResourceRef(), netproxy.NewResourceRef()
 	event := func(ref netproxy.ResourceRef) netproxy.StateEvent {
 		return netproxy.StateEvent{Resource: ref, Cause: netproxy.WrapFailure(errors.New("carrier failed"), netproxy.Failure{Resource: ref, Scope: netproxy.ScopeSharedResource, Layer: netproxy.LayerTCP})}
@@ -638,7 +657,7 @@ func TestPoolEpisodeUsesBoundedSlotGenerationWatermarks(t *testing.T) {
 		t.Fatalf("generation watermark episodes=%d", p.episode)
 	}
 	snapshot := p.Snapshot()
-	if snapshot.Resource != p.ref || snapshot.Resource.OwnerID == 0 || snapshot.EpisodeID != 3 {
+	if snapshot.Resource != initial.Resource || snapshot.Resource.OwnerID == 0 || snapshot.EpisodeID != 3 {
 		t.Fatalf("pool publishing identity=%+v", snapshot)
 	}
 }

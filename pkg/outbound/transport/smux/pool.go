@@ -22,8 +22,7 @@ type smuxSlot struct {
 
 type smuxPool struct {
 	slots   []*smuxSlot
-	state   *netproxy.StateBroadcaster
-	ref     netproxy.ResourceRef
+	state   *netproxy.PoolState
 	episode uint64
 
 	ctx    context.Context
@@ -34,22 +33,16 @@ type smuxPool struct {
 	watchers  sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
-	lastCause error
 }
 
 func newSmuxPool(owner *Smux, maxConnections int) *smuxPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &smuxPool{
-		ref: netproxy.NewResourceRef(), state: netproxy.NewStateBroadcaster(netproxy.SessionDisconnected),
+		state:  netproxy.NewPoolState(netproxy.LayerSMUX),
 		ctx:    ctx,
 		cancel: cancel,
 		slots:  make([]*smuxSlot, maxConnections),
 	}
-	initial := p.state.Snapshot()
-	initial.Resource = p.ref
-	initial.Layer = netproxy.LayerSMUX
-	initial.RecoveryExecutor = netproxy.RecoveryDaemon
-	p.state.Publish(initial)
 	for i := range p.slots {
 		p.slots[i] = &smuxSlot{lifecycle: netproxy.NewSingleSession(netproxy.SingleSessionConfig[*smuxResource]{
 			Layer: netproxy.LayerSMUX, RecoveryExecutor: netproxy.RecoveryDaemon,
@@ -147,58 +140,21 @@ func (p *smuxPool) publishStateLocked(cause error) {
 	if p.ctx.Err() != nil {
 		return
 	}
-	connected, connecting, missing := 0, false, false
+	capacity := netproxy.PoolCapacity{EpisodeID: p.episode, Cause: cause}
 	for _, slot := range p.slots {
 		if !slot.activated {
 			continue
 		}
+		capacity.DesiredCapacity++
 		if _, alive := p.connectedResourceLocked(slot); alive {
-			connected++
-			continue
-		}
-		missing = true
-		if slot.connecting > 0 || slot.state.State == netproxy.SessionConnecting {
-			connecting = true
-		} else if cause == nil {
-			cause = slot.state.Cause
+			capacity.UsableCapacity++
+		} else if slot.connecting > 0 || slot.state.State == netproxy.SessionConnecting {
+			capacity.Connecting++
+		} else if capacity.Cause == nil {
+			capacity.Cause = slot.state.Cause
 		}
 	}
-	event := p.state.Snapshot()
-	p.episode = max(p.episode, event.EpisodeID)
-	event.Layer, event.RecoveryExecutor = netproxy.LayerSMUX, netproxy.RecoveryDaemon
-	state := netproxy.SessionDisconnected
-	if connected > 0 {
-		state = netproxy.SessionConnected
-	} else if connecting {
-		state = netproxy.SessionConnecting
-	}
-	if cause != nil && p.lastCause == nil {
-		p.lastCause = cause
-	}
-	if missing || connected == 0 {
-		cause = p.lastCause
-	} else {
-		p.lastCause = nil
-		cause = nil
-	}
-	if state == netproxy.SessionConnecting && event.State == state && event.Cause == nil {
-		cause = nil
-	}
-	if event.State == state && event.UsableCapacity == connected && event.RecoveryRequired == (connected > 0 && missing) && event.Resource == p.ref && event.EpisodeID == p.episode && (cause == nil || event.Cause == cause) {
-		return
-	}
-	event.State, event.Accepting, event.UsableCapacity, event.Cause = state, connected > 0, connected, cause
-	event.RecoveryRequired = connected > 0 && missing
-	event.Resource, event.EpisodeID = p.ref, p.episode
-	switch state {
-	case netproxy.SessionConnected:
-		event.RecoveryPhase = "ready"
-	case netproxy.SessionConnecting:
-		event.RecoveryPhase = "connecting"
-	default:
-		event.RecoveryPhase = "queued"
-	}
-	p.state.Publish(event)
+	p.state.ObserveCapacity(capacity)
 }
 
 func (p *smuxPool) connectedResourceLocked(slot *smuxSlot) (*smuxResource, bool) {
@@ -385,7 +341,7 @@ func (p *smuxPool) Close() error {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
 		p.cancel()
-		p.state.Transition(netproxy.SessionClosed, nil)
+		p.state.Close()
 		p.mu.Unlock()
 		for i := len(p.slots) - 1; i >= 0; i-- {
 			p.closeErr = errors.Join(p.closeErr, p.slots[i].lifecycle.Close())

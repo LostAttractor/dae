@@ -224,7 +224,7 @@ func TestBusyAnyTLSPoolOnlyRequestsBackgroundExpansion(t *testing.T) {
 	defer server.Close()
 	s := newSession(client, nil, nil)
 	d.sessions[s] = struct{}{}
-	d.state.Transition(netproxy.SessionConnected, nil)
+	d.publishStateLocked(nil)
 	defer d.Close()
 	for range 3 {
 		selected, err := d.getSession(context.Background())

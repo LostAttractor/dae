@@ -48,11 +48,9 @@ type Dialer struct {
 	closeErr        error
 
 	desired      int
-	lastCause    error
 	connecting   bool
 	connectToken chan struct{}
-	state        *netproxy.StateBroadcaster
-	poolRef      netproxy.ResourceRef
+	state        *netproxy.PoolState
 	episode      uint64
 }
 
@@ -60,23 +58,18 @@ func NewDialer(ParentDialer netproxy.Dialer, header protocol.Header) (*Dialer, e
 	sum := sha256.Sum256([]byte(header.Password))
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		poolRef: netproxy.NewResourceRef(), ParentDialer: ParentDialer,
+		ParentDialer: ParentDialer,
 		proxyAddress: header.ProxyAddress,
 		key:          sum[:],
 		tlsConfig:    header.TlsConfig,
 		idleSessions: make(map[*session]struct{}),
 		sessions:     make(map[*session]struct{}),
 		connectToken: make(chan struct{}, 1),
-		state:        netproxy.NewStateBroadcaster(netproxy.SessionDisconnected),
+		state:        netproxy.NewPoolState(netproxy.LayerAnyTLS),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
 	d.padding.Store(defaultPadding)
-	initial := d.state.Snapshot()
-	initial.Resource = d.poolRef
-	initial.Layer = netproxy.LayerAnyTLS
-	initial.RecoveryExecutor = netproxy.RecoveryDaemon
-	d.state.Publish(initial)
 	return d, nil
 }
 
@@ -416,7 +409,7 @@ func (d *Dialer) Close() error {
 		}
 		clear(d.idleSessions)
 		clear(d.sessions)
-		d.state.Transition(netproxy.SessionClosed, nil)
+		d.state.Close()
 		d.idleSessionLock.Unlock()
 		for _, session := range sessions {
 			d.closeErr = errors.Join(d.closeErr, session.Close())
@@ -434,37 +427,10 @@ func (d *Dialer) publishStateLocked(cause error) {
 			capacity++
 		}
 	}
-	event := d.state.Snapshot()
-	state := netproxy.SessionDisconnected
-	if capacity > 0 {
-		state = netproxy.SessionConnected
-	} else if d.connecting {
-		state = netproxy.SessionConnecting
+	connecting := 0
+	if d.connecting {
+		connecting = 1
 	}
-	required := capacity > 0 && capacity < max(1, d.desired)
-	if cause != nil && d.lastCause == nil {
-		d.lastCause = cause
-	}
-	if required || capacity == 0 {
-		cause = d.lastCause
-	} else {
-		d.lastCause = nil
-		cause = nil
-	}
-	if event.State == state && event.UsableCapacity == capacity && event.RecoveryRequired == required && event.Resource == d.poolRef && event.EpisodeID == d.episode && (cause == nil || event.Cause == cause) {
-		return
-	}
-	event.State, event.Accepting, event.UsableCapacity, event.Cause = state, capacity > 0, capacity, cause
-	event.Layer, event.RecoveryExecutor = netproxy.LayerAnyTLS, netproxy.RecoveryDaemon
-	event.RecoveryRequired = required
-	event.Resource, event.EpisodeID = d.poolRef, d.episode
-	switch state {
-	case netproxy.SessionConnected:
-		event.RecoveryPhase = "ready"
-	case netproxy.SessionConnecting:
-		event.RecoveryPhase = "connecting"
-	default:
-		event.RecoveryPhase = "queued"
-	}
-	d.state.Publish(event)
+	d.state.ObserveCapacity(netproxy.PoolCapacity{UsableCapacity: capacity, DesiredCapacity: d.desired,
+		Connecting: connecting, EpisodeID: d.episode, Cause: cause})
 }

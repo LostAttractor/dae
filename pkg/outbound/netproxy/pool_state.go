@@ -4,6 +4,7 @@ package netproxy
 
 import (
 	"context"
+	"reflect"
 	"sync"
 )
 
@@ -53,18 +54,52 @@ func (p *PoolState) ready() int {
 }
 func (p *PoolState) publish() { p.publishPhase("") }
 
+// PoolCapacity is a protocol-owned membership observation. DesiredCapacity is
+// the protocol's expansion target, and EpisodeID advances only for distinct
+// shared-resource failures, not for repeated metadata about the same failure.
+type PoolCapacity struct {
+	UsableCapacity  int
+	DesiredCapacity int
+	Connecting      int
+	EpisodeID       uint64
+	Cause           error
+}
+
+// ObserveCapacity supports protocols that already own their member lifecycle
+// (for example fixed slots or independently multiplexed sessions). Such pools
+// report complete observations instead of using NewResource/Ready/Remove.
+func (p *PoolState) ObserveCapacity(capacity PoolCapacity) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.episode = max(p.episode, capacity.EpisodeID)
+	if p.cause == nil {
+		p.cause = capacity.Cause
+	}
+	desired := max(1, capacity.DesiredCapacity)
+	if capacity.UsableCapacity >= desired {
+		p.cause = nil
+	}
+	p.publishCapacity(capacity.UsableCapacity, desired, capacity.Connecting, "")
+}
+
 func (p *PoolState) publishPhase(override string) {
-	ready := p.ready()
+	p.publishCapacity(p.ready(), p.desired, p.connecting, override)
+}
+
+func (p *PoolState) publishCapacity(ready, desired, connecting int, override string) {
 	state, phase := SessionDisconnected, "queued"
 	if p.closed {
-		state, phase = SessionClosed, "stopped"
+		state, phase, ready = SessionClosed, "stopped", 0
 	} else if p.stateless || ready > 0 {
 		state, phase = SessionConnected, "ready"
-	} else if p.connecting > 0 {
+	} else if connecting > 0 {
 		state = SessionConnecting
 	}
-	required := !p.closed && !p.stateless && ready < p.desired
-	if !p.closed && p.connecting > 0 {
+	required := !p.closed && !p.stateless && ready < desired
+	if !p.closed && connecting > 0 {
 		phase = "connecting"
 	} else if required {
 		phase = "queued"
@@ -75,10 +110,28 @@ func (p *PoolState) publishPhase(override string) {
 	if override != "" && !p.closed {
 		phase = override
 	}
-	p.state.Publish(StateEvent{State: state, Cause: p.cause, Resource: p.ref, EpisodeID: p.episode,
+	event := StateEvent{State: state, Cause: p.cause, Resource: p.ref, EpisodeID: p.episode,
 		Layer: p.layer, Accepting: (p.stateless || ready > 0) && !p.closed, UsableCapacity: ready,
-		RecoveryRequired: required, RecoveryPhase: phase, RecoveryExecutor: RecoveryDaemon})
+		RecoveryRequired: required, RecoveryPhase: phase, RecoveryExecutor: RecoveryDaemon}
+	previous := p.state.Snapshot()
+	if previous.State == event.State && previous.Accepting == event.Accepting &&
+		previous.UsableCapacity == event.UsableCapacity && previous.Resource == event.Resource &&
+		previous.EpisodeID == event.EpisodeID && previous.Layer == event.Layer &&
+		previous.RecoveryRequired == event.RecoveryRequired && previous.RecoveryPhase == event.RecoveryPhase &&
+		samePoolCause(previous.Cause, event.Cause) {
+		return
+	}
+	p.state.Publish(event)
 }
+
+func samePoolCause(a, b error) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	// Arbitrary protocol errors need not have comparable concrete types.
+	return reflect.TypeOf(a).Comparable() && a == b
+}
+
 func (p *PoolState) IsReady(ref ResourceRef) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
