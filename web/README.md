@@ -424,7 +424,7 @@ the daemon version.
 
 ## Browser checks
 
-With Node.js 22.13+ and Chromium installed:
+With Node.js 22.13+, Chromium, OpenSSL and NSS `certutil` installed:
 
 ```sh
 make test
@@ -454,8 +454,9 @@ replies, membership-context changes and protected-result cleanup.
 Fixture state and browser processes are cleaned up when the test exits. These
 checks validate frontend behavior; daemon authorization has its own Go tests.
 
-To additionally exercise real browser TLS acceptance/rejection, install OpenSSL
-and NSS tools and supply `CERTUTIL=/path/to/certutil make test`. The test creates
+The Nix development shell provides OpenSSL and NSS tools for real browser
+TLS acceptance/rejection checks. Outside that shell, install `openssl` and NSS
+`certutil` on `PATH` before running `make test`. The test creates
 an isolated HOME/NSS database, trusts a temporary CA there, and checks trusted
 and untrusted HTTPS endpoints without certificate-error bypass flags. All trust
 data is removed with the temporary browser profile.

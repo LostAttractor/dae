@@ -48,9 +48,9 @@ let caGeneration = 0;
 const handshakeGeneration = new WeakMap<TLSSocket, number>();
 let renewAPILeaf: () => Promise<void>;
 
-// Optional real browser trust-store checks. HOME and the NSS database belong to
+// Real browser trust-store checks. HOME and the NSS database belong to
 // this temporary profile; no system/browser certificate store is modified.
-if (process.env.CERTUTIL) {
+{
   const exec = promisify(execFile);
   const root = join(profile, "root.pem"), rootKey = join(profile, "root.key");
   const leaf = join(profile, "leaf.pem"), leafKey = join(profile, "leaf.key"), csr = join(profile, "leaf.csr");
@@ -63,8 +63,8 @@ if (process.env.CERTUTIL) {
   await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", untrustedKey, "-out", untrusted, "-subj", "/CN=Untrusted Test", "-days", "1", "-addext", "subjectAltName=IP:127.0.0.1"]);
   const database = join(profile, ".pki", "nssdb");
   await mkdir(database, { recursive: true });
-  await exec(process.env.CERTUTIL, ["-N", "--empty-password", "-d", `sql:${database}`]);
-  await exec(process.env.CERTUTIL, ["-A", "-d", `sql:${database}`, "-n", "dae-browser-test", "-t", "C,,", "-i", root]);
+  await exec("certutil", ["-N", "--empty-password", "-d", `sql:${database}`]);
+  await exec("certutil", ["-A", "-d", `sql:${database}`, "-n", "dae-browser-test", "-t", "C,,", "-i", root]);
   renewAPILeaf = async () => {
     const cert = join(profile, "renewed.pem");
     await exec("openssl", ["x509", "-req", "-in", csr, "-CA", fixture.untrusted ? untrusted : root, "-CAkey", fixture.untrusted ? untrustedKey : rootKey, "-set_serial", String(++caGeneration + 100), "-out", cert, "-days", "1", "-extfile", extensions]);
@@ -499,7 +499,7 @@ try {
     assert.doesNotMatch(await js('document.querySelector("#device-status").textContent'), /failed|Retrying/);
   });
 
-  if (process.env.CERTUTIL) await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
+  await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
     fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "browser-one", mitm_test_origins: mitmOrigins };
     fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "browser-ca" };
     await js('document.querySelector("#refresh").click()');
@@ -557,9 +557,8 @@ try {
       assert.equal(fixture.testData, undefined);
     } finally { origin = ipv4Origin; }
   });
-  else console.log("SKIP real browser CA trust-store checks (set CERTUTIL to an NSS certutil executable)");
 
-  if (process.env.CERTUTIL) await test("real browser TLS warning does not establish CA trust", async () => {
+  await test("real browser TLS warning does not establish CA trust", async () => {
     fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca" };
     fixture.untrusted = true;
     // Switching this fixture's CA must retire pooled connections from earlier

@@ -22,6 +22,8 @@ in pkgs.mkShell ({
     nodejs_22
     # The pnpm shim selects package.json's packageManager version.
     corepack
+    openssl
+    nssTools
     binutils
     bpftools
     go_1_27
