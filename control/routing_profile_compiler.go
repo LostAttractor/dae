@@ -202,76 +202,28 @@ func routingSetKey(name string, condition []*config_parser.Function) routingRule
 	return routingRuleSetKey{name: name, condition: signature.String()}
 }
 
+func (c *routingCompiler) routingProgram() ruleSetCompiler[resolvedRoutingBlock] {
+	return ruleSetCompiler[resolvedRoutingBlock]{
+		kind: "routing", cache: c.resolved,
+		compile: func(rules []*config_parser.RoutingRule, name string) (resolvedRoutingBlock, error) {
+			span, err := c.compileRuleBatch(rules, name)
+			var block resolvedRoutingBlock
+			if err == nil {
+				err = block.appendSpan(span)
+			}
+			return block, err
+		},
+		condition: c.builder.conditionalBlock,
+		append:    (*resolvedRoutingBlock).appendBlock,
+	}
+}
+
 func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
-	key := routingSetKey(name, condition)
-	if block, ok := c.resolved[key]; ok {
-		return block, nil
-	}
-	set, ok := c.sets[name]
-	if !ok {
-		return resolvedRoutingBlock{}, fmt.Errorf("undefined routing rule_set %q", name)
-	}
-	var block resolvedRoutingBlock
-	var err error
-	if len(condition) == 0 {
-		block, err = c.resolveStatements(set.Name, set.Statements)
-	} else {
-		block, err = c.resolveSet(name, nil)
-		if err == nil {
-			block, err = c.builder.conditionalBlock(block, condition, name)
-		}
-	}
-	if err != nil {
-		return resolvedRoutingBlock{}, err
-	}
-	if len(c.resolved)+len(c.flows) >= consts.MaxMatchSetLen {
-		return resolvedRoutingBlock{}, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
-	}
-	c.resolved[key] = block
-	return block, nil
+	return c.resolveRuleSet(c.routingProgram(), name, condition)
 }
 
 func (c *routingCompiler) resolveStatements(name string, statements []config.RoutingStatement) (resolvedRoutingBlock, error) {
-	var block resolvedRoutingBlock
-	var localRules []*config_parser.RoutingRule
-	flush := func() error {
-		if len(localRules) == 0 {
-			return nil
-		}
-		span, err := c.compileRuleBatch(localRules, name)
-		if err != nil {
-			return fmt.Errorf("compile routing block %q: %w", name, err)
-		}
-		localRules = nil
-		if err := block.appendSpan(span); err != nil {
-			return fmt.Errorf("routing block %q %w", name, err)
-		}
-		return nil
-	}
-
-	for _, statement := range statements {
-		switch statement.Kind {
-		case config.RoutingStatementRule:
-			localRules = append(localRules, statement.Rule)
-		case config.RoutingStatementUse:
-			if err := flush(); err != nil {
-				return resolvedRoutingBlock{}, err
-			}
-			called, err := c.resolveSet(statement.Use, statement.Condition)
-			if err != nil {
-				return resolvedRoutingBlock{}, fmt.Errorf("routing block %q: %w", name, err)
-			}
-			if err := block.appendBlock(called); err != nil {
-				return resolvedRoutingBlock{}, fmt.Errorf("routing block %q %w", name, err)
-			}
-		default:
-			return resolvedRoutingBlock{}, fmt.Errorf("routing block %q contains an unknown statement", name)
-		}
-	}
-	if err := flush(); err != nil {
-		return resolvedRoutingBlock{}, err
-	}
-	return block, nil
+	return c.resolveBlockStatements(c.routingProgram(), name, statements)
 }
 
 // Even an empty referenced fragment must validate its condition, without

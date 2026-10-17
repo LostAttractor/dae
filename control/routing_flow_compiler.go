@@ -158,72 +158,19 @@ func (c *routingCompiler) compileFlowBatch(rules []*config_parser.RoutingRule, o
 	return block, err
 }
 
+func (c *routingCompiler) flowProgram() ruleSetCompiler[resolvedFlowBlock] {
+	return ruleSetCompiler[resolvedFlowBlock]{
+		kind: "flow", cache: c.flows, compile: c.compileFlowBatch,
+		condition: c.conditionalFlowBlock, append: (*resolvedFlowBlock).append,
+	}
+}
+
 func (c *routingCompiler) resolveFlowSet(name string, condition []*config_parser.Function) (resolvedFlowBlock, error) {
-	key := routingSetKey(name, condition)
-	if block, ok := c.flows[key]; ok {
-		return block, nil
-	}
-	set, ok := c.sets[name]
-	if !ok {
-		return resolvedFlowBlock{}, fmt.Errorf("undefined routing rule_set %q", name)
-	}
-	var block resolvedFlowBlock
-	var err error
-	if len(condition) == 0 {
-		block, err = c.resolveFlowStatements(name, set.Statements)
-	} else {
-		block, err = c.resolveFlowSet(name, nil)
-		if err == nil {
-			block, err = c.conditionalFlowBlock(block, condition, name)
-		}
-	}
-	if err != nil {
-		return block, err
-	}
-	if len(c.resolved)+len(c.flows) >= consts.MaxMatchSetLen {
-		return block, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
-	}
-	c.flows[key] = block
-	return block, nil
+	return c.resolveRuleSet(c.flowProgram(), name, condition)
 }
 
 func (c *routingCompiler) resolveFlowStatements(name string, statements []config.RoutingStatement) (resolvedFlowBlock, error) {
-	var block resolvedFlowBlock
-	var local []*config_parser.RoutingRule
-	flush := func() error {
-		if len(local) == 0 {
-			return nil
-		}
-		batch, err := c.compileFlowBatch(local, name)
-		if err != nil {
-			return fmt.Errorf("compile flow block %q: %w", name, err)
-		}
-		local = nil
-		return block.append(batch)
-	}
-	for _, statement := range statements {
-		switch statement.Kind {
-		case config.RoutingStatementRule:
-			local = append(local, statement.Rule)
-		case config.RoutingStatementUse:
-			if err := flush(); err != nil {
-				return block, err
-			}
-			called, err := c.resolveFlowSet(statement.Use, statement.Condition)
-			if err != nil {
-				return block, fmt.Errorf("flow block %q: %w", name, err)
-			}
-			if err := block.append(called); err != nil {
-				return block, err
-			}
-		default:
-			return block, fmt.Errorf("flow block %q contains an unknown statement", name)
-		}
-	}
-	if err := flush(); err != nil {
-		return block, err
-	}
-	return block, nil
+	return c.resolveBlockStatements(c.flowProgram(), name, statements)
 }
 
 // Exact destination programs are appended after the entire kernel pool. Shared
