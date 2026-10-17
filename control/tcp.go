@@ -14,7 +14,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -122,29 +121,20 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 
 	// Ordinary relays establish their outbound before leaving the setup phase.
 	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
-	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
-	defer cancel()
-	stopPolicy := watchAbort(nil, dialOption.PolicyLease, nil, func() {
-		cancel()
+	upstream := newUpstreamDial(dialOption)
+	upstream.route = routeLease
+	upstream.abort = func() {
 		setTCPResetOnClose(lConn)
 		_ = lConn.Close()
-	})
-	defer stopPolicy()
-
-	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
-	start := time.Now()
-	rConn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
-	if cause := connectionAbortCause(dialOption.PolicyLease, routeLease); cause != nil {
-		setTCPResetOnClose(lConn)
-		closeInBackground(rConn)
-		return nil, cause
 	}
+	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
+	rConn, err := upstream.establishUpstream(setupCtx, func(ctx context.Context) (net.Conn, error) {
+		return dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
+	})
 	if err != nil {
-		meta := netproxy.Failure{Phase: netproxy.OpDial}
-		if dialOption.Direct {
-			meta.Origin = netproxy.OriginTarget
+		if cause := connectionAbortCause(dialOption.PolicyLease, routeLease); cause != nil {
+			return nil, cause
 		}
-		err = netproxy.WrapFailure(err, meta)
 		if !recordDataPlaneError(dialOption.Dialer, statsPath, err) {
 			if ctxErr := setupCtx.Err(); ctxErr != nil {
 				return nil, ctxErr
@@ -153,12 +143,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		}
 		return nil, fmt.Errorf("connect TCP outbound %q via %q for %q: %w", dialOption.Outbound.Name, dialOption.Dialer.Name, domain, err)
 	}
-	if err := setupCtx.Err(); err != nil {
-		closeInBackground(rConn)
-		return nil, err
-	}
 
-	stats.DefaultStore.RecordDial(statsPath, time.Since(start))
 	relay = &tcpRelay{
 		activity:    observe,
 		lConn:       sniffer,

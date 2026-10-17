@@ -340,30 +340,20 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		}
 		c.logDial(src, ue.firstDst, domain, option, label, pending.routingResult)
 
-		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-		stopSetup := watchAbort(nil, option.PolicyLease, nil, cancel)
-		var dialErr error
-		conn, dialErr = p.packetBudget().Open(dialCtx, option.DialTarget, option.dialerForConnection().ListenPacket)
-		setupErr := dialCtx.Err()
-		stopSetup()
-		cancel()
-		if cause := connectionAbortCause(option.PolicyLease, ue.routeLease); cause != nil {
-			closeInBackground(conn)
+		upstream := newUpstreamDial(option)
+		upstream.route = ue.routeLease
+		conn, err = upstream.establishUpstream(ctx, func(ctx context.Context) (net.PacketConn, error) {
+			return p.packetBudget().Open(ctx, option.DialTarget, option.dialerForConnection().ListenPacket)
+		})
+		if err != nil {
 			p.removeInBackgroundLocked(src, ue)
-			return cause
-		}
-		if dialErr != nil {
-			p.removeInBackgroundLocked(src, ue)
-			err = netproxy.WrapFailure(dialErr, netproxy.Failure{Phase: netproxy.OpDial, Origin: ue.origin})
+			if cause := connectionAbortCause(option.PolicyLease, ue.routeLease); cause != nil {
+				return cause
+			}
 			if !recordDataPlaneError(ue.dialer, path, err) {
 				return nil
 			}
 			return fmt.Errorf("open UDP association via outbound %q node %q: %w", path.Outbound, ue.dialer.Name, err)
-		}
-		if setupErr != nil {
-			closeInBackground(conn)
-			p.removeInBackgroundLocked(src, ue)
-			return setupErr
 		}
 	}
 	var socketKey netip.AddrPort

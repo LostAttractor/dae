@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"sync/atomic"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/resource"
@@ -49,28 +48,12 @@ func dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, err
 	if option.Outbound.Name == consts.OutboundBlock.String() {
 		return nil, fmt.Errorf("HTTP upstream blocked by routing")
 	}
-	ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
-	defer cancel()
-	stop := watchAbort(nil, option.PolicyLease, nil, cancel)
-	defer stop()
-	if cause := option.PolicyLease.AbortCause(); cause != nil {
-		return nil, cause
-	}
-	path, _ := option.trafficAttribution()
-	started := time.Now()
-	conn, err := option.dialerForConnection().DialContext(ctx, "tcp", option.DialTarget)
-	if cause := option.PolicyLease.AbortCause(); cause != nil {
-		closeInBackground(conn)
-		return nil, cause
-	}
+	conn, err := newUpstreamDial(option).establishUpstream(parent, func(ctx context.Context) (net.Conn, error) {
+		return option.dialerForConnection().DialContext(ctx, "tcp", option.DialTarget)
+	})
 	if err != nil {
-		return nil, recordHTTPDialFailure(parent, option, err)
-	}
-	if err := ctx.Err(); err != nil {
-		closeInBackground(conn)
 		return nil, err
 	}
-	stats.DefaultStore.RecordDial(path, time.Since(started))
 	return &mitmUpstreamConn{Conn: conn, httpUpstream: newHTTPUpstream(option, conn)}, nil
 }
 
@@ -108,28 +91,12 @@ func (c *mitmUpstreamConn) Close() error {
 }
 
 func dialHTTPPacketUpstream(parent context.Context, option *DialOption) (net.PacketConn, net.Addr, error) {
-	ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
-	defer cancel()
-	stop := watchAbort(nil, option.PolicyLease, nil, cancel)
-	defer stop()
-	if cause := option.PolicyLease.AbortCause(); cause != nil {
-		return nil, nil, cause
-	}
-	path, _ := option.trafficAttribution()
-	started := time.Now()
-	conn, err := option.dialerForConnection().ListenPacket(ctx, option.DialTarget)
-	if cause := option.PolicyLease.AbortCause(); cause != nil {
-		closeInBackground(conn)
-		return nil, nil, cause
-	}
+	conn, err := newUpstreamDial(option).establishUpstream(parent, func(ctx context.Context) (net.PacketConn, error) {
+		return option.dialerForConnection().ListenPacket(ctx, option.DialTarget)
+	})
 	if err != nil {
-		return nil, nil, recordHTTPDialFailure(parent, option, err)
-	}
-	if err := ctx.Err(); err != nil {
-		closeInBackground(conn)
 		return nil, nil, err
 	}
-	stats.DefaultStore.RecordDial(path, time.Since(started))
 	return &mitmUpstreamPacketConn{PacketConn: conn, httpUpstream: newHTTPUpstream(option, conn)}, netproxy.NewAddr("udp", option.DialTarget), nil
 }
 
@@ -209,18 +176,5 @@ func (u *httpUpstream) failure(err error, phase netproxy.Operation) error {
 		err = netproxy.WrapFailure(err, netproxy.Failure{Phase: phase, Origin: u.origin})
 	}
 	recordDataPlaneError(u.dialer, u.path, err)
-	return err
-}
-
-func recordHTTPDialFailure(parent context.Context, option *DialOption, err error) error {
-	meta := netproxy.Failure{Phase: netproxy.OpDial}
-	if option.Direct {
-		meta.Origin = netproxy.OriginTarget
-	}
-	err = netproxy.WrapFailure(err, meta)
-	if parent.Err() == nil {
-		path, _ := option.trafficAttribution()
-		recordDataPlaneError(option.Dialer, path, err)
-	}
 	return err
 }

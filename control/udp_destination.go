@@ -120,20 +120,12 @@ func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst 
 	if full {
 		return nil, netproxy.PacketCapacityError()
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stop := watchAbort(ue.lease, ue.policyLease, ue.routeLease, cancel)
-	defer stop()
-	conn, err := p.packetBudget().Open(ctx, target.String(), ue.packetDialer.ListenPacket)
-	if cause := connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease); cause != nil {
-		closeInBackground(conn)
-		return nil, cause
-	}
+	upstream := upstreamDial{dialer: ue.dialer, path: ue.statsPath, origin: ue.origin,
+		resource: ue.lease, policy: ue.policyLease, route: ue.routeLease}
+	conn, err := upstream.establishUpstream(ctx, func(ctx context.Context) (net.PacketConn, error) {
+		return p.packetBudget().Open(ctx, target.String(), ue.packetDialer.ListenPacket)
+	})
 	if err != nil {
-		return nil, netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpDial, Origin: ue.origin})
-	}
-	if err := ctx.Err(); err != nil {
-		closeInBackground(conn)
 		return nil, err
 	}
 	if key.IsValid() {

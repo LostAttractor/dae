@@ -156,6 +156,9 @@ func recordDataPlaneError(reporter *dialer.Dialer, path stats.Path, err error) b
 	if err == nil {
 		return false
 	}
+	if setup, ok := errors.AsType[*upstreamDialError](err); ok {
+		return setup.reportable
+	}
 	if reporter != nil {
 		reporter.ReportDataPlaneError(err)
 	}
