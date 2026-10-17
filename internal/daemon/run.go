@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
@@ -68,6 +69,12 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		os.Exit(1)
 	})
 	defer stopWatchdog()
+	stopSampling, err := stats.DefaultStore.StartSampling()
+	if err != nil {
+		return fmt.Errorf("start traffic sampling: %w", err)
+	}
+	// Keep sampling through reloads and until all traffic producers have drained.
+	defer stopSampling()
 	startPprofServer(conf.Global.PprofPort)
 	defer startPprofServer(0)
 	settingsPath := filepath.Join(common.CacheDirectory(), "runtime-state.json")

@@ -22,7 +22,7 @@ type availabilityTransition struct {
 // With the default 30-second check interval, this is about 2,880 timestamps
 // per node; transitions are only appended when aliveness changes.
 //
-// Store.availabilityMu serializes all access.
+// availabilityStore.mu serializes all access.
 type recentAvailability struct {
 	transitions  []availabilityTransition
 	checkTimes   []time.Time

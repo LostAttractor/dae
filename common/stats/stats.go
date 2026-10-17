@@ -8,7 +8,6 @@
 package stats
 
 import (
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +17,8 @@ import (
 
 // Store owns process-lifetime runtime statistics. Its zero value is not usable.
 type Store struct {
+	*availabilityStore
+
 	startedAt time.Time
 
 	pathsMu        sync.RWMutex
@@ -32,40 +33,29 @@ type Store struct {
 
 	externalReadErrors atomic.Uint64
 
+	samplerMu        sync.Mutex
+	samplerRunning   bool
 	samplingMu       sync.RWMutex
 	windowStartedAt  time.Time
 	history          [api.TrafficHistorySampleCount]map[Path]trafficRate
 	completedSamples uint64
 
-	availabilityMu sync.Mutex
-	nodes          map[string]*nodeStats
-	groups         map[string]*groupStats
-	lastReload     atomic.Int64
-	metrics        storeMetrics
-	selections     []SelectionMetricsSource
+	lastReload atomic.Int64
+	metrics    storeMetrics
 }
 
+// DefaultStore records process-wide statistics without starting background work.
+// The daemon owns its traffic sampler through StartSampling.
 var DefaultStore = newStoreAt(time.Now())
-
-func init() { go DefaultStore.run() }
 
 func newStoreAt(windowStartedAt time.Time) *Store {
 	return &Store{
-		startedAt:       windowStartedAt,
-		paths:           make(map[Path]*pathCounters),
-		samplePaths:     make(map[*pathCounters]struct{}),
-		windowStartedAt: windowStartedAt,
-		nodes:           make(map[string]*nodeStats),
-		groups:          make(map[string]*groupStats),
-		metrics:         newStoreMetrics(),
-	}
-}
-
-func (s *Store) run() {
-	ticker := time.NewTicker(api.TrafficHistoryInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.sampleAt(time.Now())
+		availabilityStore: newAvailabilityStore(),
+		startedAt:         windowStartedAt,
+		paths:             make(map[Path]*pathCounters),
+		samplePaths:       make(map[*pathCounters]struct{}),
+		windowStartedAt:   windowStartedAt,
+		metrics:           newStoreMetrics(),
 	}
 }
 
@@ -85,32 +75,4 @@ func (s *Store) LastReload() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(seconds, 0)
-}
-
-// Reconcile removes availability state that does not belong to the newly
-// committed control plane. Retained identities preserve their process-lifetime
-// history; identities removed and later re-added start fresh.
-func (s *Store) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[string]struct{}, sources ...SelectionMetricsSource) {
-	s.availabilityMu.Lock()
-	nodes := make(map[string]*nodeStats, len(activeNodes))
-	for key, identity := range activeNodes {
-		state := s.nodes[key]
-		if state == nil || state.NodeIdentity != identity {
-			state = &nodeStats{NodeIdentity: identity}
-		}
-		nodes[key] = state
-	}
-	s.nodes = nodes
-
-	groups := make(map[string]*groupStats, len(activeGroups))
-	for name := range activeGroups {
-		group := s.groups[name]
-		if group == nil {
-			group = new(groupStats)
-		}
-		groups[name] = group
-	}
-	s.groups = groups
-	s.selections = slices.Clone(sources)
-	s.availabilityMu.Unlock()
 }

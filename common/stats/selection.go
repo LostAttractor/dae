@@ -26,6 +26,8 @@ type SelectionMetricsSource interface {
 }
 
 var (
+	checkLatencyLabels = []string{"id", "outbound", "subtag", "dialer", "network", "sample"}
+
 	checkLatencyDesc = prometheus.NewDesc("dae_check_latency_seconds",
 		"Connectivity-check latency in seconds by sample type.", checkLatencyLabels, nil)
 	selectionRankDesc = prometheus.NewDesc("dae_selection_rank",
@@ -34,10 +36,10 @@ var (
 		"Policy latency plus configured offset; may be negative and is not measured latency.", pathLabels, nil)
 )
 
-func (s *Store) collectSelections(ch chan<- prometheus.Metric) {
-	s.availabilityMu.Lock()
+func (s *availabilityStore) collectSelections(ch chan<- prometheus.Metric) {
+	s.mu.Lock()
 	sources := s.selections // Reconcile replaces this immutable slice.
-	s.availabilityMu.Unlock()
+	s.mu.Unlock()
 	// Never call a runtime source with the store lock held: snapshots can also
 	// read availability, and connectivity publication goes in the other direction.
 	for _, source := range sources {

@@ -8,10 +8,58 @@ package stats
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 )
+
+// availabilityStore owns node and group histories, recovery counters and the
+// current selection sources. Traffic sampling never acquires its lock.
+type availabilityStore struct {
+	mu         sync.Mutex
+	nodes      map[string]*nodeStats
+	groups     map[string]*groupStats
+	selections []SelectionMetricsSource
+	metrics    availabilityMetrics
+}
+
+func newAvailabilityStore() *availabilityStore {
+	return &availabilityStore{
+		nodes:   make(map[string]*nodeStats),
+		groups:  make(map[string]*groupStats),
+		metrics: newAvailabilityMetrics(),
+	}
+}
+
+// Reconcile removes availability state that does not belong to the newly
+// committed control plane. Retained identities preserve their process-lifetime
+// history; identities removed and later re-added start fresh.
+func (s *availabilityStore) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[string]struct{}, sources ...SelectionMetricsSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nodes := make(map[string]*nodeStats, len(activeNodes))
+	for key, identity := range activeNodes {
+		state := s.nodes[key]
+		if state == nil || state.NodeIdentity != identity {
+			state = &nodeStats{NodeIdentity: identity}
+		}
+		nodes[key] = state
+	}
+	s.nodes = nodes
+
+	groups := make(map[string]*groupStats, len(activeGroups))
+	for name := range activeGroups {
+		group := s.groups[name]
+		if group == nil {
+			group = new(groupStats)
+		}
+		groups[name] = group
+	}
+	s.groups = groups
+	s.selections = slices.Clone(sources)
+}
 
 // NodeIdentity describes an availability identity retained by the currently
 // committed control plane.
@@ -126,9 +174,9 @@ func NodeID(key string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func (s *Store) recordNode(key string, alive, checked bool, failureStartedAt time.Time) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
+func (s *availabilityStore) recordNode(key string, alive, checked bool, failureStartedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if state := s.nodes[key]; state != nil {
 		if state.alive && !alive {
 			s.metrics.nodeUnavailable.WithLabelValues(NodeID(key), state.Subtag, state.Name).Inc()
@@ -137,19 +185,19 @@ func (s *Store) recordNode(key string, alive, checked bool, failureStartedAt tim
 	}
 }
 
-func (s *Store) RecordNodeCheck(key string, alive bool, failureStartedAt time.Time) {
+func (s *availabilityStore) RecordNodeCheck(key string, alive bool, failureStartedAt time.Time) {
 	s.recordNode(key, alive, true, failureStartedAt)
 }
 
-func (s *Store) RecordNodeState(key string, alive bool, failureStartedAt time.Time) {
+func (s *availabilityStore) RecordNodeState(key string, alive bool, failureStartedAt time.Time) {
 	s.recordNode(key, alive, false, failureStartedAt)
 }
 
 // RecordNodeConnFail records a data-plane connection failure. It is a no-op
 // for nodes that have never been recorded.
-func (s *Store) RecordNodeConnFail(key string) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
+func (s *availabilityStore) RecordNodeConnFail(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	state := s.nodes[key]
 	if state == nil {
 		return
@@ -157,9 +205,9 @@ func (s *Store) RecordNodeConnFail(key string) {
 	state.lastConnFail = time.Now()
 }
 
-func (s *Store) GetNode(key string) api.Availability {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
+func (s *availabilityStore) GetNode(key string) api.Availability {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	state := s.nodes[key]
 	if state == nil {
 		return api.Availability{}
@@ -172,9 +220,9 @@ type groupStats struct {
 	states recentGroupStates
 }
 
-func (s *Store) RecordGroup(name string, available bool) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
+func (s *availabilityStore) RecordGroup(name string, available bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	group := s.groups[name]
 	if group == nil {
 		return
@@ -184,9 +232,9 @@ func (s *Store) RecordGroup(name string, available bool) {
 	group.states.record(now, available)
 }
 
-func (s *Store) GetGroup(name string) api.GroupAvailability {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
+func (s *availabilityStore) GetGroup(name string) api.GroupAvailability {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	group := s.groups[name]
 	if group == nil {
 		return api.GroupAvailability{Recent: emptyGroupStateWindow()}
