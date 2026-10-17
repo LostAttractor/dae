@@ -7,10 +7,8 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/common"
@@ -34,7 +32,6 @@ var (
 )
 
 func init() {
-	http.DefaultClient.Timeout = 30 * time.Second
 	config.Version = Version
 	rootCmd.Version = strings.Join([]string{
 		Version,

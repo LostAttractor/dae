@@ -95,7 +95,7 @@ func newFailoverTestGroup(t *testing.T, policy dialer.DialerSelectionPolicy, ann
 	if annotations == nil {
 		annotations = emptyAnnotations(len(nodes))
 	}
-	group := NewDialerGroup(option, t.Name(), GroupKindSelector, nodes, annotations, policy, nil)
+	group := NewDialerGroup(option, t.Name(), GroupKindSelector, nodes, annotations, policy)
 	t.Cleanup(func() { _ = group.Close() })
 	start := make(chan struct{})
 	if _, err := group.StartConnectivityChecks(start); err != nil {
@@ -317,7 +317,7 @@ func TestContinuousAliasesDoNotCountAsIndependentPeers(t *testing.T) {
 		annotations[0].Priority, annotations[1].Priority = 1, 1
 		policy := testFailoverPolicy()
 		policy.Policy = consts.DialerSelectionPolicy_MinMovingAverageLatencies
-		g := NewDialerGroup(option, t.Name(), GroupKindSelector, []*dialer.Dialer{high, alias, low}, annotations, policy, nil)
+		g := NewDialerGroup(option, t.Name(), GroupKindSelector, []*dialer.Dialer{high, alias, low}, annotations, policy)
 		defer g.Close()
 		start := make(chan struct{})
 		if _, err := g.StartConnectivityChecks(start); err != nil {
@@ -352,7 +352,7 @@ func TestFailoverReleasesOnlyIdleUnselectedTransports(t *testing.T) {
 		}
 		annotations := emptyAnnotations(2)
 		annotations[0].Priority = 10
-		g := NewDialerGroup(option, t.Name(), GroupKindSelector, nodes, annotations, testFailoverPolicy(), nil)
+		g := NewDialerGroup(option, t.Name(), GroupKindSelector, nodes, annotations, testFailoverPolicy())
 		defer g.Close()
 		start := make(chan struct{})
 		_, err := g.StartConnectivityChecks(start)
@@ -652,7 +652,7 @@ func TestSelectionWaitBudgetSurvivesElectionReplacement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				policy := testFailoverPolicy()
-				g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector, nil, nil, policy, nil)
+				g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector, nil, nil, policy)
 				defer g.Close()
 				// Hold publication while simulating canceled/replaced background
 				// jobs. A waiting request must keep its original deadline.

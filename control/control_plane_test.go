@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,14 +27,8 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	outboundDirect "github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	"github.com/vishvananda/netlink"
 )
-
-func TestMain(m *testing.M) {
-	outboundDirect.InitDirectDialers(false, 0)
-	os.Exit(m.Run())
-}
 
 func TestNewControlPlaneCheckAsyncDefaults(t *testing.T) {
 	sections, err := config_parser.Parse(`
@@ -486,13 +479,12 @@ func TestRouteDialOptionUsesActualFallbackOutbound(t *testing.T) {
 			name,
 		)
 	}
-	callback := func(bool, *common.NetworkType) error { return nil }
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{newDialer("direct", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("direct", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
-		[]*dialer.Dialer{newDialer("block", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("block", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	original := outbound.NewDialerGroup(option, "original", outbound.GroupKindSelector,
-		[]*dialer.Dialer{newDialer("original", true)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("original", true)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() {
 		_ = direct.Close()
 		_ = block.Close()
@@ -546,7 +538,6 @@ func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 		[]*dialer.Dialer{d},
 		[]*dialer.Annotation{{}},
 		dialer.DialerSelectionPolicy{},
-		func(bool, *common.NetworkType) error { return nil },
 	)
 	t.Cleanup(func() { _ = group.Close() })
 	wantNetwork := common.NetworkType{

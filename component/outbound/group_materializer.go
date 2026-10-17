@@ -129,8 +129,7 @@ func (m *GroupMaterializer) MaterializeGroup(ctx context.Context, target *Resolv
 		if len(dialers) == 0 {
 			return nil, fmt.Errorf("target %q has no usable paths", name)
 		}
-		group := NewDialerGroup(finalOption, name, GroupKindSelector, dialers, annotations, selectionPolicy,
-			nil).SetTargetMetadata(target.Kind)
+		group := NewDialerGroup(finalOption, name, GroupKindSelector, dialers, annotations, selectionPolicy).SetTargetMetadata(target.Kind)
 		closeOnReselect := target.Group != nil && target.Group.ReselectBehavior == "close"
 		group.SetConnectionPolicy(closeOnReselect, m.global.RouteChangeBehavior == "close")
 		return group, nil

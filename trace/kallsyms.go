@@ -27,7 +27,6 @@ type Symbol struct {
 
 var kallsyms []Symbol
 var kallsymsByName map[string]Symbol = make(map[string]Symbol)
-var kallsymsByAddr map[uint64]Symbol = make(map[uint64]Symbol)
 var kprobeSymbols = make(map[string]struct{})
 
 func ReadKallsyms() error {
@@ -50,7 +49,6 @@ func ReadKallsyms() error {
 		typ, name := parts[1], parts[2]
 		kallsyms = append(kallsyms, Symbol{typ, name, addr})
 		kallsymsByName[name] = Symbol{typ, name, addr}
-		kallsymsByAddr[addr] = Symbol{typ, name, addr}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read kernel symbols: %w", err)

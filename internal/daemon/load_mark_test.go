@@ -9,11 +9,9 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
-	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
-	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
 	bpf := control.NewRuntime()
 	t.Cleanup(func() { _ = bpf.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -21,9 +19,6 @@ func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
 	_, err := newControlPlane(ctx, bpf, &config.Config{}, nil, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("newControlPlane error = %v, want context cancellation", err)
-	}
-	if direct.Direct != previousDirect || direct.Bootstrap != previousBootstrap {
-		t.Fatal("candidate replaced process dialers")
 	}
 }
 

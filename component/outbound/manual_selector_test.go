@@ -115,7 +115,7 @@ func TestManualSelectorStartupUsesRestoredSelection(t *testing.T) {
 				}
 				g := NewDialerGroup(option, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 					Policy: consts.DialerSelectionPolicy_Selector, FixedIndex: 1 - selected, FixedIndexSet: true, TrackAll: trackAll,
-				}, nil)
+				})
 				t.Cleanup(func() { _ = g.Close() })
 				if err := g.SetSelection(paths[selected].StatsID()); err != nil {
 					t.Fatal(err)
@@ -183,7 +183,7 @@ func TestManualSelectorTrackingFollowsCommittedSelection(t *testing.T) {
 		paths := []*dialer.Dialer{newCheckedDialer(t, "first"), newCheckedDialer(t, "second")}
 		g := NewDialerGroup(paths[0].GlobalOption, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_Selector, FixedIndexSet: true, TrackAll: trackAll,
-		}, nil)
+		})
 		t.Cleanup(func() { _ = g.Close() })
 		assertTracking := func(first, second bool) {
 			t.Helper()

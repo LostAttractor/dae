@@ -33,7 +33,7 @@ func TestFailedUDPFallbackIsNotEstablished(t *testing.T) {
 	option := new(dialer.GlobalOption)
 	group := func(name string, checked bool, kind outbound.GroupKind) *outbound.DialerGroup {
 		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: data}), option, &dialer.Property{Name: name}, checked, name)
-		g := outbound.NewDialerGroup(option, name, kind, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+		g := outbound.NewDialerGroup(option, name, kind, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 		t.Cleanup(func() { _ = g.Close() })
 		return g
 	}

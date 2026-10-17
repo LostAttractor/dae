@@ -13,7 +13,6 @@ import (
 	"io"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +24,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	outboundDirect "github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
 	log "github.com/sirupsen/logrus"
 )
@@ -64,11 +62,6 @@ func TestInvalidNodeDiagnosticsDoNotExposeLink(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestMain(m *testing.M) {
-	outboundDirect.InitDirectDialers(false, 0)
-	os.Exit(m.Run())
 }
 
 type closeableTestDialer struct{ closed atomic.Bool }

@@ -64,7 +64,7 @@ func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 				option := new(dialer.GlobalOption)
 				d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: data}), option, &dialer.Property{Name: name}, false, name)
 				g := outbound.NewDialerGroup(option, name, outbound.GroupKindSingleAlwaysAlive,
-					[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+					[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 				t.Cleanup(func() { _ = g.Close() })
 				return g, data
 			}
@@ -163,7 +163,7 @@ func TestUDPDirectFallbackRetainsOriginalGroupPolicy(t *testing.T) {
 	option := new(dialer.GlobalOption)
 	makeGroup := func(name string, checked bool, kind outbound.GroupKind) *outbound.DialerGroup {
 		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{Name: name}, checked, name)
-		g := outbound.NewDialerGroup(option, name, kind, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+		g := outbound.NewDialerGroup(option, name, kind, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 		t.Cleanup(func() { _ = g.Close() })
 		return g
 	}

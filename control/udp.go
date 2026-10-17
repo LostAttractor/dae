@@ -37,8 +37,6 @@ const (
 	// larger than an Ethernet frame. Never forward a truncated payload.
 	udpReceiveBufferSize = 65535
 	udpSniffingTimeout   = 3 * time.Second
-	DnsNatTimeout        = 17 * time.Second // RFC 5452
-	MaxRetry             = 2
 )
 
 func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {

@@ -116,7 +116,7 @@ func TestHTTPPolicyDoesNotFallBackFromUnavailableGroup(t *testing.T) {
 	options := &dialer.GlobalOption{}
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: unused}), options, &dialer.Property{Name: "unavailable"}, true, "")
 	group := outbound.NewDialerGroup(options, "unavailable", outbound.GroupKindSelector,
-		[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+		[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = group.Close() })
 	plane.outbounds[2] = group
 	ctx := pluginctx.WithHTTPPolicy(t.Context(), "unavailable")

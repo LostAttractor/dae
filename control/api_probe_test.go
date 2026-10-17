@@ -147,7 +147,7 @@ func TestProbeAPIUsesCheckedOutboundsBeyondSelectors(t *testing.T) {
 	plane := newAPITestPlaneWithPolicy(t, store, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Random})
 	option := &dialer.GlobalOption{}
 	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Name: "direct"}, false, "")
-	builtin := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{direct}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+	builtin := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{direct}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = builtin.Close() })
 	plane.outbounds = append(plane.outbounds, builtin)
 	handler := plane.apiHandler("test", testClientIngress, nil, nil)

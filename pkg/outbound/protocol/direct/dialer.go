@@ -12,18 +12,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
-var (
-	Direct netproxy.Dialer
-	// Bootstrap is the physical base of proxy chains. Its DNS must not depend
-	// on routing through a proxy that this very dial is trying to establish.
-	Bootstrap netproxy.Dialer
-)
-
-func InitDirectDialers(mptcp bool, mark int) {
-	Direct = NewDirectDialer(Option{Resolver: net.DefaultResolver, Mptcp: mptcp, Mark: mark})
-	Bootstrap = NewDirectDialer(Option{Resolver: common.BootstrapResolver, Mptcp: mptcp, Mark: mark})
-}
-
 type Option struct {
 	// Resolver is supplied by the owner; nil uses net.DefaultResolver.
 	// Socket marks apply to data sockets. DNS transport policy belongs to Resolver.

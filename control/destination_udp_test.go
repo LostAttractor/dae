@@ -58,7 +58,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			newGroup := func() *outbound.DialerGroup {
 				global := &dialer.GlobalOption{}
 				d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: recorder}), global, &dialer.Property{Name: t.Name()}, false, "")
-				group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+				group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 				t.Cleanup(func() { _ = group.Close() })
 				return group
 			}

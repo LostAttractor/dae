@@ -62,10 +62,10 @@ func TestSharedRuntimeAcrossAutomaticAndManualGroups(t *testing.T) {
 		alternative := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: new(sharedCheckTransport)}), option, &dialer.Property{Name: "alternative", Link: "alternative"}, true, "manual")
 		automatic := NewDialerGroup(option, "automatic", GroupKindSelector, []*dialer.Dialer{first}, emptyAnnotations(1), dialer.DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies, EmaAlpha: 0.5,
-		}, nil)
+		})
 		manual := NewDialerGroup(option, "manual", GroupKindSelector, []*dialer.Dialer{second, alternative}, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 			Policy: consts.DialerSelectionPolicy_Selector, EmaAlpha: 0.25,
-		}, nil)
+		})
 		defer automatic.Close()
 		defer manual.Close()
 		start := make(chan struct{})
@@ -98,7 +98,7 @@ func TestSharedRuntimeAcrossAutomaticAndManualGroups(t *testing.T) {
 		if !ok {
 			t.Fatal("late share failed")
 		}
-		lateGroup := NewDialerGroup(option, "late", GroupKindSelector, []*dialer.Dialer{late}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		lateGroup := NewDialerGroup(option, "late", GroupKindSelector, []*dialer.Dialer{late}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 		defer lateGroup.Close()
 		ready, err := lateGroup.StartConnectivityChecks(make(chan struct{}))
 		if err != nil {

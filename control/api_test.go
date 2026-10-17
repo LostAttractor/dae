@@ -41,7 +41,7 @@ func newAPITestPlaneWithPolicy(t *testing.T, store *settings.Store, policy diale
 		runtime := netproxy.NewRuntime(netproxy.Layer{Data: downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })})
 		paths = append(paths, dialer.NewDialer(runtime, option, &dialer.Property{Name: name, Link: "test://" + name}, true, "api-test"))
 	}
-	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, policy, nil)
+	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, policy)
 	t.Cleanup(func() { _ = group.Close() })
 	_, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
 	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingState: matcher.routingState, routingMatcher: matcher}

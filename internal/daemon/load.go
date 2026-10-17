@@ -45,12 +45,6 @@ const (
 	maxConcurrentSubscriptions      = 4
 )
 
-var CheckNetworkLinks = []string{
-	"http://edge.microsoft.com/captiveportal/generate_204",
-	"http://www.gstatic.com/generate_204",
-	"http://www.qualcomm.cn/generate_204",
-}
-
 type subscriptionResolution struct {
 	tag   string
 	nodes []string
@@ -59,9 +53,9 @@ type subscriptionResolution struct {
 
 type subscriptionResolver func(context.Context, *http.Client, subscription.ResolveOptions, string, func(string) error) (string, []string, error)
 
-func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer netproxy.Dialer) error {
+func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer netproxy.Dialer, endpoints ...string) error {
 	const retryInterval = 5 * time.Second
-	if len(CheckNetworkLinks) == 0 {
+	if len(endpoints) == 0 {
 		return errors.New("network check has no endpoints")
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -86,7 +80,7 @@ func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer net
 	// Any reachable endpoint is sufficient. The sentinel cancels the other
 	// probes through errgroup, which joins them before the transport is closed.
 	online := errors.New("startup network is reachable")
-	for _, endpoint := range CheckNetworkLinks {
+	for _, endpoint := range endpoints {
 		checks.Go(func() error {
 			for {
 				if err := checkCtx.Err(); err != nil {
@@ -256,7 +250,10 @@ func resolveNodeDescriptors(
 		})
 	}
 	if !isReload && !conf.Global.DisableWaitingNetwork {
-		if err := waitForNetworkOnline(ctx, startupNetworkWaitTimeout, dialer); err != nil {
+		if err := waitForNetworkOnline(ctx, startupNetworkWaitTimeout, dialer,
+			"http://edge.microsoft.com/captiveportal/generate_204",
+			"http://www.gstatic.com/generate_204",
+			"http://www.qualcomm.cn/generate_204"); err != nil {
 			return nil, err
 		}
 	}

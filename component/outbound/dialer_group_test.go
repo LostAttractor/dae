@@ -264,7 +264,7 @@ func TestDialerGroupStartsChecking(t *testing.T) {
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	d := newCheckedDialer(t, t.Name())
 	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector,
-		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = g.Close() })
 	ready, err := g.StartConnectivityChecks(make(chan struct{}))
 	if err != nil {
@@ -389,7 +389,7 @@ func TestDialerGroupInitialReadyWhenBlockingChecksCompleteUnavailable(t *testing
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), selectorDialerSequence.Add(1)),
 	}, true, "")
 	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
-		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = g.Close() })
 	start := make(chan struct{})
 	ready, err := g.StartConnectivityChecks(start)
@@ -433,7 +433,7 @@ func TestDialerGroupWaitsForAllUnavailableCandidates(t *testing.T) {
 	first, second := newDialer("first"), newDialer("second")
 	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
 		[]*dialer.Dialer{first, second}, emptyAnnotations(2),
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
 	t.Cleanup(func() { _ = g.Close() })
 	if err := g.initializeConnectivity(); err != nil {
 		t.Fatal(err)
@@ -525,7 +525,7 @@ func TestDialerGroupChecksAllCandidatesWithoutWaiting(t *testing.T) {
 	}
 	g := NewDialerGroup(option, t.Name(), GroupKindSelector, dialers, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Fixed, FixedIndex: 1,
-	}, nil)
+	})
 	t.Cleanup(func() { _ = g.Close() })
 	// Routing usage is resolved after construction, before checks start.
 	start := make(chan struct{})
@@ -557,7 +557,7 @@ func TestDialerGroupReusedWorkersExposeReadiness(t *testing.T) {
 				CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
 				CheckInterval:     time.Hour, CheckIntervalMax: time.Hour,
 			}
-			g := NewDialerGroup(d.GlobalOption, t.Name(), GroupKindSelector, []*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+			g := NewDialerGroup(d.GlobalOption, t.Name(), GroupKindSelector, []*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 			t.Cleanup(func() { _ = g.Close() })
 			start := make(chan struct{})
 			if ready, err := g.StartConnectivityChecks(start); err != nil || ready == nil {
@@ -601,7 +601,7 @@ func TestDialerGroupFixedWaitsOnlyForSelectedCandidate(t *testing.T) {
 	g := NewDialerGroup(option, t.Name(), GroupKindSelector, dialers, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 1,
-	}, nil)
+	})
 	t.Cleanup(func() { _ = g.Close() })
 	if err := g.initializeConnectivity(); err != nil {
 		t.Fatal(err)
@@ -638,7 +638,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 		dialers, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy_Fixed,
 			FixedIndex: 1,
-		}, nil)
+		})
 	t.Cleanup(func() { _ = g.Close() })
 	if err := g.initializeConnectivity(); err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestCandidateGroupStatsWaitForPublication(t *testing.T) {
 func TestSingleAlwaysAliveGroupStartsAvailable(t *testing.T) {
 	d := newUncheckedDialer(t, t.Name())
 	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = g.Close() })
 	if selected, err := g.Select(testNetworkType); err != nil || selected != d {
 		t.Fatalf("Select = %v, %v", selected, err)

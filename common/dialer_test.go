@@ -5,7 +5,11 @@
 
 package common
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/daeuniverse/dae/api"
+)
 
 func TestNetworkIndexRoundTrip(t *testing.T) {
 	tests := []struct {
@@ -33,5 +37,24 @@ func TestNetworkIndexRoundTrip(t *testing.T) {
 	}
 	if NetworkInvalid.Valid() || NetworkIndex(NetworkTypeCount).Valid() {
 		t.Fatal("out-of-range network index is valid")
+	}
+}
+
+// Status arrays are indexed by common.NetworkIndex in the daemon and
+// api.NetworkIndex in clients; both their order and their size are a contract.
+func TestNetworkIndexAPIContract(t *testing.T) {
+	if NetworkTypeCount != api.NetworkTypeCount {
+		t.Fatalf("network count differs: %d vs %d", NetworkTypeCount, api.NetworkTypeCount)
+	}
+	for _, pair := range []struct {
+		internal NetworkIndex
+		wire     api.NetworkIndex
+	}{
+		{NetworkTCP4, api.NetworkTCP4}, {NetworkTCP6, api.NetworkTCP6},
+		{NetworkUDP4, api.NetworkUDP4}, {NetworkUDP6, api.NetworkUDP6},
+	} {
+		if int(pair.internal) != int(pair.wire) || pair.internal.String() != pair.wire.String() {
+			t.Fatalf("network mapping differs: %d/%s vs %d/%s", pair.internal, pair.internal, pair.wire, pair.wire)
+		}
 	}
 }

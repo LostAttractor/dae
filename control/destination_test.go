@@ -71,7 +71,7 @@ func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
 	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	global := &dialer.GlobalOption{}
 	unavailable := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: unused}), global, &dialer.Property{Name: "unavailable"}, true, "")
-	group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSelector, []*dialer.Dialer{unavailable}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+	group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSelector, []*dialer.Dialer{unavailable}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { group.Close() })
 	dst := netip.MustParseAddrPort("192.0.2.1:443")
 	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.1) -> dnat('2001:db8::1')", "ipversion(6) -> proxy"))

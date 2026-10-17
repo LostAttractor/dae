@@ -53,7 +53,7 @@ func TestSharedMonitoringDoesNotMakeStandbyPhysicallyDormant(t *testing.T) {
 			t.Fatal("could not share path")
 		}
 		owner := NewDialerGroup(alias.GlobalOption, "shared-owner", GroupKindSelector,
-			[]*dialer.Dialer{alias}, emptyAnnotations(1), dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
+			[]*dialer.Dialer{alias}, emptyAnnotations(1), dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector})
 		defer owner.Close()
 		start := make(chan struct{})
 		if _, err := owner.StartConnectivityChecks(start); err != nil {

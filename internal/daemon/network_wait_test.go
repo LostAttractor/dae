@@ -14,13 +14,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
-func setNetworkCheckLinks(t testing.TB, links ...string) {
-	t.Helper()
-	previous := CheckNetworkLinks
-	CheckNetworkLinks = links
-	t.Cleanup(func() { CheckNetworkLinks = previous })
-}
-
 func TestWaitForNetworkOnlineUsesReachableEndpoint(t *testing.T) {
 	for _, stalled := range []bool{false, true} {
 		name := "HTTP503"
@@ -51,9 +44,8 @@ func TestWaitForNetworkOnlineUsesReachableEndpoint(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			defer ready.Close()
-			setNetworkCheckLinks(t, failed.URL, ready.URL)
 			// A failed endpoint's five-second retry must not consume this budget.
-			if err := waitForNetworkOnline(t.Context(), time.Second, direct.NewDirectDialer(direct.Option{})); err != nil {
+			if err := waitForNetworkOnline(t.Context(), time.Second, direct.NewDirectDialer(direct.Option{}), failed.URL, ready.URL); err != nil {
 				t.Fatal(err)
 			}
 			if !reached.Load() {
@@ -79,8 +71,7 @@ func TestWaitForNetworkOnlineCancellation(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	setNetworkCheckLinks(t, server.URL+"/1", server.URL+"/2", server.URL+"/3")
-	if err := waitForNetworkOnline(ctx, time.Second, direct.NewDirectDialer(direct.Option{})); !errors.Is(err, context.Canceled) {
+	if err := waitForNetworkOnline(ctx, time.Second, direct.NewDirectDialer(direct.Option{}), server.URL+"/1", server.URL+"/2", server.URL+"/3"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("parent cancellation = %v, want context canceled", err)
 	}
 }
@@ -95,10 +86,9 @@ func BenchmarkWaitForNetworkOnlineFailover(b *testing.B) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ready.Close()
-	setNetworkCheckLinks(b, failed.URL, ready.URL)
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := waitForNetworkOnline(b.Context(), startupNetworkWaitTimeout, direct.NewDirectDialer(direct.Option{})); err != nil {
+		if err := waitForNetworkOnline(b.Context(), startupNetworkWaitTimeout, direct.NewDirectDialer(direct.Option{}), failed.URL, ready.URL); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -194,7 +194,7 @@ func mitmClientTestPlane(t *testing.T, host *mitm.Host, upstream string) (*Contr
 		transport := &mitmClientDialer{upstream: upstream, block: name == "block"}
 		transports = append(transports, transport)
 		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: transport}), global, &dialer.Property{Name: name, Link: "test://mitm-client/" + name}, false, name)
-		group := outbound.NewDialerGroup(global, name, outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, func(bool, *common.NetworkType) error { return nil })
+		group := outbound.NewDialerGroup(global, name, outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 		plane.outbounds = append(plane.outbounds, group)
 		t.Cleanup(func() { _ = group.Close() })
 	}

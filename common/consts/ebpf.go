@@ -154,7 +154,7 @@ func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 	panic("unsupported ipversion")
 }
 
-var (
+const (
 	TproxyMark      uint32 = routingabi.TPROXY_MARK
 	LoopbackIfIndex        = 1
 )

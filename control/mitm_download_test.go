@@ -42,7 +42,7 @@ func downloadTestGroup(t *testing.T, name string, dial downloadTestDialer) *outb
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dial}), option,
 		&dialer.Property{Name: name, Link: "test://" + t.Name() + "/" + name}, false, "")
 	group := outbound.NewDialerGroup(option, name, outbound.GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+		[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = group.Close() })
 	return group
 }
@@ -180,7 +180,7 @@ func TestMITMDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: downloadTestDialer(unexpected)}), option,
 				&dialer.Property{Name: "unavailable"}, true, "")
 			unavailable := outbound.NewDialerGroup(option, "unavailable", outbound.GroupKindSelector,
-				[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
+				[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
 			t.Cleanup(func() { _ = unavailable.Close() })
 			c := downloadTestPlane(t, test.rules, direct, block, unavailable)
 			c.noConnectivityOutbound = test.fallback
@@ -351,7 +351,7 @@ func TestMITMDownloadUsesCheckedSelectorPolicy(t *testing.T) {
 	}
 	selector := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector,
 		[]*dialer.Dialer{newDialer("first"), newDialer("selected")}, []*dialer.Annotation{{}, {}},
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed, FixedIndex: 1}, nil)
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed, FixedIndex: 1})
 	t.Cleanup(func() { _ = selector.Close() })
 	start := make(chan struct{})
 	ready, err := selector.StartConnectivityChecks(start)

@@ -95,7 +95,6 @@ func NewDialerGroup(
 	dialers []*dialer.Dialer,
 	dialersAnnotations []*dialer.Annotation,
 	selectionPolicy dialer.DialerSelectionPolicy,
-	publishNetwork func(available bool, networkType *common.NetworkType) error,
 ) *DialerGroup {
 	selectionPolicy = selectionPolicy.WithDefaults()
 	if len(dialers) != len(dialersAnnotations) {
@@ -126,9 +125,6 @@ func NewDialerGroup(
 		Dialers:            dialers,
 		selectionPolicy:    selectionPolicy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
-	}
-	if publishNetwork != nil {
-		g.observers = map[*connectivityObserver]struct{}{{publish: publishNetwork}: {}}
 	}
 	g.selectionIndex = selectionPolicy.FixedIndex
 

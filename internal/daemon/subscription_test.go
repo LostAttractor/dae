@@ -93,16 +93,10 @@ func TestWaitForNetworkOnlineCanBeCanceled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	previousLinks := CheckNetworkLinks
-	CheckNetworkLinks = []string{server.URL}
-	t.Cleanup(func() {
-		CheckNetworkLinks = previousLinks
-	})
-
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- waitForNetworkOnline(ctx, startupNetworkWaitTimeout, direct.NewDirectDialer(direct.Option{}))
+		done <- waitForNetworkOnline(ctx, startupNetworkWaitTimeout, direct.NewDirectDialer(direct.Option{}), server.URL)
 	}()
 	<-requestStarted
 	cancel()
@@ -298,13 +292,8 @@ func TestWaitForNetworkOnlineTimeoutAllowsOfflinePreparation(t *testing.T) {
 		<-request.Context().Done()
 	}))
 	defer server.Close()
-	previousLinks := CheckNetworkLinks
-	CheckNetworkLinks = []string{server.URL}
-	t.Cleanup(func() {
-		CheckNetworkLinks = previousLinks
-	})
 	started := time.Now()
-	if err := waitForNetworkOnline(context.Background(), 20*time.Millisecond, direct.NewDirectDialer(direct.Option{})); err != nil {
+	if err := waitForNetworkOnline(t.Context(), 20*time.Millisecond, direct.NewDirectDialer(direct.Option{}), server.URL); err != nil {
 		t.Fatalf("offline network check prevented preparation: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
@@ -312,7 +301,7 @@ func TestWaitForNetworkOnlineTimeoutAllowsOfflinePreparation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := waitForNetworkOnline(ctx, time.Second, direct.NewDirectDialer(direct.Option{})); !errors.Is(err, context.DeadlineExceeded) {
+	if err := waitForNetworkOnline(ctx, time.Second, direct.NewDirectDialer(direct.Option{}), server.URL); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("parent deadline error = %v, want context deadline exceeded", err)
 	}
 }

@@ -145,7 +145,6 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	callback := func(bool, *common.NetworkType) error { return nil }
 	directDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: "direct",
 		Link: "direct://",
@@ -155,9 +154,9 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		Link: "block://",
 	}, false, "")
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback).SetTargetMetadata(outbound.TargetKindBuiltin)
+		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}).SetTargetMetadata(outbound.TargetKindBuiltin)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
-		[]*dialer.Dialer{blockDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback).SetTargetMetadata(outbound.TargetKindBuiltin)
+		[]*dialer.Dialer{blockDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}).SetTargetMetadata(outbound.TargetKindBuiltin)
 	t.Cleanup(func() {
 		_ = direct.Close()
 		_ = block.Close()
@@ -174,7 +173,6 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
-		callback,
 	)
 	defer group.Close()
 
@@ -232,7 +230,6 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
-		func(bool, *common.NetworkType) error { return nil },
 	)
 	defer group.Close()
 
@@ -273,7 +270,6 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 			}},
 		}},
 		dialer.DialerSelectionPolicy{},
-		func(bool, *common.NetworkType) error { return nil },
 	).SetTargetMetadata(outbound.TargetKindNode)
 	t.Cleanup(func() {
 		_ = group.Close()

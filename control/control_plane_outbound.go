@@ -71,10 +71,10 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	b.outbounds = []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindSingleAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
-			dialer.DialerSelectionPolicy{}, nil).SetTargetMetadata(outbound.TargetKindBuiltin),
+			dialer.DialerSelectionPolicy{}).SetTargetMetadata(outbound.TargetKindBuiltin),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(), outbound.GroupKindInvisible,
 			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
-			dialer.DialerSelectionPolicy{}, nil).SetTargetMetadata(outbound.TargetKindBuiltin),
+			dialer.DialerSelectionPolicy{}).SetTargetMetadata(outbound.TargetKindBuiltin),
 	}
 	defer func() {
 		if err != nil {
