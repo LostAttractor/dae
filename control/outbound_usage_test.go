@@ -196,7 +196,7 @@ func TestUnusedOutboundDefinitionsStillValidated(t *testing.T) {
 			conf := outboundUsageConfig(t, "global {}\ngroup {\n"+tc.groups+"\n}\nrouting {\nfallback: direct\npolicy { inactive {\n"+tc.rule+"\nfallback: direct\n} }\n}")
 			built, err := new(controlPlaneCore).buildOutbounds(t.Context(), nil, conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
 			if err == nil {
-				defer closeDialerGroups(built.outbounds)
+				defer built.close()
 				_, err = compileTestRouting(preparedRules{routing: &conf.Routing, validationOutbounds: built.validationOutbounds}, built.nameToID, nil, nil)
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

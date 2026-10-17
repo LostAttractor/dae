@@ -38,6 +38,13 @@ type ResolvedTarget struct {
 	Node  *NodeInfo
 }
 
+func (t *ResolvedTarget) Name() string {
+	if t.Group != nil {
+		return t.Group.Name
+	}
+	return t.Node.Property.Name
+}
+
 type compiledStage struct {
 	nodes      []*NodeInfo
 	group      *groupDefinition
@@ -60,7 +67,7 @@ type GroupCompiler struct {
 	byName  map[string]*groupDefinition
 }
 
-func isReservedTargetName(name string) bool {
+func IsReservedTargetName(name string) bool {
 	switch name {
 	case consts.OutboundDirect.String(), consts.OutboundBlock.String(),
 		consts.OutboundMustRules.String(), consts.OutboundControlPlaneRouting.String():
@@ -87,7 +94,7 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 		if err := config.ValidateConnectionBehavior("reselect_behavior", group.ReselectBehavior); err != nil {
 			return nil, fmt.Errorf("group %q: %w", group.Name, err)
 		}
-		if isReservedTargetName(group.Name) {
+		if IsReservedTargetName(group.Name) {
 			return nil, fmt.Errorf("group name %q is reserved", group.Name)
 		}
 		if _, ok := compiler.byName[group.Name]; ok {

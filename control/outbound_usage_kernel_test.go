@@ -40,7 +40,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = closeDialerGroups(built.outbounds) })
+	t.Cleanup(func() { _ = built.close() })
 	if len(built.outbounds) != 3 || built.nameToID["proxy"] != uint8(consts.OutboundUserDefinedMin) {
 		t.Fatalf("unexpected compacted outbound IDs: %v", built.nameToID)
 	}

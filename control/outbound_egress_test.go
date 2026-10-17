@@ -35,7 +35,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeDialerGroups(b.outbounds)
+	defer b.close()
 	for _, group := range b.outbounds {
 		if group.TargetKind == outbound.TargetKindBuiltin {
 			continue

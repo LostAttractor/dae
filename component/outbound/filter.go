@@ -174,7 +174,7 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 		if node.Name != "" {
 			property.Name = node.Name
 		}
-		if isReservedTargetName(property.Name) {
+		if IsReservedTargetName(property.Name) {
 			if node.Required {
 				return nil, fmt.Errorf("local node name %q is reserved", property.Name)
 			}

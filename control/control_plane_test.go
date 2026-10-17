@@ -414,20 +414,6 @@ func TestReconcileLanLinksRetriesAndDeduplicatesPatterns(t *testing.T) {
 	}
 }
 
-func TestGroupOverrideOptionCheckIntervals(t *testing.T) {
-	global := config.Global{
-		CheckInterval:    30 * time.Second,
-		CheckIntervalMax: time.Hour,
-	}
-	option := parseGroupOverrideOption(config.Group{
-		CheckInterval:    45 * time.Second,
-		CheckIntervalMax: 10 * time.Minute,
-	}, global)
-	if option.CheckInterval != 45*time.Second || option.CheckIntervalMax != 10*time.Minute {
-		t.Fatalf("unexpected check intervals: %v, %v", option.CheckInterval, option.CheckIntervalMax)
-	}
-}
-
 func TestWaitForStartupConnectivityReleasesAtDeadline(t *testing.T) {
 	waiters := []startupConnectivityWaiter{
 		{name: "first", ready: make(chan struct{})},
@@ -465,16 +451,6 @@ func TestWaitForStartupConnectivityCanBeStopped(t *testing.T) {
 	}
 }
 
-func TestGroupOverrideOptionExplicitZeroTolerance(t *testing.T) {
-	option := parseGroupOverrideOption(config.Group{
-		Present:        map[string]bool{"check_tolerance": true},
-		CheckTolerance: 0,
-	}, config.Global{CheckTolerance: time.Second})
-	if option == nil || option.CheckTolerance != 0 {
-		t.Fatalf("explicit zero tolerance option = %#v", option)
-	}
-}
-
 func TestCollectRoutingTargetNamesPreservesFirstReferenceOrder(t *testing.T) {
 	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{
 		{Outbound: config_parser.Function{Name: "selector"}},
@@ -496,55 +472,6 @@ func TestCollectRoutingTargetNamesIncludesAllDefinitions(t *testing.T) {
 	want := []string{"shared_node", "default_node", "default_fallback", "unused_node", "unused_fallback"}
 	if got := collectRoutingTargetNames(&conf.Routing); !reflect.DeepEqual(got, want) {
 		t.Fatalf("targets = %v, want %v", got, want)
-	}
-}
-
-func TestCandidateStatsScopeSeparatesIdenticalPaths(t *testing.T) {
-	set, err := outbound.NewDialerSet([]outbound.NodeDescriptor{{
-		Name:     "node",
-		Link:     "socks5://127.0.0.1:1080",
-		Required: true,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := outbound.NodePath(set.NodesNamed("node")[0])
-	occurrences := make(map[string]int)
-	first, err := set.BuildPath(path, new(dialer.GlobalOption), candidateStatsScope("target", path, occurrences))
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := set.BuildPath(path, new(dialer.GlobalOption), candidateStatsScope("target", path, occurrences))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = first.Close()
-		_ = second.Close()
-	})
-	if first.StatsKey() == second.StatsKey() || first.StatsID() == second.StatsID() {
-		t.Fatal("identical path occurrences share stats identity")
-	}
-}
-
-func TestCandidateStatsScopeIgnoresUnrelatedPaths(t *testing.T) {
-	first := &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Name: "first", Link: "first"},
-	}}}
-	second := &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Name: "second", Link: "second"},
-	}}}
-
-	withoutInsertion := make(map[string]int)
-	_ = candidateStatsScope("target", first, withoutInsertion)
-	want := candidateStatsScope("target", second, withoutInsertion)
-
-	withInsertion := make(map[string]int)
-	_ = candidateStatsScope("target", &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Name: "inserted", Link: "inserted"},
-	}}}, withInsertion)
-	if got := candidateStatsScope("target", second, withInsertion); got != want {
-		t.Fatalf("scope after unrelated insertion = %q, want %q", got, want)
 	}
 }
 

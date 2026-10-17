@@ -43,8 +43,10 @@ routing { dport(80) -> stable fallback: changed }`)
 	if err := abandoned.close(); err != nil {
 		t.Fatal(err)
 	}
+	var retired planeOutbounds
+	retired.adoptOutbounds(first)
 	stopFirst()
-	if err := first.close(); err != nil {
+	if err := retired.closeOutbounds(); err != nil {
 		t.Fatal(err)
 	}
 	if err := stable.SetSelection(stable.Dialers[0].StatsID()); err != nil {
@@ -61,7 +63,9 @@ routing { dport(80) -> stable fallback: changed }`)
 		t.Fatal(err)
 	}
 	detach()
-	if err := next.close(); err != nil {
+	var active planeOutbounds
+	active.adoptOutbounds(next)
+	if err := active.closeOutbounds(); err != nil {
 		t.Fatal(err)
 	}
 	if stable.Dialers[0].CanShare() {

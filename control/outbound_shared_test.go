@@ -27,7 +27,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeDialerGroups(builder.outbounds)
+	defer builder.close()
 	groups := make(map[string]*outbound.DialerGroup)
 	for _, group := range builder.outbounds {
 		groups[group.Name] = group
