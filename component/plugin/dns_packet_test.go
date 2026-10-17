@@ -124,3 +124,42 @@ func TestDNSScalarReadsAndValidationPreservePackets(t *testing.T) {
 		t.Fatal("strict validation accepted missing question")
 	}
 }
+
+func TestDNSPacketReplayable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		modify func(*dns.Msg)
+		want   bool
+	}{
+		{"query", func(*dns.Msg) {}, true},
+		{"other class", func(m *dns.Msg) { m.Question[0].Qclass = dns.ClassCHAOS }, true},
+		{"edns", func(m *dns.Msg) { m.SetEdns0(1232, true) }, true},
+		{"response", func(m *dns.Msg) { m.Response = true }, false},
+		{"update", func(m *dns.Msg) { m.Opcode = dns.OpcodeUpdate }, false},
+		{"empty question", func(m *dns.Msg) { m.Question = nil }, false},
+		{"multiple questions", func(m *dns.Msg) { m.Question = append(m.Question, m.Question[0]) }, false},
+		{"zone transfer", func(m *dns.Msg) { m.Question[0].Qtype = dns.TypeAXFR }, false},
+		{"incremental transfer", func(m *dns.Msg) { m.Question[0].Qtype = dns.TypeIXFR }, false},
+		{"key negotiation", func(m *dns.Msg) { m.Question[0].Qtype = dns.TypeTKEY }, false},
+		{"transaction signature", func(m *dns.Msg) { m.SetTsig("key.", dns.HmacSHA256, 300, 0) }, false},
+		{"signature", func(m *dns.Msg) {
+			m.Extra = append(m.Extra, &dns.SIG{RRSIG: dns.RRSIG{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeSIG}, SignerName: "."}})
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message := new(dns.Msg).SetQuestion("example.test.", dns.TypeA)
+			test.modify(message)
+			packet := DNSMessage(message)
+			wire, err := packet.Wire()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if packet.Replayable() != test.want || DNSWire(wire).Replayable() != test.want {
+				t.Fatalf("replayable local/wire packet = %v/%v, want %v", packet.Replayable(), DNSWire(wire).Replayable(), test.want)
+			}
+		})
+	}
+	if (DNSPacket{}).Replayable() || DNSWire([]byte{1, 2}).Replayable() {
+		t.Fatal("empty or opaque packet is replayable")
+	}
+}

@@ -195,13 +195,13 @@ func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 	return func(ctx context.Context, request *plugin.DNSExchange) (response *plugin.DNSResponse, err error) {
 		bypass := false
 		defer func(started time.Time) { r.metrics.request(ctx, "middleware", bypass, err, started) }(time.Now())
-		query := request.MessageCopy()
 		// An earlier plugin's explicit server assignment takes precedence over
 		// general upstream policy, but still uses the ordinary routed dial service.
-		if !replayable(query) || request.ServerAssigned {
+		if !request.Replayable() || request.ServerAssigned {
 			bypass = true
 			return next(ctx, request)
 		}
+		query := request.MessageCopy()
 		q := query.Question[0]
 		if r.prefer == 0 || q.Qtype == r.prefer || q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
 			return r.resolve(ctx, request, next, "query")
@@ -264,19 +264,6 @@ func responseMessage(request *plugin.DNSExchange, response *plugin.DNSResponse) 
 		return nil
 	}
 	return message
-}
-
-func replayable(message *dns.Msg) bool {
-	if message == nil || message.Response || message.Opcode != dns.OpcodeQuery || len(message.Question) != 1 {
-		return false
-	}
-	for _, rr := range message.Extra {
-		if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
-			return false
-		}
-	}
-	q := message.Question[0]
-	return q.Qtype != dns.TypeAXFR && q.Qtype != dns.TypeIXFR && q.Qtype != dns.TypeTKEY
 }
 
 func emptyResponse(request *plugin.DNSExchange) *plugin.DNSResponse {

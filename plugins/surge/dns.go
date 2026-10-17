@@ -18,20 +18,16 @@ import (
 
 func (e *Engine) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
-		header, parsed := request.Header()
-		question, single := request.Question()
-		if !parsed || !single || header.Response || header.Opcode != dns.OpcodeQuery || !hostDNSQuestion(question) {
-			return next(ctx, request)
-		}
-		if request.HasAdditional(dns.TypeTSIG, dns.TypeSIG) {
+		if !hostDNSPacket(request.DNSPacket) {
 			return next(ctx, request)
 		}
 		return e.resolveHost(ctx, request, next, make(map[string]bool))
 	}
 }
 
-func hostDNSQuestion(question dns.Question) bool {
-	return question.Qclass == dns.ClassINET && question.Qtype != dns.TypeAXFR && question.Qtype != dns.TypeIXFR && question.Qtype != dns.TypeTKEY
+func hostDNSPacket(packet plugin.DNSPacket) bool {
+	question, _ := packet.Question()
+	return packet.Replayable() && question.Qclass == dns.ClassINET
 }
 
 func (e *Engine) findDNSHost(name string) (*Module, *HostEntry) {

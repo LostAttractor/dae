@@ -78,6 +78,18 @@ func (p DNSPacket) HasAdditional(types ...uint16) bool {
 	return false
 }
 
+// Replayable reports whether a parsed query can be independently reissued.
+// Transfers, key negotiation and signed transactions must retain their original
+// exchange. Caches and host policies may impose additional class/EDNS limits.
+func (p DNSPacket) Replayable() bool {
+	header, parsed := p.Header()
+	question, single := p.Question()
+	if !parsed || !single || header.Response || header.Opcode != dns.OpcodeQuery || p.HasAdditional(dns.TypeTSIG, dns.TypeSIG) {
+		return false
+	}
+	return question.Qtype != dns.TypeAXFR && question.Qtype != dns.TypeIXFR && question.Qtype != dns.TypeTKEY
+}
+
 // ValidateResponse reads the immutable packets without allocating message copies.
 func (p DNSPacket) ValidateResponse(response DNSPacket, allowEmptyQuestion bool) error {
 	if p.message == nil || response.message == nil {

@@ -88,15 +88,14 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 func (*Cache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
 func cacheKey(request *plugin.DNSExchange) (key, bool) {
+	if !request.Replayable() {
+		return key{}, false
+	}
 	m := request.MessageCopy()
-	if m == nil || m.Response || m.Opcode != dns.OpcodeQuery || len(m.Question) != 1 ||
-		m.Question[0].Qclass != dns.ClassINET || len(m.Answer) != 0 || len(m.Ns) != 0 || m.Truncated || m.Rcode != 0 {
+	if m.Question[0].Qclass != dns.ClassINET || len(m.Answer) != 0 || len(m.Ns) != 0 || m.Truncated || m.Rcode != 0 {
 		return key{}, false
 	}
 	q := m.Question[0]
-	if q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR || q.Qtype == dns.TypeTKEY {
-		return key{}, false
-	}
 	for _, rr := range m.Extra {
 		if _, ok := rr.(*dns.OPT); !ok {
 			return key{}, false
