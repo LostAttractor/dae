@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -45,7 +46,7 @@ func finishCheck(c *connectivityChecker, result checkResult) bool {
 	return true
 }
 
-func waitRecoveryPhase(t *testing.T, d *Dialer, phase RecoveryPhase) RecoverySnapshot {
+func waitRecoveryPhase(t *testing.T, d *Dialer, phase api.RecoveryPhase) api.RecoverySnapshot {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -56,7 +57,7 @@ func waitRecoveryPhase(t *testing.T, d *Dialer, phase RecoveryPhase) RecoverySna
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("recovery did not become %s: %+v", phase, d.RuntimeStatus())
-	return RecoverySnapshot{}
+	return api.RecoverySnapshot{}
 }
 
 func TestReportDataPlaneErrorConfirmsUpstreamFailures(t *testing.T) {
@@ -199,7 +200,7 @@ func TestRecoveryDeadlineMatchesTimer(t *testing.T) {
 	c.updateHealthSchedule(false)
 	c.dispatch()
 	snapshot := d.RuntimeStatus().Recovery
-	if snapshot.Phase != RecoveryBackoff || snapshot.RetryAt.IsZero() {
+	if snapshot.Phase != api.RecoveryBackoff || snapshot.RetryAt.IsZero() {
 		t.Fatalf("recovery = %+v", snapshot)
 	}
 	select {
@@ -228,7 +229,7 @@ func TestRecoveryQueuesBeforeConnecting(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { _, err := c.connectFor(ctx, false); done <- err }()
-	state := waitRecoveryPhase(t, d, RecoveryQueued)
+	state := waitRecoveryPhase(t, d, api.RecoveryQueued)
 	if state.Attempt != 0 || transport.connects.Load() != 0 {
 		t.Fatal("waiting for a slot was counted as connecting")
 	}
@@ -251,7 +252,7 @@ func TestLibraryRecoveryDoesNotAddDaemonRetryLoop(t *testing.T) {
 		t.Fatal("checker stopped")
 	}
 	state := d.RuntimeStatus().Recovery
-	if state.Phase != RecoveryConnecting || !state.RetryAt.IsZero() || state.Executor != netproxy.RecoveryLibraryManaged {
+	if state.Phase != api.RecoveryConnecting || !state.RetryAt.IsZero() || state.Executor != string(netproxy.RecoveryLibraryManaged) {
 		t.Fatalf("library recovery = %+v", state)
 	}
 	for i := 0; i < 10; i++ {
@@ -295,7 +296,7 @@ func TestPermanentConnectFailureBlocksUntilEnvironmentRequest(t *testing.T) {
 	if !finishCheck(c, <-c.results) {
 		t.Fatal("checker stopped")
 	}
-	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBlocked || state.BlockedBy != "auth" || !state.RetryAt.IsZero() {
+	if state := d.RuntimeStatus().Recovery; state.Phase != api.RecoveryBlocked || state.BlockedBy != "auth" || !state.RetryAt.IsZero() {
 		t.Fatalf("blocked recovery = %+v", state)
 	}
 	c.handleSessionEvent(transport.Snapshot())
@@ -347,7 +348,7 @@ func TestOwnerCleanupAndDependencyPhasesOverrideConnectionRequest(t *testing.T) 
 	c := testRecoveryChecker(t, d)
 	c.healthAt = time.Now().Add(time.Minute)
 	c.dispatch()
-	for _, phase := range []RecoveryPhase{RecoveryCleanup, RecoveryWaitingDependency} {
+	for _, phase := range []api.RecoveryPhase{api.RecoveryCleanup, api.RecoveryWaitingDependency} {
 		event := transport.Snapshot()
 		event.RecoveryPhase = string(phase)
 		event.BlockedBy = "parent lease"
@@ -362,7 +363,7 @@ func TestOwnerCleanupAndDependencyPhasesOverrideConnectionRequest(t *testing.T) 
 	event.RecoveryPhase, event.BlockedBy = "queued", ""
 	transport.state.Publish(event)
 	d.applySessionState(transport.Snapshot())
-	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBackoff || state.RetryAt.IsZero() {
+	if state := d.RuntimeStatus().Recovery; state.Phase != api.RecoveryBackoff || state.RetryAt.IsZero() {
 		t.Fatalf("actual daemon timer disappeared after cleanup: %+v", state)
 	}
 }
@@ -550,7 +551,7 @@ func TestUncheckedSessionStillRecoversWithoutProbing(t *testing.T) {
 	start := make(chan struct{})
 	close(start)
 	d.ActivateCheck(start)
-	state := waitRecoveryPhase(t, d, RecoveryReady)
+	state := waitRecoveryPhase(t, d, api.RecoveryReady)
 	if !d.RuntimeStatus().Healthy || state.Verification != "disabled" {
 		t.Fatalf("unchecked ready = %+v", d.RuntimeStatus())
 	}
@@ -559,7 +560,7 @@ func TestUncheckedSessionStillRecoversWithoutProbing(t *testing.T) {
 	for transport.connects.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	waitRecoveryPhase(t, d, RecoveryReady)
+	waitRecoveryPhase(t, d, api.RecoveryReady)
 	if transport.connects.Load() < 2 || stats.DefaultStore.GetNode(d.StatsKey()).ChecksTotal != 0 {
 		t.Fatal("disabled health checks stopped liveness recovery or ran a probe")
 	}

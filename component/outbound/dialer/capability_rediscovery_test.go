@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -145,7 +146,7 @@ func TestRetainedRediscoveryPreservesBackoffAndStopsWhenUnsupported(t *testing.T
 		checker.finish(<-checker.results)
 		checker.dispatch()
 		status := d.RuntimeStatus()
-		if checker.cancel != nil || checker.blockedBy != "no_supported_network" || status.Recovery.Phase != RecoveryBlocked ||
+		if checker.cancel != nil || checker.blockedBy != "no_supported_network" || status.Recovery.Phase != api.RecoveryBlocked ||
 			!checker.healthAt.IsZero() || !checker.supportAt.IsZero() {
 			t.Fatalf("unsupported modes left an empty recovery loop: %+v", status)
 		}

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -202,7 +203,7 @@ func (c *connectivityChecker) connectFor(ctx context.Context, replenish bool) (n
 		if replenish {
 			action = "replenish"
 		}
-		c.d.updateRecovery(RecoveryQueued, time.Time{}, "connectivity_slot", action)
+		c.d.updateRecovery(api.RecoveryQueued, time.Time{}, "connectivity_slot", action)
 		if err := acquireConnectivityCheckSlot(ctx); err != nil {
 			return snapshot, err
 		}

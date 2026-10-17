@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 )
 
@@ -40,7 +41,7 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		if status := d.RuntimeStatus(); !status.Healthy || !status.Degraded || status.FailureRecovery != 30*time.Second {
 			t.Fatalf("first success did not start the default recovery window: %+v", status)
 		}
-		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != RecoveryBackoff || recovery.Action != "verify" || !recovery.RetryAt.Equal(time.Now().Add(5*time.Second)) {
+		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != api.RecoveryBackoff || recovery.Action != "verify" || !recovery.RetryAt.Equal(time.Now().Add(5*time.Second)) {
 			t.Fatalf("recovery observation did not publish its next probe: %+v", recovery)
 		}
 		time.Sleep(29 * time.Second)
@@ -59,7 +60,7 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 				t.Errorf("%v did not share the completed recovery: %+v", network, snapshot)
 			}
 		}
-		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != RecoveryReady || !recovery.RetryAt.IsZero() {
+		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != api.RecoveryReady || !recovery.RetryAt.IsZero() {
 			t.Fatalf("completed observation still advertised a recovery check: %+v", recovery)
 		}
 	})
@@ -93,7 +94,7 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		time.Sleep(time.Until(first.Recovery.RetryAt))
 		synctest.Wait()
 		checking := d.RuntimeStatus()
-		if probes.Load() != 5 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
+		if probes.Load() != 5 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != api.RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
 			t.Fatalf("pending probe was hidden behind zero recovery progress: %+v", checking)
 		}
 		time.Sleep(d.group.probeTimeout)
@@ -104,7 +105,7 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		time.Sleep(d.group.probeTimeout)
 		synctest.Wait()
 		failed := d.RuntimeStatus()
-		if failed.Healthy || !failed.Degraded || failed.RecoveryElapsed != 0 || failed.Recovery.Phase != RecoveryBackoff || !failed.Recovery.RetryAt.After(time.Now()) {
+		if failed.Healthy || !failed.Degraded || failed.RecoveryElapsed != 0 || failed.Recovery.Phase != api.RecoveryBackoff || !failed.Recovery.RetryAt.After(time.Now()) {
 			t.Fatalf("timed-out observation did not publish failure and its next check: %+v", failed)
 		}
 	})

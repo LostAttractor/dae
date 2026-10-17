@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -55,7 +56,7 @@ func TestProxyAuthFailureBlocksRetry(t *testing.T) {
 	c.finish(result)
 	c.dispatch()
 	state := d.RuntimeStatus()
-	if c.cancel != nil || state.Recovery.Phase != RecoveryBlocked || !state.Recovery.RetryAt.IsZero() || c.blockedBy != "auth" || state.Failure == nil || state.Failure.Reason != netproxy.ReasonAuth {
+	if c.cancel != nil || state.Recovery.Phase != api.RecoveryBlocked || !state.Recovery.RetryAt.IsZero() || c.blockedBy != "auth" || state.Failure == nil || state.Failure.Reason != string(netproxy.ReasonAuth) {
 		t.Fatalf("407 not surfaced/blocked: blocked=%q retry_pending=%v failure=%+v probes=%+v", c.blockedBy, !c.supportAt.IsZero(), state.Failure, result.probes)
 	}
 }
@@ -105,7 +106,7 @@ func TestSelectionAuthenticationBlocksBackgroundRetries(t *testing.T) {
 	result.attempted = true
 	c.finishSelectionCheck(result)
 	c.dispatch()
-	if c.blockedBy != "auth" || !c.healthAt.IsZero() || !c.supportAt.IsZero() || c.cancel != nil || d.RuntimeStatus().Recovery.Phase != RecoveryBlocked {
+	if c.blockedBy != "auth" || !c.healthAt.IsZero() || !c.supportAt.IsZero() || c.cancel != nil || d.RuntimeStatus().Recovery.Phase != api.RecoveryBlocked {
 		t.Fatalf("selected auth failure retried: %+v", d.RuntimeStatus())
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -54,7 +55,7 @@ func TestHealthyCapacityRecoveryKeepsHealthAndDeduplicatesDemand(t *testing.T) {
 		t.Fatal("checker stopped")
 	}
 	state := d.RuntimeStatus()
-	if !state.Healthy || state.ConfirmingFailure || state.Recovery.Phase != RecoveryBackoff || state.Recovery.Action != "replenish" || state.Recovery.RetryAt.IsZero() {
+	if !state.Healthy || state.ConfirmingFailure || state.Recovery.Phase != api.RecoveryBackoff || state.Recovery.Action != "replenish" || state.Recovery.RetryAt.IsZero() {
 		t.Fatalf("capacity failure invalidated serving siblings or lost its timer: %+v", state)
 	}
 	if state.Availability.ChecksTotal != 0 || d.connectivityCheckRequested() {
@@ -89,7 +90,7 @@ func TestHealthyCapacityRecoveryKeepsHealthAndDeduplicatesDemand(t *testing.T) {
 		t.Fatal("checker stopped")
 	}
 	state = d.RuntimeStatus()
-	if !state.Healthy || state.Failure != nil || state.Recovery.Phase != RecoveryReady || !state.Recovery.RetryAt.IsZero() || transport.connects.Load() != 2 {
+	if !state.Healthy || state.Failure != nil || state.Recovery.Phase != api.RecoveryReady || !state.Recovery.RetryAt.IsZero() || transport.connects.Load() != 2 {
 		t.Fatalf("capacity recovery did not finish: %+v", state)
 	}
 }
@@ -108,24 +109,24 @@ func TestCapacityAuthFailureKeepsServingUntilEnvironmentRequest(t *testing.T) {
 	c.dispatch()
 	finishCheck(c, <-c.results)
 	state := d.RuntimeStatus()
-	if !state.Healthy || state.Recovery.Phase != RecoveryBlocked || state.Recovery.Action != "replenish" || !state.Recovery.RetryAt.IsZero() {
+	if !state.Healthy || state.Recovery.Phase != api.RecoveryBlocked || state.Recovery.Action != "replenish" || !state.Recovery.RetryAt.IsZero() {
 		t.Fatalf("blocked capacity work changed serving health or scheduled a retry: %+v", state)
 	}
-	if state.Failure == nil || state.Failure.Reason != netproxy.ReasonAuth {
+	if state.Failure == nil || state.Failure.Reason != string(netproxy.ReasonAuth) {
 		t.Fatalf("blocked capacity work lost authentication detail: %+v", state.Failure)
 	}
 	c.handleSessionEvent(transport.Snapshot())
 
 	c.dispatch()
 	c.updateSchedule(checkHealth, appliedCheck{success: true})
-	if c.cancel != nil || transport.connects.Load() != 1 || d.RuntimeStatus().Recovery.Phase != RecoveryBlocked {
+	if c.cancel != nil || transport.connects.Load() != 1 || d.RuntimeStatus().Recovery.Phase != api.RecoveryBlocked {
 		t.Fatal("Session diagnostic or successful probe restarted blocked capacity work")
 	}
 	// A successful health check verifies serving slots; it does not repair the
 	// credentials used to open replacement slots.
 	c.start(checkHealth)
 	finishCheck(c, <-c.results)
-	if failure := d.RuntimeStatus().Failure; failure == nil || failure.Reason != netproxy.ReasonAuth {
+	if failure := d.RuntimeStatus().Failure; failure == nil || failure.Reason != string(netproxy.ReasonAuth) {
 		t.Fatalf("successful health probe hid blocked replenishment: %+v", failure)
 	}
 	event = transport.Snapshot()
@@ -133,7 +134,7 @@ func TestCapacityAuthFailureKeepsServingUntilEnvironmentRequest(t *testing.T) {
 	transport.state.Publish(event)
 	c.handleSessionEvent(transport.Snapshot())
 	c.dispatch()
-	if failure := d.RuntimeStatus().Failure; failure == nil || failure.Reason != netproxy.ReasonAuth {
+	if failure := d.RuntimeStatus().Failure; failure == nil || failure.Reason != string(netproxy.ReasonAuth) {
 		t.Fatalf("capacity state update hid authentication detail: %+v", failure)
 	}
 
@@ -149,7 +150,7 @@ func TestCapacityAuthFailureKeepsServingUntilEnvironmentRequest(t *testing.T) {
 
 	c.dispatch()
 	finishCheck(c, result)
-	if state := d.RuntimeStatus(); !state.Healthy || state.Failure != nil || state.Recovery.Phase != RecoveryReady || transport.connects.Load() != 2 {
+	if state := d.RuntimeStatus(); !state.Healthy || state.Failure != nil || state.Recovery.Phase != api.RecoveryReady || transport.connects.Load() != 2 {
 		t.Fatalf("capacity did not recover after environment request: %+v", state)
 	}
 }

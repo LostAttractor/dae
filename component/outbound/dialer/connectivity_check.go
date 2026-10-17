@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
@@ -105,7 +106,7 @@ func (c *connectivityChecker) start(kind checkKind) {
 	ctx, cancel := context.WithCancel(c.d.ctx)
 	c.runningKind = kind
 	c.cancel = cancel
-	c.d.setRecovery(RecoveryQueued, time.Time{}, "connectivity_slot")
+	c.d.setRecovery(api.RecoveryQueued, time.Time{}, "connectivity_slot")
 	go func() { c.results <- c.performAttempt(ctx, attempt) }()
 }
 

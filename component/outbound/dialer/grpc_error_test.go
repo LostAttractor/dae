@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	grpctransport "github.com/daeuniverse/dae/pkg/outbound/transport/grpc"
 )
@@ -59,10 +60,10 @@ func TestGRPCInitialFailureDiagnosisAndRetryPolicy(t *testing.T) {
 			}
 			status := d.RuntimeStatus()
 			if tc.blocked {
-				if status.Recovery.Phase != RecoveryBlocked || status.Recovery.BlockedBy != "auth" || !status.Recovery.RetryAt.IsZero() {
+				if status.Recovery.Phase != api.RecoveryBlocked || status.Recovery.BlockedBy != "auth" || !status.Recovery.RetryAt.IsZero() {
 					t.Fatalf("authentication should block retries: %+v", status)
 				}
-			} else if status.Recovery.Phase != RecoveryBackoff || status.Recovery.RetryAt.IsZero() {
+			} else if status.Recovery.Phase != api.RecoveryBackoff || status.Recovery.RetryAt.IsZero() {
 				t.Fatalf("transient failure should retry: %+v", status)
 			}
 		})

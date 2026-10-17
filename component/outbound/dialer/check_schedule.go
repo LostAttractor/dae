@@ -8,6 +8,7 @@ package dialer
 import (
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
@@ -163,7 +164,7 @@ func (c *connectivityChecker) dispatch() {
 	status := c.d.runtimeStatus()
 	if c.d.session != nil && status.Session.State == netproxy.SessionClosed {
 		c.stopRetries()
-		c.d.setRecovery(RecoveryStopped, time.Time{}, "")
+		c.d.setRecovery(api.RecoveryStopped, time.Time{}, "")
 		return
 	}
 	if c.d.connectivityCheckRequested() {
@@ -174,7 +175,7 @@ func (c *connectivityChecker) dispatch() {
 		return
 	}
 	if c.blockedBy != "" {
-		c.d.setRecovery(RecoveryBlocked, time.Time{}, c.blockedBy)
+		c.d.setRecovery(api.RecoveryBlocked, time.Time{}, c.blockedBy)
 		return
 	}
 	// Selection requests can finish discovery before the background sweep runs.
@@ -190,7 +191,7 @@ func (c *connectivityChecker) dispatch() {
 		c.d.mu.RUnlock()
 		if !demand || !status.HasSession || status.Healthy && !status.Session.RecoveryRequired {
 			c.stopRetries()
-			c.d.setRecovery(RecoveryReady, time.Time{}, "")
+			c.d.setRecovery(api.RecoveryReady, time.Time{}, "")
 			return
 		}
 		// Selected failover paths and retained callers still need capacity.
@@ -208,7 +209,7 @@ func (c *connectivityChecker) dispatch() {
 		c.supportAt = time.Time{}
 	}
 	if c.libraryRequested && status.Session.RecoveryExecutor == netproxy.RecoveryLibraryManaged && !status.Session.Accepting {
-		c.d.setRecovery(RecoveryConnecting, time.Time{}, "protocol_recovery")
+		c.d.setRecovery(api.RecoveryConnecting, time.Time{}, "protocol_recovery")
 		return
 	}
 
@@ -267,17 +268,17 @@ func (c *connectivityChecker) dispatch() {
 	// In-flight status is published by connect/probe operations themselves.
 	switch {
 	case !status.Healthy && !c.healthAt.IsZero() && (capacityAt.IsZero() || !capacityAt.Before(c.healthAt)):
-		c.d.setRecovery(RecoveryBackoff, c.healthAt, "")
+		c.d.setRecovery(api.RecoveryBackoff, c.healthAt, "")
 	case needsCapacity && c.capacityBlockReason != "":
-		c.d.updateRecovery(RecoveryBlocked, time.Time{}, c.capacityBlockReason, "replenish")
+		c.d.updateRecovery(api.RecoveryBlocked, time.Time{}, c.capacityBlockReason, "replenish")
 	case needsCapacity && !capacityAt.IsZero():
-		c.d.updateRecovery(RecoveryBackoff, capacityAt, "capacity", "replenish")
+		c.d.updateRecovery(api.RecoveryBackoff, capacityAt, "capacity", "replenish")
 	case !status.Healthy && !next.IsZero():
-		c.d.setRecovery(RecoveryBackoff, next, "")
+		c.d.setRecovery(api.RecoveryBackoff, next, "")
 	case recoveryTimeout > 0 && !c.healthAt.IsZero():
-		c.d.setRecovery(RecoveryBackoff, c.healthAt, "")
+		c.d.setRecovery(api.RecoveryBackoff, c.healthAt, "")
 	default:
-		c.d.setRecovery(RecoveryReady, time.Time{}, "")
+		c.d.setRecovery(api.RecoveryReady, time.Time{}, "")
 	}
 }
 

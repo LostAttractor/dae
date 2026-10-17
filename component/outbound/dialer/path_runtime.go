@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -85,7 +86,7 @@ func (d *Dialer) Close() error {
 			return
 		}
 		d.cancel()
-		d.recovery.Phase = RecoveryStopped
+		d.recovery.Phase = api.RecoveryStopped
 		d.recovery.RetryAt = time.Time{}
 		d.statusRevision++
 		d.mu.Unlock()

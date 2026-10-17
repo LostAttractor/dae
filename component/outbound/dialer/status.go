@@ -51,8 +51,8 @@ type RuntimeSnapshot struct {
 	ObservedHealthy    bool
 	Revision           uint64
 	ObservedSessionSeq uint64
-	Recovery           RecoverySnapshot
-	Failure            *FailureSnapshot
+	Recovery           api.RecoverySnapshot
+	Failure            *api.FailureSnapshot
 	Healthy            bool
 	Dormant            bool // Physical transport released, not a group's probe policy.
 	InitialCheckDone   bool

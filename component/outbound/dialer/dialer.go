@@ -9,6 +9,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -39,7 +40,7 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 		checksConnectivity: checksConnectivity,
 		checks:             pathChecks{wake: make(chan struct{}, 1)},
 		statusRevision:     1,
-		recovery:           recoveryProgress{Phase: RecoveryQueued},
+		recovery:           recoveryProgress{Phase: api.RecoveryQueued},
 		ctx:                ctx,
 		cancel:             cancel,
 		members:            make(map[*Dialer]struct{}),
@@ -54,7 +55,7 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 		d.health.networks[i] = networkSupported
 	}
 	if session == nil {
-		d.recovery.Phase = RecoveryReady
+		d.recovery.Phase = api.RecoveryReady
 	} else {
 		snapshot := session.Snapshot()
 		if snapshot.Accepting {

@@ -139,11 +139,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Health:             nodeHealthStatus(node.ChecksConnectivity(), runtime),
 		Revision:           runtime.Revision,
 		ObservedSessionSeq: runtime.ObservedSessionSeq,
-		Recovery: api.RecoverySnapshot{
-			Executor: string(runtime.Recovery.Executor), Action: runtime.Recovery.Action,
-			Phase: api.RecoveryPhase(runtime.Recovery.Phase), Verification: runtime.Recovery.Verification,
-			Attempt: runtime.Recovery.Attempt, RetryAt: runtime.Recovery.RetryAt, BlockedBy: runtime.Recovery.BlockedBy,
-		},
+		Recovery:           runtime.Recovery,
 		ID:                 node.StatsID(),
 		Name:               node.Name,
 		Subtag:             node.Property.SubscriptionTag,
@@ -162,12 +158,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if failure := runtime.Failure; failure != nil {
-		status.Failure = &api.FailureSnapshot{
-			EpisodeID: failure.EpisodeID, Resource: api.ResourceRef(failure.Resource),
-			Scope: string(failure.Scope), Layer: string(failure.Layer), Phase: string(failure.Phase),
-			Origin: string(failure.Origin), Reason: string(failure.Reason), Code: failure.Code,
-			OccurredAt: failure.OccurredAt, Message: failure.Message,
-		}
+		status.Failure = new(*failure)
 	}
 	if runtime.HasSession {
 		status.SessionDetail = &api.SessionStatus{

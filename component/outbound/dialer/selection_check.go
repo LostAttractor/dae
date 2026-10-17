@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -218,7 +219,7 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64) checkResult {
 	result := checkResult{kind: checkSelection, generation: generation}
 	ctx := flight.ctx
-	c.d.setRecovery(RecoveryQueued, time.Time{}, "connectivity_slot")
+	c.d.setRecovery(api.RecoveryQueued, time.Time{}, "connectivity_slot")
 	if err := acquireConnectivityCheckSlot(ctx); err != nil {
 		result.connectErr = err
 		return result

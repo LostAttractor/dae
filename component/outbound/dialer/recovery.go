@@ -3,6 +3,7 @@ package dialer
 import (
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
@@ -13,92 +14,51 @@ import (
 type pathFailures struct {
 	generation         uint64
 	reportedAt         time.Time
-	last               *FailureSnapshot
+	last               *api.FailureSnapshot
 	resources          map[uint64]resourceFailureProgress
 	failedBefore       bool
 	recoverySince      time.Time
 	recoveryVerifiedAt time.Time
 }
 
-type RecoveryPhase string
-
-const (
-	RecoveryCleanup           RecoveryPhase = "cleanup"
-	RecoveryWaitingDependency RecoveryPhase = "waiting_dependency"
-	RecoveryQueued            RecoveryPhase = "queued"
-	RecoveryBackoff           RecoveryPhase = "backoff"
-	RecoveryConnecting        RecoveryPhase = "connecting"
-	RecoveryVerifying         RecoveryPhase = "verifying"
-	RecoveryReady             RecoveryPhase = "ready"
-	RecoveryBlocked           RecoveryPhase = "blocked"
-	RecoveryStopped           RecoveryPhase = "stopped"
-)
-
 // recoveryProgress contains only worker-owned facts. Session ownership and
 // verification are derived when reading status, rather than copied on events.
 type recoveryProgress struct {
 	Action    string
-	Phase     RecoveryPhase
+	Phase     api.RecoveryPhase
 	Attempt   uint64
 	RetryAt   time.Time
 	BlockedBy string
 }
 
 // Caller holds d.mu. This is the single composition point for public status.
-func (d *pathRuntime) recoverySnapshotLocked(session netproxy.StateEvent, healthy bool) RecoverySnapshot {
+func (d *pathRuntime) recoverySnapshotLocked(session netproxy.StateEvent, healthy bool) api.RecoverySnapshot {
 	progress := d.recovery
-	recovery := RecoverySnapshot{
-		Executor: session.RecoveryExecutor,
+	recovery := api.RecoverySnapshot{
+		Executor: string(session.RecoveryExecutor),
 		Action:   progress.Action, Phase: progress.Phase, Attempt: progress.Attempt,
 		RetryAt: progress.RetryAt, BlockedBy: progress.BlockedBy,
 		Verification: "pending",
 	}
 	if !d.checksConnectivity {
 		recovery.Verification = "disabled"
-	} else if healthy && d.health.phase != healthConfirming && progress.Phase != RecoveryVerifying {
+	} else if healthy && d.health.phase != healthConfirming && progress.Phase != api.RecoveryVerifying {
 		recovery.Verification = "verified"
 	}
-	if recovery.Phase == RecoveryStopped || recovery.Phase == RecoveryBlocked {
+	if recovery.Phase == api.RecoveryStopped || recovery.Phase == api.RecoveryBlocked {
 		return recovery
 	}
-	if recovery.Phase == RecoveryReady && d.health.phase == healthConfirming {
-		recovery.Phase, recovery.Action, recovery.BlockedBy = RecoveryQueued, "verify", "failure_confirmation"
+	if recovery.Phase == api.RecoveryReady && d.health.phase == healthConfirming {
+		recovery.Phase, recovery.Action, recovery.BlockedBy = api.RecoveryQueued, "verify", "failure_confirmation"
 	}
-	switch RecoveryPhase(session.RecoveryPhase) {
-	case RecoveryCleanup, RecoveryWaitingDependency:
-		recovery.Phase = RecoveryPhase(session.RecoveryPhase)
+	switch api.RecoveryPhase(session.RecoveryPhase) {
+	case api.RecoveryCleanup, api.RecoveryWaitingDependency:
+		recovery.Phase = api.RecoveryPhase(session.RecoveryPhase)
 		recovery.Action = "connect"
 		recovery.BlockedBy = session.BlockedBy
 		recovery.RetryAt = time.Time{}
 	}
 	return recovery
-}
-
-// RecoverySnapshot describes the actual background worker, never a queue for
-// application dials. RetryAt is populated only by the owner of the timer.
-type RecoverySnapshot struct {
-	Executor     netproxy.RecoveryExecutor `json:"executor,omitempty"`
-	Action       string                    `json:"action,omitempty"`
-	Phase        RecoveryPhase             `json:"phase"`
-	Verification string                    `json:"verification"`
-	Attempt      uint64                    `json:"attempt"`
-	RetryAt      time.Time                 `json:"retry_at,omitzero"`
-	BlockedBy    string                    `json:"blocked_by,omitempty"`
-}
-
-// FailureSnapshot contains stable metadata, without serializing concrete Go
-// errors or permitting diagnostic text to become metric labels.
-type FailureSnapshot struct {
-	EpisodeID  uint64                 `json:"episode_id"`
-	Resource   netproxy.ResourceRef   `json:"resource"`
-	Scope      netproxy.FailureScope  `json:"scope"`
-	Layer      netproxy.FailureLayer  `json:"layer"`
-	Phase      netproxy.Operation     `json:"phase"`
-	Origin     netproxy.FailureOrigin `json:"origin"`
-	Reason     netproxy.FailureReason `json:"reason"`
-	Code       string                 `json:"code,omitempty"`
-	OccurredAt time.Time              `json:"occurred_at"`
-	Message    string                 `json:"message"`
 }
 
 // The publisher is a configured lifecycle controller, not a replaceable pool
@@ -139,19 +99,19 @@ func (d *pathRuntime) observeResourceFailureLocked(event netproxy.StateEvent, fa
 	return fresh
 }
 
-func failureSnapshot(failure netproxy.Failure, episode uint64) *FailureSnapshot {
+func failureSnapshot(failure netproxy.Failure, episode uint64) *api.FailureSnapshot {
 	message := ""
 	if failure.Cause != nil {
 		message = failure.Cause.Error()
 	}
-	return &FailureSnapshot{
+	return &api.FailureSnapshot{
 		EpisodeID:  episode,
-		Resource:   failure.Resource,
-		Scope:      failure.Scope,
-		Layer:      failure.Layer,
-		Phase:      failure.Phase,
-		Origin:     failure.Origin,
-		Reason:     failure.Reason,
+		Resource:   api.ResourceRef(failure.Resource),
+		Scope:      string(failure.Scope),
+		Layer:      string(failure.Layer),
+		Phase:      string(failure.Phase),
+		Origin:     string(failure.Origin),
+		Reason:     string(failure.Reason),
 		Code:       failure.Code,
 		OccurredAt: time.Now(),
 		Message:    message,
@@ -208,11 +168,11 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 	}
 }
 
-func (d *pathRuntime) setRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy string) {
+func (d *pathRuntime) setRecovery(phase api.RecoveryPhase, retryAt time.Time, blockedBy string) {
 	d.updateRecovery(phase, retryAt, blockedBy, "")
 }
 
-func (d *pathRuntime) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy, action string) {
+func (d *pathRuntime) updateRecovery(phase api.RecoveryPhase, retryAt time.Time, blockedBy, action string) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -223,18 +183,18 @@ func (d *pathRuntime) updateRecovery(phase RecoveryPhase, retryAt time.Time, blo
 	next.RetryAt = retryAt
 	next.BlockedBy = blockedBy
 	switch phase {
-	case RecoveryQueued, RecoveryBackoff:
+	case api.RecoveryQueued, api.RecoveryBackoff:
 		next.Action = "verify"
 		if d.session != nil && !d.session.Snapshot().Accepting {
 			next.Action = "connect"
 		}
-	case RecoveryConnecting:
+	case api.RecoveryConnecting:
 		next.Action = "connect"
-	case RecoveryVerifying:
+	case api.RecoveryVerifying:
 		next.Action = "verify"
-	case RecoveryReady:
+	case api.RecoveryReady:
 		next.Action = ""
-	case RecoveryStopped:
+	case api.RecoveryStopped:
 		next.Action = ""
 	}
 	if action != "" {
@@ -259,7 +219,7 @@ func (d *pathRuntime) updateRecovery(phase RecoveryPhase, retryAt time.Time, blo
 	if blockedBy != "" {
 		fields["blocked_by"] = blockedBy
 	}
-	if phase == RecoveryBlocked {
+	if phase == api.RecoveryBlocked {
 		if diagnostic != nil {
 			fields["error"] = diagnostic.Message
 			fields["layer"] = diagnostic.Layer
@@ -278,7 +238,7 @@ func (d *pathRuntime) startConnection(event netproxy.StateEvent, action string) 
 		return
 	}
 	d.recovery.Attempt++
-	d.recovery.Phase = RecoveryConnecting
+	d.recovery.Phase = api.RecoveryConnecting
 	d.recovery.Action = action
 	d.recovery.RetryAt = time.Time{}
 	d.recovery.BlockedBy = ""
@@ -292,7 +252,7 @@ func (d *pathRuntime) startConnection(event netproxy.StateEvent, action string) 
 func (d *pathRuntime) probeQueued() {
 	d.mu.Lock()
 	if d.ctx.Err() == nil && d.checks.activeProbes == 0 {
-		d.recovery.Phase = RecoveryQueued
+		d.recovery.Phase = api.RecoveryQueued
 		d.recovery.Action = "verify"
 		d.recovery.RetryAt = time.Time{}
 		d.recovery.BlockedBy = "connectivity_slot"
@@ -305,7 +265,7 @@ func (d *pathRuntime) probeStarted() {
 	d.mu.Lock()
 	d.checks.activeProbes++
 	if d.ctx.Err() == nil {
-		d.recovery.Phase = RecoveryVerifying
+		d.recovery.Phase = api.RecoveryVerifying
 		d.recovery.Action = "verify"
 		d.recovery.BlockedBy = ""
 		d.statusRevision++

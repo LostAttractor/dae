@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	grpctransport "github.com/daeuniverse/dae/pkg/outbound/transport/grpc"
 	grpcapi "google.golang.org/grpc"
@@ -67,8 +68,8 @@ func TestGRPCInitialFailureRetriesUntilServerRecovers(t *testing.T) {
 		}
 	}()
 
-	state := waitRecoveryPhase(t, d, RecoveryBackoff)
-	if state.Executor != netproxy.RecoveryDaemon || state.RetryAt.IsZero() || d.RuntimeStatus().Healthy {
+	state := waitRecoveryPhase(t, d, api.RecoveryBackoff)
+	if state.Executor != string(netproxy.RecoveryDaemon) || state.RetryAt.IsZero() || d.RuntimeStatus().Healthy {
 		t.Fatalf("initial failure must retain a daemon retry: %+v", state)
 	}
 	// Start accepting transports without requesting another check or reloading.
@@ -76,7 +77,7 @@ func TestGRPCInitialFailureRetriesUntilServerRecovers(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		status := d.RuntimeStatus()
-		if status.Healthy && status.InitialCheckDone && status.Recovery.Phase == RecoveryBackoff && status.Recovery.Action == "verify" {
+		if status.Healthy && status.InitialCheckDone && status.Recovery.Phase == api.RecoveryBackoff && status.Recovery.Action == "verify" {
 			if transport.connects.Load() < 2 || status.Session.RecoveryExecutor != netproxy.RecoveryLibraryManaged || !status.Recovery.RetryAt.After(time.Now()) || !status.Degraded {
 				t.Fatalf("recovered channel: %+v", status)
 			}
