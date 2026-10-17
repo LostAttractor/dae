@@ -49,7 +49,7 @@ func readCacheFile(ctx context.Context, dir *os.File, name string, limit int64) 
 	if stat.Uid != uint32(os.Geteuid()) || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0077 != 0 || stat.Size > limit {
 		return nil, errors.New("resource cache must be an owned, private regular file within the size limit")
 	}
-	return readBounded(ctx, f, limit)
+	return ReadBounded(ctx, f, limit)
 }
 
 func writeCacheFile(ctx context.Context, dir *os.File, name string, data []byte) error {

@@ -42,7 +42,7 @@ func TestRelativeSubscriptionOpenErrorIdentifiesComponent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = ResolveFile(u, dir)
+			_, err = ResolveFile(t.Context(), u, dir)
 			if pathErr, ok := errors.AsType[*os.PathError](err); !ok || pathErr.Path != component || !errors.Is(err, unix.ENOTDIR) {
 				t.Fatalf("open error = %v, want ENOTDIR identifying %s", err, component)
 			}

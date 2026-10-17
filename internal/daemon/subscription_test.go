@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/daemon/subscription"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 

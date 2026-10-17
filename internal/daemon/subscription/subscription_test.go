@@ -325,7 +325,7 @@ func TestResolveFileRejectsSymlinks(t *testing.T) {
 			raw = "file:links/nodes.sub"
 		}
 		u, _ := url.Parse(raw)
-		if _, err := ResolveFile(u, dir); err == nil {
+		if _, err := ResolveFile(t.Context(), u, dir); err == nil {
 			t.Fatal("relative file followed symlink")
 		}
 	}

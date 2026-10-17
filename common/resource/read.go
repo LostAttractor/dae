@@ -9,13 +9,10 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"golang.org/x/sys/unix"
 )
 
 type ReadOptions struct {
@@ -43,28 +40,15 @@ func Read(ctx context.Context, client *http.Client, source Source, opts ReadOpti
 		result, err := readRemote(ctx, client, source, opts)
 		return result, RedactError(err)
 	}
-	if !filepath.IsAbs(source.Location) {
-		return Result{}, errors.New("local resource location must be an absolute path")
-	}
-	// A FIFO must not block open before the regular-file check. Symlinks are
-	// allowed here; callers handling credentials can use stricter file policies.
-	fd, err := unix.Open(source.Location, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return Result{}, &os.PathError{Op: "open resource", Path: source.Location, Err: err}
-	}
-	f := os.NewFile(uintptr(fd), source.Location)
-	defer f.Close()
-	info, err := f.Stat()
+	f, info, err := OpenLocalFile(source.Location, "")
 	if err != nil {
 		return Result{}, err
 	}
-	if !info.Mode().IsRegular() {
-		return Result{}, errors.New("resource source must be a regular file")
-	}
+	defer f.Close()
 	if info.Size() > opts.MaxBytes {
 		return Result{}, fmt.Errorf("resource file exceeds %d bytes", opts.MaxBytes)
 	}
-	data, err := readBounded(ctx, f, opts.MaxBytes)
+	data, err := ReadBounded(ctx, f, opts.MaxBytes)
 	if err != nil {
 		return Result{}, err
 	}
@@ -129,14 +113,18 @@ func readRemote(ctx context.Context, client *http.Client, source Source, opts Re
 	if strings.HasPrefix(source.Location, "https://") && !strings.HasPrefix(final.Location, "https://") {
 		return Result{}, errors.New("HTTPS resource response cannot downgrade to HTTP")
 	}
-	data, err := readBounded(ctx, response.Body, opts.MaxBytes)
+	data, err := ReadBounded(ctx, response.Body, opts.MaxBytes)
 	if err != nil {
 		return Result{}, err
 	}
 	return Result{Data: data, Location: final.Location}, nil
 }
 
-func readBounded(ctx context.Context, reader io.Reader, limit int64) ([]byte, error) {
+// ReadBounded reads at most limit bytes and rejects longer input.
+func ReadBounded(ctx context.Context, reader io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 || limit == math.MaxInt64 {
+		return nil, errors.New("resource byte limit must be positive and less than MaxInt64")
+	}
 	data, err := io.ReadAll(io.LimitReader(common.NewContextReader(ctx, reader), limit+1))
 	if err != nil {
 		return nil, err

@@ -18,17 +18,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/proxylink"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 type sip008 struct {
@@ -205,7 +202,10 @@ func decodeSIP008(b []byte) (sip008, error) {
 	return sip, nil
 }
 
-func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
+func ResolveFile(ctx context.Context, u *url.URL, configDir string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	source, err := resource.Parse(u.String(), configDir)
 	if err != nil {
 		return nil, err
@@ -213,106 +213,25 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	if source.Remote() {
 		return nil, fmt.Errorf("local subscription requires a file URL")
 	}
-	path := source.Location
-	var f *os.File
-	if !source.Relative {
-		// An explicit absolute path may name a rotating secret symlink, such
-		// as /run/secrets. Validate the opened target below, rather than
-		// rejecting links or resolving them once before opening the file.
-		f, err = openAbsoluteSubscriptionFile(path)
-	} else {
-		// file:relative/path resolves within the configuration directory.
+	root := ""
+	if source.Relative {
 		if configDir == "" {
 			return nil, fmt.Errorf("local subscription requires a configuration directory")
 		}
-		configDir, err = filepath.Abs(configDir)
-		if err != nil {
-			return nil, err
-		}
-		if err = common.EnsureFileInSubDir(path, configDir); err != nil {
-			return nil, err
-		}
-		f, err = openSubscriptionFile(configDir, path)
+		root = configDir
 	}
+	file, info, err := resource.OpenLocalFile(source.Location, root)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return readSubscriptionFile(f, path)
+	defer file.Close()
+	if info.Mode()&0037 > 0 {
+		return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", info.Mode()&0777, source.Location)
+	}
+	return readSubscriptionFile(ctx, file)
 }
 
-func openAbsoluteSubscriptionFile(path string) (*os.File, error) {
-	// O_NONBLOCK prevents a named pipe from hanging before the regular-file
-	// check. Fstat and reads use the same descriptor even if a secret rotates.
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, &os.PathError{Op: "open subscription file", Path: path, Err: err}
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}
-
-func openSubscriptionFile(configDir, path string) (*os.File, error) {
-	relative, err := filepath.Rel(configDir, path)
-	if err != nil {
-		return nil, err
-	}
-	parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
-	if len(parts) == 0 || parts[0] == "." || parts[0] == ".." {
-		return nil, fmt.Errorf("invalid relative subscription path %q", relative)
-	}
-
-	dirFd, err := unix.Open(configDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, &os.PathError{Op: "open subscription directory", Path: configDir, Err: err}
-	}
-	for i, part := range parts {
-		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
-		if i != len(parts)-1 {
-			flags |= unix.O_DIRECTORY
-		} else {
-			flags |= unix.O_NONBLOCK
-		}
-		fd, openErr := unix.Openat(dirFd, part, flags, 0)
-		if openErr != nil {
-			componentPath := filepath.Join(configDir, filepath.Join(parts[:i+1]...))
-			pathErr := subscriptionFileOpenError(dirFd, part, componentPath, openErr)
-			_ = unix.Close(dirFd)
-			return nil, pathErr
-		}
-		_ = unix.Close(dirFd)
-		if i == len(parts)-1 {
-			return os.NewFile(uintptr(fd), path), nil
-		}
-		dirFd = fd
-	}
-	return nil, fmt.Errorf("invalid subscription path %q", path)
-}
-
-func subscriptionFileOpenError(dirFd int, name, path string, err error) error {
-	// Linux reports ENOTDIR, rather than ELOOP, when O_NOFOLLOW and
-	// O_DIRECTORY reject an intermediate symlink. Inspect only for diagnostics;
-	// the failed open is never retried with weaker flags.
-	if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
-		var stat unix.Stat_t
-		if unix.Fstatat(dirFd, name, &stat, unix.AT_SYMLINK_NOFOLLOW) == nil && stat.Mode&unix.S_IFMT == unix.S_IFLNK {
-			err = fmt.Errorf("symbolic links are not allowed: %w", err)
-		}
-	}
-	return &os.PathError{Op: "open subscription path", Path: path, Err: err}
-}
-
-func readSubscriptionFile(f *os.File, path string) (b []byte, err error) {
-	// Check file access.
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("subscription file is not a regular file: %v", path)
-	}
-	if fi.Mode()&0037 > 0 {
-		return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, path)
-	}
+func readSubscriptionFile(ctx context.Context, f *os.File) (b []byte, err error) {
 	// Resolve the first line instruction.
 	fReader := bufio.NewReader(f)
 	b, err = fReader.Peek(1)
@@ -327,12 +246,9 @@ func readSubscriptionFile(f *os.File, path string) (b []byte, err error) {
 		}
 	}
 
-	b, err = io.ReadAll(io.LimitReader(fReader, maxRemoteSubscriptionSize+1))
+	b, err = resource.ReadBounded(ctx, fReader, maxRemoteSubscriptionSize)
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(b)) > maxRemoteSubscriptionSize {
-		return nil, fmt.Errorf("subscription file exceeds %d bytes", maxRemoteSubscriptionSize)
 	}
 	return bytes.TrimSpace(b), err
 }
@@ -432,7 +348,7 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, option
 		if parseErr != nil {
 			return tag, nil, resource.RedactError(parseErr)
 		}
-		b, err = ResolveFile(u, options.BaseDir)
+		b, err = ResolveFile(ctx, u, options.BaseDir)
 		if err != nil {
 			return "", nil, err
 		}
