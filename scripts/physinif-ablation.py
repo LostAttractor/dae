@@ -41,7 +41,7 @@ def main():
         "no-zero-guard": [("routing.h", "if (match_set->ifindex &&", "if (", 1)],
         "no-cache-store": [("tproxy.c", "value->result = *result;", "value->result = *result;\n\tvalue->result.physinif = 0;", 1)],
         "no-cache-restore": [("tproxy.c", "*result = value->result;", "*result = value->result;\n\t\tresult->physinif = 0;", 1)],
-        "no-handoff": [("tproxy.c", "routing_result->physinif = params->physinif;", "routing_result->physinif = 0;", 1)],
+        "no-handoff": [("tproxy.c", "result->physinif = params->physinif;", "result->physinif = 0;", 1)],
         # Reconstruct the original four-helper reader for repeatable comparisons
         # after the optimization, without relying on a historical checkout.
         "probe-read": [

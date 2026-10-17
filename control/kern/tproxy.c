@@ -1122,6 +1122,19 @@ static __always_inline void decode_route_result(struct routing_result *result,
 	result->capture_flags = encoded >> ROUTE_RESULT_CAPTURE_SHIFT;
 }
 
+static __always_inline void fill_route_metadata(struct routing_result *result,
+	const struct route_params *params, __u32 generation, __u64 route_epoch)
+{
+	result->generation = generation;
+	result->route_epoch = route_epoch;
+	result->profile_id = params->profile_id;
+	result->protocol = params->l4proto_type;
+	result->dscp = params->dscp;
+	result->ifindex = params->ifindex;
+	result->physinif = params->physinif;
+	__builtin_memcpy(result->mac, params->mac, sizeof(result->mac));
+}
+
 static __always_inline int do_tproxy_first_fragment(
 	struct __sk_buff *skb, bool is_wan, struct ethhdr *ethh,
 	struct l3_hdr *l3h, struct l4_hdr *l4h, __u8 l4proto,
@@ -1208,13 +1221,7 @@ static __always_inline int do_tproxy_first_fragment(
 
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
-		result->route_epoch = route_epoch;
-		result->generation = generation;
-		result->profile_id = params->profile_id;
-		result->ifindex = params->ifindex;
-		result->physinif = params->physinif;
-
-		__builtin_memcpy(result->mac, ethh->h_source, sizeof(result->mac));
+		fill_route_metadata(result, params, generation, route_epoch);
 		if (l4proto == IPPROTO_UDP) {
 			if (save_udp_route(&udp_key, result) || result->outbound != OUTBOUND_DIRECT)
 				return TCX_DROP;
@@ -1404,15 +1411,8 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (route_ret < 0)
 		return TCX_DROP;
-	routing_result->generation = generation;
-	routing_result->route_epoch = route_epoch;
-	routing_result->profile_id = params->profile_id;
 	decode_route_result(routing_result, route_ret);
-	routing_result->protocol = params->l4proto_type;
-	routing_result->dscp = tuples->dscp;
-	routing_result->ifindex = ifindex;
-	routing_result->physinif = params->physinif;
-	__builtin_memcpy(routing_result->mac, ethh->h_source, sizeof(routing_result->mac));
+	fill_route_metadata(routing_result, params, generation, route_epoch);
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;

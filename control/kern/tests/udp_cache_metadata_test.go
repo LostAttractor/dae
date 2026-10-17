@@ -17,6 +17,94 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestUDPFragmentRoutingCacheMetadata(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const profileID, generation = uint32(70001), uint32(18)
+	const dscp = uint8(46)
+	ifindex := uint32(loopback.Index)
+	mac := [6]byte{2, 0, 0, 0, 0, 37}
+	if err := obj.RoutingGeneration.Set(generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.RoutingMap.Update(uint32(0), bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.RoutingProfileMap.Update(profileID, bpftestRoutingProfile{Length: 1}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.RoutingInterfaceMap.Update(ifindex, profileID, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range []struct {
+		name   string
+		pktgen *ebpf.Program
+	}{
+		{"IPv4", obj.TestpktgenIpv4FirstUdpFragmentDirect},
+		{"IPv6", obj.TestpktgenIpv6FirstUdpFragmentDirect},
+	} {
+		for _, network := range []struct {
+			name  string
+			entry *ebpf.Program
+		}{
+			{"LAN", obj.LanIngressL2},
+			{"WAN", obj.TproxyWanEgressL2},
+		} {
+			for _, fragmented := range []bool{true, false} {
+				name := family.name + "/" + network.name
+				if fragmented {
+					name += "/fragment"
+				} else {
+					name += "/whole"
+				}
+				t.Run(name, func(t *testing.T) {
+					status, packet, ctx, err := runBpfProgram(family.pktgen, make([]byte, 4096-256-320), make([]byte, 256))
+					if err != nil || status != 0 {
+						t.Fatalf("generate: status=%d err=%v", status, err)
+					}
+					copy(packet[6:12], mac[:])
+					binary.NativeEndian.PutUint32(ctx[40:44], ifindex)
+					if family.name == "IPv4" {
+						packet[15] = dscp << 2
+						if !fragmented {
+							binary.BigEndian.PutUint16(packet[20:22], 0)
+						}
+					} else {
+						packet[14] = 0x60 | dscp>>2
+						packet[15] = (dscp & 3) << 6
+						if !fragmented {
+							binary.BigEndian.PutUint16(packet[56:58], 0)
+						} // Atomic fragment.
+					}
+					if err := clearUDPRoutingCache(obj.UdpRoutingCacheMap); err != nil {
+						t.Fatal(err)
+					}
+					status, _, _, err = runBpfProgram(network.entry, packet, ctx)
+					if err != nil || status != ^uint32(0) {
+						t.Fatalf("direct: status=%d err=%v", status, err)
+					}
+					var key bpftestUdpRoutingCacheKey
+					var cached bpftestUdpRoutingCacheValue
+					iter := obj.UdpRoutingCacheMap.Iterate()
+					if !iter.Next(&key, &cached) {
+						t.Fatalf("missing cache: %v", iter.Err())
+					}
+					result := cached.Result
+					if result.Protocol != 2 || result.Dscp != dscp || result.Ifindex != ifindex || result.ProfileId != profileID || result.Generation != generation || result.Mac != mac {
+						t.Fatalf("incomplete source metadata: %+v", result)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 	obj, err := loadTestObjects(t)
 	if err != nil {
