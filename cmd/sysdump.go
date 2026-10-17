@@ -28,33 +28,31 @@ var (
 	sysdumpCmd = &cobra.Command{
 		Use:   "sysdump",
 		Short: "To dump up system network config",
-		Run: func(cmd *cobra.Command, args []string) {
-			dumpNetworkInfo()
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			return dumpNetworkInfo(cmd.OutOrStdout())
 		},
 	}
 )
 
-func dumpNetworkInfo() {
+func dumpNetworkInfo(out io.Writer) error {
 	tempDir, err := os.MkdirTemp("", "sysdump")
 	if err != nil {
-		fmt.Printf("Failed to create temp directory: %v\n", err)
-		return
+		return fmt.Errorf("create sysdump directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	dumpRouting(tempDir)
-	dumpNetInterfaces(tempDir)
-	dumpSysctl(tempDir)
-	dumpNetfilter(tempDir)
-	dumpIPTables(tempDir)
+	// Preserve the available diagnostics even when one collector fails.
+	collectErr := errors.Join(dumpRouting(tempDir), dumpNetInterfaces(tempDir),
+		dumpSysctl(tempDir), dumpNetfilter(tempDir), dumpIPTables(tempDir))
 
 	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz", time.Now().Unix())
 	if err := archiveDirectory(tempDir, tarFile); err != nil {
-		fmt.Printf("Failed to create tar archive: %v\n", err)
-		return
+		return errors.Join(collectErr, fmt.Errorf("create sysdump archive: %w", err))
 	}
 
-	fmt.Printf("System network information collected and saved to %s\n", tarFile)
+	_, err = fmt.Fprintf(out, "System network information saved to %s\n", tarFile)
+	return errors.Join(collectErr, err)
 }
 
 func archiveDirectory(source, destination string) error {
@@ -197,19 +195,19 @@ func typeToString(typ int) string {
 	}
 }
 
-func dumpRouting(outputDir string) {
+func dumpRouting(outputDir string) error {
 	routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
 	if err != nil {
-		fmt.Printf("Failed to get routing table: %v\n", err)
-		return
+		return fmt.Errorf("get routing table: %w", err)
 	}
 
 	var buffer bytes.Buffer
+	var linkErrors []error
 	buffer.WriteString("Routing:\n")
 	for _, route := range routes {
 		link, err := netlink.LinkByIndex(route.LinkIndex)
 		if err != nil {
-			fmt.Printf("Failed to get link by index: %v\n", err)
+			linkErrors = append(linkErrors, fmt.Errorf("get routing interface %d: %w", route.LinkIndex, err))
 			continue
 		}
 		ifaceName := link.Attrs().Name
@@ -245,17 +243,13 @@ func dumpRouting(outputDir string) {
 
 		buffer.WriteString(routeStr + "\n")
 	}
-	err = os.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
-	if err != nil {
-		fmt.Printf("Failed to write routing information to file: %v\n", err)
-	}
+	return errors.Join(errors.Join(linkErrors...), os.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644))
 }
 
-func dumpNetInterfaces(outputDir string) {
+func dumpNetInterfaces(outputDir string) error {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		fmt.Printf("Failed to get network interfaces: %v\n", err)
-		return
+		return fmt.Errorf("get network interfaces: %w", err)
 	}
 
 	var buffer bytes.Buffer
@@ -268,22 +262,25 @@ func dumpNetInterfaces(outputDir string) {
 		}
 	}
 
-	os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
+	return os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
 }
 
-func dumpSysctl(outputDir string) {
+func dumpSysctl(outputDir string) error {
 	sysctlPath := "/proc/sys/net"
 	var buffer bytes.Buffer
+	var readErrors []error
 
 	err := filepath.Walk(sysctlPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Fail in filepath.Walk: %v\n", err)
+			readErrors = append(readErrors, err)
+			return nil
 		}
 
 		if !info.IsDir() {
 			value, err := os.ReadFile(path)
 			if err != nil {
-				fmt.Printf("Fail in filepath.Walk: %v\n", err)
+				readErrors = append(readErrors, err)
+				return nil
 			}
 
 			relativePath := strings.TrimPrefix(path, sysctlPath+"/")
@@ -292,40 +289,30 @@ func dumpSysctl(outputDir string) {
 		return nil
 	})
 
-	if err != nil {
-		fmt.Printf("Failed to get sysctl settings: %v\n", err)
-	}
-
-	os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
+	return errors.Join(err, errors.Join(readErrors...), os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644))
 }
 
-func dumpNetfilter(outputDir string) {
+func dumpNetfilter(outputDir string) error {
 	cmd := exec.Command("nft", "list", "ruleset")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("Failed to get nftables ruleset: %v\n", err)
-		return
+		return fmt.Errorf("get nftables ruleset: %w", err)
 	}
 
-	os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
+	return os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
 }
 
-func dumpIPTables(outputDir string) {
-	iptables := exec.Command("iptables-save", "-c")
-	output, err := iptables.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to get iptables: %v\n", err)
-	} else {
-		os.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
+func dumpIPTables(outputDir string) error {
+	var errs []error
+	for _, tool := range []string{"iptables", "ip6tables"} {
+		output, err := exec.Command(tool+"-save", "-c").CombinedOutput()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("get %s rules: %w", tool, err))
+			continue
+		}
+		errs = append(errs, os.WriteFile(filepath.Join(outputDir, tool+".txt"), output, 0644))
 	}
-
-	ip6tables := exec.Command("ip6tables-save", "-c")
-	output, err = ip6tables.CombinedOutput()
-	if err != nil {
-		fmt.Printf("Failed to get ip6tables: %v\n", err)
-	} else {
-		os.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
-	}
+	return errors.Join(errs...)
 }
 
 func init() {
