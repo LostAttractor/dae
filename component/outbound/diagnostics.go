@@ -29,8 +29,8 @@ func (g *DialerGroup) ExplainSelection(network *common.NetworkType) api.ExplainO
 		}
 	case g.Kind != GroupKindSelector && len(g.Dialers) != 0:
 		selected = g.Dialers[0]
-	case g.selector != nil:
-		selected = g.selector.selected[network.Index()]
+	case g.automatic != nil:
+		selected = g.automatic.selectedDialer(network.Index())
 	default:
 		selected = g.fixedDialer()
 	}

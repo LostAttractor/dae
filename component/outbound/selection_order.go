@@ -2,27 +2,11 @@ package outbound
 
 import (
 	"cmp"
-	"slices"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
 )
-
-type latencyBasedSelector struct {
-	dialerGroup     *DialerGroup
-	tolerance       time.Duration
-	toleranceActive bool
-
-	selected [common.NetworkTypeCount]*dialer.Dialer
-}
-
-func (s *latencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
-	candidates := s.dialerGroup.candidates(networkType)
-	slices.SortStableFunc(candidates, compareCandidates)
-	return candidates
-}
 
 func compareCandidates(a, b selectorCandidate) int {
 	if a.degraded != b.degraded {
@@ -34,7 +18,7 @@ func compareCandidates(a, b selectorCandidate) int {
 	return cmp.Or(cmp.Compare(b.priority, a.priority), cmp.Compare(a.sortingLatency, b.sortingLatency))
 }
 
-func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {
+func (s *automaticSelection) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {
 	oldName := "<nil>"
 	newName := "<nil>"
 	if oldDialer != nil {
@@ -46,12 +30,12 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 	fields := log.Fields{
 		"node":          newName,
 		"previous_node": oldName,
-		"group":         s.dialerGroup.Name,
+		"group":         s.g.Name,
 		"network":       networkType.String(),
-		"policy":        s.dialerGroup.selectionPolicy.Policy,
+		"policy":        s.g.selectionPolicy.Policy,
 	}
 	if newDialer != nil {
-		if candidate, ok := s.dialerGroup.candidate(newDialer, networkType); ok {
+		if candidate, ok := s.g.candidate(newDialer, networkType); ok {
 			fields["latency"] = candidate.latency.String()
 			fields["selection_score"] = candidate.sortingLatency.String()
 			fields["priority"] = candidate.priority

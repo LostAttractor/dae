@@ -665,11 +665,11 @@ func TestSelectionWaitBudgetSurvivesElectionReplacement(t *testing.T) {
 				}()
 				for range 3 {
 					time.Sleep(policy.SelectionTimeout / 2)
-					g.mu.Lock()
+					g.automatic.mu.Lock()
 					for network := range common.NetworkIndex(common.NetworkTypeCount) {
 						g.automatic.changedLocked(network)
 					}
-					g.mu.Unlock()
+					g.automatic.mu.Unlock()
 				}
 				synctest.Wait()
 				select {

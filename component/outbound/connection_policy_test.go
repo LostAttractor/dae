@@ -8,30 +8,29 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 	for _, closeOld := range []bool{false, true} {
 		t.Run(map[bool]string{false: "keep", true: "close"}[closeOld], func(t *testing.T) {
-			a, b := newUncheckedDialer(t, "a"), newUncheckedDialer(t, "b")
+			a, b := newVerifiedTestDialer(t, "a", "test://a"), newVerifiedTestDialer(t, "b", "test://b")
 			annotations := emptyAnnotations(2)
 			annotations[1].AddLatency = time.Second
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, annotations,
 				dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
 			g.SetConnectionPolicy(closeOld, false)
-			g.selector.selected[common.NetworkTCP4] = a
-			g.selector.selected[common.NetworkUDP4] = a
+			g.automatic.selected[common.NetworkTCP4] = a
+			g.automatic.selected[common.NetworkTCP6] = a
 			old, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
 			if err != nil || old.Dialer != a {
 				t.Fatalf("first selection = %v, %v", old.Dialer, err)
 			}
-			udp, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			otherNetwork, err := g.SelectConnection(*common.NetworkTCP6.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_ = a.Close()
-			g.selector.selected[common.NetworkTCP4] = b
+			g.automatic.selected[common.NetworkTCP4] = b
 			current, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
 			if err != nil || current.Dialer != b {
 				t.Fatalf("new selection = %v, %v", current.Dialer, err)
@@ -39,7 +38,7 @@ func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 			if (old.Lease.AbortCause() != nil) != closeOld {
 				t.Fatalf("previous connection generation: %v", old.Lease.AbortCause())
 			}
-			if current.Lease.AbortCause() != nil || udp.Lease.AbortCause() != nil {
+			if current.Lease.AbortCause() != nil || otherNetwork.Lease.AbortCause() != nil {
 				t.Fatal("reselection terminated new or unrelated-network connections")
 			}
 			if closeOld && old.Lease == current.Lease {
@@ -262,7 +261,7 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 			makeGroup := func(selectB bool) *DialerGroup {
 				dials := make([]*dialer.Dialer, 2)
 				for i, name := range []string{"a", "b"} {
-					dials[i] = dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Name: name, Link: "test://" + name}, false, "")
+					dials[i] = newVerifiedTestDialer(t, name, "test://"+name)
 				}
 				policy := dialer.DialerSelectionPolicy{Policy: tc.policy}
 				annotations := emptyAnnotations(2)
@@ -273,9 +272,9 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 				}
 				g := newSelectorTestGroup(t, dials, annotations, policy, nil)
 				g.selectionIndex = policy.FixedIndex
-				if g.selector != nil {
-					for network := range g.selector.selected {
-						g.selector.selected[network] = dials[policy.FixedIndex]
+				if g.automatic != nil {
+					for network := range g.automatic.selected {
+						g.automatic.selected[network] = dials[policy.FixedIndex]
 					}
 				}
 				g.SetConnectionPolicy(tc.closeOld, false)

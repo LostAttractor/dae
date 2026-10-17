@@ -13,19 +13,24 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 )
 
-// automaticSelection owns discovery demand. Its state and selection commits are
-// protected by the group mutex; network operations never hold that mutex.
+// automaticSelection owns discovery, proofs and the selected paths under mu.
+// Group publications happen after releasing mu. Group readers may acquire mu
+// while holding the group lock; selection never acquires those locks in reverse.
 type automaticSelection struct {
-	g        *DialerGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wake     chan struct{}
-	wg       sync.WaitGroup
-	started  bool
-	networks [common.NetworkTypeCount]selectionNetwork
+	mu              sync.Mutex
+	selected        [common.NetworkTypeCount]*dialer.Dialer
+	tolerance       time.Duration
+	toleranceActive bool
+	g               *DialerGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wake            chan struct{}
+	wg              sync.WaitGroup
+	started         bool
+	networks        [common.NetworkTypeCount]selectionNetwork
 }
 
 type selectionNetwork struct {
@@ -59,9 +64,9 @@ func (s *automaticSelection) check(job *selectionJob, network common.NetworkInde
 	return d.Check(job.ctx, network, s.g.selectionPolicy.ProbeTimeout)
 }
 
-func newAutomaticSelection(g *DialerGroup) *automaticSelection {
+func newAutomaticSelection(g *DialerGroup, tolerance time.Duration) *automaticSelection {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &automaticSelection{g: g, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}
+	s := &automaticSelection{g: g, tolerance: tolerance, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}
 	for i := range s.networks {
 		s.networks[i].changed = make(chan struct{})
 		s.networks[i].fresh = make(map[*dialer.Dialer]dialer.HealthProof)
@@ -80,9 +85,9 @@ func (s *automaticSelection) signal() {
 }
 
 func (s *automaticSelection) start(start <-chan struct{}) {
-	s.g.mu.Lock()
-	defer s.g.mu.Unlock()
-	if s.started || s.g.closed.Load() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started || s.ctx.Err() != nil {
 		return
 	}
 	s.started = true
@@ -102,9 +107,10 @@ func (s *automaticSelection) start(start <-chan struct{}) {
 			case <-timer.C:
 			}
 			timer.Stop()
-			s.g.mu.Lock()
+			s.mu.Lock()
 			next := s.scheduleLocked()
-			s.g.mu.Unlock()
+			s.mu.Unlock()
+			s.g.automaticChanged(common.NetworkInvalid, nil)
 			if !next.IsZero() {
 				timer.Reset(max(time.Until(next), 0))
 			}
@@ -117,7 +123,7 @@ func (s *automaticSelection) failover() bool {
 }
 
 func (s *automaticSelection) current(network common.NetworkIndex) (selectorCandidate, bool) {
-	d := s.g.selector.selected[network]
+	d := s.selected[network]
 	if d == nil || !d.VerifiedUsable(network.NetworkType()) {
 		return selectorCandidate{}, false
 	}
@@ -138,8 +144,8 @@ func (s *automaticSelection) prefer(a, b selectorCandidate, force bool) bool {
 		return false
 	}
 	tolerance := time.Duration(0)
-	if s.g.selector.toleranceActive && !force {
-		tolerance = s.g.selector.tolerance
+	if s.toleranceActive && !force {
+		tolerance = s.tolerance
 	}
 	return saturatingDurationAdd(a.sortingLatency, tolerance) < b.sortingLatency
 }
@@ -186,7 +192,7 @@ func (s *automaticSelection) unverifiedPeer(network common.NetworkIndex, current
 }
 
 func (s *automaticSelection) scheduleLocked() time.Time {
-	if s.g.closed.Load() {
+	if s.ctx.Err() != nil {
 		return time.Time{}
 	}
 	now := time.Now()
@@ -241,7 +247,7 @@ func (s *automaticSelection) scheduleLocked() time.Time {
 					continue
 				}
 				if state.upgradeAt.IsZero() {
-					state.upgradeAt = now.Add(selectionJitter(s.g.selectionPolicy.UpgradeInterval, s.g.selectionPolicy.UpgradeIntervalMax))
+					state.upgradeAt = now.Add(checktime.Jitter(s.g.selectionPolicy.UpgradeInterval, s.g.selectionPolicy.UpgradeIntervalMax))
 				}
 				when, upgrade = state.upgradeAt, true
 			}
@@ -268,7 +274,6 @@ func (s *automaticSelection) scheduleLocked() time.Time {
 		s.wg.Go(func() { s.selectNetwork(index, job, target, upgrade) })
 	}
 	s.refreshDemandLocked()
-	_ = s.g.updateConnectivity()
 	return next
 }
 
@@ -294,8 +299,14 @@ func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *sel
 	} else {
 		s.elect(network, job, upgrade)
 	}
-	s.g.mu.Lock()
-	defer s.g.mu.Unlock()
+	s.mu.Lock()
+	notify := false
+	defer func() {
+		s.mu.Unlock()
+		if notify {
+			s.g.automaticChanged(common.NetworkInvalid, nil)
+		}
+	}()
 	state := &s.networks[network]
 	// The slot stays occupied until this goroutine completes, including after
 	// cancellation. A replacement cannot overlap this job's commit or cleanup.
@@ -313,7 +324,7 @@ func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *sel
 	now := time.Now()
 	if _, usable := s.current(network); !usable {
 		state.retryDelay = min(max(time.Second, saturatingDurationAdd(state.retryDelay, state.retryDelay)), s.g.selectionPolicy.UpgradeIntervalMax)
-		state.retryAt = now.Add(selectionJitter(state.retryDelay, s.g.selectionPolicy.UpgradeIntervalMax))
+		state.retryAt = now.Add(checktime.Jitter(state.retryDelay, s.g.selectionPolicy.UpgradeIntervalMax))
 	} else {
 		state.retryDelay = 0
 		state.retryAt = time.Time{}
@@ -324,11 +335,10 @@ func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *sel
 	} else {
 		state.upgradeDelay = min(max(s.g.selectionPolicy.UpgradeInterval, saturatingDurationAdd(state.upgradeDelay, state.upgradeDelay)), s.g.selectionPolicy.UpgradeIntervalMax)
 	}
-	state.upgradeAt = now.Add(selectionJitter(state.upgradeDelay, s.g.selectionPolicy.UpgradeIntervalMax))
+	state.upgradeAt = now.Add(checktime.Jitter(state.upgradeDelay, s.g.selectionPolicy.UpgradeIntervalMax))
+	notify = true
 	s.changedLocked(network)
 	s.refreshDemandLocked()
-	_ = s.g.updateConnectivity()
-	s.g.closeRecoveredConnections()
 	s.signal()
 }
 
@@ -339,18 +349,6 @@ func releaseProofs(proofs map[*dialer.Dialer]dialer.HealthProof) {
 	clear(proofs)
 }
 
-func selectionJitter(interval, maximum time.Duration) time.Duration {
-	spread := interval / 5
-	if spread == 0 {
-		return interval
-	}
-	low, high := interval-spread, min(saturatingDurationAdd(interval, spread), maximum)
-	if high <= low {
-		return min(interval, maximum)
-	}
-	return low + time.Duration(fastrand.Int63n(int64(high-low+1)))
-}
-
 func (s *automaticSelection) changedLocked(network common.NetworkIndex) {
 	state := &s.networks[network]
 	close(state.changed)
@@ -358,30 +356,34 @@ func (s *automaticSelection) changedLocked(network common.NetworkIndex) {
 }
 
 func (s *automaticSelection) commit(network common.NetworkIndex, job *selectionJob, d *dialer.Dialer, proof dialer.HealthProof) bool {
-	s.g.mu.Lock()
-	defer s.g.mu.Unlock()
+	s.mu.Lock()
+	committed := false
+	defer func() {
+		s.mu.Unlock()
+		if committed {
+			s.g.automaticChanged(network, d)
+		}
+	}()
 	state := &s.networks[network]
-	if s.g.closed.Load() || errors.Is(job.ctx.Err(), context.Canceled) || proof.Network != network || !d.ProofValid(proof) {
+	if s.ctx.Err() != nil || errors.Is(job.ctx.Err(), context.Canceled) || proof.Network != network || !d.ProofValid(proof) {
 		return false
 	}
 	candidate, ok := s.g.candidate(d, network.NetworkType())
 	if !ok {
 		return false
 	}
-	previous := s.g.selector.selected[network]
+	previous := s.selected[network]
 	if current, ok := s.current(network); ok && previous != d && !s.prefer(candidate, current, state.force) {
 		return false
 	}
 	if previous != d {
-		s.g.selector.selected[network] = d
-		s.g.selector.logSelection(previous, d, network.NetworkType())
+		s.selected[network] = d
+		s.logSelection(previous, d, network.NetworkType())
 	}
 	job.committed, job.serving = true, true
-	s.g.updateConnectionSelection(network.NetworkType(), d)
 	s.changedLocked(network)
 	s.refreshDemandLocked()
-	_ = s.g.updateConnectivity()
-	s.g.closeRecoveredConnections()
+	committed = true
 	return true
 }
 
@@ -399,8 +401,8 @@ type discoveryResult struct {
 }
 
 func (s *automaticSelection) discoveryCandidates(network common.NetworkIndex, upgrade bool) []discoveryCandidate {
-	s.g.mu.Lock()
-	defer s.g.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	current, usable := s.current(network)
 	var candidates []discoveryCandidate
 	for _, d := range s.g.Dialers {
@@ -468,11 +470,11 @@ func (s *automaticSelection) elect(network common.NetworkIndex, job *selectionJo
 		}
 		batch := pending[:end]
 		pending = pending[end:]
-		s.g.mu.Lock()
+		s.mu.Lock()
 		for _, candidate := range batch {
 			s.networks[network].visited[candidate.d] = true
 		}
-		s.g.mu.Unlock()
+		s.mu.Unlock()
 		results := make(chan discoveryResult, len(batch))
 		outstanding := make(map[*dialer.Dialer]discoveryCandidate, len(batch))
 		for _, candidate := range batch {
@@ -556,7 +558,7 @@ func (s *automaticSelection) refreshDemandLocked() {
 	var current [common.NetworkTypeCount]selectorCandidate
 	var usable [common.NetworkTypeCount]bool
 	var hasPeer [common.NetworkTypeCount]bool
-	for network, d := range s.g.selector.selected {
+	for network, d := range s.selected {
 		current[network], usable[network] = s.current(common.NetworkIndex(network))
 		if s.failover() || !usable[network] {
 			continue
@@ -575,7 +577,7 @@ func (s *automaticSelection) refreshDemandLocked() {
 	}
 	for _, d := range s.g.Dialers {
 		enabled := false
-		d.SetSelected(slices.Contains(s.g.selector.selected[:], d))
+		d.SetSelected(slices.Contains(s.selected[:], d))
 		for network, selected := range current {
 			candidate, ok := s.g.candidate(d, common.NetworkIndex(network).NetworkType())
 			// A continuous policy may sleep lower tiers only with a usable peer
@@ -613,25 +615,25 @@ func (s *automaticSelection) wait(network common.NetworkIndex, deadline time.Tim
 		}
 	}()
 	for {
-		s.g.mu.Lock()
-		selected := s.g.selector.selected[network]
+		s.mu.Lock()
+		selected := s.selected[network]
 		available := selected != nil && selected.VerifiedUsable(network.NetworkType())
-		if !s.started || s.g.closed.Load() || available {
-			s.g.mu.Unlock()
+		if !s.started || s.ctx.Err() != nil || available {
+			s.mu.Unlock()
 			return available
 		}
 		state := &s.networks[network]
 		if state.disabled {
-			s.g.mu.Unlock()
+			s.mu.Unlock()
 			return false
 		}
 		if state.job == nil && state.retryAt.After(time.Now()) {
-			s.g.mu.Unlock()
+			s.mu.Unlock()
 			return false
 		}
 		changed := state.changed
 		s.signal()
-		s.g.mu.Unlock()
+		s.mu.Unlock()
 		if timer == nil {
 			timer = time.NewTimer(max(time.Until(deadline), 0))
 		}

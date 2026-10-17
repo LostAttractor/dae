@@ -7,6 +7,7 @@ package dialer
 
 import (
 	"context"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -327,6 +328,6 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 	} else {
 		c.capacityInterval = min(c.capacityInterval*2, maximum)
 	}
-	deadline := time.Now().Add(jitterRetryInterval(c.capacityInterval, maximum))
+	deadline := time.Now().Add(checktime.Jitter(c.capacityInterval, maximum))
 	c.capacityAt = deadline
 }

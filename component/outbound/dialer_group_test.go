@@ -61,6 +61,28 @@ func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	}, true, "")
 }
 
+// Connection-policy fixtures need a real shared health proof even when election
+// itself is controlled by the test.
+func newVerifiedTestDialer(t *testing.T, name, link string) *dialer.Dialer {
+	t.Helper()
+	option := &dialer.GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour,
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1", "::1"}}}
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: new(sharedCheckTransport)}), option,
+		&dialer.Property{Name: name, Link: link}, true, "")
+	t.Cleanup(func() { _ = d.Close() })
+	start := make(chan struct{})
+	close(start)
+	d.ActivateCheck(start)
+	for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+		proof, err := d.Check(t.Context(), network, time.Second)
+		proof.Release()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return d
+}
+
 func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy, callback func(bool, *common.NetworkType) error) *DialerGroup {
 	t.Helper()
 	g := &DialerGroup{
@@ -81,7 +103,7 @@ func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []
 	case consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 		consts.DialerSelectionPolicy_MinLastLatency:
-		g.selector = &latencyBasedSelector{dialerGroup: g}
+		g.automatic = newAutomaticSelection(g, 0)
 	}
 	t.Cleanup(func() { _ = g.Close() })
 	return g
@@ -189,9 +211,9 @@ func TestLatencySelectorFallsBackWhenSelectedDialerCloses(t *testing.T) {
 
 func TestAutomaticSelectionTolerance(t *testing.T) {
 	g := &DialerGroup{selectionPolicy: dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}}
-	g.selector = &latencyBasedSelector{dialerGroup: g, tolerance: 20 * time.Millisecond}
-	s := newAutomaticSelection(g)
-	defer s.cancel()
+	g.automatic = newAutomaticSelection(g, 20*time.Millisecond)
+	s := g.automatic
+	defer s.close()
 	current := selectorCandidate{sortingLatency: 100 * time.Millisecond}
 	faster := selectorCandidate{sortingLatency: 90 * time.Millisecond}
 	if !s.prefer(faster, current, false) {
@@ -276,7 +298,7 @@ func TestDialerGroupStartupReadyWaitsForNetworkPublication(t *testing.T) {
 	publicationBlocked := make(chan struct{})
 	releasePublication := make(chan struct{})
 	g := newSelectorTestGroup(t, []*dialer.Dialer{pending, available}, emptyAnnotations(2), dialer.DialerSelectionPolicy{
-		Policy: consts.DialerSelectionPolicy_MinLastLatency,
+		Policy: consts.DialerSelectionPolicy_Fixed, FixedIndex: 1,
 	}, func(available bool, networkType *common.NetworkType) error {
 		if available && networkType.Index() == common.NetworkTCP6 {
 			close(publicationBlocked)

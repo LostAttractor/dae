@@ -11,7 +11,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
@@ -42,7 +41,6 @@ type DialerGroup struct {
 	TargetKind      TargetKind
 	Dialers         []*dialer.Dialer
 	selectionPolicy dialer.DialerSelectionPolicy
-	selector        *latencyBasedSelector
 	automatic       *automaticSelection
 	selectionIndex  int
 	connections     connectionPolicy
@@ -146,16 +144,13 @@ func NewDialerGroup(
 			consts.DialerSelectionPolicy_Failover,
 			consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 			consts.DialerSelectionPolicy_MinLastLatency:
-			g.selector = &latencyBasedSelector{dialerGroup: g, tolerance: option.CheckTolerance}
+			g.automatic = newAutomaticSelection(g, option.CheckTolerance)
 		default:
 			panic(fmt.Sprintf("unsupported selection policy %q", selectionPolicy.Policy))
 		}
 	}
 
 	if g.ChecksConnectivity() {
-		if selectionPolicy.Automatic() {
-			g.automatic = newAutomaticSelection(g)
-		}
 		for _, d := range dialers {
 			d.RegisterDialerGroup(g, selectionPolicy)
 		}
@@ -217,11 +212,7 @@ func (g *DialerGroup) Close() error {
 		g.releaseStartupReady(true)
 		g.mu.Unlock()
 		if g.automatic != nil {
-			g.automatic.cancel()
-			g.automatic.wg.Wait()
-			for _, state := range g.automatic.networks {
-				releaseProofs(state.fresh)
-			}
+			g.automatic.close()
 		}
 		for _, d := range g.Dialers {
 			_ = d.Close()
@@ -376,6 +367,7 @@ func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, a
 }
 
 type groupConnectivity struct {
+	retain      [common.NetworkTypeCount]bool
 	networks    [common.NetworkTypeCount]bool
 	stable      bool
 	pending     bool
@@ -393,20 +385,10 @@ func (c groupConnectivity) state(published bool) api.GroupState {
 }
 
 func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
-	if g.automatic != nil && g.automatic.started {
-		var aggregate groupConnectivity
-		aggregate.initialDone = true
-		for network := range common.NetworkIndex(common.NetworkTypeCount) {
-			selected := g.selector.selected[network]
-			available := selected != nil && selected.VerifiedUsable(network.NetworkType())
-			aggregate.networks[network] = available
-			aggregate.stable = aggregate.stable || available
-			state := &g.automatic.networks[network]
-			pending := !state.disabled && (state.job != nil || state.retryAt.IsZero() && !available)
-			aggregate.pending = aggregate.pending || pending
-			aggregate.initialDone = aggregate.initialDone && !pending
+	if g.automatic != nil {
+		if snapshot, started := g.automatic.connectivity(); started {
+			return snapshot
 		}
-		return aggregate
 	}
 	aggregate := groupConnectivity{initialDone: true}
 	for _, d := range g.policyDialers() {
@@ -436,32 +418,7 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 		return
 	}
 	if g.automatic != nil {
-		newObservation := false
-		for network := range common.NetworkIndex(common.NetworkTypeCount) {
-			snapshot := dialer.SelectionSnapshot(network.NetworkType())
-			state := &g.automatic.networks[network]
-			if !snapshot.Proof.SameObservation(state.observed[dialer]) {
-				state.observed[dialer] = snapshot.Proof
-				if proof, ok := dialer.RetainProof(snapshot.Proof); ok {
-					state.fresh[dialer].Release()
-					state.fresh[dialer] = proof
-					state.retryAt = time.Time{}
-					newObservation = true
-				}
-			}
-			if forceSelection.Contains(network) {
-				g.automatic.networks[network].force = true
-			}
-		}
-		if newObservation {
-			for network, selected := range g.selector.selected {
-				if selected == dialer {
-					g.automatic.networks[network].reconsider = true
-				}
-			}
-		}
-		g.automatic.refreshDemandLocked()
-		g.automatic.signal()
+		g.automatic.observe(dialer, forceSelection)
 		return
 	}
 	if err := g.updateConnectivity(); err != nil {
@@ -481,7 +438,7 @@ func (g *DialerGroup) updateConnectivity() error {
 		networkType := common.NetworkIndex(i).NetworkType()
 		// Keep already admitted proxy routes while their bounded replacement
 		// election runs. Only a completed unsuccessful election publishes down.
-		if g.automatic != nil && g.automatic.networks[i].job != nil && !connectivity.networks[i] {
+		if connectivity.retain[i] && !connectivity.networks[i] {
 			continue
 		}
 		err = errors.Join(err, g.publishNetworkAvailable(networkType, connectivity.networks[i]))
@@ -497,4 +454,24 @@ func (g *DialerGroup) updateConnectivity() error {
 		g.releaseStartupReady(available)
 	}
 	return nil
+}
+
+// Selection releases its lock before notifying the group. Take a fresh snapshot
+// under the group lock so delayed notifications cannot publish an older choice.
+func (g *DialerGroup) automaticChanged(network common.NetworkIndex, selected *dialer.Dialer) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed.Load() {
+		return
+	}
+	// Only a committed election changes connection generations. A scheduler
+	// wake must not replace the path chosen by a random-policy request.
+	if selected != nil {
+		g.updateConnectionSelection(network.NetworkType(), selected)
+	}
+	if err := g.updateConnectivity(); err != nil {
+		log.WithField("group", g.Name).WithError(err).Error("Failed to update group routing availability")
+		return
+	}
+	g.closeRecoveredConnections()
 }

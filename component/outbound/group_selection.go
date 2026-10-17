@@ -138,7 +138,7 @@ func (g *DialerGroup) TrackAll() bool {
 // Caller holds mu or is constructing an unpublished group.
 func (g *DialerGroup) updateCheckTracking() {
 	if g.automatic != nil {
-		g.automatic.refreshDemandLocked()
+		g.automatic.refreshDemand()
 		return
 	}
 	if !g.IsSelector() {
@@ -154,8 +154,8 @@ func (g *DialerGroup) updateCheckTracking() {
 func (g *DialerGroup) EnableSelectionTolerance() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.selector != nil {
-		g.selector.toleranceActive = true
+	if g.automatic != nil {
+		g.automatic.enableTolerance()
 	}
 }
 
@@ -197,7 +197,7 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 		case consts.DialerSelectionPolicy_Random:
 			return nil
 		default:
-			selected = g.selector.selected[networkType.Index()]
+			selected = g.automatic.selectedDialer(networkType.Index())
 		}
 	}
 	if !g.selectionUsable(selected, networkType) {
@@ -247,7 +247,7 @@ func (g *DialerGroup) selectLocked(networkType *common.NetworkType) (*dialer.Dia
 	case consts.DialerSelectionPolicy_Random:
 		selected = g.selectRandom(networkType)
 	default:
-		selected = g.selector.selected[networkType.Index()]
+		selected = g.automatic.selectedDialer(networkType.Index())
 	}
 	if !g.selectionUsable(selected, networkType) {
 		return nil, ErrNoAliveDialer

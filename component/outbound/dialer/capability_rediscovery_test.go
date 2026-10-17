@@ -5,6 +5,7 @@ package dialer
 import (
 	"context"
 	"errors"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -135,7 +136,7 @@ func TestRetainedRediscoveryPreservesBackoffAndStopsWhenUnsupported(t *testing.T
 			}
 			checker.finish(<-checker.results)
 			checker.dispatch()
-			low, high := retryJitterRange(interval, d.CheckIntervalMax)
+			low, high := checktime.Bounds(interval, d.CheckIntervalMax)
 			if delay := time.Until(checker.healthAt); delay < low || delay > high || checker.cancel != nil {
 				t.Fatalf("retained recovery bypassed backoff: delay=%v running=%v", delay, checker.cancel != nil)
 			}
@@ -170,7 +171,7 @@ func TestUnsuccessfulRediscoveryBacksOffWithoutResettingRound(t *testing.T) {
 				t.Fatal("rediscovery was not dispatched")
 			}
 			checker.finish(<-checker.results)
-			low, high := retryJitterRange(interval, d.CheckIntervalMax)
+			low, high := checktime.Bounds(interval, d.CheckIntervalMax)
 			if delay := time.Until(checker.supportAt); delay < low || delay > high || !checker.healthAt.IsZero() {
 				t.Fatalf("support delay=%v health=%v want [%v,%v]", delay, checker.healthAt, low, high)
 			}

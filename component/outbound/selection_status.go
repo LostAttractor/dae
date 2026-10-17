@@ -3,8 +3,6 @@
 package outbound
 
 import (
-	"slices"
-
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
@@ -23,7 +21,7 @@ func (g *DialerGroup) NodeSelectionStatus(d *dialer.Dialer, runtime dialer.Runti
 	if runtime.CheckEnabled {
 		status.Tracking = "monitoring"
 	}
-	if g.selector != nil && slices.Contains(g.selector.selected[:], d) {
+	if g.automatic != nil && g.automatic.isSelected(d) {
 		status.Tracking = "selected"
 	}
 	return status

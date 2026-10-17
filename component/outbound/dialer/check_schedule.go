@@ -6,23 +6,20 @@
 package dialer
 
 import (
+	"math"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 const (
 	checkBackoffInitialInterval = time.Second
 	supportRetryInitialInterval = time.Second
-	supportRetryMultiplier      = 4
+	// Unknown capabilities back off faster than retries of a known healthy path.
+	supportRetryMultiplier = 4
 )
-
-func jitterCheckInterval(interval time.Duration) time.Duration {
-	spread := interval / 5
-	return interval - spread + time.Duration(fastrand.Int63n(int64(2*spread+1)))
-}
 
 func (c *connectivityChecker) scheduleSupport() {
 	if !c.supportPending() {
@@ -30,7 +27,7 @@ func (c *connectivityChecker) scheduleSupport() {
 		return
 	}
 	if c.supportAt.IsZero() {
-		deadline := time.Now().Add(jitterRetryInterval(c.retryInterval, c.d.CheckIntervalMax))
+		deadline := time.Now().Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
 		c.supportAt = deadline
 		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
 	}
@@ -112,7 +109,7 @@ func (c *connectivityChecker) scheduleRediscovery() {
 
 func (c *connectivityChecker) updateInitialSchedule(success bool) {
 	if !c.d.initialCheckCompleted() {
-		c.healthAt = time.Now().Add(jitterRetryInterval(c.retryInterval, c.d.CheckIntervalMax))
+		c.healthAt = time.Now().Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
 		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
 		return
 	}
@@ -127,7 +124,7 @@ func (c *connectivityChecker) updateInitialSchedule(success bool) {
 	c.healthInterval = c.d.CheckInterval
 	c.backingOff = false
 	if c.staggerNext {
-		delay = jitterCheckInterval(c.healthInterval)
+		delay = checktime.Jitter(c.healthInterval, math.MaxInt64)
 		c.staggerNext = false
 	}
 	c.healthAt = time.Now().Add(delay)
@@ -146,9 +143,9 @@ func (c *connectivityChecker) updateHealthSchedule(success bool) {
 	}
 	delay := c.healthInterval
 	if !success {
-		delay = jitterRetryInterval(delay, maximum)
+		delay = checktime.Jitter(delay, maximum)
 	} else if c.staggerNext {
-		delay = jitterCheckInterval(delay)
+		delay = checktime.Jitter(delay, math.MaxInt64)
 		c.staggerNext = false
 	}
 	c.healthAt = time.Now().Add(delay)
@@ -291,19 +288,6 @@ func nextRetryInterval(interval, maximum time.Duration) time.Duration {
 
 func initialRetryInterval(maximum time.Duration) time.Duration {
 	return min(supportRetryInitialInterval, maximum)
-}
-
-func jitterRetryInterval(interval, maximum time.Duration) time.Duration {
-	low, high := retryJitterRange(interval, maximum)
-	return low + time.Duration(fastrand.Int63n(int64(high-low+1)))
-}
-
-func retryJitterRange(interval, maximum time.Duration) (low, high time.Duration) {
-	spread := interval / 5
-	low = interval - spread
-	high = interval + spread
-	high = min(high, maximum)
-	return low, high
 }
 
 func (c *connectivityChecker) supportPending() bool {

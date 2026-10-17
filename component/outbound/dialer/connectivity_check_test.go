@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 	"io"
 	"net"
 	"strings"
@@ -426,10 +427,10 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 
 func TestSupportRetryBackoffAndJitter(t *testing.T) {
 	for interval := time.Nanosecond; interval < 5*time.Nanosecond; interval++ {
-		if got := jitterCheckInterval(interval); got != interval {
+		if got := checktime.Jitter(interval, time.Second); got != interval {
 			t.Fatalf("sub-jitter check interval = %v, want %v", got, interval)
 		}
-		if got := jitterRetryInterval(interval, time.Second); got != interval {
+		if got := checktime.Jitter(interval, time.Second); got != interval {
 			t.Fatalf("sub-jitter retry interval = %v, want %v", got, interval)
 		}
 	}
@@ -455,13 +456,13 @@ func TestSupportRetryBackoffAndJitter(t *testing.T) {
 	if got := initialRetryInterval(time.Second); got != time.Second {
 		t.Fatalf("capped initial interval = %v, want 1s", got)
 	}
-	if low, high := retryJitterRange(time.Hour, time.Hour); low != 48*time.Minute || high != time.Hour {
+	if low, high := checktime.Bounds(time.Hour, time.Hour); low != 48*time.Minute || high != time.Hour {
 		t.Fatalf("capped jitter range = [%v, %v], want [48m, 1h]", low, high)
 	}
-	if got := jitterCheckInterval(10 * time.Second); got < 8*time.Second || got > 12*time.Second {
+	if got := checktime.Jitter(10*time.Second, time.Hour); got < 8*time.Second || got > 12*time.Second {
 		t.Fatalf("jittered interval = %v, want [8s, 12s]", got)
 	}
-	if got := jitterRetryInterval(time.Hour, time.Hour); got < 48*time.Minute || got > time.Hour {
+	if got := checktime.Jitter(time.Hour, time.Hour); got < 48*time.Minute || got > time.Hour {
 		t.Fatalf("capped jittered interval = %v, want [48m, 1h]", got)
 	}
 }
