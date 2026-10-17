@@ -3,12 +3,10 @@
 package mitm
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/url"
 	"slices"
-	"strings"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -20,7 +18,7 @@ import (
 func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
 	if dns {
-		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok {
+		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok && identity.ContextKey != "" {
 			identity.ContextKey = h.dnsContext + identity.ContextKey
 			ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
 		}
@@ -40,11 +38,11 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 	}
 	var query *dnsmessage.Msg
 	upstreamSelected := false
-	if dns && request.DNS != nil {
-		query = new(dnsmessage.Msg)
-		query.SetQuestion(request.DNS.Name, dnsmessage.StringToType[strings.ToUpper(cmp.Or(request.DNS.Type, "A"))])
-		query.Question[0].Qclass = dnsmessage.StringToClass[strings.ToUpper(cmp.Or(request.DNS.Class, "IN"))]
+	if dns {
+		identity, _ := plugin.DiagnosticDNSRequest(ctx)
+		query = identity.MessageCopy()
 	}
+
 	for _, instance := range h.instances {
 		if ctx.Err() != nil {
 			result.Complete = false
@@ -65,26 +63,21 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 			}
 		} else {
 			for n, scope := range instance.plan.Scopes {
-				decided := false
-				for _, rule := range scope.Scope {
-					allow := rule
-					allow.Exclude = false
-					hit := (plugin.Scope{allow}).Match(host, uint16(request.Flow.Destination.Port))
+				decision, allowed := scope.Scope.Decide(host, uint16(request.Flow.Destination.Port))
+				matched = matched || allowed
+				for i, rule := range scope.Scope {
+					hit := rule.Match(host, uint16(request.Flow.Destination.Port))
 					condition := api.ExplainCondition{Expression: fmt.Sprintf("scope %d: %s ports=%v exclude=%t", n, rule.Host, rule.Ports, rule.Exclude), Actual: fmt.Sprintf("%s:%d", host, request.Flow.Destination.Port), Expected: rule.Host, Match: "miss", Status: "evaluated", Reason: "host_mismatch"}
 					if len(rule.Ports) != 0 && !slices.Contains(rule.Ports, uint16(request.Flow.Destination.Port)) {
 						condition.Reason = "port_mismatch"
 					}
-					if decided {
+					if decision >= 0 && i > decision {
 						condition.Status = "supplementary"
 					}
 					if hit {
 						condition.Match, condition.Reason = "match", "scope_match"
 						if rule.Exclude {
 							condition.Reason = "scope_exclusion"
-						}
-						if !decided {
-							matched = matched || !rule.Exclude
-							decided = true
 						}
 					}
 					step.Conditions = append(step.Conditions, condition)
@@ -141,17 +134,11 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 				request.Flow.HTTP, result.HTTP = output.HTTP, output.HTTP
 			}
 			if output.DNS != nil && priorComplete && output.Complete {
-				request.DNS, result.DNS = output.DNS, output.DNS
-				query = new(dnsmessage.Msg)
-				query.SetQuestion(output.DNS.Name, dnsmessage.StringToType[strings.ToUpper(cmp.Or(output.DNS.Type, "A"))])
-				query.Question[0].Qclass = dnsmessage.StringToClass[strings.ToUpper(cmp.Or(output.DNS.Class, "IN"))]
-				if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok {
-					if message := identity.MessageCopy(); message != nil {
-						message.Question = slices.Clone(query.Question)
-						identity.DNSPacket = plugin.DNSMessage(message)
-						ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
-					}
-				}
+				query, result.DNS = output.DNS, output.DNS
+				identity, _ := plugin.DiagnosticDNSRequest(ctx)
+				identity.DNSPacket = plugin.DNSMessage(query)
+				ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
+
 			}
 		} else {
 			result.Steps[len(result.Steps)-1].Status, result.Steps[len(result.Steps)-1].Reason = "unknown", "plugin_explanation_unavailable"

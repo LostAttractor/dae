@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	dns "github.com/miekg/dns"
 )
 
 func TestExplainUsesProductionPredicatesAndPreservesUnknowns(t *testing.T) {
@@ -29,7 +31,8 @@ func TestExplainUsesProductionPredicatesAndPreservesUnknowns(t *testing.T) {
 	}
 	for _, name := range []string{"test.example.", "outside.test."} {
 		input := api.ExplainRequest{Kind: "dns", Context: api.DiagnosticContext{SourceIP: "192.0.2.4"}, DNS: &api.DiagnosticDNS{Name: name, Type: "A"}}
-		result := policy.Explain(t.Context(), input, nil)
+		ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion(name, dns.TypeA))})
+		result := policy.Explain(ctx, input, nil)
 		selected, err := policy.RequestSelect(name, 1, 0, netip.IPv4Unspecified(), netip.MustParseAddr("192.0.2.4"))
 		if err != nil || !result.Complete {
 			t.Fatal(result, err)
@@ -47,7 +50,8 @@ func TestExplainUsesProductionPredicatesAndPreservesUnknowns(t *testing.T) {
 			t.Fatal("missing selected rule")
 		}
 	}
-	result := policy.Explain(t.Context(), api.ExplainRequest{DNS: &api.DiagnosticDNS{Name: "outside.test.", Type: "A"}}, nil)
+	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion("outside.test.", dns.TypeA))})
+	result := policy.Explain(ctx, api.ExplainRequest{DNS: &api.DiagnosticDNS{Name: "outside.test.", Type: "A"}}, nil)
 	if result.Complete {
 		t.Fatal("missing source IP selected fallback")
 	}

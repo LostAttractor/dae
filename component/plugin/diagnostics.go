@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/dae/api"
+	dns "github.com/miekg/dns"
 )
 
 // Explainer is an optional pure capability. Implementations must not perform
@@ -20,9 +21,10 @@ type Explanation struct {
 	Steps    []api.ExplainStep
 	Complete bool
 	Terminal bool
-	// A declarative request transformation can be passed to the next plugin.
+	// Declarative transformations carry private copies, including all DNS flags
+	// and EDNS options. A terminal DNS message may instead contain a local reply.
 	HTTP *api.DiagnosticHTTP
-	DNS  *api.DiagnosticDNS
+	DNS  *dns.Msg
 	// Dials are possible first transport attempts owned by this middleware.
 	// Multiple entries remain candidates, never an invented race winner.
 	Dials []DiagnosticDial
@@ -35,12 +37,13 @@ type DiagnosticDial struct {
 
 type diagnosticDNSKey struct{}
 
-// WithDiagnosticDNSRequest carries a fully known cache identity as data only.
-// A missing value means an explainer must not claim an exact cache hit/miss.
+// WithDiagnosticDNSRequest carries the canonical query and any known routing identity.
+// Leave ContextKey empty when the identity is incomplete.
 func WithDiagnosticDNSRequest(ctx context.Context, request DNSRequest) context.Context {
 	return context.WithValue(ctx, diagnosticDNSKey{}, request)
 }
 
+// DiagnosticDNSRequest returns query data even when routing identity is incomplete.
 func DiagnosticDNSRequest(ctx context.Context) (DNSRequest, bool) {
 	request, ok := ctx.Value(diagnosticDNSKey{}).(DNSRequest)
 	return request, ok

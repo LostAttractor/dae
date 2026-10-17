@@ -288,36 +288,50 @@ func responseHasBody(method string, status int) bool {
 }
 
 // URL rewrites stop at the first match, including an in-place URL change.
-func (e *Engine) rewriteURL(r *http.Request) (*http.Response, error) {
+func (e *Engine) firstURLRewrite(ctx context.Context, rawURL string) (*Module, int) {
 	for _, module := range e.options.Modules {
 		for i, rewrite := range module.URLRewrites {
-			if !rewrite.Match(r.Context(), r.URL.String()) {
-				continue
-			}
-			e.traceRequest(r, "url_rewrite_match", "module", module.Name, "rule", i+1, "action", rewrite.Type)
-			e.metrics.match("url_rewrite")
-			target, err := rewrite.Rewrite(r.Context(), r.URL.String())
-			if err != nil {
-				return nil, err
-			}
-			switch rewrite.Type {
-			case "reject":
-				return syntheticResponse(r, http.StatusForbidden, nil, nil), nil
-			case "302", "307":
-				code, _ := strconv.Atoi(rewrite.Type)
-				return syntheticResponse(r, code, http.Header{"Location": {target}}, nil), nil
-			case "header":
-				if err := replaceURL(r, target); err != nil {
-					return nil, err
-				}
-				r.Host = r.URL.Host
-				return nil, nil
-			default:
-				return nil, fmt.Errorf("unsupported URL rewrite type %q", rewrite.Type)
+			if rewrite.Match(ctx, rawURL) {
+				return module, i
 			}
 		}
 	}
-	return nil, nil
+	return nil, -1
+}
+
+func (e *Engine) rewriteURL(r *http.Request) (*http.Response, error) {
+	module, index := e.firstURLRewrite(r.Context(), r.URL.String())
+	if module == nil {
+		return nil, nil
+	}
+	rewrite := module.URLRewrites[index]
+	e.traceRequest(r, "url_rewrite_match", "module", module.Name, "rule", index+1, "action", rewrite.Type)
+	e.metrics.match("url_rewrite")
+	target, err := rewrite.Rewrite(r.Context(), r.URL.String())
+	if err != nil {
+		return nil, err
+	}
+	return applyURLRewrite(r, rewrite, target)
+}
+
+// Applying a declarative URL rule only edits the private request or constructs
+// a response, so runtime execution and explanation can use the same behavior.
+func applyURLRewrite(r *http.Request, rewrite URLRewrite, target string) (*http.Response, error) {
+	switch rewrite.Type {
+	case "reject":
+		return syntheticResponse(r, http.StatusForbidden, nil, nil), nil
+	case "302", "307":
+		code, _ := strconv.Atoi(rewrite.Type)
+		return syntheticResponse(r, code, http.Header{"Location": {target}}, nil), nil
+	case "header":
+		if err := replaceURL(r, target); err != nil {
+			return nil, err
+		}
+		r.Host = r.URL.Host
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported URL rewrite type %q", rewrite.Type)
+	}
 }
 
 func (e *Engine) rewriteHeaders(kind string, request *http.Request, headers http.Header) error {

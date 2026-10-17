@@ -349,6 +349,7 @@ func (c *ControlPlane) Explain(ctx context.Context, request api.ExplainRequest, 
 }
 
 func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequest, s *diagnosticState, input routingInput, missing map[string]bool) (api.ExplainResult, error) {
+	ctx = diagnosticDNSQuestion(ctx, request)
 	result := api.ExplainResult{Decision: api.ExplainDecision{Complete: true, Verdict: "analysis", Policy: s.matcher.diagnosticPolicy(input)}, Steps: []api.ExplainStep{}, Domains: slices.Clone(s.evidence), Outbounds: []api.ExplainOutbound{}, Notes: []string{}}
 	if missing["policy"] {
 		result.Decision.Policy = ""

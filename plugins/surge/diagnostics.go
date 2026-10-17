@@ -35,7 +35,7 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result 
 		}
 	}()
 	if input.Kind == "dns" {
-		return e.explainDNS(ctx, input)
+		return e.explainDNS(ctx)
 	}
 	result = plugin.Explanation{Complete: true}
 	if input.Flow.HTTP == nil {
@@ -104,6 +104,7 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result 
 		value.Host = cmp.Or(input.Flow.HTTP.Host, u.Host)
 	}
 	headers.Del("Host")
+	selectedModule, selectedRule := scoped.firstURLRewrite(ctx, value.URL)
 	rewritten := false
 	for _, module := range scoped.options.Modules {
 		for i, rule := range module.URLRewrites {
@@ -111,10 +112,10 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result 
 				result.Complete = false
 				return result
 			}
-			hit := rule.Match(ctx, value.URL)
+			hit := module == selectedModule && i == selectedRule
 			step := appendStep(module, "url", i, rule.Pattern+" -> "+rule.Type+" "+rule.Replacement, hit)
 			if rewritten {
-				step.Status, step.Reason = "not_reached", "earlier_url_rule"
+				step.Status, step.Match, step.Reason = "not_reached", "unknown", "earlier_url_rule"
 				continue
 			}
 			if !hit || !result.Complete || result.Terminal {
@@ -127,16 +128,13 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result 
 				continue
 			}
 			step.Targets, step.Action = []string{target}, rule.Type
-			if rule.Type == "header" {
-				value.URL = target
-				parsed, err := url.Parse(target)
-				if err != nil || parsed.Host == "" {
-					result.Complete = false
-				} else {
-					value.Host = parsed.Host
-				}
+			privateRequest := &http.Request{URL: u, Host: value.Host, Header: headers}
+			response, err := applyURLRewrite(privateRequest, rule, target)
+			if err != nil {
+				step.Status, step.Reason, result.Complete = "unknown", "rewrite_error: "+err.Error(), false
 			} else {
-				result.Terminal = true
+				value.URL, value.Host = privateRequest.URL.String(), privateRequest.Host
+				result.Terminal = response != nil
 			}
 		}
 	}
@@ -204,23 +202,23 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result 
 	return result
 }
 
-func (e *Engine) explainDNS(ctx context.Context, input api.ExplainRequest) plugin.Explanation {
+func (e *Engine) explainDNS(ctx context.Context) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
-	if input.DNS == nil {
+	request, _ := plugin.DiagnosticDNSRequest(ctx)
+	query := request.MessageCopy()
+	if query == nil || len(query.Question) != 1 {
 		result.Complete = false
 		return result
 	}
-	query := *input.DNS
-	query.AnswerIPs = slices.Clone(query.AnswerIPs)
-	question := dns.Question{Name: query.Name, Qclass: dns.StringToClass[strings.ToUpper(cmp.Or(query.Class, "IN"))], Qtype: dns.StringToType[strings.ToUpper(cmp.Or(query.Type, "A"))]}
-	if !hostDNSPacket(plugin.DNSMessage(&dns.Msg{Question: []dns.Question{question}})) {
-		result.DNS = &query
+	if !hostDNSPacket(request.DNSPacket) {
+		result.DNS = query
 		result.Steps = append(result.Steps, api.ExplainStep{ID: "question", Stage: "dns_host", Expression: "DNS question", Status: "skipped", Match: "miss", Reason: "unsupported_dns_question"})
 		return result
 	}
+
 	seen := make(map[string]bool)
 	for range 16 {
-		name := strings.TrimSuffix(strings.ToLower(query.Name), ".")
+		name := strings.TrimSuffix(strings.ToLower(query.Question[0].Name), ".")
 		if seen[name] {
 			result.Complete = false
 			result.Steps = append(result.Steps, api.ExplainStep{ID: "alias_loop", Stage: "dns_host", Expression: name, Status: "error", Match: "match", Reason: "alias_loop"})
@@ -249,27 +247,27 @@ func (e *Engine) explainDNS(ctx context.Context, input api.ExplainRequest) plugi
 			}
 		}
 		if matched == nil {
-			result.DNS = &query
+			result.DNS = query
 			return result
 		}
 		if len(matched.Addresses) != 0 {
 			result.Terminal = true
-			for _, address := range matched.Addresses {
-				if (query.Type == "" || strings.EqualFold(query.Type, "A")) && address.Is4() || strings.EqualFold(query.Type, "AAAA") && address.Is6() || strings.EqualFold(query.Type, "ANY") {
-					query.AnswerIPs = append(query.AnswerIPs, address.String())
-				}
-			}
-			result.DNS = &query
+			request.DNSPacket = plugin.DNSMessage(query)
+			result.DNS = hostAddressResponse(&plugin.DNSExchange{DNSRequest: request}, matched.Addresses, 60).MessageCopy()
 			return result
 		}
 		if matched.Alias != "" {
-			if strings.EqualFold(query.Type, "CNAME") {
+			if query.Question[0].Qtype == dns.TypeCNAME {
 				result.Terminal = true
+				response := new(dns.Msg).SetReply(query)
+				response.Answer = []dns.RR{&dns.CNAME{Hdr: dns.RR_Header{Name: query.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 60}, Target: matched.Alias}}
+				result.DNS = response
 				return result
 			}
-			query.Name = matched.Alias
+			query.Question[0].Name = matched.Alias
 			continue
 		}
+
 		reason := "assigned_upstream"
 		if matched.Script != "" {
 			reason = "script_execution_required"

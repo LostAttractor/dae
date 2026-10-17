@@ -21,19 +21,32 @@ type HostRule struct {
 }
 
 func (s Scope) Match(host string, port uint16) bool {
+	_, allowed := s.Decide(host, port)
+	return allowed
+}
+
+// Decide returns the first matching rule and its allow/exclude decision.
+// An index of -1 means no rule matches.
+func (s Scope) Decide(host string, port uint16) (int, bool) {
 	if host == "" || port == 0 {
-		return false
+		return -1, false
 	}
 	host = scopeHost(host)
-	for _, rule := range s {
-		if len(rule.Ports) != 0 && !slices.Contains(rule.Ports, port) {
-			continue
-		}
-		if glob(scopeHost(rule.Host), host) {
-			return !rule.Exclude
+	for i, rule := range s {
+		if rule.matches(host, port) {
+			return i, !rule.Exclude
 		}
 	}
-	return false
+	return -1, false
+}
+
+// Match reports the rule predicate, independently of its allow/exclude action.
+func (r HostRule) Match(host string, port uint16) bool {
+	return host != "" && port != 0 && r.matches(scopeHost(host), port)
+}
+
+func (r HostRule) matches(host string, port uint16) bool {
+	return (len(r.Ports) == 0 || slices.Contains(r.Ports, port)) && glob(scopeHost(r.Host), host)
 }
 
 func scopeHost(host string) string {

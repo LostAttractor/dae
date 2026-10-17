@@ -61,7 +61,8 @@ func TestExplainDNSQuestionApplicabilityMatchesRuntime(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := engine.Explain(t.Context(), api.ExplainRequest{Kind: "dns", DNS: &api.DiagnosticDNS{Name: "example.test.", Type: dns.TypeToString[kind], Class: dns.ClassToString[class]}})
+			ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query)})
+			result := engine.Explain(ctx, api.ExplainRequest{Kind: "dns", DNS: &api.DiagnosticDNS{Name: "example.test.", Type: dns.TypeToString[kind], Class: dns.ClassToString[class]}})
 			if result.Terminal == forwarded || !result.Complete {
 				t.Fatalf("class=%d type=%d runtime forwarded=%v explanation=%+v", class, kind, forwarded, result)
 			}
@@ -117,4 +118,57 @@ func diagnosticTestEngine(module *Module) *Engine {
 	e := &Engine{options: EngineOptions{Modules: []*Module{module}, ScriptTimeout: DefaultScriptTimeout}, slots: make(chan struct{}, 1)}
 	e.metrics = newEngineMetrics(e)
 	return e
+}
+
+func TestExplainURLRuleOrderMatchesRuntimeAcrossModules(t *testing.T) {
+	for _, action := range []string{"header", "302", "reject"} {
+		replacement := "https://example.com/changed"
+		if action == "reject" {
+			replacement = "-"
+		}
+		first, err := Parse("[MITM]\nhostname = example.com\n[URL Rewrite]\n^https://example.com/start "+replacement+" "+action, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := Parse("[MITM]\nhostname = example.com\n[URL Rewrite]\n^https://example.com/ - reject", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine := newTestEngine(t, EngineOptions{Modules: []*Module{first, second}})
+		request := httptest.NewRequest(http.MethodGet, "https://example.com/start", nil)
+		response, err := engine.rewriteURL(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := engine.Explain(t.Context(), api.ExplainRequest{Flow: api.DiagnosticFlow{Destination: api.DiagnosticTarget{Port: 443}, HTTP: &api.DiagnosticHTTP{URL: "https://example.com/start"}}})
+		if !result.Complete || result.Terminal != (response != nil) || result.HTTP.URL != request.URL.String() {
+			t.Fatalf("action=%s runtime URL=%s response=%v explanation=%+v", action, request.URL, response, result)
+		}
+	}
+}
+
+func TestExplainDNSAliasPreservesRuntimeQuery(t *testing.T) {
+	module, err := Parse("[Host]\noriginal.test = alias.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, EngineOptions{Modules: []*Module{module}})
+	query := new(dns.Msg).SetQuestion("original.test.", dns.TypeAAAA)
+	query.RecursionDesired, query.CheckingDisabled = false, true
+	query.SetEdns0(1232, true)
+	query.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_LOCAL{Code: 65001, Data: []byte{1}}}
+	request := plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query)}
+	var forwarded *dns.Msg
+	_, err = engine.WrapDNS(func(_ context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		forwarded = request.MessageCopy()
+		return nil, nil
+	})(t.Context(), &plugin.DNSExchange{DNSRequest: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), request)
+	result := engine.Explain(ctx, api.ExplainRequest{Kind: "dns", DNS: &api.DiagnosticDNS{Name: "stale.test.", Type: "A", Class: "CH"}})
+	if !result.Complete || result.Terminal || !reflect.DeepEqual(result.DNS, forwarded) {
+		t.Fatalf("diagnostic query=%s runtime=%s", result.DNS, forwarded)
+	}
 }

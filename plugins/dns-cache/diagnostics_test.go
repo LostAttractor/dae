@@ -46,3 +46,13 @@ func TestExplainDoesNotTouchCacheLifetimeOrLRU(t *testing.T) {
 		t.Fatal("comparison resampled a live cache entry")
 	}
 }
+
+func TestExplainKnownQuestionWithoutIdentityStaysUnknown(t *testing.T) {
+	c := testCache(t, "")
+	request := testRequest()
+	request.ContextKey = ""
+	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), request.DNSRequest)
+	if result := c.Explain(ctx, api.ExplainRequest{Kind: "dns"}); result.Complete || result.Steps[0].Reason != "missing_exact_dns_context" {
+		t.Fatalf("incomplete identity became a cache miss: %+v", result)
+	}
+}

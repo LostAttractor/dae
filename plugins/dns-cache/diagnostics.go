@@ -5,12 +5,10 @@ package dnscache
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
-	dns "github.com/miekg/dns"
 )
 
 // Explain peeks at the exact cache key without moving its LRU position,
@@ -19,7 +17,7 @@ func (c *Cache) Explain(ctx context.Context, input api.ExplainRequest) plugin.Ex
 	step := api.ExplainStep{ID: "cache", Stage: "dns_cache", Expression: "context + transport + destination + canonical query", Status: "evaluated", Match: "unknown", Reason: "missing_exact_dns_context"}
 	result := plugin.Explanation{Steps: []api.ExplainStep{step}, Complete: false}
 	request, ok := plugin.DiagnosticDNSRequest(ctx)
-	if !ok {
+	if !ok || request.ContextKey == "" {
 		return result
 	}
 	k, cacheable := cacheKey(&plugin.DNSExchange{DNSRequest: request})
@@ -53,22 +51,7 @@ func (c *Cache) Explain(ctx context.Context, input api.ExplainRequest) plugin.Ex
 		}
 		result.Terminal = true
 		result.Steps[0].Match, result.Steps[0].Status, result.Steps[0].Reason = "match", "selected", fmt.Sprintf("cache_hit; remaining_ttl=%s", entry.expires.Sub(sample.at).Round(time.Second))
-		if input.DNS != nil {
-			q := *input.DNS
-			q.AnswerIPs = slices.Clone(q.AnswerIPs)
-			if message := entry.response.MessageCopy(); message != nil {
-				q.RCode = new(message.Rcode)
-				for _, rr := range message.Answer {
-					switch value := rr.(type) {
-					case *dns.A:
-						q.AnswerIPs = append(q.AnswerIPs, value.A.String())
-					case *dns.AAAA:
-						q.AnswerIPs = append(q.AnswerIPs, value.AAAA.String())
-					}
-				}
-			}
-			result.DNS = &q
-		}
+		result.DNS = entry.response.MessageCopy()
 		return result
 	}
 	result.Steps[0].Match, result.Steps[0].Reason = "miss", "cache_key_absent"

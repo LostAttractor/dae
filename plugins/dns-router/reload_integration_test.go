@@ -100,7 +100,7 @@ func TestCacheIsolatesReloadedDNSPolicy(t *testing.T) {
 	lookup(old, "192.0.2.1", true) // Draining generations keep their own answers.
 	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), query.DNSRequest)
 	explanation := next.Explain(ctx, api.ExplainRequest{DNS: &api.DiagnosticDNS{Name: "test.example.", Type: "A", Class: "IN"}}, true)
-	if !explanation.Complete || !explanation.Terminal || explanation.DNS == nil || len(explanation.DNS.AnswerIPs) != 1 || explanation.DNS.AnswerIPs[0] != "192.0.2.2" {
+	if !explanation.Complete || !explanation.Terminal || explanation.DNS == nil || len(explanation.DNS.Answer) != 1 || explanation.DNS.Answer[0].(*dns.A).A.String() != "192.0.2.2" {
 		t.Fatalf("diagnostic lookup differs from live cache: %+v", explanation)
 	}
 }

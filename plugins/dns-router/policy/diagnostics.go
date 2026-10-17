@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strings"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/consts"
@@ -146,12 +145,18 @@ func explainAtoms(ctx context.Context, stage string, atoms []diagnosticAtom, sou
 // Reading an upstream's Raw URL never initializes its resolver or transport.
 func (s *Dns) Explain(ctx context.Context, input api.ExplainRequest, names []string) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
-	if input.DNS == nil {
+	request, _ := plugin.DiagnosticDNSRequest(ctx)
+	question, ok := request.Question()
+	if !ok {
 		result.Complete = false
 		return result
 	}
 	q := input.DNS
-	qtype := dnsmessage.StringToType[strings.ToUpper(cmp.Or(q.Type, "A"))]
+	if q == nil {
+		q = &api.DiagnosticDNS{}
+	} // Optional response assumptions, never the question.
+	qtype := question.Qtype
+
 	sip, sipErr := netip.ParseAddr(input.Context.SourceIP)
 	if sipErr != nil {
 		sip = netip.IPv4Unspecified()
@@ -164,12 +169,12 @@ func (s *Dns) Explain(ctx context.Context, input api.ExplainRequest, names []str
 	if input.Context.IfIndex != nil {
 		ifindex = *input.Context.IfIndex
 	}
-	bitmap := s.reqMatcher.domainMatcher.MatchDomainBitmap(q.Name)
+	bitmap := s.reqMatcher.domainMatcher.MatchDomainBitmap(question.Name)
 	atoms := make([]diagnosticAtom, len(s.reqMatcher.matches))
 	for i := range atoms {
 		match := &s.reqMatcher.matches[i]
 		hit, err := s.reqMatcher.matchValue(i, qtype, ifindex, addrToBin128(dip), addrToBin128(sip), bitmap)
-		a := diagnosticAtom{hit: hit, not: match.Not, action: match.Upstream, expression: fmt.Sprintf("%v(%d)", match.Type, match.Value), actual: q.Name}
+		a := diagnosticAtom{hit: hit, not: match.Not, action: match.Upstream, expression: fmt.Sprintf("%v(%d)", match.Type, match.Value), actual: question.Name}
 		switch match.Type {
 		case consts.MatchType_SourceIpSet:
 			a.unknown, a.actual = sipErr != nil, input.Context.SourceIP
@@ -178,7 +183,7 @@ func (s *Dns) Explain(ctx context.Context, input api.ExplainRequest, names []str
 		case consts.MatchType_IfIndex:
 			a.unknown, a.actual = input.Context.IfIndex == nil, fmt.Sprint(ifindex)
 		case consts.MatchType_QType:
-			a.actual = cmp.Or(q.Type, "A")
+			a.actual = dnsmessage.TypeToString[qtype]
 		}
 		if err != nil {
 			a.unknown = true
@@ -223,7 +228,7 @@ func (s *Dns) Explain(ctx context.Context, input api.ExplainRequest, names []str
 			ips = append(ips, addrToBin128(ip))
 		}
 	}
-	bitmap = s.respMatcher.domainMatcher.MatchDomainBitmap(q.Name)
+	bitmap = s.respMatcher.domainMatcher.MatchDomainBitmap(question.Name)
 	atoms = make([]diagnosticAtom, len(s.respMatcher.matches))
 	for i, match := range s.respMatcher.matches {
 		hit, err := s.respMatcher.matchValue(i, qtype, responseFrom, ips, bitmap)
