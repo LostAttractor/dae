@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
@@ -61,7 +60,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			}
 			// AutoSu has returned in the final privileged process. Install the
 			// process-global resolver before constructors can resolve hostnames.
-			resolver, err := netutils.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
+			resolver, err := daemon.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
 			if err != nil {
 				return fmt.Errorf("configure marked resolver: %w", err)
 			}

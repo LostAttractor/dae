@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -43,7 +42,7 @@ func TestDaemonReloadRefreshesAPIAddressesKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := netutils.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
+	resolver, err := InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
 	if err != nil {
 		t.Fatal(err)
 	}

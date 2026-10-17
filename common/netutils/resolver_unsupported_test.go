@@ -13,13 +13,13 @@ import (
 	"testing"
 )
 
-func TestInstallDefaultResolverUnsupported(t *testing.T) {
+func TestNewInternalResolverUnsupported(t *testing.T) {
 	original := net.DefaultResolver
-	_, err := InstallDefaultResolver(0, "")
+	_, err := NewInternalResolver(0, "")
 	if err == nil || !strings.Contains(err.Error(), "requires Linux SO_MARK support") {
-		t.Fatalf("InstallDefaultResolver returned %v, want unsupported error", err)
+		t.Fatalf("NewInternalResolver returned %v, want unsupported error", err)
 	}
 	if net.DefaultResolver != original {
-		t.Fatal("unsupported resolver installation changed global state")
+		t.Fatal("unsupported resolver construction changed global state")
 	}
 }

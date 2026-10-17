@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package netutils
+package control
 
 import (
 	"bytes"
@@ -13,9 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ValidateClientScope binds scoped TCP endpoints to the observed LAN ingress.
+// validateLANClientScope binds scoped TCP endpoints to the observed LAN ingress.
 // A tuple's numeric IPv6 addresses alone cannot distinguish different links.
-func ValidateClientScope(source, destination netip.Addr, ingress int) error {
+func validateLANClientScope(source, destination netip.Addr, ingress int) error {
 	return validateClientScope(source, destination, ingress, netlink.LinkList)
 }
 
@@ -104,10 +104,10 @@ func clientZone(zone string) (int, error) {
 	return 0, fmt.Errorf("unknown client interface zone %q", zone)
 }
 
-// ValidateClientMAC checks a connection's observed source MAC against its direct
+// validateLANClientMAC checks a connection's observed source MAC against its direct
 // L3 neighbor. LAN authorization belongs to the ingress hook; the route device
 // may instead be a bridge or bond. Other interfaces' neighbors are irrelevant.
-func ValidateClientMAC(source netip.Addr, mac [6]byte) error {
+func validateLANClientMAC(source netip.Addr, mac [6]byte) error {
 	source = source.Unmap()
 	if !source.IsValid() || source.IsLoopback() ||
 		(!source.IsGlobalUnicast() && !source.IsLinkLocalUnicast()) ||

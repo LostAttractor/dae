@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/settings"
@@ -100,7 +99,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 		content, err := os.ReadFile(resourcePath)
 		return plugin.Resources{Key: string(content)}, err
 	}}}
-	resolver, err := netutils.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
+	resolver, err := InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
 	if err != nil {
 		t.Fatal(err)
 	}

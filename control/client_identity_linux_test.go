@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package netutils
+package control
 
 import (
 	"net"
@@ -36,18 +36,18 @@ func TestClientScopeFollowsOnlyReceiveTopology(t *testing.T) {
 	}
 }
 
-func TestValidateClientMACRejectsInvalidPeers(t *testing.T) {
+func TestValidateLANClientMACRejectsInvalidPeers(t *testing.T) {
 	mac := [6]byte{2, 0, 0, 0, 0, 1}
 	for _, source := range []string{"", "127.0.0.1", "::1", "0.0.0.0", "::", "224.0.0.1", "ff02::1%lo", "255.255.255.255", "fe80::1", "fe80::1%missing-dae-test-interface", "fe80::1%0", "fe80::1%2147483647"} {
 		t.Run(source, func(t *testing.T) {
 			addr, _ := netip.ParseAddr(source)
-			if err := ValidateClientMAC(addr, mac); err == nil {
+			if err := validateLANClientMAC(addr, mac); err == nil {
 				t.Fatal("accepted invalid client address")
 			}
 		})
 	}
 	for _, mac := range [][6]byte{{}, {1, 0, 0, 0, 0, 1}} {
-		if err := ValidateClientMAC(netip.MustParseAddr("192.0.2.23"), mac); err == nil {
+		if err := validateLANClientMAC(netip.MustParseAddr("192.0.2.23"), mac); err == nil {
 			t.Fatal("accepted a non-unicast MAC")
 		}
 	}

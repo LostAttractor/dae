@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common"
-	outbound "github.com/daeuniverse/dae/pkg/outbound/common"
 )
 
 // ResolverDialContext routes one DNS transport to a literal server address.
@@ -78,10 +77,9 @@ func NewBootstrapResolver(server string, dial func(context.Context, string, stri
 	return resolver, nil
 }
 
-// InstallDefaultResolver is called once during single-threaded process startup,
-// before libraries can read the process-global resolver pointers. Runtime
-// changes use Configure/SetRoute, never replace these pointers.
-func InstallDefaultResolver(mark uint32, server string) (*InternalResolver, error) {
+// NewInternalResolver constructs marked application and bootstrap resolvers.
+// The process startup owner installs their global pointers explicitly.
+func NewInternalResolver(mark uint32, server string) (*InternalResolver, error) {
 	mark = common.EffectiveSoMarkFromDae(mark)
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
@@ -94,10 +92,7 @@ func InstallDefaultResolver(mark uint32, server string) (*InternalResolver, erro
 	if err != nil {
 		return nil, err
 	}
-	r := newInternalResolver(address, dialer.DialContext)
-	net.DefaultResolver = r.Resolver
-	outbound.BootstrapResolver = r.Bootstrap
-	return r, nil
+	return newInternalResolver(address, dialer.DialContext), nil
 }
 
 // Configure is called by the daemon's startup/reload owner. A nil route selects

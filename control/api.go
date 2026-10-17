@@ -11,7 +11,6 @@ import (
 	"github.com/cilium/ebpf"
 	contract "github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/internal/apiserver"
 	"golang.org/x/sys/unix"
 )
@@ -89,12 +88,12 @@ func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort)
 	if _, attached := c.core.hostTCXLink(int(client.Ifindex), hostTCXLanIngress); !attached {
 		return bpfApiClient{}, fmt.Errorf("observed LAN ingress is no longer attached")
 	}
-	if err := netutils.ValidateClientScope(source.Addr(), destination.Addr(), int(client.Ifindex)); err != nil {
+	if err := validateLANClientScope(source.Addr(), destination.Addr(), int(client.Ifindex)); err != nil {
 		return bpfApiClient{}, err
 	}
 	switch client.LinkType {
 	case 1:
-		if err := netutils.ValidateClientMAC(source.Addr(), client.Mac); err != nil {
+		if err := validateLANClientMAC(source.Addr(), client.Mac); err != nil {
 			return bpfApiClient{}, err
 		}
 	case 2:
