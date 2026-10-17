@@ -14,9 +14,8 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/bitlist"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/trie/internal/bitlist"
 )
 
 var ValidCidrChars = NewValidChars([]byte{'0', '1'})
@@ -143,8 +142,9 @@ func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 		return nil, nil
 	}
 	// Check chars.
-	keys = common.Deduplicate(keys)
+	keys = slices.Clone(keys)
 	slices.Sort(keys)
+	keys = slices.Compact(keys)
 	for _, key := range keys {
 		for _, c := range []byte(key) {
 			if !chars.IsValidChar(c) {

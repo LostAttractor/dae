@@ -13,8 +13,8 @@ import (
 func tightenAndCheck(t *testing.T, bm *CompactBitList) {
 	t.Helper()
 	bm.Tighten()
-	if bm.b.Cap() != bm.b.Len() {
-		t.Fatal("failed to tighten", bm.b.Cap(), bm.b.Len())
+	if cap(bm.b) != len(bm.b) {
+		t.Fatal("failed to tighten", cap(bm.b), len(bm.b))
 	}
 }
 

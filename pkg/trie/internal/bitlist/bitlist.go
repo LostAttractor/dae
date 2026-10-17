@@ -8,24 +8,20 @@ package bitlist
 import (
 	"fmt"
 	"math/bits"
-
-	"github.com/daeuniverse/dae/pkg/anybuffer"
-	"github.com/daeuniverse/dae/pkg/outbound/common"
+	"slices"
 )
 
 // CompactBitList allows your units to be of arbitrary bit size.
 type CompactBitList struct {
 	unitBitSize int
-	size        int
-	b           *anybuffer.Buffer[uint16]
+	b           []uint16
 	unitNum     int
 }
 
 func NewCompactBitList(unitBitSize int) *CompactBitList {
 	return &CompactBitList{
 		unitBitSize: unitBitSize,
-		size:        0,
-		b:           anybuffer.NewBuffer[uint16](8),
+		b:           make([]uint16, 0, 8),
 	}
 }
 
@@ -35,7 +31,7 @@ func (m *CompactBitList) Set(iUnit int, v uint64) {
 		panic(fmt.Sprintf("value %v exceeds unit bit size", v))
 	}
 	m.growByUnitIndex(iUnit)
-	b := m.b.Slice()
+	b := m.b
 	i := iUnit * m.unitBitSize / 16
 	j := iUnit * m.unitBitSize % 16
 	for unitToTravel := m.unitBitSize; unitToTravel > 0; unitToTravel -= 16 {
@@ -61,16 +57,16 @@ func (m *CompactBitList) Set(iUnit int, v uint64) {
 		v >>= 16
 		j = (bakJ + 16) % 16
 	}
-	m.unitNum = common.Max(m.unitNum, iUnit+1)
+	m.unitNum = max(m.unitNum, iUnit+1)
 }
 
 func (m *CompactBitList) Get(iUnit int) (v uint64) {
 	bitBoundary := (iUnit + 1) * m.unitBitSize
-	if m.b.Len()*16 < bitBoundary {
+	if len(m.b)*16 < bitBoundary {
 		return 0
 	}
 
-	b := m.b.Slice()
+	b := m.b
 	i := iUnit * m.unitBitSize / 16
 	j := iUnit * m.unitBitSize % 16
 
@@ -122,17 +118,15 @@ func (m *CompactBitList) Append(v uint64) {
 }
 
 func (m *CompactBitList) growByUnitIndex(i int) {
-	if bitBoundary := (i + 1) * m.unitBitSize; m.b.Len()*16 < bitBoundary {
+	if bitBoundary := (i + 1) * m.unitBitSize; len(m.b)*16 < bitBoundary {
 		needBytes := bitBoundary / 16
 		if bitBoundary%16 != 0 {
 			needBytes++
 		}
-		m.b.Extend(needBytes - m.b.Len())
+		m.b = append(m.b, make([]uint16, needBytes-len(m.b))...)
 	}
 }
 
 func (m *CompactBitList) Tighten() {
-	a := make([]uint16, m.b.Len())
-	copy(a, m.b.Slice())
-	m.b = anybuffer.NewBufferFrom(a)
+	m.b = slices.Clip(slices.Clone(m.b))
 }
