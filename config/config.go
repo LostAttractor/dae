@@ -26,8 +26,7 @@ type Global struct {
 	APIMITMTestIPv6           string                 `mapstructure:"api_mitm_test_ipv6" default:"2001:db8:ffff::254"`
 	APIKey                    string                 `mapstructure:"api_key"`
 	TproxyPort                uint16                 `mapstructure:"tproxy_port" default:"12345"`
-	SoMarkFromDae             uint32                 `mapstructure:"so_mark_from_dae"`
-	SoMarkFromDaeSet          bool                   `mapstructure:"_" outline:"-"`
+	SoMarkFromDae             uint32                 `mapstructure:"so_mark_from_dae" default:"0x100"`
 	LogLevel                  string                 `mapstructure:"log_level" default:"info"`
 	UdpCheckDns               []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
 	CheckInterval             time.Duration          `mapstructure:"check_interval" default:"3m"`
@@ -262,7 +261,6 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
 		}
 		if sectionName == "global" {
-			conf.Global.SoMarkFromDaeSet = sectionHasParam(section.Val, "so_mark_from_dae")
 		}
 		section.Parsed = true
 	}

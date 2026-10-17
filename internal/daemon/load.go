@@ -177,7 +177,6 @@ func sameControlConfig(previous, next *config.Config) bool {
 		value.Global.ResourceCache, value.Global.DisableWaitingNetwork = false, false
 		value.Global.ResourceUpdateInterval = 0
 		value.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(value.Global.SoMarkFromDae)
-		value.Global.SoMarkFromDaeSet = false
 		return value
 	}
 	return reflect.DeepEqual(project(previous), project(next))
@@ -187,12 +186,9 @@ func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *confi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	mark, autoSelected := common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
+	mark := common.EffectiveSoMarkFromDae(conf.Global.SoMarkFromDae)
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
-	}
-	if autoSelected {
-		log.WithField("so_mark_from_dae", "0x100").Debug("Using default internal socket mark")
 	}
 	preparation, err := control.PrepareControlPlane(ctx, datapath, mark, inputs.rules)
 	if err != nil {

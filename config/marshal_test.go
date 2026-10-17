@@ -70,7 +70,7 @@ func TestMarshal(t *testing.T) {
 	}
 }
 
-func TestMarshalPreservesOmittedSoMark(t *testing.T) {
+func TestMarshalPreservesDefaultSoMark(t *testing.T) {
 	conf := parseConfig(t, `
 global {}
 routing { fallback: direct }
@@ -79,12 +79,9 @@ routing { fallback: direct }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "so_mark_from_dae") {
-		t.Fatalf("marshal added an omitted so_mark_from_dae: %s", b)
-	}
 	reparsed := parseConfig(t, string(b))
-	if reparsed.Global.SoMarkFromDaeSet {
-		t.Fatal("omitted so_mark_from_dae became explicit after marshal round trip")
+	if reparsed.Global.SoMarkFromDae != conf.Global.SoMarkFromDae {
+		t.Fatal("socket mark changed after marshal round trip")
 	}
 }
 

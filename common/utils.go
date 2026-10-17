@@ -92,15 +92,6 @@ func EffectiveSoMarkFromDae(mark uint32) uint32 {
 	return InternalSoMarkFromDae
 }
 
-// ResolveSoMarkFromDae also reports whether the default was selected because
-// the option was omitted, so callers can warn without warning for explicit 0.
-func ResolveSoMarkFromDae(mark uint32, explicitlyConfigured bool) (effective uint32, autoSelected bool) {
-	if mark != 0 {
-		return mark, false
-	}
-	return InternalSoMarkFromDae, !explicitlyConfigured
-}
-
 func ValidateSoMarkFromDae(mark uint32) error {
 	if mark&consts.TproxyMark != 0 {
 		return fmt.Errorf("so_mark_from_dae %#x contains reserved tproxy mark %#x", mark, consts.TproxyMark)

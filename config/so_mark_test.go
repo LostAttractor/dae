@@ -9,23 +9,23 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func TestSoMarkFromDaeTracksExplicitConfiguration(t *testing.T) {
+func TestSoMarkFromDaePreservesExplicitZero(t *testing.T) {
 	conf := parseConfig(t, `
 global { so_mark_from_dae: 0 }
 routing { fallback: direct }
 `)
-	if !conf.Global.SoMarkFromDaeSet {
-		t.Fatal("SoMarkFromDaeSet = false, want true")
+	if conf.Global.SoMarkFromDae != 0 {
+		t.Fatal("explicit zero was not preserved")
 	}
 }
 
-func TestSoMarkFromDaeTracksOmittedConfiguration(t *testing.T) {
+func TestSoMarkFromDaeDefaults(t *testing.T) {
 	conf := parseConfig(t, `
 global {}
 routing { fallback: direct }
 `)
-	if conf.Global.SoMarkFromDaeSet {
-		t.Fatal("SoMarkFromDaeSet = true, want false")
+	if conf.Global.SoMarkFromDae != 0x100 {
+		t.Fatal("omitted socket mark did not use the default")
 	}
 }
 
