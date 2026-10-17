@@ -9,7 +9,6 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
 	log "github.com/sirupsen/logrus"
@@ -84,7 +83,7 @@ func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, host string, p *Rou
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if mode != mitm.HTTPInspect || option.Outbound.Name == consts.OutboundBlock.String() {
+	if mode != mitm.HTTPInspect || option.Outbound.IsBlock() {
 		return option, nil, nil, nil
 	}
 	release, err := option.Dialer.Retain()

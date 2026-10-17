@@ -475,3 +475,8 @@ func (g *DialerGroup) automaticChanged(network common.NetworkIndex, selected *di
 	}
 	g.closeRecoveredConnections()
 }
+
+// IsBlock identifies the reserved blocking outbound. Its name cannot be assigned to user targets.
+func (g *DialerGroup) IsBlock() bool {
+	return g.Name == consts.OutboundBlock.String()
+}

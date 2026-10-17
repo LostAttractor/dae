@@ -4,6 +4,7 @@ package status
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestDormantStatusPreservesMeasuredLatency(t *testing.T) {
 		RecoveryElapsed: 5 * time.Second, FailureRecovery: 30 * time.Second,
 		Priority: 7, Score: -time.Hour, MeasuredAt: now.Add(-time.Minute)}
 	row := compactNodeStatusRow(node, 0, api.NetworkValues[string]{}, false, now)
-	rendered := renderLogTable(nil, []table.Row{row})
+	rendered := clitable.RenderLog(nil, []table.Row{row})
 	for _, want := range []string{"[degraded]", "p=7*", "dormant", "10/20/30 @"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("missing %q in sleeping path status:\n%s", want, rendered)

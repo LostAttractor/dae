@@ -25,15 +25,6 @@ import (
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../../../kern -I.
 
-type testDaeParam struct {
-	ControlPlanePid      uint32
-	Dae0Ifindex          uint32
-	Dae0peerIfindex      uint32
-	Dae0peerMac          [6]uint8
-	HasBpfGetCurrentTask uint8
-	Padding              uint8
-}
-
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
 	dataOut = make([]byte, len(data))
 	if len(dataOut) > 0 {
@@ -105,7 +96,7 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 	if !ok {
 		return nil, errors.New("missing PARAM constant")
 	}
-	if err := param.Set(testDaeParam{
+	if err := param.Set(bpftestDaeParam{
 		ControlPlanePid: uint32(os.Getpid()),
 	}); err != nil {
 		return nil, err

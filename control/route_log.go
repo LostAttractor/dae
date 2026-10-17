@@ -102,7 +102,7 @@ func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOptio
 		if consts.OutboundIndex(routingResult.Outbound) == consts.OutboundControlPlaneRouting {
 			fields["control_plane_route"] = true
 		}
-		if dialOption.Outbound.Name == consts.OutboundBlock.String() {
+		if dialOption.Outbound.IsBlock() {
 			fields["action"] = "block"
 		}
 		if dialOption.FallbackIpVersion || dialOption.OriginalOutbound != nil {

@@ -23,7 +23,7 @@ import (
 func observabilityState() (pprof *http.Server, pprofListenPort uint16, metrics *http.Server, metricsListenPort uint16) {
 	observabilityMu.Lock()
 	defer observabilityMu.Unlock()
-	return pprofServer, pprofPort, metricsServer, metricsPort
+	return pprofService.server, pprofService.port, metricsService.server, metricsService.port
 }
 
 func freeLocalPort(t *testing.T) uint16 {
@@ -126,11 +126,11 @@ func TestPprofUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 	port := freeLocalPort(t)
 	server := new(http.Server)
 	observabilityMu.Lock()
-	pprofServer = server
-	pprofPort = port
+	pprofService.server = server
+	pprofService.port = port
 	observabilityMu.Unlock()
 
-	serveHTTP("pprof", server, closedLocalListener(t), clearPprofServer)
+	serveHTTP("pprof", server, closedLocalListener(t), pprofService.clear)
 	current, currentPort, _, _ := observabilityState()
 	if current != nil || currentPort != 0 {
 		t.Fatal("unexpected exit did not clear the pprof server")
@@ -149,11 +149,11 @@ func TestMetricsUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 	port := freeLocalPort(t)
 	server := new(http.Server)
 	observabilityMu.Lock()
-	metricsServer = server
-	metricsPort = port
+	metricsService.server = server
+	metricsService.port = port
 	observabilityMu.Unlock()
 
-	serveHTTP("metrics", server, closedLocalListener(t), clearMetricsServer)
+	serveHTTP("metrics", server, closedLocalListener(t), metricsService.clear)
 	_, _, current, currentPort := observabilityState()
 	if current != nil || currentPort != 0 {
 		t.Fatal("unexpected exit did not clear the metrics server")

@@ -26,6 +26,10 @@ func dnsKernelCollection(t *testing.T) (*ebpf.Collection, *BPFState) {
 }
 
 func dnsKernelGeneration(t *testing.T, shared map[string]*ebpf.Map, generation uint32) (*ebpf.Collection, *BPFState) {
+	return routingKernelFixture(t, shared, generation, nil)
+}
+
+func routingKernelFixture(t testing.TB, shared map[string]*ebpf.Map, generation uint32, configure func(*ebpf.CollectionSpec)) (*ebpf.Collection, *BPFState) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("root is required for isolated BPF program tests")
@@ -42,6 +46,9 @@ func dnsKernelGeneration(t *testing.T, shared map[string]*ebpf.Map, generation u
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone
 	}
+	if configure != nil {
+		configure(spec)
+	}
 	collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{MapReplacements: shared})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +59,7 @@ func dnsKernelGeneration(t *testing.T, shared map[string]*ebpf.Map, generation u
 		t.Fatal(err)
 	}
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		HttpClientsMap: collection.Maps["http_clients_map"], RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
+		DomainRoutingMap: collection.Maps["domain_routing_map"], HttpClientsMap: collection.Maps["http_clients_map"], RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	return collection, state
 }
@@ -185,7 +192,7 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 
 // Scope-only fixtures explicitly admit every client; admission fixtures replace
 // this private table with their own ordered policy.
-func allowHTTPClientsForTest(t *testing.T, collection *ebpf.Collection) {
+func allowHTTPClientsForTest(t testing.TB, collection *ebpf.Collection) {
 	t.Helper()
 	matcher, err := clientmatch.Parse([]string{"all"})
 	if err != nil {

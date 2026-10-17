@@ -24,7 +24,20 @@ func (e *Engine) AcceptResources(value any) {
 	e.resourceStatus.Store(status)
 }
 
+type moduleRuleCounts struct {
+	scripts, hostnames, destinations, dnsHosts, urlRewrites, headerRewrites, bodyRewrites, mapLocals, routes int
+}
+
+func (m *Module) ruleCounts() moduleRuleCounts {
+	return moduleRuleCounts{
+		scripts: len(m.Scripts) + len(m.TaskScripts), hostnames: len(m.Hostnames),
+		destinations: len(m.Hosts), dnsHosts: len(m.DNSHosts), urlRewrites: len(m.URLRewrites),
+		headerRewrites: len(m.HeaderRewrites), bodyRewrites: len(m.BodyRewrites), mapLocals: len(m.MapLocals), routes: len(m.Rules),
+	}
+}
+
 func (m *Module) Status() surgeapi.ModuleStatus {
+	counts := m.ruleCounts()
 	state := m.cacheState
 	if state == "" {
 		state = "loaded"
@@ -34,9 +47,9 @@ func (m *Module) Status() surgeapi.ModuleStatus {
 	}
 	return surgeapi.ModuleStatus{
 		Name: m.Name, Source: m.source, State: state,
-		Scripts: len(m.Scripts) + len(m.TaskScripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts) + len(m.DNSHosts),
-		URLRewrites: len(m.URLRewrites), HeaderRewrites: len(m.HeaderRewrites),
-		BodyRewrites: len(m.BodyRewrites), MapLocals: len(m.MapLocals), Rules: len(m.Rules),
+		Scripts: counts.scripts, Hostnames: counts.hostnames, HostMappings: counts.destinations + counts.dnsHosts,
+		URLRewrites: counts.urlRewrites, HeaderRewrites: counts.headerRewrites,
+		BodyRewrites: counts.bodyRewrites, MapLocals: counts.mapLocals, Rules: counts.routes,
 		Warnings: slices.Clone(m.Warnings),
 	}
 }

@@ -103,7 +103,7 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 					continue
 				}
 				option, err := c.selectHTTPAddress(ctx, network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
-				if !yield(option, err) || (err == nil && option.Outbound.Name == consts.OutboundBlock.String()) {
+				if !yield(option, err) || (err == nil && option.Outbound.IsBlock()) {
 					return
 				}
 			}

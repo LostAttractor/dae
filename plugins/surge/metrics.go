@@ -29,10 +29,11 @@ func newEngineMetrics(e *Engine) *engineMetrics {
 		rules.WithLabelValues(kind)
 	}
 	for _, module := range e.options.Modules {
+		counts := module.ruleCounts()
 		for kind, count := range map[string]int{
-			"script": len(module.Scripts) + len(module.TaskScripts), "url_rewrite": len(module.URLRewrites), "header_rewrite": len(module.HeaderRewrites),
-			"body_rewrite": len(module.BodyRewrites), "map_local": len(module.MapLocals), "dns_host": len(module.DNSHosts),
-			"destination": len(module.Hosts), "route": len(module.Rules),
+			"script": counts.scripts, "url_rewrite": counts.urlRewrites, "header_rewrite": counts.headerRewrites,
+			"body_rewrite": counts.bodyRewrites, "map_local": counts.mapLocals, "dns_host": counts.dnsHosts,
+			"destination": counts.destinations, "route": counts.routes,
 		} {
 			rules.WithLabelValues(kind).Add(float64(count))
 		}

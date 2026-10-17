@@ -4,6 +4,7 @@ package client
 
 import (
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
@@ -23,6 +24,6 @@ func RenderSurgeScriptTasks(tasks []SurgeScriptTask) string {
 	for _, task := range tasks {
 		rows = append(rows, table.Row{task.Instance, task.Module, task.Name, task.Type, task.State, task.CronExp})
 	}
-	return "Surge scripts supporting manual execution:\n" + renderLogTable(
+	return "Surge scripts supporting manual execution:\n" + clitable.RenderLog(
 		table.Row{"INSTANCE", "MODULE", "SCRIPT", "TYPE", "STATE", "EXPRESSION"}, rows)
 }

@@ -94,19 +94,12 @@ func fullLoadBpfObjects(
 		return err
 	}
 	constants := map[string]any{
-		"PARAM": struct {
-			controlPlanePid      uint32
-			dae0Ifindex          uint32
-			dae0peerIfindex      uint32
-			dae0peerMac          [6]byte
-			hasBpfGetCurrentTask uint8
-			padding              uint8
-		}{
-			controlPlanePid:      uint32(os.Getpid()),
-			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
-			dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
-			dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
-			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
+		"PARAM": bpfDaeParam{
+			ControlPlanePid:      uint32(os.Getpid()),
+			Dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
+			Dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
+			Dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
+			HasBpfGetCurrentTask: hasBpfGetCurrentTask,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {

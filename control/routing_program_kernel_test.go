@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"os"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -20,30 +19,7 @@ import (
 // Exercise configuration -> compiler -> map publication -> actual classifier.
 // All maps are private; programs run with BPF_PROG_TEST_RUN and never attach.
 func TestRoutingProgramsKernelIntegration(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("root is required for isolated BPF program tests")
-	}
-	spec, err := loadBpf()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name := range spec.Programs {
-		if name != "lan_ingress_l2" && name != "tproxy_wan_egress_l2" {
-			delete(spec.Programs, name)
-		}
-	}
-	for _, m := range spec.Maps {
-		m.Pinning = ebpf.PinNone
-	}
-	collection, err := ebpf.NewCollection(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer collection.Close()
-	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingMap:        collection.Maps["routing_map"],
-		RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
-	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
+	collection, state := dnsKernelCollection(t)
 	for _, laterMust := range []bool{false, true} {
 		controls := `domain(full: one.example) && dport(443) -> must
 domain(full: bump.example) && dport(443) -> bump

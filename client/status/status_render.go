@@ -44,11 +44,6 @@ func printTable(out io.Writer, header table.Row, rows []table.Row) {
 	fmt.Fprintln(out, renderStatusTable(header, rows, nil, getStatusTerminalWidth()))
 }
 
-// Journal output keeps the full table even when dae runs in a narrow terminal.
-func renderLogTable(header table.Row, rows []table.Row) string {
-	return text.StripEscape(renderStatusTable(header, rows, nil, 0))
-}
-
 func tableUsageRow(usage api.TableUsage) table.Row {
 	limit, ratio := "unlimited", "-"
 	if usage.Limit > 0 {
@@ -372,7 +367,7 @@ func RenderStartupNodes(groups []api.GroupStatus) string {
 		}
 		fmt.Fprintf(&out, "Paths of target %q [%s]\n", group.Name, groupStatusMetadata(group))
 		header := table.Row{"PATH", "PROTO", "STATE", "NETWORKS", "LAT L/A/M(ms)"}
-		fmt.Fprintln(&out, renderLogTable(header, rows))
+		fmt.Fprintln(&out, clitable.RenderLog(header, rows))
 	}
 	return strings.TrimSuffix(out.String(), "\n")
 }

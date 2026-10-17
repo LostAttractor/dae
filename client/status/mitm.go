@@ -5,6 +5,7 @@ package status
 import (
 	"encoding/json/v2"
 	"fmt"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"slices"
 	"strings"
 
@@ -30,7 +31,7 @@ func RenderMITM(snapshot api.PluginStatus, withSummary bool) string {
 			}
 		}
 	}
-	return memorySummary + renderLogTable(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows) + details.String()
+	return memorySummary + clitable.RenderLog(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows) + details.String()
 }
 
 // Nested reports stay available through --verbose, --json or the plugin's status command.

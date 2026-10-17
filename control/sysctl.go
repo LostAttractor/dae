@@ -7,6 +7,7 @@ package control
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -39,36 +40,33 @@ func CheckIpforward(ifname string) error {
 	return nil
 }
 
-func setHostSysctl(name, path, value string) error {
-	return setHostSysctlWith(name, value, func() ([]byte, error) {
-		return os.ReadFile(path)
-	}, func(value []byte) error {
-		return os.WriteFile(path, value, 0644)
-	})
-}
-
-func setHostSysctlWith(name, value string, read func() ([]byte, error), write func([]byte) error) error {
-	current, err := read()
+// setHostSysctl writes only changed values. Callers own reporting; errors retain
+// the operation and sysctl name as well as the underlying filesystem error.
+func setHostSysctl(name, path, value string) (previous string, changed bool, err error) {
+	current, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", name, err)
+		return "", false, &os.PathError{Op: "read", Path: name, Err: err}
 	}
-	if string(bytes.TrimSpace(current)) == value {
-		return nil
+	previous = strings.TrimSpace(string(current))
+	if previous == value {
+		return previous, false, nil
 	}
-	if err := write([]byte(value)); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
+	if err := os.WriteFile(path, []byte(value), 0644); err != nil {
+		return previous, false, &os.PathError{Op: "write", Path: name, Err: err}
 	}
-	return nil
+	return previous, true, nil
 }
 
 func setForwarding(ifname string, ipversion consts.IpVersionStr, val string) error {
 	name := fmt.Sprintf("net.ipv%v.conf.%v.forwarding", ipversion, ifname)
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
-	return setHostSysctl(name, path, val)
+	_, _, err := setHostSysctl(name, path, val)
+	return err
 }
 
 func SetIpv4forward(val string) error {
-	return setHostSysctl("net.ipv4.ip_forward", "/proc/sys/net/ipv4/ip_forward", val)
+	_, _, err := setHostSysctl("net.ipv4.ip_forward", "/proc/sys/net/ipv4/ip_forward", val)
+	return err
 }
 
 func SetForwarding(ifname string, val string) error {
@@ -100,7 +98,8 @@ func CheckSendRedirects(ifname string) error {
 func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
 	name := fmt.Sprintf("net.ipv%v.conf.%v.send_redirects", ipversion, ifname)
 	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	return setHostSysctl(name, path, val)
+	_, _, err := setHostSysctl(name, path, val)
+	return err
 }
 
 func SetSendRedirects(ifname string, val string) error {
@@ -166,20 +165,18 @@ func (s *SysctlManager) startWatch() {
 				expected, ok := s.expectations[event.Name]
 				s.mux.Unlock()
 				if ok {
-					raw, err := os.ReadFile(event.Name)
+					previous, changed, err := setHostSysctl(event.Name, event.Name, expected)
 					if err != nil {
-						log.WithField("path", event.Name).WithError(err).Warn("Failed to verify required sysctl value")
+						entry := log.WithFields(log.Fields{"path": event.Name, "required": expected}).WithError(err)
+						if failure, ok := errors.AsType[*os.PathError](err); ok && failure.Op == "read" {
+							entry.Warn("Failed to verify required sysctl value")
+						} else {
+							entry.Error("Failed to restore required sysctl value")
+						}
 						continue
 					}
-					value := strings.TrimSpace(string(raw))
-					if value != expected {
-						if err := os.WriteFile(event.Name, []byte(expected), 0644); err != nil {
-							log.WithFields(log.Fields{"path": event.Name, "value": value, "required": expected}).
-								WithError(err).Error("Failed to restore required sysctl value")
-						} else {
-							log.WithFields(log.Fields{"path": event.Name, "previous": value, "value": expected}).
-								Info("Restored required sysctl value")
-						}
+					if changed {
+						log.WithFields(log.Fields{"path": event.Name, "previous": previous, "value": expected}).Info("Restored required sysctl value")
 					}
 				}
 			}
@@ -232,5 +229,6 @@ func (s *SysctlManager) set(path string, value string, watch bool) (err error) {
 			return
 		}
 	}
-	return os.WriteFile(path, []byte(value), 0644)
+	_, _, err = setHostSysctl(path, path, value)
+	return err
 }

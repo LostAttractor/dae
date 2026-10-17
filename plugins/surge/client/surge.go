@@ -58,13 +58,13 @@ func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 			warnings = append(warnings, identity+": "+terminaltext.Line(warning))
 		}
 	}
-	sections := []string{"Surge modules:\n" + renderLogTable(table.Row{
+	sections := []string{"Surge modules:\n" + clitable.RenderLog(table.Row{
 		"INSTANCE", "MODULE", "STATE", "SCRIPTS", "TASKS", "HOSTS", "IP MAPS", "URL", "HEADER", "BODY", "LOCAL", "RULES", "WARNINGS",
 	}, rows)}
 	if len(taskRows) > 0 {
-		sections = append(sections, "Surge script tasks:\n"+renderLogTable(table.Row{
+		sections = append(sections, "Surge script tasks:\n"+clitable.RenderLog(table.Row{
 			"INSTANCE", "MODULE", "SCRIPT", "TYPE", "EXPRESSION", "TIMEZONE", "TIMEOUT", "STATE", "NEXT RUN",
-		}, taskRows), "Last script runs:\n"+renderLogTable(table.Row{
+		}, taskRows), "Last script runs:\n"+clitable.RenderLog(table.Row{
 			"INSTANCE", "MODULE", "SCRIPT", "TYPE", "STARTED", "FINISHED", "DURATION", "TRIGGER", "RESULT", "RUNS", "FAILED", "SKIPPED",
 		}, runRows))
 	}
@@ -171,11 +171,4 @@ func Surge(instances []api.PluginInstanceStatus) (surgeapi.SurgeStatus, error) {
 		return b.CreatedAt.Compare(a.CreatedAt)
 	})
 	return status, nil
-}
-
-func renderLogTable(header table.Row, rows []table.Row) string {
-	writer := clitable.New()
-	writer.AppendHeader(header)
-	writer.AppendRows(rows)
-	return terminaltext.Plain(writer.Render())
 }

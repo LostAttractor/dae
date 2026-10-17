@@ -150,7 +150,7 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 		param.destination = target
 		option, err = c.routeDestination(param, hostname)
 	}
-	if err == nil && option.Outbound.Name == consts.OutboundBlock.String() {
+	if err == nil && option.Outbound.IsBlock() {
 		err = errors.New("DNS destination blocked by routing")
 	}
 	return option, err

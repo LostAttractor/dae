@@ -323,7 +323,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	} else {
 		// A block fallback has no association to preserve. A later packet can
 		// try again after the group recovers.
-		if option.Outbound.Name == consts.OutboundBlock.String() {
+		if option.Outbound.IsBlock() {
 			p.removeInBackgroundLocked(src, ue)
 			return nil
 		}

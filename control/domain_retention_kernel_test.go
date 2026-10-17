@@ -5,7 +5,6 @@ package control
 import (
 	"errors"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,33 +17,7 @@ import (
 // Exercise capture verdicts as shared-IP evidence expires, is capacity-evicted,
 // and is promoted by ongoing traffic. Private maps/programs are never attached.
 func TestDomainRetentionKernelIntegration(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("root is required for isolated BPF program tests")
-	}
-	spec, err := loadBpf()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name := range spec.Programs {
-		if name != "lan_ingress_l2" && name != "tproxy_wan_egress_l2" {
-			delete(spec.Programs, name)
-		}
-	}
-	for _, m := range spec.Maps {
-		m.Pinning = ebpf.PinNone
-	}
-	spec.Maps["domain_routing_map"].MaxEntries = 1
-	collection, err := ebpf.NewCollection(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer collection.Close()
-	allowHTTPClientsForTest(t, collection)
-	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"],
-		RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
-		UnusedLpmType: collection.Maps["unused_lpm_type"], DomainRoutingMap: collection.Maps["domain_routing_map"],
-	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
+	collection, state := routingKernelFixture(t, nil, 0, func(spec *ebpf.CollectionSpec) { spec.Maps["domain_routing_map"].MaxEntries = 1 })
 	prepared := prepareFlowRulesForTest(t, "", "domain(full: target.example) && dport(443) -> direct(mark:37)")
 	prepared.enableMITMPlan(mitmRoutingPlugin("target.example").Plan())
 	matcher, _ := routingMatcherForTest(t, prepared)

@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"sync/atomic"
 
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -45,7 +44,7 @@ func logHTTPDial(source netip.AddrPort, domain string, option *DialOption, err e
 // Attribute HTTP traffic to its actual upstream route. A client connection may
 // visit several outbounds, and local responses must not open a fictitious route.
 func dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, error) {
-	if option.Outbound.Name == consts.OutboundBlock.String() {
+	if option.Outbound.IsBlock() {
 		return nil, fmt.Errorf("HTTP upstream blocked by routing")
 	}
 	conn, err := newUpstreamDial(option).establishUpstream(parent, func(ctx context.Context) (net.Conn, error) {

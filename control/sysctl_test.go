@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,55 +12,54 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
-func TestSetHostSysctlWith(t *testing.T) {
-	t.Run("same value does not write", func(t *testing.T) {
-		writes := 0
-		err := setHostSysctlWith("net.ipv4.ip_forward", "1", func() ([]byte, error) {
-			return []byte("1\n"), nil
-		}, func([]byte) error {
-			writes++
-			return nil
-		})
-		if err != nil || writes != 0 {
-			t.Fatalf("same-value set = %v, writes = %d; want nil, 0", err, writes)
-		}
-	})
-
-	t.Run("different value writes once", func(t *testing.T) {
-		var writes [][]byte
-		err := setHostSysctlWith("net.ipv4.ip_forward", "1", func() ([]byte, error) {
-			return []byte("0\n"), nil
-		}, func(value []byte) error {
-			writes = append(writes, bytes.Clone(value))
-			return nil
-		})
-		if err != nil || len(writes) != 1 || string(writes[0]) != "1" {
-			t.Fatalf("changed-value set = %v, writes = %q; want nil, [1]", err, writes)
-		}
-	})
-
-	for _, tc := range []struct {
-		name      string
-		readError bool
-	}{
-		{name: "read error", readError: true},
-		{name: "write error"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sentinel := errors.New("permission denied")
-			err := setHostSysctlWith("net.ipv6.conf.all.forwarding", "1", func() ([]byte, error) {
-				if tc.readError {
-					return nil, sentinel
-				}
-				return []byte("0"), nil
-			}, func([]byte) error {
-				return sentinel
-			})
-			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "net.ipv6.conf.all.forwarding") {
-				t.Fatalf("set error = %v; want wrapped error with exact sysctl name", err)
+func TestSetHostSysctl(t *testing.T) {
+	for _, initial := range []string{"1\n", "0\n"} {
+		t.Run(strings.TrimSpace(initial), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "sysctl")
+			if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
+				t.Fatal(err)
+			}
+			previous, changed, err := setHostSysctl("net.ipv4.ip_forward", path, "1")
+			wantChange := initial == "0\n"
+			if err != nil || previous != strings.TrimSpace(initial) || changed != wantChange {
+				t.Fatalf("set = %q, %v, %v; want previous value and changed=%v", previous, changed, err, wantChange)
+			}
+			data, err := os.ReadFile(path)
+			want := initial
+			if wantChange {
+				want = "1"
+			}
+			// An unchanged value retains its newline, proving no rewrite occurred.
+			if err != nil || string(data) != want {
+				t.Fatalf("file = %q, %v; want %q", data, err, want)
 			}
 		})
 	}
+	t.Run("read error", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing")
+		_, changed, err := setHostSysctl("net.ipv6.conf.all.forwarding", path, "1")
+		failure, ok := errors.AsType[*os.PathError](err)
+		if changed || !errors.Is(err, os.ErrNotExist) || !ok || failure.Op != "read" || failure.Path != "net.ipv6.conf.all.forwarding" {
+			t.Fatalf("read failure lost context: changed=%v err=%v", changed, err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("failed read created a sysctl file")
+		}
+	})
+	t.Run("write error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can write a read-only fixture")
+		}
+		path := filepath.Join(t.TempDir(), "sysctl")
+		if err := os.WriteFile(path, []byte("0\n"), 0400); err != nil {
+			t.Fatal(err)
+		}
+		previous, changed, err := setHostSysctl("net.ipv6.conf.all.forwarding", path, "1")
+		failure, ok := errors.AsType[*os.PathError](err)
+		if previous != "0" || changed || !errors.Is(err, os.ErrPermission) || !ok || failure.Op != "write" || failure.Path != "net.ipv6.conf.all.forwarding" {
+			t.Fatalf("write failure lost context: previous=%q changed=%v err=%v", previous, changed, err)
+		}
+	})
 }
 
 func TestSysctlWatchLogsRepairOutcome(t *testing.T) {

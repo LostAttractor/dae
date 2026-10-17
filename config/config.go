@@ -260,8 +260,6 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 		if err := SectionParser(field.Addr(), section.Val); err != nil {
 			return nil, fmt.Errorf("failed to parse \"%v\": %w", sectionName, err)
 		}
-		if sectionName == "global" {
-		}
 		section.Parsed = true
 	}
 

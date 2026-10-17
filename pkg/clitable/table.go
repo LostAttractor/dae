@@ -4,6 +4,7 @@
 package clitable
 
 import (
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
@@ -26,4 +27,15 @@ func New() table.Writer {
 	writer.SetStyle(style)
 	writer.SuppressTrailingSpaces()
 	return writer
+}
+
+// RenderLog keeps full-width tables readable in journals and removes terminal controls.
+func RenderLog(header table.Row, rows []table.Row) string {
+	writer := New()
+	aligned := AlignRows(append([]table.Row{header}, rows...))
+	if len(header) > 0 {
+		writer.AppendHeader(aligned[0])
+	}
+	writer.AppendRows(aligned[1:])
+	return terminaltext.Plain(writer.Render())
 }

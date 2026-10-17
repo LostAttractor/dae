@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 )
 
@@ -48,7 +47,7 @@ func (c *ControlPlane) DNSResolverDialer() netutils.ResolverDialContext {
 		if err != nil {
 			return nil, err
 		}
-		if option.Outbound.Name == consts.OutboundBlock.String() {
+		if option.Outbound.IsBlock() {
 			return nil, errors.New("internal DNS destination blocked by routing")
 		}
 		return c.dialDNSUpstream(ctx, network, option, identity)

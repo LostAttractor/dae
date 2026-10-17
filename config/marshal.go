@@ -76,21 +76,8 @@ func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) (err error) {
 	m.writeLine(depth, name+" {")
 	defer m.writeLine(depth, "}")
-	if from.Type() == reflect.TypeFor[MITM]() {
-		return m.marshalMITM(from.Interface().(MITM), depth+1)
-	}
-	if from.Type() == reflect.TypeFor[Plugins]() {
-		return m.marshalPlugins(from.Interface().(Plugins), depth+1)
-	}
-	if from.Type() == reflect.TypeFor[[]Node]() {
-		return m.marshalNodes(from.Interface().([]Node), depth+1)
-	}
-	if from.Type() == reflect.TypeFor[[]Subscription]() {
-		return m.marshalSubscriptions(from.Interface().([]Subscription), depth+1)
-	}
-
-	if from.Type() == reflect.TypeFor[Routing]() {
-		return m.marshalRouting(from.Interface().(Routing), depth+1)
+	if codec, ok := sectionCodecs[from.Type()]; ok {
+		return codec.marshal(m, from, depth+1)
 	}
 
 	switch from.Kind() {

@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/internal/pluginctx"
 )
@@ -99,7 +98,7 @@ func (p *httpRoutePlanner) originalRoute(ctx context.Context) (*DialOption, erro
 }
 
 func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option *DialOption) (mitm.UpstreamPlan, error) {
-	if option.Outbound.Name == consts.OutboundBlock.String() {
+	if option.Outbound.IsBlock() {
 		return mitm.UpstreamPlan{}, fmt.Errorf("HTTP upstream blocked by routing")
 	}
 	if cause := option.PolicyLease.AbortCause(); cause != nil {

@@ -19,17 +19,29 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type observabilityServer struct {
+	name     string
+	handler  http.Handler
+	active   func(bool)
+	server   *http.Server
+	listener net.Listener
+	port     uint16
+}
+
 var (
-	pprofServer     *http.Server
-	metricsServer   *http.Server
-	pprofListener   net.Listener
-	metricsListener net.Listener
-	pprofPort       uint16
-	// metricsPort is the port metricsServer listens on; 0 means disabled.
-	metricsPort     uint16
 	metricsRegistry = prometheus.NewRegistry()
 	pluginMetrics   mitm.Metrics
 	observabilityMu sync.Mutex
+	pprofService    = observabilityServer{name: "pprof", handler: http.DefaultServeMux, active: func(enabled bool) {
+		rate := 0
+		if enabled {
+			rate = 1
+		}
+		runtime.SetBlockProfileRate(rate)
+		runtime.SetMutexProfileFraction(rate)
+	}}
+	metricsService = observabilityServer{name: "metrics", handler: promhttp.HandlerFor(
+		prometheus.Gatherers{metricsRegistry, &pluginMetrics}, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError})}
 )
 
 func init() {
@@ -57,32 +69,25 @@ func serveHTTP(name string, server *http.Server, listener net.Listener, clearCur
 	}
 }
 
-func clearPprofServer(server *http.Server) {
-	observabilityMu.Lock()
-	defer observabilityMu.Unlock()
-	if pprofServer == server {
-		pprofServer = nil
-		pprofListener = nil
-		pprofPort = 0
-		runtime.SetBlockProfileRate(0)
-		runtime.SetMutexProfileFraction(0)
+func (s *observabilityServer) setActive(enabled bool) {
+	if s.active != nil {
+		s.active(enabled)
 	}
 }
 
-func clearMetricsServer(server *http.Server) {
+func (s *observabilityServer) clear(server *http.Server) {
 	observabilityMu.Lock()
 	defer observabilityMu.Unlock()
-	if metricsServer == server {
-		metricsServer = nil
-		metricsListener = nil
-		metricsPort = 0
+	if s.server == server {
+		s.server, s.listener, s.port = nil, nil, 0
+		s.setActive(false)
 	}
 }
 
 func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16) {
 	observabilityMu.Lock()
-	currentPprof := pprofPort
-	currentMetrics := metricsPort
+	currentPprof := pprofService.port
+	currentMetrics := metricsService.port
 	observabilityMu.Unlock()
 
 	// Release a port first when the other service needs to take it over.
@@ -96,88 +101,40 @@ func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16) {
 	startMetricsServer(metricsTarget)
 }
 
-func startPprofServer(port uint16) {
+func startPprofServer(port uint16) { pprofService.start(port) }
+
+// The registry remains stable across control-plane reloads.
+func startMetricsServer(port uint16) { metricsService.start(port) }
+
+func (s *observabilityServer) start(port uint16) {
 	observabilityMu.Lock()
-	if pprofServer != nil && pprofPort == port && port != 0 {
+	if s.server != nil && s.port == port && port != 0 {
 		observabilityMu.Unlock()
 		return
 	}
+	old, oldListener := s.server, s.listener
 	if port == 0 {
-		old := pprofServer
-		oldListener := pprofListener
-		pprofServer = nil
-		pprofListener = nil
-		pprofPort = 0
-		runtime.SetBlockProfileRate(0)
-		runtime.SetMutexProfileFraction(0)
+		s.server, s.listener, s.port = nil, nil, 0
+		s.setActive(false)
 		observabilityMu.Unlock()
-		stopHTTPServer("pprof", old, oldListener)
+		stopHTTPServer(s.name, old, oldListener)
 		return
 	}
 	server := &http.Server{
 		Addr:              fmt.Sprintf("localhost:%d", port),
-		Handler:           http.DefaultServeMux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
 		observabilityMu.Unlock()
-		log.Warnf("Failed to start pprof server: %v", err)
+		log.WithError(err).WithField("server", s.name).Warn("Failed to start HTTP server")
 		return
 	}
-	old := pprofServer
-	oldListener := pprofListener
-	pprofServer = server
-	pprofListener = listener
-	pprofPort = port
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-	go serveHTTP("pprof", server, listener, clearPprofServer)
+	s.server, s.listener, s.port = server, listener, port
+	s.setActive(true)
+	go serveHTTP(s.name, server, listener, s.clear)
 	observabilityMu.Unlock()
-	stopHTTPServer("pprof", old, oldListener)
-}
-
-// startMetricsServer restarts the metrics server only when its process-level
-// listener changes. The registry is stable across control-plane reloads.
-func startMetricsServer(port uint16) {
-	observabilityMu.Lock()
-	if metricsServer != nil && metricsPort == port && port != 0 {
-		observabilityMu.Unlock()
-		return
-	}
-
-	if port == 0 {
-		old := metricsServer
-		oldListener := metricsListener
-		metricsServer = nil
-		metricsListener = nil
-		metricsPort = 0
-		observabilityMu.Unlock()
-		stopHTTPServer("metrics", old, oldListener)
-		return
-	}
-
-	server := &http.Server{
-		Addr: fmt.Sprintf("localhost:%d", port),
-		Handler: promhttp.HandlerFor(prometheus.Gatherers{metricsRegistry, &pluginMetrics}, promhttp.HandlerOpts{
-			ErrorHandling: promhttp.ContinueOnError,
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		observabilityMu.Unlock()
-		log.Warnf("Failed to start metrics server: %v", err)
-		return
-	}
-	old := metricsServer
-	oldListener := metricsListener
-	metricsServer = server
-	metricsListener = listener
-	metricsPort = port
-	go serveHTTP("metrics", server, listener, clearMetricsServer)
-	observabilityMu.Unlock()
-	stopHTTPServer("metrics", old, oldListener)
+	stopHTTPServer(s.name, old, oldListener)
 }
