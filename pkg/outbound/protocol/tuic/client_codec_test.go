@@ -2,8 +2,11 @@ package tuic
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	quicgo "github.com/daeuniverse/quic-go"
 	"net"
 	"testing"
 	"time"
@@ -15,19 +18,33 @@ import (
 
 func TestDialerHonorsUDPRelayMode(t *testing.T) {
 	for _, quic := range []bool{false, true} {
-		header := protocol.Header{User: "00000000-0000-0000-0000-000000000001", Feature1: "bbr"}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		listener, err := quicgo.ListenAddr("127.0.0.1:0", recoveryTLS(t), &quicgo.Config{EnableDatagrams: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		header := protocol.Header{ProxyAddress: listener.Addr().String(), User: "00000000-0000-0000-0000-000000000001", Feature1: "bbr", TlsConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"tuic-test"}}}
 		want := common.NATIVE
 		if quic {
 			header.Flags |= protocol.Flags_Tuic_UdpRelayModeQuic
 			want = common.QUIC
 		}
-		dialer, err := NewDialer(nil, header)
+		dialer, err := NewDialer(loopbackPacketParent{}, header)
 		if err != nil {
 			t.Fatal(err)
 		}
-		client := dialer.clientRing.newClient(func(int64) {})
-		if client.UdpRelayMode != want {
-			t.Fatalf("relay mode=%v want=%v", client.UdpRelayMode, want)
+		if err := dialer.Connect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := dialer.clientRing.Allocate(ctx, false, func(_ context.Context, client *clientImpl) error {
+			if client.UdpRelayMode != want {
+				t.Fatalf("relay mode=%v want=%v", client.UdpRelayMode, want)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
 		}
 		if err := dialer.Close(); err != nil {
 			t.Fatal(err)
@@ -138,25 +155,5 @@ func TestUDPDeadlineClearsWithoutClosingAssociation(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("closed queue blocked reader")
-	}
-}
-
-func TestClientRingCloseCancelsInFlightAllocation(t *testing.T) {
-	r := newClientRing(func(func(int64)) *clientImpl { return new(clientImpl) }, 0)
-	node := &clientRingNode{cli: new(clientImpl), capability: -1}
-	r.current = r._insertAfterCurrent(node)
-	r.state.Ready(node.cli.resource)
-	// Model the allocation critical section waiting on the pool context.
-	r.mu.Lock()
-	done := make(chan error, 1)
-	go func() { done <- r.Close() }()
-	select {
-	case <-r.ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("Close waited for allocation before canceling")
-	}
-	r.mu.Unlock()
-	if err := <-done; err != nil {
-		t.Fatal(err)
 	}
 }

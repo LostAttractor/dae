@@ -78,7 +78,13 @@ func TestRecoveryStreamResetDoesNotKillSharedQUICConnection(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	old := d.clientRing.current.Value.(*clientRingNode).cli
+	var old *clientImpl
+	if err := d.clientRing.Allocate(ctx, false, func(_ context.Context, client *clientImpl) error {
+		old = client
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	open := func() (net.Conn, *quic.Stream) {
 		t.Helper()
 		client, err := d.DialContext(ctx, "tcp", "example.test:443")

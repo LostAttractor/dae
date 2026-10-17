@@ -64,7 +64,7 @@ type clientImpl struct {
 	poolState      *netproxy.PoolState
 }
 
-func (t *clientImpl) getQuicConn(ctx context.Context, dialer netproxy.Dialer, dialFn common.DialFunc) (*quic.Conn, error) {
+func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, dialFn common.DialFunc) (*quic.Conn, error) {
 	t.connMutex.Lock()
 	defer t.connMutex.Unlock()
 	if t.Ctx.Err() != nil {
@@ -79,41 +79,22 @@ func (t *clientImpl) getQuicConn(ctx context.Context, dialer netproxy.Dialer, di
 	if t.resource == (netproxy.ResourceRef{}) {
 		t.resource = netproxy.NewResourceRef()
 	}
-	transport, addr, err := dialFn(ctx, dialer)
+	var authStream *quic.SendStream
+	established, err := common.EstablishQUIC(ctx, dialer, dialFn, t.resource, common.QUICHooks{
+		TLSConfig: t.TlsConfig, QUICConfig: t.QuicConfig,
+		CongestionController: t.CongestionController, CWND: t.CWND,
+		Authenticate: func(ctx context.Context, conn *quic.Conn) (err error) {
+			authStream, err = t.openAuthentication(ctx, conn)
+			return err
+		}, AuthenticationError: tuic.ProtocolError,
+	})
 	if err != nil {
 		return nil, err
 	}
-	quicConn, err := transport.Dial(ctx, addr, t.TlsConfig, t.QuicConfig)
-	if err != nil {
-		transport.Close()
-		transport.Conn.Close()
-		return nil, err
-	}
-
-	common.SetCongestionController(quicConn, t.CongestionController, t.CWND)
-
-	authStream, err := t.openAuthentication(ctx, quicConn)
-	if err != nil {
-		_ = quicConn.CloseWithError(tuic.ProtocolError, "authentication failed")
-		_ = transport.Close()
-		_ = transport.Conn.Close()
-		return nil, common.WrapQUICError(err, t.resource, nil, netproxy.OpHandshake, nil)
-	}
-	if err := ctx.Err(); err != nil {
-		_ = quicConn.CloseWithError(0, "establishment canceled")
-		_ = transport.Close()
-		_ = transport.Conn.Close()
-		return nil, err
-	}
-	t.lease = netproxy.NewLease(t.resource, netproxy.DependencyOf(transport.Conn))
-	if !t.lease.Valid() {
-		_ = quicConn.CloseWithError(0, "dependency invalidated during establishment")
-		_ = transport.Close()
-		_ = transport.Conn.Close()
-		return nil, t.lease.Cause()
-	}
-	t.transport = transport
-	t.underConn = transport.Conn
+	quicConn := established.Conn
+	t.lease = established.Lease
+	t.transport = established.Transport
+	t.underConn = established.Transport.Conn
 	t.quicConn = quicConn
 	if t.poolState != nil {
 		t.poolState.Ready(t.resource)
@@ -123,14 +104,7 @@ func (t *clientImpl) getQuicConn(ctx context.Context, dialer netproxy.Dialer, di
 			t.failConnection(err)
 		}
 	}()
-	go func() {
-		select {
-		case <-quicConn.Context().Done():
-			t.failConnection(context.Cause(quicConn.Context()))
-		case <-t.lease.Done():
-			t.failConnection(t.lease.Cause())
-		}
-	}()
+	established.WatchFailure(t.failConnection)
 	return quicConn, nil
 }
 
@@ -237,7 +211,7 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *Metadata) (*Conn
 	}
 	quicConn, err := t.currentConn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("getQuicConn: %w", err)
+		return nil, fmt.Errorf("ConnectQUIC: %w", err)
 	}
 	quicStream, err := quicConn.OpenStream()
 	if err != nil {
@@ -295,3 +269,10 @@ func (t *clientImpl) currentConn(ctx context.Context) (*quic.Conn, error) {
 	}
 	return t.quicConn, nil
 }
+
+func (t *clientImpl) BindPool(state *netproxy.PoolState, ref netproxy.ResourceRef, onClose func()) {
+	t.poolState, t.resource = state, ref
+	t.setOnClose(onClose)
+}
+
+func (t *clientImpl) FailureCause() error { return t.lease.Cause() }
