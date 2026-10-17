@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/http"
@@ -95,9 +94,14 @@ func (s *HTTP) URL() url.URL {
 		Host:     net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
 		Fragment: s.Name,
 	}
+	query := make(url.Values)
 	if s.SNI != "" {
-		u.RawQuery = url.Values{"sni": []string{s.SNI}, "allowInsecure": []string{common.BoolToString(s.AllowInsecure)}}.Encode()
+		query.Set("sni", s.SNI)
 	}
+	if s.AllowInsecure {
+		query.Set("allowInsecure", strconv.FormatBool(s.AllowInsecure))
+	}
+	u.RawQuery = query.Encode()
 	if s.Username != "" {
 		if s.Password != "" {
 			u.User = url.UserPassword(s.Username, s.Password)
