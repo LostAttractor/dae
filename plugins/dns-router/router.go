@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/proxylink"
 	policy "github.com/daeuniverse/dae/plugins/dns-router/policy"
 	"github.com/daeuniverse/dae/plugins/dns-router/transport"
@@ -41,8 +41,25 @@ type Router struct {
 
 func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 	conf := policy.Config{}
-	if err := config.SectionParser(reflect.ValueOf(&conf), spec.Config); err != nil {
+	var upstreams []string
+	if err := plugin.DecodeSettingsFields(spec.Config, map[string]any{
+		"ipversion_prefer": &conf.IPVersionPrefer,
+		"upstream":         &upstreams,
+		"routing": func(section *config_parser.Section) error {
+			return plugin.DecodeSettingsFields(section, map[string]any{
+				"request": func(section *config_parser.Section) error {
+					return decodeRoutingSettings(section, &conf.Routing.Request.Rules, &conf.Routing.Request.Fallback)
+				},
+				"response": func(section *config_parser.Section) error {
+					return decodeRoutingSettings(section, &conf.Routing.Response.Rules, &conf.Routing.Response.Fallback)
+				},
+			})
+		},
+	}); err != nil {
 		return conf, 0, err
+	}
+	for _, value := range upstreams {
+		conf.Upstream = append(conf.Upstream, config.KeyableString(value))
 	}
 	if conf.Routing.Request.Fallback == nil {
 		conf.Routing.Request.Fallback = "asis"
@@ -70,10 +87,27 @@ func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 			return conf, 0, fmt.Errorf("upstream %q: invalid URL", name)
 		}
 		if _, _, _, _, err := policy.ParseRawUpstream(raw); err != nil {
-			return conf, 0, fmt.Errorf("upstream %q: %w", name, err)
+			return conf, 0, fmt.Errorf("upstream %q: invalid transport, host or port", name)
 		}
 	}
 	return conf, prefer, policy.Validate(&conf)
+}
+
+func decodeRoutingSettings(section *config_parser.Section, rules *[]*config_parser.RoutingRule, fallback *config.FunctionOrString) error {
+	return plugin.DecodeSettingsFields(section, map[string]any{
+		"_": rules,
+		"fallback": func(param *config_parser.Param) error {
+			switch {
+			case param.AndFunctions != nil:
+				*fallback = param.AndFunctions
+			case param.Quoted:
+				*fallback = config.QuotedString(param.Val)
+			default:
+				*fallback = param.Val
+			}
+			return nil
+		},
+	})
 }
 
 func Configure(spec plugin.Spec) (plugin.Factory, error) {

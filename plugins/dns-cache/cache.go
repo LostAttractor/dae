@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,16 +17,15 @@ import (
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	dns "github.com/miekg/dns"
 )
 
 var Plugin = plugin.Definition{Configure: Configure}
 
 type settings struct {
-	Size        int                    `mapstructure:"size" default:"32768"`
-	MemoryLimit int                    `mapstructure:"memory_limit" default:"67108864"`
-	FixedTTL    []config.KeyableString `mapstructure:"fixed_domain_ttl"`
+	Size        int
+	MemoryLimit int
+	FixedTTL    []string
 }
 
 type key struct{ context, network, query string }
@@ -65,8 +63,11 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 }
 
 func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
-	var conf settings
-	if err := config.SectionParser(reflect.ValueOf(&conf), spec.Config); err != nil {
+	conf := settings{Size: 32768, MemoryLimit: 67108864}
+	if err := plugin.DecodeSettingsFields(spec.Config, map[string]any{
+		"size": &conf.Size, "memory_limit": &conf.MemoryLimit,
+		"fixed_domain_ttl": &conf.FixedTTL,
+	}); err != nil {
 		return conf, nil, err
 	}
 	if conf.Size < 1 || conf.MemoryLimit < 65536 {
@@ -77,7 +78,7 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 		name, value, ok := strings.Cut(string(item), ":")
 		ttl, err := strconv.ParseUint(strings.TrimSpace(value), 0, 31)
 		if !ok || err != nil {
-			return conf, nil, fmt.Errorf("invalid fixed_domain_ttl %q", item)
+			return conf, nil, fmt.Errorf("invalid value in fixed_domain_ttl; expected domain:ttl")
 		}
 		fixed[dns.CanonicalName(strings.TrimSpace(name))] = uint32(ttl)
 	}

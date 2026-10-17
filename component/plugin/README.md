@@ -22,10 +22,18 @@ Decode settings in `Configure`. Declare scalar configuration names and defaults
 on struct fields with `mapstructure:"name"` and `default:"value"` tags, then pass
 the struct pointer to `DecodeSettings`. It applies defaults before user values,
 so explicit `false`, `0` and empty strings override defaults. Fields without a
-`default` tag use Go zero values. Use `mapstructure:"_"` for fields parsed separately,
-such as module sections; keep conditional defaults and validation in the plugin.
-The decoder rejects duplicate and unknown settings without including values
-in errors.
+`default` tag retain their initial values. Use `mapstructure:"_"` for fields parsed
+separately, such as module sections; keep conditional defaults and validation in
+the plugin.
+
+`DecodeSettings` delegates to `DecodeSettingsFields`, which also accepts explicit
+field bindings for nested sections and plugin-specific expressions: scalar
+pointers receive values, section and parameter callbacks decode custom syntax,
+and a `_` rule-slice entry receives routing rules. `DecodeStringList` reads keyed
+or unkeyed string lists. Set defaults before calling `DecodeSettingsFields`.
+Both entry points reject duplicate and unknown settings. Decoder callbacks and
+validation errors must omit raw configuration values, which may contain
+credentials.
 
 Implement `Plan` and optional protocol interfaces. Copy
 [plugins.cfg.example](../../plugins.cfg.example) to local `plugins.cfg`, add
