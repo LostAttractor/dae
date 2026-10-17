@@ -26,7 +26,7 @@ type hostBinder struct {
 	*kernelLinks
 	mu          sync.Mutex
 	bpf         *BPFState
-	ifmgr       *network.InterfaceManager
+	ifmgr       *network.InterfaceScope
 	closed      context.Context
 	wanBindings map[int]*wanBinding
 }

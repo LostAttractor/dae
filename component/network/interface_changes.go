@@ -11,19 +11,16 @@ type linkWatch struct {
 	cancel  func()
 }
 
-func (m *InterfaceManager) watchChanges() (linkWatch, error) {
-	source := m
-	if m.source != nil {
-		source = m.source
-	}
+func (m *InterfaceScope) watchChanges() (linkWatch, error) {
+	source := m.source
 	source.mu.Lock()
 	defer source.mu.Unlock()
-	if m.isStopped() || source.isStopped() {
+	if source.isStopped() || m.isStopped() {
 		return linkWatch{}, net.ErrClosed
 	}
 	updates := make(chan struct{}, 1)
 	if source.changes == nil {
-		source.changes = make(map[chan struct{}]*InterfaceManager)
+		source.changes = make(map[chan struct{}]*InterfaceScope)
 	}
 	source.changes[updates] = m
 	return linkWatch{updates: updates, cancel: func() {
@@ -47,7 +44,7 @@ func (m *InterfaceManager) notifyChangesLocked() {
 	}
 }
 
-func (m *InterfaceManager) closeChangesLocked(owner *InterfaceManager) {
+func (m *InterfaceManager) closeChangesLocked(owner *InterfaceScope) {
 	for updates, scope := range m.changes {
 		if owner == nil || scope == owner {
 			delete(m.changes, updates)

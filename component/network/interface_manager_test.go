@@ -21,8 +21,8 @@ import (
 )
 
 func TestMatchingLinksFollowsLifecycleAndRecovery(t *testing.T) {
-	m := &InterfaceManager{links: make(map[int]netlink.Link)}
-	scope := &InterfaceManager{source: m}
+	m := testInterfaceSource(t, &InterfaceManager{links: make(map[int]netlink.Link)})
+	scope := testInterfaceScope(t, m)
 	assertNames := func(want ...string) {
 		t.Helper()
 		var got []string
@@ -51,7 +51,7 @@ func TestMatchingLinksFollowsLifecycleAndRecovery(t *testing.T) {
 func TestInterfaceManagerCloseWaitsForCallback(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 		links: make(map[int]netlink.Link),
@@ -62,7 +62,7 @@ func TestInterfaceManagerCloseWaitsForCallback(t *testing.T) {
 				<-release
 			},
 		}},
-	}
+	})
 	updates := make(chan netlink.LinkUpdate)
 	go m.monitor(updates, nil, nil)
 	updates <- netlink.LinkUpdate{
@@ -104,14 +104,14 @@ func TestInterfaceManagerCloseWaitsForCallback(t *testing.T) {
 
 func TestInterfaceManagerDispatchesLinkLifecycle(t *testing.T) {
 	var events []string
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		links: make(map[int]netlink.Link),
 		callbacks: []callbackSet{{
 			pattern:     "test0",
 			newCallback: func(netlink.Link) { events = append(events, "new") },
 			delCallback: func(netlink.Link) { events = append(events, "del") },
 		}},
-	}
+	})
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "test0"}}
 	m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: link})
 	m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: link})
@@ -123,14 +123,14 @@ func TestInterfaceManagerDispatchesLinkLifecycle(t *testing.T) {
 
 func TestInterfaceManagerDispatchesRename(t *testing.T) {
 	var events []string
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		links: make(map[int]netlink.Link),
 		callbacks: []callbackSet{
 			{pattern: "old0", delCallback: func(netlink.Link) { events = append(events, "old-del") }},
 			{pattern: "new0", newCallback: func(netlink.Link) { events = append(events, "new-add") }},
 		},
-		onChange: func() { events = append(events, "reconcile") },
-	}
+	})
+	testInterfaceScope(t, m).SetChangeCallback(func() { events = append(events, "reconcile") })
 	m.handleLinkUpdate(netlink.LinkUpdate{
 		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
 		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "old0"}},
@@ -167,38 +167,30 @@ func TestInterfaceManagerRejectsInvalidPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.RegisterWithPattern("[", nil, nil, nil); err == nil {
+	if err := testInterfaceScope(t, m).RegisterWithPatternSync("[", nil, nil, nil); err == nil {
 		t.Fatal("invalid interface pattern was accepted")
 	}
 }
 
-func TestInterfaceManagerRetainsRegistrationAfterInitialListFailure(t *testing.T) {
+func TestInterfaceManagerRejectsRegistrationAfterInitialListFailure(t *testing.T) {
 	listErr := errors.New("temporary list failure")
-	called := make(chan int, 1)
-	m := &InterfaceManager{
-		links: make(map[int]netlink.Link),
-		listLinks: func() ([]netlink.Link, error) {
-			return nil, listErr
-		},
-	}
-	err := m.RegisterWithPattern("test0", nil, func(link netlink.Link) {
-		called <- link.Attrs().Index
-	}, nil)
-	if !errors.Is(err, listErr) {
+	m := testInterfaceSource(t, &InterfaceManager{listLinks: func() ([]netlink.Link, error) { return nil, listErr }})
+	scope := testInterfaceScope(t, m)
+	called := false
+	if err := scope.RegisterWithPatternSync("test0", nil, func(netlink.Link) { called = true }, nil); !errors.Is(err, listErr) {
 		t.Fatalf("registration error = %v, want %v", err, listErr)
 	}
-
-	m.handleLinkUpdate(netlink.LinkUpdate{
-		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
-		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "test0"}},
-	})
-	select {
-	case index := <-called:
-		if index != 2 {
-			t.Fatalf("callback ifindex = %d, want 2", index)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("registration was lost after initial LinkList failure")
+	m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: &netlink.Dummy{Index: 2, Name: "test0"}})
+	if called || len(m.callbacks) != 0 {
+		t.Fatal("failed initial dump retained a registration")
+	}
+	m.listLinks = func() ([]netlink.Link, error) { return nil, nil }
+	if err := scope.RegisterWithPatternSync("test0", nil, func(netlink.Link) { called = true }, nil); err != nil {
+		t.Fatal(err)
+	}
+	m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: &netlink.Dummy{Index: 3, Name: "test0"}})
+	if !called {
+		t.Fatal("explicit retry did not register")
 	}
 }
 
@@ -234,7 +226,7 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	oldLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "old0"}}
 	newLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "new0"}}
 	events := make(chan string, 4)
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 		links: map[int]netlink.Link{1: oldLink},
@@ -243,9 +235,10 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 			newCallback: func(link netlink.Link) { events <- "new:" + link.Attrs().Name },
 			delCallback: func(link netlink.Link) { events <- "del:" + link.Attrs().Name },
 		}},
-		onReset:  func() { events <- "reset" },
-		onChange: func() { events <- "change" },
-	}
+	})
+	scope := testInterfaceScope(t, m)
+	scope.SetResetCallback(func() { events <- "reset" })
+	scope.SetChangeCallback(func() { events <- "change" })
 	subscribed := make(chan chan<- netlink.LinkUpdate, 1)
 	subscribe := func(ch chan<- netlink.LinkUpdate, done <-chan struct{}, _ netlink.LinkSubscribeOptions) error {
 		subscribed <- ch
@@ -255,7 +248,7 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 		}()
 		return nil
 	}
-	watch, err := m.watchChanges()
+	watch, err := testInterfaceScope(t, m).watchChanges()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,49 +292,31 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	}
 }
 
-func TestInterfaceManagerCallbackCanRegisterAnotherInterface(t *testing.T) {
-	m := &InterfaceManager{
-		stop:         make(chan struct{}),
-		links:        make(map[int]netlink.Link),
-		listLinks:    func() ([]netlink.Link, error) { return nil, nil },
-		deliveryDone: make(chan struct{}),
+func TestInterfaceManagerCallbackCanReadCachedLinks(t *testing.T) {
+	m := testInterfaceSource(t, &InterfaceManager{listLinks: func() ([]netlink.Link, error) { return nil, nil }})
+	scope := testInterfaceScope(t, m)
+	var name string
+	if err := scope.RegisterSync("test0", nil, func(link netlink.Link) {
+		name = scope.NameByIndex(link.Attrs().Index)
+	}, nil); err != nil {
+		t.Fatal(err)
 	}
-	m.deliveryCond = sync.NewCond(&m.deliveryMu)
-	go m.dispatchCallbacks()
-	t.Cleanup(m.stopCallbackDispatcher)
-
-	registered := make(chan struct{})
-	m.callbacks = []callbackSet{{
-		pattern: "first0",
-		newCallback: func(netlink.Link) {
-			m.Register("second0", nil, func(netlink.Link) { close(registered) }, nil)
-		},
-	}}
-	m.handleLinkUpdate(netlink.LinkUpdate{
-		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
-		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "first0"}},
-	})
-	m.handleLinkUpdate(netlink.LinkUpdate{
-		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
-		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "second0"}},
-	})
-	select {
-	case <-registered:
-	case <-time.After(time.Second):
-		t.Fatal("registration from callback did not receive a later event")
+	m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: &netlink.Dummy{Index: 1, Name: "test0"}})
+	if name != "test0" {
+		t.Fatalf("callback saw name %q", name)
 	}
 }
 
 func TestInterfaceManagerSyncInitErrorDisablesRegistration(t *testing.T) {
 	initErr := errors.New("initial callback failed")
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		links: make(map[int]netlink.Link),
 		listLinks: func() ([]netlink.Link, error) {
 			return []netlink.Link{&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test0"}}}, nil
 		},
-	}
+	})
 	called := false
-	err := m.RegisterSync("test0", func(netlink.Link) error { return initErr }, func(netlink.Link) { called = true }, nil)
+	err := testInterfaceScope(t, m).RegisterSync("test0", func(netlink.Link) error { return initErr }, func(netlink.Link) { called = true }, nil)
 	if !errors.Is(err, initErr) {
 		t.Fatalf("RegisterSync error = %v, want %v", err, initErr)
 	}
@@ -358,12 +333,12 @@ func TestInterfaceManagerSyncInitErrorDisablesRegistration(t *testing.T) {
 }
 
 func TestInterfaceManagerCancelableRegistration(t *testing.T) {
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		links:     make(map[int]netlink.Link),
 		listLinks: func() ([]netlink.Link, error) { return nil, nil },
-	}
+	})
 	called := false
-	cancel, err := m.RegisterSyncCancelable("test0", nil, func(netlink.Link) { called = true }, nil)
+	cancel, err := testInterfaceScope(t, m).RegisterSyncCancelable("test0", nil, func(netlink.Link) { called = true }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,12 +361,12 @@ func TestInterfaceManagerCancelableRegistration(t *testing.T) {
 
 func TestInterfaceManagerExactRegistrationTreatsNameLiterally(t *testing.T) {
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test[0]"}}
-	m := &InterfaceManager{
+	m := testInterfaceSource(t, &InterfaceManager{
 		links:     make(map[int]netlink.Link),
 		listLinks: func() ([]netlink.Link, error) { return []netlink.Link{link}, nil },
-	}
+	})
 	called := false
-	if err := m.RegisterSync("test[0]", func(netlink.Link) error {
+	if err := testInterfaceScope(t, m).RegisterSync("test[0]", func(netlink.Link) error {
 		called = true
 		return nil
 	}, nil, nil); err != nil {
@@ -405,15 +380,12 @@ func TestInterfaceManagerExactRegistrationTreatsNameLiterally(t *testing.T) {
 func TestInterfaceManagerCancelJoinsDispatchedCallbackDuringShutdown(t *testing.T) {
 	for _, stopping := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stopping=%v", stopping), func(t *testing.T) {
-			m := &InterfaceManager{links: make(map[int]netlink.Link), listLinks: func() ([]netlink.Link, error) { return nil, nil }, deliveryDone: make(chan struct{})}
-			m.deliveryCond = sync.NewCond(&m.deliveryMu)
-			go m.dispatchCallbacks()
-			defer m.stopCallbackDispatcher()
+			m := testInterfaceSource(t, &InterfaceManager{links: make(map[int]netlink.Link), listLinks: func() ([]netlink.Link, error) { return nil, nil }, deliveryDone: make(chan struct{})})
 			started, release := make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
 			defer releaseOnce.Do(func() { close(release) })
 			var writes atomic.Int32
-			cancel, err := m.RegisterSyncCancelable("test0", nil, func(netlink.Link) { close(started); <-release; writes.Add(1) }, nil)
+			cancel, err := testInterfaceScope(t, m).RegisterSyncCancelable("test0", nil, func(netlink.Link) { close(started); <-release; writes.Add(1) }, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

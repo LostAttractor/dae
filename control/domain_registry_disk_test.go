@@ -294,10 +294,12 @@ func TestDomainRegistrySaveFailureDoesNotPreventRetirement(t *testing.T) {
 	now, ip := time.Now(), netip.MustParseAddr("192.0.2.1")
 	g.Upsert("retained.example.", ip, testBitmap(0), 60, now)
 	activity := g.activity
-	ifmgr, err := network.NewInterfaceManager()
+	interfaceSource, err := network.NewInterfaceManager()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = interfaceSource.Close() })
+	ifmgr := interfaceSource.NewScope()
 	closed, cancel := context.WithCancel(t.Context())
 	core := &controlPlaneCore{closed: closed, close: cancel, ifmgr: ifmgr, domainRegistry: g}
 	core.addCleanup(g.Close)

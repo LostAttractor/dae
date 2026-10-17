@@ -62,7 +62,7 @@ type routingCompiler struct {
 
 // compileRouting consumes prepared rules only: external data and optimizer
 // passes finish before construction, and BPF writes remain deferred to activation.
-func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) (*RoutingMatcherBuilder, error) {
+func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceScope) (*RoutingMatcherBuilder, error) {
 	builder := newRoutingMatcherBuilder(outbounds, bpf, ifmgr)
 	sets := make(map[string]config.RoutingRuleSet, len(p.routing.RuleSets))
 	for _, set := range p.routing.RuleSets {

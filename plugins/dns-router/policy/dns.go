@@ -30,7 +30,7 @@ type NewOption struct {
 	// InterfaceManager resolves interface names in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
 	// case interface rules never match.
-	InterfaceManager *network.InterfaceManager
+	InterfaceManager *network.InterfaceScope
 }
 
 // New builds DNS routing from rules prepared by the control-plane startup phase.

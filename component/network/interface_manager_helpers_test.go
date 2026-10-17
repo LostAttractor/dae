@@ -3,37 +3,47 @@
 package network
 
 import (
-	"errors"
-	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
-func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
-	var initial func(netlink.Link) error
-	if initCallback != nil {
-		initial = func(link netlink.Link) error {
-			initCallback(link)
-			return nil
-		}
+// Fixtures use the production dispatcher with hand-written link sources.
+func testInterfaceSource(t *testing.T, source *InterfaceManager) *InterfaceManager {
+	t.Helper()
+	if source.stop == nil {
+		source.stop = make(chan struct{})
 	}
-	_, err := m.register(pattern, false, initial, newCallback, delCallback, false)
-	return err
+	if source.done == nil {
+		source.done = make(chan struct{})
+	}
+	if source.links == nil {
+		source.links = make(map[int]netlink.Link)
+	}
+	if source.listLinks == nil {
+		source.listLinks = func() ([]netlink.Link, error) { return nil, nil }
+	}
+	for i := range source.callbacks {
+		source.callbacks[i].active = new(atomic.Bool)
+		source.callbacks[i].active.Store(true)
+	}
+	source.deliveryDone = make(chan struct{})
+	source.deliveryCond = sync.NewCond(&source.deliveryMu)
+	go source.dispatchCallbacks()
+	t.Cleanup(func() {
+		source.stopSubscription()
+		source.stopCallbackDispatcher()
+	})
+	return source
 }
 
-func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) {
-	var initial func(netlink.Link) error
-	if initCallback != nil {
-		initial = func(link netlink.Link) error {
-			initCallback(link)
-			return nil
-		}
-	}
-	if _, err := m.register(ifname, true, initial, newCallback, delCallback, false); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.WithField("interface", ifname).WithError(err).
-			Warn("Initial interface lookup failed; waiting for a later interface update")
-	}
+func testInterfaceScope(t *testing.T, source *InterfaceManager) *InterfaceScope {
+	t.Helper()
+	scope := source.NewScope()
+	t.Cleanup(func() { _ = scope.Close() })
+	return scope
 }
 
 // Tests that assert lifecycle effects wait for the ordered dispatcher.

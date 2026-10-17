@@ -19,10 +19,12 @@ import (
 
 func newShutdownTestPlane(t *testing.T) *ControlPlane {
 	t.Helper()
-	ifmgr, err := network.NewInterfaceManager()
+	interfaceSource, err := network.NewInterfaceManager()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = interfaceSource.Close() })
+	ifmgr := interfaceSource.NewScope()
 	t.Cleanup(func() { _ = ifmgr.Close() })
 	coreCtx, cancelCore := context.WithCancel(t.Context())
 	t.Cleanup(cancelCore)

@@ -28,14 +28,14 @@ type interfaceReg struct {
 type RequestMatcherBuilder struct {
 	matcherBuilder[DnsRequestOutboundIndex, atomic.Uint32]
 	interfaceRegs []interfaceReg
-	ifmgr         *network.InterfaceManager
+	ifmgr         *network.InterfaceScope
 }
 
 func NewRequestMatcherBuilder(
 	rules []*config_parser.RoutingRule,
 	upstreamName2Id map[string]uint8,
 	fallback config.FunctionOrString,
-	ifmgr *network.InterfaceManager,
+	ifmgr *network.InterfaceScope,
 ) (b *RequestMatcherBuilder, err error) {
 	b = &RequestMatcherBuilder{upstreamName2Id: upstreamName2Id, ifmgr: ifmgr}
 	b.resolve = b.upstreamToId

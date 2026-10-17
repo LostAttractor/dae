@@ -27,7 +27,7 @@ type RoutingMatcherBuilder struct {
 	kernelLpmLen         int
 	routing              RoutingProgram
 	outboundName2Id      map[string]uint8
-	ifmgr                *network.InterfaceManager
+	ifmgr                *network.InterfaceScope
 	domainSetIDs         map[string]uint32
 	staticLpmIDs         map[string]int
 	simulatedDomainSet   []routing.DomainSet
@@ -41,7 +41,7 @@ type RoutingMatcherBuilder struct {
 	inactiveRules        []routingRuleMetadata
 }
 
-func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) *RoutingMatcherBuilder {
+func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceScope) *RoutingMatcherBuilder {
 	b := &RoutingMatcherBuilder{
 		bpf: bpf, clientSetSlots: make(map[string]int),
 		outboundName2Id: outboundName2Id,

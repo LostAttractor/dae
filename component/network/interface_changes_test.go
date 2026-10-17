@@ -63,7 +63,7 @@ func TestInterfaceChangesIncludeAttributesAndCoalesce(t *testing.T) {
 
 func TestInterfaceChangesPrecedeSlowLifecycleCallback(t *testing.T) {
 	source := scopeTestSource(t)
-	watch, err := source.watchChanges()
+	watch, err := testInterfaceScope(t, source).watchChanges()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestInterfaceChangesPrecedeSlowLifecycleCallback(t *testing.T) {
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
-	if err := source.RegisterSync("wan0", nil, func(netlink.Link) { close(entered); <-release }, nil); err != nil {
+	if err := testInterfaceScope(t, source).RegisterSync("wan0", nil, func(netlink.Link) { close(entered); <-release }, nil); err != nil {
 		t.Fatal(err)
 	}
 	go func() {

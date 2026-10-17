@@ -16,12 +16,7 @@ import (
 
 func scopeTestSource(t *testing.T) *InterfaceManager {
 	t.Helper()
-	source := &InterfaceManager{stop: make(chan struct{}), links: make(map[int]netlink.Link),
-		listLinks: func() ([]netlink.Link, error) { return nil, nil }, deliveryDone: make(chan struct{})}
-	source.deliveryCond = sync.NewCond(&source.deliveryMu)
-	go source.dispatchCallbacks()
-	t.Cleanup(source.stopCallbackDispatcher)
-	return source
+	return testInterfaceSource(t, &InterfaceManager{listLinks: func() ([]netlink.Link, error) { return nil, nil }})
 }
 
 func TestInterfaceScopesKeepSiblingSubscriptions(t *testing.T) {
@@ -91,11 +86,11 @@ func TestInterfaceScopeCloseJoinsInitialRegistration(t *testing.T) {
 	}
 }
 
-func TestInterfaceScopeOwnsFailedAsynchronousRegistration(t *testing.T) {
+func TestInterfaceScopeRejectsFailedRegistration(t *testing.T) {
 	source := scopeTestSource(t)
 	source.listLinks = func() ([]netlink.Link, error) { return nil, errors.New("temporary dump failure") }
 	scope := source.NewScope()
-	if err := scope.RegisterWithPattern("test*", nil, nil, nil); err == nil {
+	if err := scope.RegisterWithPatternSync("test*", nil, nil, nil); err == nil {
 		t.Fatal("missing initial dump error")
 	}
 	scope.Close()

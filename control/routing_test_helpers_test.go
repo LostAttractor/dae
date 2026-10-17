@@ -30,7 +30,7 @@ func testRoutingConfig(rules []*config_parser.RoutingRule, fallback config.Funct
 }
 
 // Tests use the same preparation and compilation path as a control plane.
-func compileTestRouting(input preparedRules, outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) (*RoutingMatcherBuilder, error) {
+func compileTestRouting(input preparedRules, outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceScope) (*RoutingMatcherBuilder, error) {
 	if input.routing == nil {
 		input.routing = testRoutingConfig(nil, "direct")
 	}

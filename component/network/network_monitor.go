@@ -119,7 +119,7 @@ type HostNetworkMonitor struct {
 
 // NewHostNetworkMonitor borrows link invalidations from interfaces. Closing it
 // leaves the shared source and sibling generations alive.
-func NewHostNetworkMonitor(interfaces *InterfaceManager) (*HostNetworkMonitor, error) {
+func NewHostNetworkMonitor(interfaces *InterfaceScope) (*HostNetworkMonitor, error) {
 	links, err := interfaces.watchChanges()
 	if err != nil {
 		return nil, err
@@ -374,36 +374,9 @@ func (m *HostNetworkMonitor) run(
 		if m.subscriptions == nil {
 			return
 		}
-		if addrCh == nil && m.subscriptions.addr != nil {
-			next, err := m.subscriptions.addr(m.subscriptionEnd)
-			addrCh = next
-			subscriptionResult("address", err)
-			if err != nil {
-				addrCh = nil
-			} else {
-				markDirty()
-			}
-		}
-		if routeCh == nil && m.subscriptions.route != nil {
-			next, err := m.subscriptions.route(m.subscriptionEnd)
-			routeCh = next
-			subscriptionResult("route", err)
-			if err != nil {
-				routeCh = nil
-			} else {
-				markDirty()
-			}
-		}
-		if ruleCh == nil && m.subscriptions.rule != nil {
-			next, err := m.subscriptions.rule(m.subscriptionEnd)
-			ruleCh = next
-			subscriptionResult("rule", err)
-			if err != nil {
-				ruleCh = nil
-			} else {
-				markDirty()
-			}
-		}
+		m.restoreSubscription(&addrCh, m.subscriptions.addr, "address", subscriptionResult, markDirty)
+		m.restoreSubscription(&routeCh, m.subscriptions.route, "route", subscriptionResult, markDirty)
+		m.restoreSubscription(&ruleCh, m.subscriptions.rule, "rule", subscriptionResult, markDirty)
 	}
 	defer func() {
 		if debounceTimer != nil {
@@ -472,6 +445,19 @@ func (m *HostNetworkMonitor) run(
 				reconcile()
 			}
 		}
+	}
+}
+
+func (m *HostNetworkMonitor) restoreSubscription[T any](current *<-chan T, subscribe func(<-chan struct{}) (<-chan T, error), kind string, report func(string, error), dirty func()) {
+	if subscribe == nil {
+		return
+	}
+	restored, err := restoreSubscription(current, func() (<-chan T, error) { return subscribe(m.subscriptionEnd) })
+	if restored || err != nil {
+		report(kind, err)
+	}
+	if restored {
+		dirty()
 	}
 }
 

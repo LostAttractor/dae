@@ -32,11 +32,12 @@ import (
 var Plugin = plugin.Definition{Configure: Configure}
 
 type Router struct {
-	policy        *policy.Dns
-	prefer        uint16
-	interfaces    *network.InterfaceManager
-	metrics       *routerMetrics
-	upstreamNames []string
+	policy          *policy.Dns
+	prefer          uint16
+	interfaces      *network.InterfaceScope
+	ownedInterfaces *network.InterfaceManager
+	metrics         *routerMetrics
+	upstreamNames   []string
 }
 
 func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
@@ -130,25 +131,24 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 	if err != nil {
 		return nil, err
 	}
-	var interfaces *network.InterfaceManager
-	if services.Interfaces != nil {
-		interfaces = services.Interfaces.NewScope()
-	} else {
-		interfaces, err = network.NewInterfaceManager()
+	source := services.Interfaces
+	var ownedInterfaces *network.InterfaceManager
+	if source == nil {
+		source, err = network.NewInterfaceManager()
+		ownedInterfaces = source
 	}
 	if err != nil {
 		return nil, err
 	}
-	p, err := policy.New(&conf, request, response, &policy.NewOption{InterfaceManager: interfaces})
+	r := &Router{prefer: prefer, interfaces: source.NewScope(), ownedInterfaces: ownedInterfaces, metrics: newRouterMetrics()}
+	p, err := policy.New(&conf, request, response, &policy.NewOption{InterfaceManager: r.interfaces})
 	if err != nil {
-		interfaces.Close()
-		return nil, err
+		return nil, errors.Join(err, r.Close())
 	}
 	if err := p.CheckUpstreamsFormat(); err != nil {
-		interfaces.Close()
-		return nil, err
+		return nil, errors.Join(err, r.Close())
 	}
-	r := &Router{policy: p, prefer: prefer, interfaces: interfaces, metrics: newRouterMetrics()}
+	r.policy = p
 	for _, upstream := range conf.Upstream {
 		name, _ := proxylink.SplitTag(string(upstream))
 		r.upstreamNames = append(r.upstreamNames, name)
@@ -162,11 +162,14 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 	return r, nil
 }
 
-func (r *Router) Close() error {
+func (r *Router) Close() (err error) {
 	if r.interfaces != nil {
-		return r.interfaces.Close()
+		err = r.interfaces.Close()
 	}
-	return nil
+	if r.ownedInterfaces != nil {
+		err = errors.Join(err, r.ownedInterfaces.Close())
+	}
+	return err
 }
 
 func (*Router) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }

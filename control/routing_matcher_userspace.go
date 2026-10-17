@@ -20,7 +20,7 @@ import (
 
 type RoutingMatcher struct {
 	*routingState
-	ifmgr                *network.InterfaceManager
+	ifmgr                *network.InterfaceScope
 	interfaceRulePatches []routingInterfaceRulePatch
 	defaultProfileID     uint32
 	profiles             map[uint32][]routingSpan

@@ -59,10 +59,12 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			}
 			plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 			t.Cleanup(plane.udpEndpoints.closeAll)
-			ifmgr, err := network.NewInterfaceManager()
+			interfaceSource, err := network.NewInterfaceManager()
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = interfaceSource.Close() })
+			ifmgr := interfaceSource.NewScope()
 			coreCtx, coreCancel := context.WithCancel(context.Background())
 			plane.core = &controlPlaneCore{closed: coreCtx, close: coreCancel, ifmgr: ifmgr,
 				bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{

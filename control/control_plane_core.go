@@ -41,10 +41,11 @@ type controlPlaneCore struct {
 	// bump/routing value, so user space and BPF stay in sync.
 	domainRegistry *DomainRegistry
 
-	closed context.Context
-	close  context.CancelFunc
-	ifmgr  *network.InterfaceManager
-	netmon *network.HostNetworkMonitor
+	closed          context.Context
+	close           context.CancelFunc
+	ifmgr           *network.InterfaceScope
+	ownedInterfaces *network.InterfaceManager
+	netmon          *network.HostNetworkMonitor
 
 	// outboundConnectivityMap stores actual outbound usability per network. It
 	// mirrors the eBPF map for userspace skip_while_noalive evaluation. A zero
@@ -63,30 +64,34 @@ func newControlPlaneCore(
 	isReload bool,
 ) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
-	var ifmgr *network.InterfaceManager
+	var source, ownedInterfaces *network.InterfaceManager
 	var err error
 	if bpf.Runtime != nil {
-		ifmgr, err = bpf.Runtime.Interfaces()
-		if err == nil {
-			ifmgr = ifmgr.NewScope()
-		}
+		source, err = bpf.Runtime.Interfaces()
 	} else {
-		ifmgr, err = network.NewInterfaceManager()
+		source, err = network.NewInterfaceManager()
+		ownedInterfaces = source
 	}
 	if err != nil {
 		toClose()
 		return nil, fmt.Errorf("initialize interface manager: %w", err)
 	}
+	ifmgr := source.NewScope()
 	netmon, err := network.NewHostNetworkMonitor(ifmgr)
 	if err != nil {
 		toClose()
-		return nil, errors.Join(fmt.Errorf("initialize host network monitor: %w", err), ifmgr.Close())
+		err = errors.Join(fmt.Errorf("initialize host network monitor: %w", err), ifmgr.Close())
+		if ownedInterfaces != nil {
+			err = errors.Join(err, ownedInterfaces.Close())
+		}
+		return nil, err
 	}
 	core := &controlPlaneCore{
 		kernelLinks:                 &bpf.kernelLinks,
 		bpf:                         bpf,
 		isReload:                    isReload,
 		ifmgr:                       ifmgr,
+		ownedInterfaces:             ownedInterfaces,
 		netmon:                      netmon,
 		closed:                      closed,
 		close:                       toClose,
@@ -141,6 +146,9 @@ func (c *controlPlaneCore) quiesce() error {
 		}
 		if c.ifmgr != nil {
 			c.quiesceErr = errors.Join(c.quiesceErr, c.ifmgr.Close())
+		}
+		if c.ownedInterfaces != nil {
+			c.quiesceErr = errors.Join(c.quiesceErr, c.ownedInterfaces.Close())
 		}
 		if c.hostBinder != nil {
 			c.hostBinder.quiesce()

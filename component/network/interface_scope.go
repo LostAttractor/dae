@@ -4,6 +4,7 @@ package network
 
 import (
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/vishvananda/netlink"
@@ -11,16 +12,72 @@ import (
 
 type interfaceEvents struct{ change, reset func() }
 
-// NewScope borrows one monitor and link cache. Close removes this scope's
-// registrations and joins their callbacks without stopping sibling scopes.
-func (m *InterfaceManager) NewScope() *InterfaceManager {
-	if m.source != nil {
-		m = m.source
-	}
-	return &InterfaceManager{source: m, stop: make(chan struct{}), done: make(chan struct{})}
+// InterfaceScope owns one consumer's subscriptions, never the kernel source.
+// Closing it joins its callbacks without stopping sibling consumers.
+type InterfaceScope struct {
+	source        *InterfaceManager
+	mu            sync.Mutex
+	registrations []*atomic.Bool
+	registering   sync.WaitGroup
+	closeOnce     sync.Once
+	stop, done    chan struct{}
 }
 
-func (m *InterfaceManager) registerScoped(name string, exact bool, initial func(netlink.Link) error, added, removed func(netlink.Link), synchronous bool) (*atomic.Bool, error) {
+// NewScope borrows this source's monitor and cache.
+func (m *InterfaceManager) NewScope() *InterfaceScope {
+	return &InterfaceScope{source: m, stop: make(chan struct{}), done: make(chan struct{})}
+}
+
+// RegisterWithPatternSync waits for the initial callbacks. Registration and
+// cancellation must not be called from an interface callback.
+func (m *InterfaceScope) RegisterWithPatternSync(pattern string, initial func(netlink.Link) error, added, removed func(netlink.Link)) error {
+	_, err := m.register(pattern, false, initial, added, removed)
+	return err
+}
+
+// RegisterSync treats the interface name literally rather than as a pattern.
+func (m *InterfaceScope) RegisterSync(name string, initial func(netlink.Link) error, added, removed func(netlink.Link)) error {
+	_, err := m.register(name, true, initial, added, removed)
+	return err
+}
+
+// RegisterSyncCancelable returns an idempotent cancellation that also joins
+// callbacks already queued for this registration.
+func (m *InterfaceScope) RegisterSyncCancelable(name string, initial func(netlink.Link) error, added, removed func(netlink.Link)) (func(), error) {
+	registration, err := m.register(name, true, initial, added, removed)
+	if err != nil {
+		return nil, err
+	}
+	return sync.OnceFunc(func() {
+		m.source.disableRegistration(registration)
+		m.source.waitCallbacks()
+	}), nil
+}
+
+func (m *InterfaceScope) NameByIndex(index int) string {
+	if m == nil {
+		return ""
+	}
+	return m.source.NameByIndex(index)
+}
+
+func (m *InterfaceScope) MatchingLinks(patterns []string) []netlink.Link {
+	return m.source.MatchingLinks(patterns)
+}
+
+func (m *InterfaceScope) SetChangeCallback(callback func()) { m.setEvent(callback, false) }
+func (m *InterfaceScope) SetResetCallback(callback func())  { m.setEvent(callback, true) }
+
+func (m *InterfaceScope) isStopped() bool {
+	select {
+	case <-m.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *InterfaceScope) register(name string, exact bool, initial func(netlink.Link) error, added, removed func(netlink.Link)) (*atomic.Bool, error) {
 	m.mu.Lock()
 	if m.isStopped() {
 		m.mu.Unlock()
@@ -29,7 +86,7 @@ func (m *InterfaceManager) registerScoped(name string, exact bool, initial func(
 	m.registering.Add(1)
 	m.mu.Unlock()
 	defer m.registering.Done()
-	registration, err := m.source.register(name, exact, initial, added, removed, synchronous)
+	registration, err := m.source.register(name, exact, initial, added, removed)
 	if registration == nil {
 		return nil, err
 	}
@@ -46,7 +103,7 @@ func (m *InterfaceManager) registerScoped(name string, exact bool, initial func(
 	return registration, err
 }
 
-func (m *InterfaceManager) closeScope() error {
+func (m *InterfaceScope) Close() error {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		close(m.stop)
@@ -71,10 +128,6 @@ func (m *InterfaceManager) closeScope() error {
 }
 
 func (m *InterfaceManager) waitCallbacks() {
-	if m.source != nil {
-		m.source.waitCallbacks()
-		return
-	}
 	done := make(chan error, 1)
 	if !m.enqueueDelivery([]func() error{func() error { return nil }}, done) {
 		<-m.deliveryDone
@@ -83,7 +136,7 @@ func (m *InterfaceManager) waitCallbacks() {
 	<-done
 }
 
-func (m *InterfaceManager) setScopeEvent(callback func(), reset bool) {
+func (m *InterfaceScope) setEvent(callback func(), reset bool) {
 	source := m.source
 	source.mu.Lock()
 	defer source.mu.Unlock()
@@ -91,7 +144,7 @@ func (m *InterfaceManager) setScopeEvent(callback func(), reset bool) {
 		return
 	}
 	if source.scopes == nil {
-		source.scopes = make(map[*InterfaceManager]interfaceEvents)
+		source.scopes = make(map[*InterfaceScope]interfaceEvents)
 	}
 	events := source.scopes[m]
 	if reset {
@@ -106,13 +159,6 @@ func (m *InterfaceManager) setScopeEvent(callback func(), reset bool) {
 // a queued event cannot enter a generation after that scope has been closed.
 func (m *InterfaceManager) eventCallbacksLocked(reset bool) []func() error {
 	var callbacks []func() error
-	direct := m.onChange
-	if reset {
-		direct = m.onReset
-	}
-	if direct != nil {
-		callbacks = append(callbacks, voidCallback(direct))
-	}
 	for scope, events := range m.scopes {
 		callback := events.change
 		if reset {

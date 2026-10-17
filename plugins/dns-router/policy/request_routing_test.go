@@ -112,10 +112,12 @@ func TestRequestMatcherResolvesInterfaceName(t *testing.T) {
 	}
 	iface := interfaces[0]
 
-	ifmgr, err := network.NewInterfaceManager()
+	interfaceSource, err := network.NewInterfaceManager()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = interfaceSource.Close() })
+	ifmgr := interfaceSource.NewScope()
 	t.Cleanup(func() { _ = ifmgr.Close() })
 	builder, err := NewRequestMatcherBuilder(
 		[]*config_parser.RoutingRule{{
