@@ -108,11 +108,11 @@ func (k *kernelLinks) updateHostTCXLink(index int, spec hostTCXProgram) (bool, e
 // Replace inherited classifiers even when WAN discovery temporarily cannot
 // rediscover an interface. Never leave an attachment referencing a retired plane.
 func (k *kernelLinks) updatePrograms(old, next *bpfObjects) error {
-	pairs := map[*ebpf.Program]*ebpf.Program{
-		old.LanIngressL2: next.LanIngressL2, old.LanIngressL3: next.LanIngressL3,
-		old.LanEgressL2: next.LanEgressL2, old.LanEgressL3: next.LanEgressL3,
-		old.TproxyWanIngressL2: next.TproxyWanIngressL2, old.TproxyWanIngressL3: next.TproxyWanIngressL3,
-		old.TproxyWanEgressL2: next.TproxyWanEgressL2, old.TproxyWanEgressL3: next.TproxyWanEgressL3,
+	pairs := make(map[*ebpf.Program]*ebpf.Program)
+	for _, role := range []hostTCXRole{hostTCXLanIngress, hostTCXLanEgress, hostTCXWanIngress, hostTCXWanEgress} {
+		for _, ethernet := range []bool{false, true} {
+			pairs[role.program(&old.bpfPrograms, ethernet)] = role.program(&next.bpfPrograms, ethernet)
+		}
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -126,27 +126,6 @@ func (k *kernelLinks) updatePrograms(old, next *bpfObjects) error {
 		}
 	}
 	return nil
-}
-
-// Seed discovery from the still-attached WAN links on reload. An authoritative
-// snapshot replaces these provisional owners; an unavailable snapshot retains
-// them until discovery recovers instead of creating an interception gap.
-func (c *controlPlaneCore) seedAutoWanBindings() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.kernelLinks.mu.Lock()
-	defer c.kernelLinks.mu.Unlock()
-	for _, owned := range c.hostTCXLinks {
-		if owned.role != hostTCXWanEgress {
-			continue
-		}
-		binding := c.wanBindings[owned.linkIndex]
-		if binding == nil {
-			binding = &wanBinding{manualPatterns: make(map[string]struct{})}
-			c.wanBindings[owned.linkIndex] = binding
-		}
-		binding.automatic = true
-	}
 }
 
 // Only interfaces removed from the configuration lose their attachments.

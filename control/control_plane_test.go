@@ -191,7 +191,7 @@ func TestPrepareWanAcceptRA(t *testing.T) {
 
 func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 	closed := t.Context()
-	core := &controlPlaneCore{kernelLinks: new(kernelLinks), closed: closed, wanBindings: make(map[int]*wanBinding)}
+	core := &hostBinder{kernelLinks: new(kernelLinks), closed: closed, wanBindings: make(map[int]*wanBinding)}
 	snapshot := network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
 		{Index: 2, Name: "eth0", IPv4Default: true},
@@ -223,7 +223,7 @@ func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 	closed := t.Context()
 	const index = 2
-	core := &controlPlaneCore{
+	core := &hostBinder{
 		kernelLinks: new(kernelLinks),
 		closed:      closed,
 		wanBindings: map[int]*wanBinding{index: {
@@ -264,7 +264,7 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 
 func TestManualWanRejectsLoopback(t *testing.T) {
 	closed := t.Context()
-	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
+	core := &hostBinder{closed: closed, wanBindings: make(map[int]*wanBinding)}
 	core.setManualWan(&netlink.Dummy{
 		Index: consts.LoopbackIfIndex,
 		Name:  "lo",
@@ -277,7 +277,7 @@ func TestManualWanRejectsLoopback(t *testing.T) {
 func TestManualWanRenamePreservesAttachment(t *testing.T) {
 	closed := t.Context()
 	const index = 2
-	core := &controlPlaneCore{
+	core := &hostBinder{
 		closed: closed,
 		wanBindings: map[int]*wanBinding{index: {
 			ifname:         "eth0",
@@ -302,7 +302,7 @@ func TestWanRenameBeforeRemovalCallback(t *testing.T) {
 				owners["*0"] = struct{}{}
 			}
 			var closes, prepares int
-			core := &controlPlaneCore{
+			core := &hostBinder{
 				closed:      t.Context(),
 				wanBindings: map[int]*wanBinding{2: {ifname: "eth0", manualPatterns: owners}},
 				kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{
@@ -332,7 +332,7 @@ func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
 	closed := t.Context()
 	const index = 2
 	var closes int
-	core := &controlPlaneCore{
+	core := &hostBinder{
 		closed: closed,
 		wanBindings: map[int]*wanBinding{index: {
 			ifname:         "eth0",
@@ -362,7 +362,7 @@ func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
 	closed := t.Context()
 	const index = 2
 	var closes int
-	core := &controlPlaneCore{
+	core := &hostBinder{
 		closed: closed,
 		wanBindings: map[int]*wanBinding{index: {
 			ifname:         "eth0",
@@ -384,7 +384,7 @@ func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
 	}
 }
 
-func TestReconcileLanLinksRetriesAndDeduplicatesPatterns(t *testing.T) {
+func TestReconcileLanLinksRetriesAndSkipsHost(t *testing.T) {
 	links := []netlink.Link{
 		&netlink.Dummy{Index: 2, Name: "eth0"},
 		&netlink.Dummy{Index: 3, Name: "eth1"},
@@ -400,10 +400,10 @@ func TestReconcileLanLinksRetriesAndDeduplicatesPatterns(t *testing.T) {
 		return nil
 	}
 
-	if !reconcileLanLinks(links, []string{"eth*", "*0"}, bind) {
+	if !reconcileLanLinks(links, bind) {
 		t.Fatal("failed LAN attachment did not request retry")
 	}
-	if reconcileLanLinks(links, []string{"eth*", "*0"}, bind) {
+	if reconcileLanLinks(links, bind) {
 		t.Fatal("successful LAN reconciliation requested retry")
 	}
 	if attempts["eth0"] != 2 || attempts["eth1"] != 2 {

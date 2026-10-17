@@ -39,7 +39,7 @@ func TestKernelLinksSurviveReloadAndPruneRemovedInterfaces(t *testing.T) {
 
 func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 	for _, preparationFails := range []bool{false, true} {
-		core := &controlPlaneCore{kernelLinks: new(kernelLinks), closed: t.Context(), wanBindings: make(map[int]*wanBinding)}
+		core := &hostBinder{kernelLinks: new(kernelLinks), closed: t.Context(), wanBindings: make(map[int]*wanBinding)}
 		closed := 0
 		for _, role := range []hostTCXRole{hostTCXWanIngress, hostTCXWanEgress} {
 			core.ownHostTCXLink(hostTCXLink{linkIndex: 2, role: role, close: func() error { closed++; return nil }})

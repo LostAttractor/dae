@@ -203,7 +203,7 @@ func TestHostTCXAttachOrderAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = foreignEgressLink.Close() })
-	core := &controlPlaneCore{kernelLinks: new(kernelLinks)}
+	core := &hostBinder{kernelLinks: new(kernelLinks)}
 	t.Cleanup(func() { _ = core.closeHostTCXLinks(linkIndex) })
 
 	if err := core.migrateHostTCXPrograms(dummy,
@@ -242,7 +242,7 @@ func TestHostTCXAttachOrderAndCleanup(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	next := &controlPlaneCore{kernelLinks: core.kernelLinks}
+	next := &hostBinder{kernelLinks: core.kernelLinks}
 	next.beginRebind()
 	if err := next.migrateHostTCXPrograms(dummy,
 		hostTCXProgram{role: hostTCXLanIngress, program: lanIngress},

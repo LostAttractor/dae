@@ -377,6 +377,28 @@ func (m *InterfaceManager) NameByIndex(index int) string {
 	return link.Attrs().Name
 }
 
+// MatchingLinks returns the cached links matching any registered-style pattern,
+// once each and in stable order. Link snapshots must not be mutated by callers.
+// Subscription recovery refreshes this cache before delivering lifecycle events.
+func (m *InterfaceManager) MatchingLinks(patterns []string) []netlink.Link {
+	if m.source != nil {
+		return m.source.MatchingLinks(patterns)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var links []netlink.Link
+	for _, link := range m.links {
+		for _, pattern := range patterns {
+			if callbackMatches(callbackSet{pattern: pattern}, link.Attrs().Name) {
+				links = append(links, link)
+				break
+			}
+		}
+	}
+	sortLinks(links)
+	return links
+}
+
 // RegisterWithPatternSync waits for every initial callback and returns its
 // first error. It must not be called from an interface callback.
 func (m *InterfaceManager) RegisterWithPatternSync(pattern string, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link)) error {

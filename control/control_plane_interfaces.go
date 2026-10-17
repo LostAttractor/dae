@@ -7,7 +7,6 @@ package control
 
 import (
 	"fmt"
-	"path"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -30,7 +29,7 @@ func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
 
 func (c *ControlPlane) bindHostInterfaces() error {
 	core := c.core
-	core.ifmgr.SetResetCallback(core.resetHostTCXLinks)
+	core.ifmgr.SetResetCallback(core.hostBinder.resetHostTCXLinks)
 	hostEnabled := len(c.lanInterface) > 0 || len(c.wanInterface) > 0 || c.autoWan
 	if hostEnabled {
 		core.ifmgr.SetChangeCallback(c.requestHostReconcile)
@@ -45,7 +44,7 @@ func (c *ControlPlane) bindHostInterfaces() error {
 			}
 		}
 		for _, ifname := range c.lanInterface {
-			if err := core.bindLan(ifname, c.autoConfigKernelParameter); err != nil {
+			if err := core.hostBinder.bindLan(ifname, c.autoConfigKernelParameter); err != nil {
 				return err
 			}
 		}
@@ -53,19 +52,19 @@ func (c *ControlPlane) bindHostInterfaces() error {
 	wanEnabled := len(c.wanInterface) > 0 || c.autoWan
 	retryHost := false
 	if wanEnabled {
-		if err := core.ifmgr.RegisterWithPatternSync("*", nil, nil, core.invalidateWanLink); err != nil {
+		if err := core.ifmgr.RegisterWithPatternSync("*", nil, nil, core.hostBinder.invalidateWanLink); err != nil {
 			return fmt.Errorf("register WAN link deletion handler: %w", err)
 		}
 		if err := core.setupSkPidMonitor(); err != nil {
 			return fmt.Errorf("setup WAN socket identity monitor: %w", err)
 		}
 		for _, ifname := range c.wanInterface {
-			if err := core.bindWan(ifname, c.prepareWanInterface); err != nil {
+			if err := core.hostBinder.bindWan(ifname, c.prepareWanInterface); err != nil {
 				return err
 			}
 		}
 		if c.autoWan {
-			core.seedAutoWanBindings()
+			core.hostBinder.seedAutoWanBindings()
 		}
 		retryHost = c.reconcileWan()
 	}
@@ -117,24 +116,17 @@ func (c *ControlPlane) reconcileWan() bool {
 			snapshot = &current
 		}
 	}
-	return c.core.reconcileWan(snapshot, c.prepareWanInterface)
+	return c.core.hostBinder.reconcileWan(snapshot, c.prepareWanInterface)
 }
 
-func reconcileLanLinks(links []netlink.Link, patterns []string, bind func(netlink.Link) error) (retry bool) {
+func reconcileLanLinks(links []netlink.Link, bind func(netlink.Link) error) (retry bool) {
 	for _, link := range links {
 		if link.Attrs().Name == hostLinkName {
 			continue
 		}
-		for _, pattern := range patterns {
-			matched, _ := path.Match(pattern, link.Attrs().Name)
-			if !matched {
-				continue
-			}
-			if err := bind(link); err != nil {
-				log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not attach LAN programs")
-				retry = true
-			}
-			break
+		if err := bind(link); err != nil {
+			log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not attach LAN programs")
+			retry = true
 		}
 	}
 	return retry
@@ -144,13 +136,9 @@ func (c *ControlPlane) reconcileLan() bool {
 	if c.ctx.Err() != nil || len(c.lanInterface) == 0 {
 		return false
 	}
-	links, err := netlink.LinkList()
-	if err != nil {
-		log.WithError(err).Error("Could not discover LAN interfaces")
-		return true
-	}
-	return reconcileLanLinks(links, c.lanInterface, func(link netlink.Link) error {
-		return c.core.prepareAndBindLanLink(link, c.autoConfigKernelParameter)
+	links := c.core.ifmgr.MatchingLinks(c.lanInterface)
+	return reconcileLanLinks(links, func(link netlink.Link) error {
+		return c.core.hostBinder.prepareAndBindLanLink(link, c.autoConfigKernelParameter)
 	})
 }
 

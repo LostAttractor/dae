@@ -8,6 +8,7 @@ package network
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,34 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
+
+func TestMatchingLinksFollowsLifecycleAndRecovery(t *testing.T) {
+	m := &InterfaceManager{links: make(map[int]netlink.Link)}
+	scope := &InterfaceManager{source: m}
+	assertNames := func(want ...string) {
+		t.Helper()
+		var got []string
+		for _, link := range scope.MatchingLinks([]string{"eth*", "*0"}) {
+			got = append(got, link.Attrs().Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("matching links = %v, want %v", got, want)
+		}
+	}
+	update := func(typ uint16, index int, name string) {
+		m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: typ}, Link: &netlink.Dummy{Index: index, Name: name}})
+	}
+	update(unix.RTM_NEWLINK, 2, "eth0")
+	update(unix.RTM_NEWLINK, 3, "eth1")
+	update(unix.RTM_NEWLINK, 4, "other")
+	assertNames("eth0", "eth1") // Overlapping patterns cannot duplicate a link.
+	update(unix.RTM_NEWLINK, 2, "wan1")
+	assertNames("eth1")
+	update(unix.RTM_DELLINK, 3, "eth1")
+	assertNames()
+	m.replaceLinks([]netlink.Link{&netlink.Dummy{Index: 5, Name: "lan0"}})
+	assertNames("lan0")
+}
 
 func TestInterfaceManagerCloseWaitsForCallback(t *testing.T) {
 	started := make(chan struct{})
