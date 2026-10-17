@@ -5,50 +5,24 @@ package clientset
 
 import (
 	"errors"
-	"fmt"
-	"strings"
+
+	"github.com/daeuniverse/dae/config"
 
 	"github.com/google/nftables"
 	log "github.com/sirupsen/logrus"
 )
 
-func validName(name string, limit int) bool {
-	if len(name) == 0 || len(name) > limit {
-		return false
-	}
-	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.') {
-			return false
-		}
-	}
-	return true
-}
-
-func Validate(ipset, nftset string) error {
-	if ipset != "" && !validName(ipset, 31) {
-		return fmt.Errorf("ipset names must contain 1–31 ASCII letters, digits, '_', '-' or '.'")
-	}
-	if nftset != "" {
-		_, _, err := nftTarget(nftset)
-		return err
-	}
-	return nil
-}
-
 func nftTarget(target string) (*nftables.Table, string, error) {
-	parts := strings.Split(target, "/")
-	if len(parts) != 3 || !validName(parts[1], 255) || !validName(parts[2], 255) {
-		return nil, "", fmt.Errorf("nftset requires family/table/set with ASCII letters, digits, '_', '-' or '.' in table/set names")
+	family, table, set, err := config.ParseNFTSet(target)
+	if err != nil {
+		return nil, "", err
 	}
-	family, ok := map[string]nftables.TableFamily{
+	families := map[string]nftables.TableFamily{
 		"inet": nftables.TableFamilyINet, "ip": nftables.TableFamilyIPv4,
 		"ip6": nftables.TableFamilyIPv6, "bridge": nftables.TableFamilyBridge,
 		"netdev": nftables.TableFamilyNetdev, "arp": nftables.TableFamilyARP,
-	}[parts[0]]
-	if !ok {
-		return nil, "", fmt.Errorf("unsupported nftset family %q", parts[0])
 	}
-	return &nftables.Table{Family: family, Name: parts[1]}, parts[2], nil
+	return &nftables.Table{Family: families[family], Name: table}, set, nil
 }
 
 // Replace publishes one membership snapshot using the same rollback journal as

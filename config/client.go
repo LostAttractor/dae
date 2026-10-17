@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
-
-	"github.com/daeuniverse/dae/component/clientset"
 )
 
 type Client struct {
@@ -29,7 +27,7 @@ func validateClients(clients []Client) error {
 		if err := ValidateClientName(client.Name); err != nil {
 			return err
 		}
-		if err := clientset.Validate(client.IPSet, client.NFTSet); err != nil {
+		if err := ValidateClientExports(client.IPSet, client.NFTSet); err != nil {
 			return fmt.Errorf("client %q: %w", client.Name, err)
 		}
 		for _, other := range clients[:i] {
@@ -42,4 +40,43 @@ func validateClients(clients []Client) error {
 		}
 	}
 	return nil
+}
+
+func validKernelSetName(name string, limit int) bool {
+	if len(name) == 0 || len(name) > limit {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateClientExports checks the syntax of optional kernel set targets.
+func ValidateClientExports(ipset, nftset string) error {
+	if ipset != "" && !validKernelSetName(ipset, 31) {
+		return fmt.Errorf("ipset names must contain 1–31 ASCII letters, digits, '_', '-' or '.'")
+	}
+	if nftset != "" {
+		_, _, _, err := ParseNFTSet(nftset)
+		return err
+	}
+	return nil
+}
+
+// ParseNFTSet validates the configured family/table/set reference independently
+// of the kernel exporter.
+func ParseNFTSet(target string) (family, table, set string, err error) {
+	parts := strings.Split(target, "/")
+	if len(parts) != 3 || !validKernelSetName(parts[1], 255) || !validKernelSetName(parts[2], 255) {
+		return "", "", "", fmt.Errorf("nftset requires family/table/set with ASCII letters, digits, '_', '-' or '.' in table/set names")
+	}
+	switch parts[0] {
+	case "inet", "ip", "ip6", "bridge", "netdev", "arp":
+	default:
+		return "", "", "", fmt.Errorf("unsupported nftset family %q", parts[0])
+	}
+	return parts[0], parts[1], parts[2], nil
 }

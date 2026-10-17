@@ -9,6 +9,7 @@ import (
 	"slices"
 	"syscall"
 
+	"github.com/daeuniverse/dae/config"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -54,7 +55,7 @@ func Prepare(targets []Target) (tx *Transaction, err error) {
 	tables := make(map[string]bool)
 	conn := &nftables.Conn{}
 	for _, target := range targets {
-		if err := Validate(target.IPSet, target.NFTSet); err != nil {
+		if err := config.ValidateClientExports(target.IPSet, target.NFTSet); err != nil {
 			return tx, err
 		}
 		for _, mac := range target.Members {
