@@ -46,7 +46,7 @@ func TestResolveIp46ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestResolveIp46(t *testing.T) {
+func TestResolveIp46Context(t *testing.T) {
 	original := net.DefaultResolver
 	t.Cleanup(func() { net.DefaultResolver = original })
 	for _, test := range []struct {
@@ -97,12 +97,12 @@ func TestResolveIp46(t *testing.T) {
 					return client, nil
 				},
 			}
-			got, err := ResolveIp46("ip46.test.")
+			got, err := ResolveIp46Context(t.Context(), "ip46.test.")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got == nil || *got != test.want {
-				t.Fatalf("ResolveIp46 = %+v, want %+v", got, test.want)
+				t.Fatalf("ResolveIp46Context = %+v, want %+v", got, test.want)
 			}
 		})
 	}

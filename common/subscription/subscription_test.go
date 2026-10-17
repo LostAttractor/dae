@@ -88,7 +88,7 @@ func TestResolveSubscriptionAsSIP008EncodesPlugin(t *testing.T) {
 			t.Fatalf("plugin URL=%s", u)
 		}
 		if tt.plugin != "" {
-			if err := componentoutbound.ValidateNodeLink(nodes[0]); err != nil {
+			if err := componentoutbound.NewNodeValidator(t.Context(), &config.Global{})(nodes[0]); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -125,7 +125,7 @@ func TestResolveSubscriptionRedactsTransportErrorURL(t *testing.T) {
 	}
 	sentinel := errors.New("transport failed")
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, sentinel })}
-	_, _, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, raw, componentoutbound.ValidateNodeLink)
+	_, _, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, raw, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "https://example.com:8443") {
 		t.Fatalf("transport error: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestResolveSubscriptionRemoteLimitsAndUserAgent(t *testing.T) {
 				}
 				return &http.Response{StatusCode: tt.status, ContentLength: tt.length, Body: body}, nil
 			})}
-			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, "https://example.com/sub", componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, "https://example.com/sub", componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			if !body.closed || (err == nil) != (tt.name == "valid") || err != nil && nodes != nil {
 				t.Fatalf("closed=%t nodes=%v err=%v", body.closed, nodes, err)
 			}
@@ -195,7 +195,7 @@ func TestResolveSubscriptionInvalidResponsePreservesCache(t *testing.T) {
 			}))
 			opts := ResolveOptions{CacheDir: t.TempDir()}
 			load := func() (string, []string, error) {
-				return ResolveSubscriptionContext(t.Context(), server.Client(), opts, "test:"+server.URL, componentoutbound.ValidateNodeLink)
+				return ResolveSubscriptionContext(t.Context(), server.Client(), opts, "test:"+server.URL, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			}
 			if _, _, err := load(); err != nil {
 				t.Fatal(err)
@@ -242,7 +242,7 @@ func TestSubscriptionCacheLogsConfirmedOutcome(t *testing.T) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(encodedSubscription(testSSNode("cached.example"))))}, nil
 		})}
 		if state != "missing" {
-			if _, _, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.ValidateNodeLink); err != nil {
+			if _, _, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.NewNodeValidator(t.Context(), &config.Global{})); err != nil {
 				t.Fatal(err)
 			}
 			if state == "invalid" {
@@ -254,7 +254,7 @@ func TestSubscriptionCacheLogsConfirmedOutcome(t *testing.T) {
 		}
 		offline = true
 		logs.Reset()
-		_, nodes, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.ValidateNodeLink)
+		_, nodes, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 		if state == "usable" {
 			if err != nil || len(nodes) != 1 || strings.Count(logs.String(), `"level":"warning"`) != 1 || !strings.Contains(logs.String(), "using cached nodes") {
 				t.Fatalf("logs=%s err=%v", &logs, err)
@@ -277,7 +277,7 @@ func TestResolveSubscriptionCancellationAndValidation(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
-	if _, _, err := ResolveSubscriptionContext(ctx, server.Client(), ResolveOptions{CacheDir: t.TempDir()}, server.URL, componentoutbound.ValidateNodeLink); !errors.Is(err, context.DeadlineExceeded) {
+	if _, _, err := ResolveSubscriptionContext(ctx, server.Client(), ResolveOptions{CacheDir: t.TempDir()}, server.URL, componentoutbound.NewNodeValidator(t.Context(), &config.Global{})); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -300,7 +300,7 @@ func TestResolveSubscriptionCancellationAndValidation(t *testing.T) {
 func TestValidateSubscriptionNodesFiltersMixedContent(t *testing.T) {
 	valid := testSSNode("valid.example")
 	for _, content := range [][]string{{valid, "unsupported://invalid"}, {valid, "ss://%%%"}} {
-		nodes, err := resolveSubscriptionContent(t.Context(), encodedSubscription(content...), componentoutbound.ValidateNodeLink)
+		nodes, err := resolveSubscriptionContent(t.Context(), encodedSubscription(content...), componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 		if err != nil || len(nodes) != 1 || nodes[0] != valid {
 			t.Fatalf("nodes=%v err=%v", nodes, err)
 		}

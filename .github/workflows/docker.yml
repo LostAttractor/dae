@@ -36,7 +36,6 @@ on:
       - "scripts/check-static.sh"
       - "scripts/publish-container-index.py"
       - "scripts/tests/test_container_publish.py"
-      - "control/bpf_subobjects.tmpl"
       - "Makefile"
       - ".github/workflows/docker.yml"
       - "kern/headers"

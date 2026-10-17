@@ -20,20 +20,6 @@ func (i *Ip46) IsValid() bool {
 	return i.Ip4.IsValid() || i.Ip6.IsValid()
 }
 
-func FromAddr(addr netip.Addr) (ip46 *Ip46) {
-	ip46 = new(Ip46)
-	if addr.Is4() || addr.Is4In6() {
-		ip46.Ip4 = addr
-	} else {
-		ip46.Ip6 = addr
-	}
-	return
-}
-
-func ParseOrResolveIp46(host string) (*Ip46, error) {
-	return ParseOrResolveIp46Context(context.Background(), host)
-}
-
 func ParseOrResolveIp46Context(ctx context.Context, host string) (*Ip46, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		ipv46 := new(Ip46)
@@ -45,10 +31,6 @@ func ParseOrResolveIp46Context(ctx context.Context, host string) (*Ip46, error) 
 		return ipv46, nil
 	}
 	return ResolveIp46Context(ctx, host)
-}
-
-func ResolveIp46(host string) (ipv46 *Ip46, err error) {
-	return ResolveIp46Context(context.Background(), host)
 }
 
 func ResolveIp46Context(ctx context.Context, host string) (ipv46 *Ip46, err error) {

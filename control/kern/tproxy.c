@@ -30,7 +30,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
-// #define __PRINT_SETUP_PROCESS_CONNNECTION
 // #define __DEBUG
 // #define __UNROLL_ROUTE_LOOP
 
@@ -371,12 +370,6 @@ struct {
 } udp_routing_scratch_map SEC(".maps");
 
 #include "routing_maps.h"
-
-struct ip_port_proto {
-	__u32 ip[4];
-	__be16 port;
-	__u8 proto;
-};
 
 struct pid_pname {
 	__u32 pid;
@@ -1856,10 +1849,6 @@ static __always_inline int _update_map_elem_by_cookie(const __u64 cookie,
 		return ret;
 	}
 
-#ifdef __PRINT_SETUP_PROCESS_CONNNECTION
-	bpf_printk("setup_mapping: %llu -> %s (%d)", cookie, val.pname,
-		   val.pid);
-#endif
 	return 0;
 }
 

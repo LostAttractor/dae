@@ -5,29 +5,7 @@
 
 package common
 
-import (
-	"time"
-
-	"github.com/daeuniverse/dae/common/consts"
-)
-
-func ShowDuration(d time.Duration) string {
-	return d.Truncate(time.Millisecond).String()
-}
-
-func LatencyString(realLatency, latencyOffset time.Duration) string {
-	var offsetSign string = "+"
-	if latencyOffset < 0 {
-		offsetSign = "-"
-	}
-
-	var offsetPart string = ""
-	if latencyOffset != 0 {
-		offsetPart = "(" + offsetSign + ShowDuration(latencyOffset.Abs()) + "=" + ShowDuration(realLatency+latencyOffset) + ")"
-	}
-
-	return ShowDuration(realLatency) + offsetPart
-}
+import "github.com/daeuniverse/dae/common/consts"
 
 type NetworkType struct {
 	L4Proto   consts.L4ProtoStr

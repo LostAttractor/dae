@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"net/url"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -22,11 +21,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
-
-type UrlOrEmpty struct {
-	Url   *url.URL
-	Empty bool
-}
 
 func ARangeU32(n uint32) []uint32 {
 	ret := make([]uint32, n)
@@ -181,27 +175,6 @@ func FuzzyDecode(to any, val string) bool {
 		}
 	case reflect.String:
 		v.SetString(val)
-	case reflect.Struct:
-		switch v.Interface().(type) {
-		case UrlOrEmpty:
-			if val == "" {
-				v.Set(reflect.ValueOf(UrlOrEmpty{
-					Url:   nil,
-					Empty: true,
-				}))
-			} else {
-				u, err := url.Parse(val)
-				if err != nil {
-					return false
-				}
-				v.Set(reflect.ValueOf(UrlOrEmpty{
-					Url:   u,
-					Empty: false,
-				}))
-			}
-		default:
-			return false
-		}
 	case reflect.Slice:
 		switch v.Interface().(type) {
 		case []string:

@@ -268,19 +268,6 @@ func parseNodeLink(link string) (D.Builder, *D.Property, error) {
 	return D.NewFromLink(normalizeShadowsocksLink(link))
 }
 
-func ValidateNodeLink(link string) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = errors.New("node parser panicked")
-		}
-	}()
-	_, _, err = parseNodeLink(link)
-	if err != nil {
-		return errors.New("node parser rejected link")
-	}
-	return nil
-}
-
 const maxConcurrentNodeValidations = 4
 
 var nodeValidationSlots = make(chan struct{}, maxConcurrentNodeValidations)

@@ -36,7 +36,6 @@ on:
       - "scripts/check-static.sh"
       - "scripts/run-target.sh"
       - ".github/actions/**"
-      - "control/bpf_subobjects.tmpl"
       - "install/release-targets.json"
       - "scripts/release-checksums.sh"
       - "scripts/tests/test_release_pipeline.py"

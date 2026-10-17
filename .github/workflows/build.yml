@@ -30,7 +30,6 @@ on:
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
-      - "control/bpf_subobjects.tmpl"
       - "install/release-targets.json"
       - ".github/workflows/build.yml"
       - ".github/workflows/seed-build.yml"

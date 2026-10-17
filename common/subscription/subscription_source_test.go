@@ -28,7 +28,7 @@ func TestResolveSubscriptionWithSchemeNamedTags(t *testing.T) {
 			if offline {
 				server.Close()
 			}
-			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, sub.String(), componentoutbound.ValidateNodeLink)
+			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, sub.String(), componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			if err != nil || tag != sub.Name || len(nodes) != 1 || nodes[0] != node {
 				t.Fatalf("offline=%t: tag=%q nodes=%v err=%v", offline, tag, nodes, err)
 			}
@@ -41,7 +41,7 @@ func TestResolveSubscriptionWithSchemeNamedTags(t *testing.T) {
 			t.Fatal(err)
 		}
 		sub := config.Subscription{Name: "http", Link: "file:nodes.sub"}
-		tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: dir}, sub.String(), componentoutbound.ValidateNodeLink)
+		tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: dir}, sub.String(), componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 		if err != nil || tag != sub.Name || len(nodes) != 1 || nodes[0] != node {
 			t.Fatalf("scheme-named local tag returned tag=%q nodes=%v err=%v", tag, nodes, err)
 		}
@@ -68,7 +68,7 @@ func TestResolveSubscriptionRelativeFileSources(t *testing.T) {
 			{"local:file:nodes%20100%25.sub", "local"},
 		} {
 			t.Run(configDir+"/"+test.tag, func(t *testing.T) {
-				tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, test.link, componentoutbound.ValidateNodeLink)
+				tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, test.link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 				if err != nil || tag != test.tag || len(nodes) != 1 || nodes[0] != node {
 					t.Fatalf("relative source returned tag=%q nodes=%v err=%v", tag, nodes, err)
 				}
@@ -92,7 +92,7 @@ func TestResolveSubscriptionRejectsInvalidSources(t *testing.T) {
 		"ftp://example.com/nodes.sub", "file:nodes.sub?token=secret", "file:nodes.sub#fragment",
 	} {
 		t.Run(link, func(t *testing.T) {
-			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{BaseDir: dir}, link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("invalid source returned nodes=%v err=%v", nodes, err)
 			}
@@ -107,7 +107,7 @@ func TestSubscriptionCacheIdentityUsesURLRatherThanTag(t *testing.T) {
 	}))
 	defer server.Close()
 	opts := ResolveOptions{CacheDir: t.TempDir()}
-	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/one", componentoutbound.ValidateNodeLink); err != nil {
+	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/one", componentoutbound.NewNodeValidator(t.Context(), &config.Global{})); err != nil {
 		t.Fatal(err)
 	}
 	server.Close()
@@ -116,12 +116,12 @@ func TestSubscriptionCacheIdentityUsesURLRatherThanTag(t *testing.T) {
 		if tag != "" {
 			link = tag + ":" + link
 		}
-		gotTag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, link, componentoutbound.ValidateNodeLink)
+		gotTag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 		if err != nil || gotTag != tag || len(nodes) != 1 || nodes[0] != node {
 			t.Fatalf("tag affected cache identity: tag=%q nodes=%v err=%v", gotTag, nodes, err)
 		}
 	}
-	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/two", componentoutbound.ValidateNodeLink); err == nil {
+	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/two", componentoutbound.NewNodeValidator(t.Context(), &config.Global{})); err == nil {
 		t.Fatal("same tag reused another URL's cache")
 	}
 }
@@ -146,14 +146,14 @@ func TestDisabledRemoteSubscriptionCacheDoesNotReadOrWrite(t *testing.T) {
 			}
 			defer server.Close()
 			link := "ordinary:" + server.URL
-			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
+			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			if err != nil || tag != "ordinary" || len(nodes) != 1 || nodes[0] != node {
 				t.Fatalf("ordinary download returned tag=%q nodes=%v err=%v", tag, nodes, err)
 			}
 			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
 				t.Fatalf("disabled cache wrote files: %v %v", entries, err)
 			}
-			if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, link, componentoutbound.ValidateNodeLink); err != nil {
+			if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{})); err != nil {
 				t.Fatal(err)
 			}
 			files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
@@ -163,7 +163,7 @@ func TestDisabledRemoteSubscriptionCacheDoesNotReadOrWrite(t *testing.T) {
 			cachePath := files[0]
 			cached, _ := os.ReadFile(cachePath)
 			server.Close()
-			_, nodes, err = ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
+			_, nodes, err = ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.NewNodeValidator(t.Context(), &config.Global{}))
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("ordinary download fell back to cached nodes=%v err=%v", nodes, err)
 			}

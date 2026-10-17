@@ -167,16 +167,16 @@ func TestNodeStatsIdentityIsStableAcrossReordering(t *testing.T) {
 	}
 }
 
-func TestValidateNodeLinkRejectsHTMLErrorPage(t *testing.T) {
-	if err := ValidateNodeLink(`<a href="https://example.com/help">service unavailable</a>`); err == nil {
+func TestParseNodeLinkRejectsHTMLErrorPage(t *testing.T) {
+	if _, _, err := parseNodeLink(`<a href="https://example.com/help">service unavailable</a>`); err == nil {
 		t.Fatal("HTML error page was accepted as a node")
 	}
 }
 
-func TestValidateNodeLinkAcceptsSIP002PluginWithoutOptions(t *testing.T) {
+func TestParseNodeLinkAcceptsSIP002PluginWithoutOptions(t *testing.T) {
 	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
 	link := "ss://" + userinfo + "@127.0.0.1:443/?plugin=v2ray-plugin"
-	if err := ValidateNodeLink(link); err != nil {
+	if _, _, err := parseNodeLink(link); err != nil {
 		t.Fatalf("valid plugin-only link was rejected: %v", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestValidateNodeLinkAcceptsSIP002PluginWithoutOptions(t *testing.T) {
 func TestNodeValidatorRejectsUnsupportedCipher(t *testing.T) {
 	userinfo := base64.RawURLEncoding.EncodeToString([]byte("unsupported-cipher:password"))
 	link := "ss://" + userinfo + "@127.0.0.1:8388"
-	if err := ValidateNodeLink(link); err != nil {
+	if _, _, err := parseNodeLink(link); err != nil {
 		t.Fatalf("syntax validation unexpectedly failed: %v", err)
 	}
 	if err := NewNodeValidator(context.Background(), &config.Global{})(link); err == nil {
