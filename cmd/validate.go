@@ -8,29 +8,30 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/daemon"
 
 	"github.com/spf13/cobra"
 )
 
-var (
-	validateCmd = &cobra.Command{
+func newValidateCommand(definitions map[string]plugin.Definition) *cobra.Command {
+	var configFile string
+	command := &cobra.Command{
 		Use:   "validate",
 		Short: "To validate dae config.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			if cfgFile == "" {
+			if configFile == "" {
 				return fmt.Errorf("argument --config or -c is required")
 			}
-			// Read config from --config cfgFile.
-			_, _, err := config.Load(cfgFile)
-			return err
+			conf, _, err := config.Load(configFile)
+			if err != nil {
+				return err
+			}
+			return daemon.ValidateConfig(cmd.Context(), conf, definitions)
 		},
 	}
-)
-
-func init() {
-	rootCmd.AddCommand(validateCmd)
-
-	validateCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
+	command.PersistentFlags().StringVarP(&configFile, "config", "c", "", "config file")
+	return command
 }
