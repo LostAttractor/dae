@@ -14,3 +14,7 @@ enum MatchType export_MatchType;
 enum MatchAction export_MatchAction;
 enum L4ProtoType export_L4ProtoType;
 enum IpVersionType export_IpVersionType;
+enum http_client_kind export_http_client_kind;
+enum http_client_layout export_http_client_layout;
+enum api_client_link_type export_api_client_link_type;
+enum handoff_constants export_handoff_constants;

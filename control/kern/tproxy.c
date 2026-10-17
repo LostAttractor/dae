@@ -89,8 +89,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
-#define TPROXY_MARK 0x8000000
-
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
 #define UDP_ROUTING_CACHE_TTL_NS (60ULL * 1000 * 1000 * 1000)
 
@@ -212,7 +210,6 @@ struct tcp_flow_state {
 
 /* Bounded setup mailbox. TCP consumes its entry at accept; UDP snapshots it.
  * Unconsumed entries expire logically and are reclaimed by the LRU. */
-#define HANDOFF_LIFETIME_SECONDS 30U
 struct routing_handoff {
 	struct routing_result result;
 	__u32 expires;
@@ -317,7 +314,7 @@ volatile __u32 routing_generation;
 struct api_client {
 	__u64 observed_at;
 	__u8 mac[6];
-	__u8 link_type; /* 1: Ethernet, 2: IP without an Ethernet identity. */
+	__u8 link_type; /* enum api_client_link_type */
 	__u32 ifindex;
 	__u32 physinif;
 };
@@ -1251,7 +1248,7 @@ static __always_inline void observe_api_client(
 		.observed_at = bpf_ktime_get_ns(),
 		.ifindex = skb->ifindex,
 		.physinif = skb_bridge_physinif(skb),
-		.link_type = link_h_len == ETH_HLEN ? 1 : 2,
+		.link_type = link_h_len == ETH_HLEN ? API_CLIENT_LINK_ETHERNET : API_CLIENT_LINK_IP,
 	};
 
 	if (link_h_len == ETH_HLEN)

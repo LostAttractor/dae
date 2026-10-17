@@ -44,8 +44,6 @@ struct http_client_decision {
 	__u32 allow;
 };
 
-/* 4096 configured selectors plus 4096 dynamic device overrides. */
-#define MAX_HTTP_CLIENT_ENTRIES 8192
 struct http_client_map {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);

@@ -7,6 +7,7 @@ package tests
 import (
 	"encoding/binary"
 	"errors"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"math"
 	"net/netip"
 	"testing"
@@ -95,7 +96,7 @@ func TestAPIClientIngressObservation(t *testing.T) {
 						}
 						return
 					}
-					if err != nil || client.ObservedAt == 0 || client.LinkType != 1 || client.Mac != [6]byte{2, 0, 0, 0, 0, 23} {
+					if err != nil || client.ObservedAt == 0 || client.LinkType != routingabi.API_CLIENT_LINK_ETHERNET || client.Mac != [6]byte{2, 0, 0, 0, 0, 23} {
 						t.Fatalf("LAN observation = %+v, error = %v", client, err)
 					}
 					var result bpftestRoutingResult

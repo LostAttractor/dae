@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"maps"
 	"net"
 	"slices"
@@ -19,9 +20,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Matches HANDOFF_LIFETIME_SECONDS. A replaced generation admits queued setups for
+// A replaced generation admits queued setups for
 // this bounded interval; accepted relays retain their own resources afterwards.
-const handoffLifetime = 30 * time.Second
+const handoffLifetime = routingabi.HANDOFF_LIFETIME_SECONDS * time.Second
 
 // ErrPublicationRejected means the candidate failed before touching the active
 // generation or its links. The caller can discard it and resume the old API.

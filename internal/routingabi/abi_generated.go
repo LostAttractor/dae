@@ -3,10 +3,23 @@
 package routingabi
 
 const (
+	API_CLIENT_LINK_ETHERNET                = 1
+	API_CLIENT_LINK_IP                      = 2
 	CAPTURE_HTTP                            = 1
 	CAPTURE_DESTINATION                     = 2
 	CAPTURE_HTTP_REQUEST                    = 4
 	CAPTURE_DNS                             = 8
+	HANDOFF_LIFETIME_SECONDS                = 30
+	TPROXY_MARK                             = 134217728
+	HTTP_CLIENT_ALL                         = 0
+	HTTP_CLIENT_MAC_OVERRIDE                = 1
+	HTTP_CLIENT_MAC                         = 2
+	HTTP_CLIENT_IPV4                        = 4
+	HTTP_CLIENT_IPV6                        = 6
+	HTTP_CLIENT_KIND_BITS                   = 32
+	HTTP_CLIENT_MAC_BITS                    = 48
+	HTTP_CLIENT_MAPPED_PREFIX_BITS          = 96
+	HTTP_CLIENT_KEY_BITS                    = 160
 	IpVersionType4                          = 1
 	IpVersionType6                          = 2
 	IpVersionTypeX                          = 3
@@ -58,4 +71,5 @@ const (
 	ROUTE_RESULT_SKIPPED_NOALIVE            = 2199023255552
 	ROUTE_RESULT_CAPTURE_SHIFT              = 42
 	MAX_INTERFACE_NUM                       = 256
+	MAX_HTTP_CLIENT_ENTRIES                 = 8192
 )

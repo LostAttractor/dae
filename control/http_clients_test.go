@@ -4,6 +4,7 @@ package control
 
 import (
 	"errors"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -230,7 +231,7 @@ func TestHTTPClientPublicationRollsBackWithSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer current.Close()
-	key := bpfHttpClientKey{Prefixlen: 160, Kind: 1}
+	key := bpfHttpClientKey{Prefixlen: routingabi.HTTP_CLIENT_KEY_BITS, Kind: routingabi.HTTP_CLIENT_MAC_OVERRIDE}
 	copy(key.Address[:], mac[:])
 	var decision bpfHttpClientDecision
 	if err := current.Lookup(key, &decision); !errors.Is(err, ebpf.ErrKeyNotExist) {

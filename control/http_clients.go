@@ -12,7 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/component/settings"
-	"golang.org/x/sys/unix"
+	"github.com/daeuniverse/dae/internal/routingabi"
 )
 
 // Readers take the lock only for one immutable-policy lookup. A writer holds
@@ -24,33 +24,48 @@ type httpClientAdmission struct {
 	policy *clientmatch.Policy
 }
 
-func httpClientMap(policy *clientmatch.Policy) (*ebpf.Map, error) {
-	entries := policy.Entries()
-	if len(entries) > 8192 {
-		return nil, fmt.Errorf("HTTP client policy exceeds 8192 entries")
+// Retain only the inner map template, not the full program collection.
+var httpClientMapSpec = sync.OnceValues(func() (*ebpf.MapSpec, error) {
+	spec, err := loadBpf()
+	if err != nil {
+		return nil, err
 	}
-	table, err := ebpf.NewMap(&ebpf.MapSpec{Name: "http_clients", Type: ebpf.LPMTrie, KeySize: 24, ValueSize: 8, MaxEntries: 8192, Flags: unix.BPF_F_NO_PREALLOC})
+	return spec.Maps[bpfMapHttpClientsMap].InnerMap.Copy(), nil
+})
+
+func httpClientMap(policy *clientmatch.Policy) (*ebpf.Map, error) {
+	template, err := httpClientMapSpec()
+	if err != nil {
+		return nil, err
+	}
+	spec := template.Copy()
+	spec.Name = "http_clients"
+	entries := policy.Entries()
+	if uint64(len(entries)) > uint64(spec.MaxEntries) {
+		return nil, fmt.Errorf("HTTP client policy exceeds %d entries", spec.MaxEntries)
+	}
+	table, err := ebpf.NewMap(spec)
 	if err != nil {
 		return nil, err
 	}
 	for _, entry := range entries {
-		key := bpfHttpClientKey{Prefixlen: 32}
+		key := bpfHttpClientKey{Prefixlen: routingabi.HTTP_CLIENT_KIND_BITS, Kind: routingabi.HTTP_CLIENT_ALL}
 		switch {
 		case entry.All:
 		case entry.Prefix.IsValid():
-			key.Kind = 6
+			key.Kind = routingabi.HTTP_CLIENT_IPV6
 			key.Address = entry.Prefix.Addr().As16()
 			key.Prefixlen += uint32(entry.Prefix.Bits())
 			if entry.Prefix.Addr().Is4() {
-				key.Kind = 4
-				key.Prefixlen += 96
+				key.Kind = routingabi.HTTP_CLIENT_IPV4
+				key.Prefixlen += routingabi.HTTP_CLIENT_MAPPED_PREFIX_BITS
 			}
 		default:
-			key.Kind = 2
+			key.Kind = routingabi.HTTP_CLIENT_MAC
 			if entry.Override {
-				key.Kind = 1
+				key.Kind = routingabi.HTTP_CLIENT_MAC_OVERRIDE
 			}
-			key.Prefixlen += 48
+			key.Prefixlen += routingabi.HTTP_CLIENT_MAC_BITS
 			copy(key.Address[:], entry.MAC[:])
 		}
 		value := bpfHttpClientDecision{Order: entry.Decision.Order}

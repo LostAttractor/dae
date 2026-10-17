@@ -155,7 +155,7 @@ func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 }
 
 var (
-	TproxyMark      uint32 = 0x08000000
+	TproxyMark      uint32 = routingabi.TPROXY_MARK
 	LoopbackIfIndex        = 1
 )
 

@@ -7,6 +7,33 @@
  */
 enum routing_limits {
 	MAX_INTERFACE_NUM = 256,
+	/* 4096 selectors plus 4096 dynamic device overrides. */
+	MAX_HTTP_CLIENT_ENTRIES = 8192,
+};
+
+enum http_client_kind {
+	HTTP_CLIENT_ALL = 0,
+	HTTP_CLIENT_MAC_OVERRIDE = 1,
+	HTTP_CLIENT_MAC = 2,
+	HTTP_CLIENT_IPV4 = 4,
+	HTTP_CLIENT_IPV6 = 6,
+};
+
+enum http_client_layout {
+	HTTP_CLIENT_KIND_BITS = 32,
+	HTTP_CLIENT_MAC_BITS = 48,
+	HTTP_CLIENT_MAPPED_PREFIX_BITS = 96,
+	HTTP_CLIENT_KEY_BITS = HTTP_CLIENT_KIND_BITS + 128,
+};
+
+enum api_client_link_type {
+	API_CLIENT_LINK_ETHERNET = 1,
+	API_CLIENT_LINK_IP = 2,
+};
+
+enum handoff_constants {
+	HANDOFF_LIFETIME_SECONDS = 30,
+	TPROXY_MARK = 0x08000000,
 };
 
 enum outbound_index {

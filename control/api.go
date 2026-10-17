@@ -4,6 +4,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"net/http"
 	"net/netip"
 	"time"
@@ -55,7 +56,7 @@ func (c *ControlPlane) resolveAPIClient(source, destination netip.AddrPort) (api
 		return apiserver.ClientIdentity{}, err
 	}
 	linkType := "ethernet"
-	if client.LinkType == 2 {
+	if client.LinkType == routingabi.API_CLIENT_LINK_IP {
 		linkType = "ip"
 	}
 	return apiserver.ClientIdentity{LinkType: linkType, MAC: client.Mac, IfIndex: client.Ifindex, PhysicalIfIndex: client.Physinif}, nil
@@ -92,11 +93,11 @@ func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort)
 		return bpfApiClient{}, err
 	}
 	switch client.LinkType {
-	case 1:
+	case routingabi.API_CLIENT_LINK_ETHERNET:
 		if err := validateLANClientMAC(source.Addr(), client.Mac); err != nil {
 			return bpfApiClient{}, err
 		}
-	case 2:
+	case routingabi.API_CLIENT_LINK_IP:
 		if client.Mac != [6]byte{} {
 			return bpfApiClient{}, fmt.Errorf("IP ingress cannot supply an Ethernet MAC")
 		}
