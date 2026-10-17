@@ -63,15 +63,6 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	}
 	plan := prepared.plan
 	rules.destinations = append(rules.destinations, plan.Destinations...)
-	needsSniff := len(plan.Scopes) != 0
-	for _, rule := range plan.Destinations {
-		for _, f := range rule.Filter {
-			needsSniff = needsSniff || f.Name == "domain"
-		}
-	}
-	if needsSniff && c.sniffingTimeout <= 0 {
-		c.sniffingTimeout = time.Second
-	}
 	rules.enableMITMPlan(plan)
 	previousCount := len(c.outbounds)
 	wasAsync := c.outboundCheckAsync
@@ -88,25 +79,9 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		group.DeferStats()
 	}
 	c.connectivityOutbounds.Store(new(c.outbounds))
-	builder, err := rules.compileRouting(outbounds.nameToID, c.core.bpf, c.core.ifmgr)
-	if err != nil {
+	if err := c.installRouting(rules, outbounds.nameToID, conf.Group, plan.RequiredOutbounds); err != nil {
 		return err
 	}
-	if c.routingMatcher, err = builder.BuildUserspace(); err != nil {
-		return err
-	}
-	c.routingMatcher.outboundUsable = c.core.outboundUsable
-	c.routingMatcherBuilder = builder
-	c.routingState = builder.routingState
-	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
-	for _, name := range plan.RequiredOutbounds {
-		index, ok := outbounds.nameToID[name]
-		if !ok {
-			return fmt.Errorf("plugin requires unknown outbound %q", name)
-		}
-		c.criticalOutbounds[index] = true
-	}
-	c.outboundCheckAsync = configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds)
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}

@@ -5,7 +5,6 @@ package control
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/daeuniverse/dae/common"
@@ -101,30 +100,14 @@ func (c *ControlPlane) initialize(core *controlPlaneCore) {
 }
 
 func (c *ControlPlane) initializeRouting(rules preparedRules, outbounds *outboundBuilder, conf *config.Config) error {
-	builder, err := rules.compileRouting(outbounds.nameToID, c.core.bpf, c.core.ifmgr)
-	if err != nil {
-		return fmt.Errorf("compile routing: %w", err)
+	if err := c.installRouting(&rules, outbounds.nameToID, conf.Group, nil); err != nil {
+		return err
 	}
-	matcher, err := builder.BuildUserspace()
-	if err != nil {
-		return fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
-	}
-	matcher.outboundUsable = c.core.outboundUsable
-	c.routingMatcher, c.routingState, c.routingMatcherBuilder = matcher, builder.routingState, builder
-	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
-	c.outboundCheckAsync = configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds)
 	if conf.Global.DNSRetentionWindow > 0 {
 		registry := c.core.domainRegistry
 		registry.mu.Lock()
 		registry.window = conf.Global.DNSRetentionWindow
 		registry.mu.Unlock()
-	}
-	for _, profile := range builder.profiles {
-		for _, predicate := range profile.Destination.predicates {
-			if predicate.domain && c.sniffingTimeout <= 0 {
-				c.sniffingTimeout = time.Second
-			}
-		}
 	}
 	return nil
 }
