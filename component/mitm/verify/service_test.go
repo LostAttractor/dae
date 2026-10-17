@@ -169,3 +169,25 @@ func TestMITMChallengeCapacityIsSharedAcrossDevices(t *testing.T) {
 		t.Fatalf("expiry did not free the device's challenge slot: %v", err)
 	}
 }
+
+func TestMITMChallengeGlobalQuotaAndExpiry(t *testing.T) {
+	s := testService(t)
+	ip, local := netip.MustParseAddr("192.0.2.2"), netip.MustParseAddrPort("192.0.2.1:9080")
+	for i := range maxTests {
+		if _, err := s.Start(ip, [6]byte{2, byte(i >> 8), byte(i)}, local, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Start(ip, [6]byte{2, 255, 255}, local, "", true); err == nil {
+		t.Fatal("global quota exceeded")
+	}
+	for _, c := range s.tests {
+		c.ExpiresAt = time.Now().Add(-time.Second)
+	}
+	if _, err := s.Start(ip, [6]byte{2, 255, 255}, local, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.tests) != 1 {
+		t.Fatalf("expired challenges retained: %d", len(s.tests))
+	}
+}
