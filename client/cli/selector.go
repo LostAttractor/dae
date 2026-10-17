@@ -23,7 +23,7 @@ func NewSelectorCommand() *cobra.Command {
 		Use: "selector [GROUP]", Short: "List selector choices and candidates.",
 		Args: cobra.MaximumNArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}
@@ -60,7 +60,7 @@ func NewSelectorCommand() *cobra.Command {
 	set := &cobra.Command{
 		Use: "set GROUP NODE", Short: "Save a choice by exact node name or node ID.", Args: cobra.ExactArgs(2), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}
@@ -104,7 +104,7 @@ func NewSelectorCommand() *cobra.Command {
 	reset := &cobra.Command{
 		Use: "reset GROUP", Short: "Clear a saved choice and restore the configured default.", Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}

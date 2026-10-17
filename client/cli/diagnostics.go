@@ -155,7 +155,7 @@ func NewExplainCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}

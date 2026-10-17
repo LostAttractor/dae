@@ -8,19 +8,6 @@ package cmd
 import (
 	"fmt"
 	"strconv"
-
-	"github.com/spf13/cobra"
-)
-
-var (
-	suspendCmd = &cobra.Command{
-		Use:   "suspend [pid]",
-		Short: "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'.",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReloadCommand(cmd, args, true)
-		},
-	}
 )
 
 func parsePositivePID(raw string) (int, error) {
@@ -29,9 +16,4 @@ func parsePositivePID(raw string) (int, error) {
 		return 0, fmt.Errorf("invalid pid %q", raw)
 	}
 	return int(pid), nil
-}
-
-func init() {
-	rootCmd.AddCommand(suspendCmd)
-	suspendCmd.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
 }

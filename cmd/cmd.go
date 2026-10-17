@@ -53,6 +53,6 @@ func Execute() error {
 	ca := newCACommand()
 	plugins := newPluginsCommand(definitions, services)
 	connection.Bind(plugins.PersistentFlags())
-	rootCmd.AddCommand(newRunCommand(definitions), ca, plugins)
+	rootCmd.AddCommand(newRunCommand(definitions), newReloadCommand(false), newReloadCommand(true), ca, plugins)
 	return rootCmd.Execute()
 }

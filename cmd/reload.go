@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
+	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/client/progress"
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/spf13/cobra"
@@ -87,26 +89,27 @@ func waitForOperation(ctx context.Context, opts operationWaitOptions) (string, e
 	return "", ctx.Err()
 }
 
-var (
-	abort     bool
-	reloadCmd = &cobra.Command{
-		Use:   "reload [pid]",
-		Short: "To reload config file without interrupt connections.",
-		Args:  cobra.MaximumNArgs(1),
-		RunE:  func(cmd *cobra.Command, args []string) error { return runReloadCommand(cmd, args, false) },
+func newReloadCommand(suspend bool) *cobra.Command {
+	kind, description := "reload", "To reload config file without interrupt connections."
+	if suspend {
+		kind, description = "suspend", "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'."
 	}
-)
-
-func init() {
-	rootCmd.AddCommand(reloadCmd)
-	reloadCmd.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
+	var connection cli.Connection
+	var abort bool
+	command := &cobra.Command{
+		Use:   kind + " [pid]",
+		Short: description,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReloadCommand(cmd, args, &connection, kind, abort)
+		},
+	}
+	connection.Bind(command.PersistentFlags())
+	command.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
+	return command
 }
 
-func runReloadCommand(cmd *cobra.Command, args []string, suspend bool) error {
-	kind := "reload"
-	if suspend {
-		kind = "suspend"
-	}
+func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connection, kind string, abort bool) error {
 	cmd.SilenceUsage = true
 	request := api.OperationRequest{Kind: kind, Abort: abort}
 	if len(args) != 0 {
@@ -116,16 +119,20 @@ func runReloadCommand(cmd *cobra.Command, args []string, suspend bool) error {
 		}
 		request.ExpectedPID = pid
 	}
-	if err := internal.AutoSu(); err != nil {
-		return err
-	}
-	remote, err := client.New(client.Options{})
+	remote, err := connection.Open()
 	if err != nil {
 		return err
 	}
 	defer remote.Close()
 	status, err := remote.SubmitOperation(cmd.Context(), request)
 	if err != nil {
+		// Only a local permission failure needs elevation. Remote APIs use
+		// their configured credentials and must keep the caller's environment.
+		if errors.Is(err, os.ErrPermission) {
+			if elevateErr := internal.AutoSu(); elevateErr != nil {
+				return elevateErr
+			}
+		}
 		return err
 	}
 	spinner := progress.Start(cmd.ErrOrStderr(), "Waiting for "+kind+"...")

@@ -28,7 +28,7 @@ func NewClientCommand() *cobra.Command {
 			args, use = cobra.NoArgs, operation
 		}
 		command := &cobra.Command{Use: use, Args: args, Short: "Client " + operation + ".", RunE: func(cmd *cobra.Command, args []string) error {
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}
@@ -118,7 +118,7 @@ func NewClientCommand() *cobra.Command {
 			if flags.self == (flags.mac != "") {
 				return fmt.Errorf("specify exactly one of --self or --mac")
 			}
-			remote, err := connection.open()
+			remote, err := connection.Open()
 			if err != nil {
 				return err
 			}
