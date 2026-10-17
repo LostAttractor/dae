@@ -12,7 +12,6 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"golang.org/x/crypto/hkdf"
 )
@@ -139,7 +138,7 @@ func DecryptQuic_(dst, header []byte, blockEnd int, destConnId []byte) (plaintex
 	if err != nil {
 		return nil, err
 	}
-	keys, err := NewKeys(destConnId, version, common.NewGcm)
+	keys, err := NewKeys(destConnId, version, newGCM)
 	if err != nil {
 		return nil, err
 	}
@@ -164,4 +163,12 @@ func DecryptQuic_(dst, header []byte, blockEnd int, destConnId []byte) (plaintex
 	}
 
 	return plaintext, nil
+}
+
+func newGCM(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }

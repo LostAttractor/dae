@@ -7,11 +7,12 @@ package routing
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"strconv"
+	"strings"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	log "github.com/sirupsen/logrus"
@@ -53,7 +54,7 @@ func MacParserFactory(callback func(f *config_parser.Function, macAddrs [][6]byt
 	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var macAddrs [][6]byte
 		for _, v := range paramValueGroup {
-			mac, err := common.ParseMac(v)
+			mac, err := parseMac(v)
 			if err != nil {
 				return err
 			}
@@ -67,7 +68,7 @@ func PortRangeParserFactory(callback func(f *config_parser.Function, portRanges 
 	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var portRanges [][2]uint16
 		for _, v := range paramValueGroup {
-			portRange, err := common.ParsePortRange(v)
+			portRange, err := parsePortRange(v)
 			if err != nil {
 				return err
 			}
@@ -163,4 +164,43 @@ func UintParserFactory[T constraints.Unsigned](callback func(f *config_parser.Fu
 		}
 		return callback(f, values, overrideOutbound)
 	})
+}
+
+func parseMac(mac string) (addr [6]byte, err error) {
+	fields := strings.SplitN(mac, ":", 6)
+	if len(fields) != 6 {
+		return addr, fmt.Errorf("invalid mac: %v", mac)
+	}
+	for i, field := range fields {
+		v, err := hex.DecodeString(field)
+		if err != nil {
+			return addr, fmt.Errorf("parse mac %v: %w", mac, err)
+		}
+		if len(v) != 1 {
+			return addr, fmt.Errorf("invalid mac: %v", mac)
+		}
+		addr[i] = v[0]
+	}
+	return addr, nil
+}
+
+func parsePortRange(pr string) (portRange [2]uint16, err error) {
+	fields := strings.SplitN(pr, "-", 2)
+	for i, field := range fields {
+		if field == "" {
+			return portRange, fmt.Errorf("bad port range: %v", pr)
+		}
+		port, err := strconv.Atoi(field)
+		if err != nil {
+			return portRange, err
+		}
+		if port < 0 || port > 0xffff {
+			return portRange, fmt.Errorf("port %v exceeds uint16 range", port)
+		}
+		portRange[i] = uint16(port)
+	}
+	if len(fields) == 1 {
+		portRange[1] = portRange[0]
+	}
+	return portRange, nil
 }

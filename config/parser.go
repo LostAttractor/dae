@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -76,7 +75,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				field.Set(reflect.ValueOf(defaultValue))
 
 				// Can we fuzzy decode?
-			} else if !common.FuzzyDecode(field.Addr().Interface(), defaultValue) {
+			} else if !FuzzyDecode(field.Addr().Interface(), defaultValue) {
 				return fmt.Errorf(`failed to decode default value of "%v"`, structField.Name)
 			}
 		}
@@ -133,14 +132,14 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 					}
 					for _, value := range values {
 						vPointerNew := reflect.New(field.Val.Type().Elem())
-						if !common.FuzzyDecode(vPointerNew.Interface(), value) {
+						if !FuzzyDecode(vPointerNew.Interface(), value) {
 							return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().Elem().String())
 						}
 						field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
 					}
 				default:
 					// Field is not any, we can decode.
-					if !common.FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
+					if !FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
 						return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 					}
 				}

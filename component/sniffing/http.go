@@ -8,8 +8,6 @@ package sniffing
 import (
 	"bytes"
 	"strings"
-
-	"github.com/daeuniverse/dae/common"
 )
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
@@ -36,7 +34,7 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 		}
 		return "", ErrNeedMore
 	}
-	if !common.IsValidHttpMethod(string(method)) {
+	if !isValidHTTPMethod(string(method)) {
 		return "", ErrNotApplicable
 	}
 
@@ -60,5 +58,14 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 		if strings.EqualFold(string(key), "host") {
 			return string(value), nil
 		}
+	}
+}
+
+func isValidHTTPMethod(method string) bool {
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE":
+		return true
+	default:
+		return false
 	}
 }

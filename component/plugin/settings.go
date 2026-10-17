@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -39,7 +39,7 @@ func DecodeSettings(section *config_parser.Section, target any) error {
 		}
 		fields[key] = field.Addr().Interface()
 		if initial, ok := definition.Tag.Lookup("default"); ok {
-			if !common.FuzzyDecode(fields[key], initial) {
+			if !config.FuzzyDecode(fields[key], initial) {
 				return fmt.Errorf("invalid default for setting %q", key)
 			}
 		}
@@ -114,7 +114,7 @@ func DecodeSettingsFields(section *config_parser.Section, fields map[string]any)
 			if _, section := field.(func(*config_parser.Section) error); section {
 				return fmt.Errorf("setting %q requires a section", key)
 			}
-			if value.AndFunctions != nil || !common.FuzzyDecode(field, value.Val) {
+			if value.AndFunctions != nil || !config.FuzzyDecode(field, value.Val) {
 				return fmt.Errorf("invalid value for setting %q", key)
 			}
 		}

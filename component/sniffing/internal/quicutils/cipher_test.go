@@ -11,15 +11,13 @@ import (
 	"crypto/cipher"
 	"encoding/hex"
 	"testing"
-
-	"github.com/daeuniverse/dae/common"
 )
 
 var destConnId = []byte{0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08}
 
 func TestDeriveKeys(t *testing.T) {
 	// https://datatracker.ietf.org/doc/html/rfc9001#name-keys
-	keys, err := NewKeys(destConnId, Version_V1, common.NewGcm)
+	keys, err := NewKeys(destConnId, Version_V1, newGCM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +66,7 @@ func TestKeysHeaderProtection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			keys, err := NewKeys(connectionID, test.version, common.NewGcm)
+			keys, err := NewKeys(connectionID, test.version, newGCM)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +119,7 @@ func TestKeysPayloadDecrypt(t *testing.T) {
 			payload := []byte{Quic_FrameType_Crypto, 0, 3, 'a', 'b', 'c'}
 			ciphertext := peer.Seal(nil, nonce, payload, header)
 
-			keys, err := NewKeys(destConnId, test.version, common.NewGcm)
+			keys, err := NewKeys(destConnId, test.version, newGCM)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +137,7 @@ func TestKeysPayloadDecrypt(t *testing.T) {
 }
 
 func TestKeysPayloadDecryptRejectsInvalidTag(t *testing.T) {
-	keys, err := NewKeys(destConnId, Version_V1, common.NewGcm)
+	keys, err := NewKeys(destConnId, Version_V1, newGCM)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/daeuniverse/dae/common"
-
 	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
@@ -42,7 +40,7 @@ func BenchmarkStringSwitch(b *testing.B) {
 	for b.Loop() {
 		var test [5]byte
 		fastrand.Read(test[:])
-		if !common.IsValidHttpMethod(string(test[:])) {
+		if !isValidHTTPMethod(string(test[:])) {
 			benchmarkStringSink = fmt.Sprintf("%v", string(test[:]))
 		}
 	}
