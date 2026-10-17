@@ -16,6 +16,23 @@ import (
 	"github.com/daeuniverse/dae/component/settings"
 )
 
+func TestMITMSelectionUsesPublishedHTTPPolicy(t *testing.T) {
+	clients, err := clientmatch.Parse([]string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := [6]byte{2, 0, 0, 0, 0, 1}
+	ip := netip.MustParseAddr("192.0.2.1")
+	plane := &ControlPlane{mitmClients: clients}
+	for _, enabled := range []bool{false, true} {
+		plane.httpClients.policy = clients.Compile(map[[6]byte]bool{mac: enabled})
+		got, override := plane.mitmSelection(ip, mac)
+		if got != enabled || override == nil || *override != enabled || plane.httpClientAllowed(ip, mac) != got {
+			t.Fatalf("published policy differs between MITM and routing: got %v, override %v, want %v", got, override, enabled)
+		}
+	}
+}
+
 func TestHTTPClientAdmissionSkipsScopesAndSharesResult(t *testing.T) {
 	prepared := prepareFlowRulesForTest(t, "dport(8443) -> dnat('198.51.100.20:9443')\ndport(53) -> must\ndport(9443) -> bump", "dport(443) -> direct(mark:37)")
 	prepared.bypass = planRulesForTest(t, "dport(9000) -> direct")

@@ -398,6 +398,9 @@ func TestDiagnosticsHTTPAdmissionUsesCurrentAndAssumedClientPolicy(t *testing.T)
 	plane := diagnosticPreparedPlane(t, prepared)
 	plane.mitmHost = controlTestHost(t, extension, nil)
 	plane.mitmClients, _ = clientmatch.Parse([]string{"all"})
+	if err := plane.restoreHTTPClients(); err != nil {
+		t.Fatal(err)
+	}
 	request := diagnosticRequest()
 	request.Flow.SNI = new("198.51.100.10")
 	request.Compare = &api.DiagnosticAssumptions{MITM: new(false)}

@@ -45,6 +45,9 @@ func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extensio
 		t.Fatal(err)
 	}
 	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, routingMatcher: matcher, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
+	if err := plane.restoreHTTPClients(); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"direct", "block", "proxy"} {
 		plane.outbounds = append(plane.outbounds, downloadTestGroup(t, name, dial))
 	}
@@ -186,6 +189,9 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 			})
 			if test.denied {
 				plane.mitmClients = clientmatch.Matcher{}
+				if err := plane.restoreHTTPClients(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 			if err != nil {

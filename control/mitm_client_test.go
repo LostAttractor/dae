@@ -44,7 +44,11 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &ControlPlane{mitmHost: controlTestHost(t, extension, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+		plane := &ControlPlane{mitmHost: controlTestHost(t, extension, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+		if err := plane.restoreHTTPClients(); err != nil {
+			t.Fatal(err)
+		}
+		return plane
 	}
 	plane := makePlane(nil)
 	ip := netip.MustParseAddr("192.0.2.10")
@@ -113,11 +117,12 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	if !state.Enabled || state.Override == nil || !selected(plane, mac) || selected(plane, other) {
 		t.Fatalf("device enable did not remain MAC-scoped: %+v", state)
 	}
-	// A new plane shares live settings while changing configured defaults.
+	// A new plane restores the saved settings with its configured defaults.
+	// Retired planes keep their own published policy, just like their routing predicates.
 	reloaded := makePlane([]string{"all"})
 	handler = reloaded.apiHandler("test", resolve, nil, nil)
 	state = request("PUT", endpoint, `{"enabled":false}`, 200)
-	if state.Enabled || state.Override == nil || *state.Override || selected(reloaded, mac) || !selected(reloaded, other) || selected(plane, mac) {
+	if state.Enabled || state.Override == nil || *state.Override || selected(reloaded, mac) || !selected(reloaded, other) || !selected(plane, mac) {
 		t.Fatalf("device disable did not override all across reload: %+v", state)
 	}
 	state = request("DELETE", endpoint, "", 200)

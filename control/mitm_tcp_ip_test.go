@@ -73,6 +73,9 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 			plane.core.bpf = &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{RoutingTuplesMap: tuples}}}
 			if test.excluded {
 				plane.mitmClients = clientmatch.Matcher{}
+				if err := plane.restoreHTTPClients(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			src, dst := param.Src, netip.MustParseAddrPort(test.destination)
 			key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_TCP}

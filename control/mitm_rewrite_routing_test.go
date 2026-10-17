@@ -88,6 +88,9 @@ domain(full: original.example) -> block`)
 				if err != nil {
 					t.Fatal(err)
 				}
+				if err := plane.restoreHTTPClients(); err != nil {
+					t.Fatal(err)
+				}
 				pending := identity
 				pending.CaptureFlags = captureHTTP | captureHTTPRequest
 				pending.Outbound = uint8(consts.OutboundControlPlaneRouting)

@@ -49,7 +49,6 @@ type planeHTTP struct {
 	retiredHosts     sync.WaitGroup
 	workerRoundTrips sync.WaitGroup
 	mitmClients      clientmatch.Matcher
-	mitmBasePolicy   *clientmatch.Policy
 	httpClients      httpClientAdmission
 }
 

@@ -104,6 +104,9 @@ func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			plane := &ControlPlane{mitmHost: mitmClientTestHost(t, &localca.Authority{}, nil, nil), settings: store, mitmClients: clients}
+			if err := plane.restoreHTTPClients(); err != nil {
+				t.Fatal(err)
+			}
 			result := &routingResult{Mac: test.mac, Mark: 37, Must: 1}
 			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
@@ -182,6 +185,9 @@ func mitmClientTestPlane(t *testing.T, host *mitm.Host, upstream string) (*Contr
 		t.Fatal(err)
 	}
 	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
+	if err := plane.restoreHTTPClients(); err != nil {
+		t.Fatal(err)
+	}
 	var transports []*mitmClientDialer
 	global := &dialer.GlobalOption{}
 	for _, name := range []string{"direct", "block", "proxy"} {

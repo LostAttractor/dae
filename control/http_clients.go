@@ -70,9 +70,7 @@ func httpClientMap(policy *clientmatch.Policy) (*ebpf.Map, error) {
 }
 
 func (c *ControlPlane) httpClientAllowed(ip netip.Addr, mac [6]byte) bool {
-	c.httpClients.mu.RLock()
-	defer c.httpClients.mu.RUnlock()
-	enabled, _ := c.httpClients.policy.Match(ip, mac)
+	enabled, _ := c.mitmSelection(ip, mac)
 	return enabled
 }
 

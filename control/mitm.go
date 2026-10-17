@@ -62,13 +62,9 @@ func (c *ControlPlane) mitmAuthority() *localca.Authority {
 // mitmSelection is shared by the traffic gate and the device API. An explicit
 // device setting takes precedence over the configured IP/MAC allowlist.
 func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, override *bool) {
-	if enabled, exists := c.settings.MITM(mac); exists {
-		return enabled, &enabled
-	}
-	if c.mitmBasePolicy != nil {
-		return c.mitmBasePolicy.Match(ip, mac)
-	}
-	return c.mitmClients.Match(ip, mac), nil
+	c.httpClients.mu.RLock()
+	defer c.httpClients.mu.RUnlock()
+	return c.httpClients.policy.Match(ip, mac)
 }
 
 // Request-transforming scopes are admitted before choosing any upstream route

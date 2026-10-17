@@ -46,6 +46,9 @@ func TestCertificateDiagnosticThroughProductionTCPAdmission(t *testing.T) {
 			if err := plane.settings.SetMITM(param.routingResult.Mac, new(scenario != "device disabled")); err != nil {
 				t.Fatal(err)
 			}
+			if err := plane.restoreHTTPClients(); err != nil {
+				t.Fatal(err)
+			}
 			param.Dest = netip.AddrPortFrom(targets[0], 443)
 			local, source := netip.MustParseAddrPort("192.0.2.20:9080"), param.Src.Addr()
 			if scenario == "trusted IPv6 alternate source" {
