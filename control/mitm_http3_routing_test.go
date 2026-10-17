@@ -86,7 +86,7 @@ l4proto(udp) && dip(127.0.0.1) && dport(%d) && sip(192.0.2.10) && sport(5000) &&
 domain(full: original.example) -> block
 dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(packets.LocalAddr()).Port()))
 	prepared.enableMITMPlan(host.Plan())
-	matcher, builder := routingMatcherForTest(t, prepared)
+	matcher, _ := routingMatcherForTest(t, prepared)
 	matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
 	matcher.destinations[42] = matcher.destinations[matcher.defaultProfileID]
 	matcher.defaultProfileID = 99
@@ -131,11 +131,11 @@ dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(pa
 	request("rewrite", 200, "HTTP/3")
 	request("rewrite", 200, "HTTP/3")
 	request("auxiliary", 200, "TCP")
-	if err := builder.SetClientMembers(matcher, "marked", [][6]byte{before.Mac}, false); err != nil {
+	if err := matcher.SetClientMembers("marked", [][6]byte{before.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	request("rewrite", 200, "HTTP/3")
-	if err := builder.SetClientMembers(matcher, "blocked", [][6]byte{before.Mac}, false); err != nil {
+	if err := matcher.SetClientMembers("blocked", [][6]byte{before.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	request("rewrite", 502, "")

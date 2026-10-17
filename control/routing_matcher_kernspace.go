@@ -76,60 +76,60 @@ func encodeRoutingProfiles(profiles []routingProfile) (ids []uint32, values []bp
 	return ids, values
 }
 
-func (b *RoutingMatcherBuilder) BuildKernspace() error {
+func (m *RoutingMatcher) BuildKernspace() error {
 	// Each configuration uploads once into fresh private maps. Mutable client
 	// sets and interface bindings update their own slots after preparation.
-	if err := b.uploadLPMTries(); err != nil {
+	if err := m.uploadLPMTries(); err != nil {
 		return err
 	}
-	if err := b.uploadRoutingPool(); err != nil {
+	if err := m.uploadRoutingPool(); err != nil {
 		return err
 	}
-	if err := b.uploadRoutingProfiles(); err != nil {
+	if err := m.uploadRoutingProfiles(); err != nil {
 		return err
 	}
-	if err := b.activateInterfaceRulePatches(); err != nil {
+	if err := m.activateInterfaceRulePatches(); err != nil {
 		return fmt.Errorf("initialize interface routing rules: %w", err)
 	}
-	if err := b.activateProfileBindings(); err != nil {
+	if err := m.activateProfileBindings(); err != nil {
 		return fmt.Errorf("initialize interface routing profiles: %w", err)
 	}
-	if err := b.bpf.DefaultRoutingProfile.Set(b.defaultProfileID); err != nil {
+	if err := m.bpf.DefaultRoutingProfile.Set(m.defaultProfileID); err != nil {
 		return fmt.Errorf("select default routing policy: %w", err)
 	}
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) uploadLPMTries() error {
-	for i, cidrs := range b.simulatedLpmTries[:b.kernelLpmLen] {
-		m, err := b.bpf.newLpmMap(cidrs)
+func (m *RoutingMatcher) uploadLPMTries() error {
+	for i, cidrs := range m.simulatedLpmTries[:m.kernelLpmLen] {
+		kernelMap, err := m.bpf.newLpmMap(cidrs)
 		if err != nil {
 			return fmt.Errorf("create LPM map %d: %w", i, err)
 		}
-		if err := b.bpf.LpmArrayMap.Update(uint32(i), m, ebpf.UpdateAny); err != nil {
-			m.Close()
+		if err := m.bpf.LpmArrayMap.Update(uint32(i), kernelMap, ebpf.UpdateAny); err != nil {
+			kernelMap.Close()
 			return fmt.Errorf("update LPM map slot %d: %w", i, err)
 		}
-		m.Close()
+		kernelMap.Close()
 	}
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) uploadRoutingPool() error {
-	keys := common.ARangeU32(uint32(b.routing.end))
-	if _, err := b.bpf.RoutingMap.BatchUpdate(keys, b.rules[:b.routing.end], &ebpf.BatchOptions{
+func (m *RoutingMatcher) uploadRoutingPool() error {
+	keys := common.ARangeU32(uint32(m.routing.end))
+	if _, err := m.bpf.RoutingMap.BatchUpdate(keys, m.matches[:m.routing.end], &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("batch update routing map: %w", err)
 	}
-	log.Infof("Routing match set len: %v/%v", b.routing.end, consts.MaxMatchSetLen)
+	log.Infof("Routing match set len: %v/%v", m.routing.end, consts.MaxMatchSetLen)
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) uploadRoutingProfiles() error {
-	ids, values := encodeRoutingProfiles(b.profiles)
+func (m *RoutingMatcher) uploadRoutingProfiles() error {
+	ids, values := encodeRoutingProfiles(m.profileInfo)
 	options := &ebpf.BatchOptions{ElemFlags: uint64(ebpf.UpdateAny)}
-	if _, err := b.bpf.RoutingProfileMap.BatchUpdate(ids, values, options); err != nil {
+	if _, err := m.bpf.RoutingProfileMap.BatchUpdate(ids, values, options); err != nil {
 		return fmt.Errorf("batch update routing profiles: %w", err)
 	}
 	return nil

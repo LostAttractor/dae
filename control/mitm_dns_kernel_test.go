@@ -108,9 +108,9 @@ http-request . old new // request body rewriting keeps the declared capture scop
 	}
 	prepared.enableMITMPlan(diagnostics.Plan())
 	prepared.bypassAPI(9080, addresses)
-	matcher, builder := routingMatcherForTest(t, prepared)
-	builder.bpf = state
-	if err := builder.BuildKernspace(); err != nil {
+	matcher, _ := routingMatcherForTest(t, prepared)
+	matcher.bpf = state
+	if err := matcher.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
 	core := &controlPlaneCore{bpf: state}

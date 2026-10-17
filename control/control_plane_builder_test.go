@@ -50,7 +50,7 @@ func (b *controlPlaneTestBuilder) withSettings() *controlPlaneTestBuilder {
 
 func (b *controlPlaneTestBuilder) withRouting(matcher *RoutingMatcher, builder *RoutingMatcherBuilder) *controlPlaneTestBuilder {
 	c := b.plane
-	c.routingMatcher, c.routingState, c.routingMatcherBuilder = matcher, builder.routingState, builder
+	c.routingMatcher, c.routingState = matcher, matcher.routingState
 	c.routingGeneration, c.sniffVerifyMode = 7, consts.SniffVerifyMode_None
 	c.core = &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}
 	return b

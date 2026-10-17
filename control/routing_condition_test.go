@@ -137,12 +137,12 @@ func TestConditionalUseDynamicPredicates(t *testing.T) {
 		if member {
 			members = append(members, mac)
 		}
-		if err := b.SetClientMembers(m, "devices", members, false); err != nil {
+		if err := m.SetClientMembers("devices", members, false); err != nil {
 			t.Fatal(err)
 		}
 		for _, index := range []uint32{7, 9} {
 			for _, patch := range b.interfaceRulePatches {
-				if err := b.updateIfindex(patch.matchIndex, index, false); err != nil {
+				if err := m.updateIfindex(patch.matchIndex, index, false); err != nil {
 					t.Fatal(err)
 				}
 			}

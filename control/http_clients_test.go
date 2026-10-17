@@ -101,9 +101,9 @@ func TestHTTPClientAdmissionKernelParity(t *testing.T) {
 			{Host: "198.51.100.8", Ports: []uint16{80, 443, 53, 8443, 8888}},
 			{Host: "2001:db8::8", Ports: []uint16{80, 443, 53, 8443, 8888}},
 		}, PreserveRoute: preserve}}})
-		matcher, builder := routingMatcherForTest(t, prepared)
-		builder.bpf = state
-		if err := builder.BuildKernspace(); err != nil {
+		matcher, _ := routingMatcherForTest(t, prepared)
+		matcher.bpf = state
+		if err := matcher.BuildKernspace(); err != nil {
 			t.Fatal(err)
 		}
 		for _, tc := range []struct {

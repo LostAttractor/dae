@@ -65,7 +65,7 @@ dip(198.51.100.22) -> dnat(198.51.100.23)`)
 }
 
 func TestDestinationDynamicClientAndCandidate(t *testing.T) {
-	m, b := destinationTestMatcher(t, `!domain(full: excluded.example) && client(kids) && dport(443) -> dnat(198.51.100.9)`)
+	m, _ := destinationTestMatcher(t, `!domain(full: excluded.example) && client(kids) && dport(443) -> dnat(198.51.100.9)`)
 	mac := [6]byte{2, 0, 0, 0, 0, 1}
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: "allowed.example", routingResult: &routingResult{Mac: mac}, networkType: *common.NetworkTCP4.NetworkType()}
 	var frozen *RoutingMatcher
@@ -74,7 +74,7 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 		if joined {
 			members = append(members, mac)
 		}
-		if err := b.SetClientMembers(m, "kids", members, false); err != nil {
+		if err := m.SetClientMembers("kids", members, false); err != nil {
 			t.Fatal(err)
 		}
 		decision, err := m.matchDestination(p)
@@ -88,16 +88,16 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	if decision, err := frozen.matchDestination(p); err != nil || !decision.IsValid() {
 		t.Fatalf("membership update changed the existing UDP lifetime: %+v, %v", decision, err)
 	}
-	if err := b.SetClientMembers(m, "kids", [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers("kids", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	// Materialize only the kernel candidate as a normal test terminal. Domain
 	// is intentionally unavailable; all remaining metadata still constrains it.
-	for i := range b.rules {
-		if ((b.rules[i].Flags>>3)&3)&captureDestination != 0 {
-			b.rules[i].Flags &^= 3 << 3
-			b.rules[i].Action = uint8(consts.MatchActionRoute)
-			b.rules[i].Outbound = 2
+	for i := range m.matches {
+		if ((m.matches[i].Flags>>3)&3)&captureDestination != 0 {
+			m.matches[i].Flags &^= 3 << 3
+			m.matches[i].Action = uint8(consts.MatchActionRoute)
+			m.matches[i].Outbound = 2
 		}
 	}
 	out, _, _, err := m.match(routingInput{

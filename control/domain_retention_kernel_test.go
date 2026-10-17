@@ -47,9 +47,9 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	prepared := prepareFlowRulesForTest(t, "", "domain(full: target.example) && dport(443) -> direct(mark:37)")
 	prepared.enableMITMPlan(mitmRoutingPlugin("target.example").Plan())
-	matcher, builder := routingMatcherForTest(t, prepared)
-	builder.bpf = state
-	if err := builder.BuildKernspace(); err != nil {
+	matcher, _ := routingMatcherForTest(t, prepared)
+	matcher.bpf = state
+	if err := matcher.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
 	core := &controlPlaneCore{bpf: state}

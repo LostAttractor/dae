@@ -18,8 +18,8 @@ func TestMITMCaptureKeepsUnrelatedDirectInKernel(t *testing.T) {
 		{Host: "192.0.2.10", Ports: []uint16{8443}},
 		{Host: "2001:db8::10", Ports: []uint16{443}},
 	}}}})
-	matcher, builder := routingMatcherForTest(t, prepared)
-	exposeCapturePredicates(t, builder)
+	matcher, _ := routingMatcherForTest(t, prepared)
+	exposeCapturePredicates(t, matcher)
 	for _, test := range []struct {
 		name, destination string
 		dns               []string
@@ -87,8 +87,8 @@ func TestMITMEmptyAndExcludedScopesDoNotCapture(t *testing.T) {
 }
 
 func TestDestinationDomainCaptureRetainsDNSPredicate(t *testing.T) {
-	matcher, builder := destinationTestMatcher(t, "domain(full: service.example) && dport(443) -> dnat(198.51.100.1)")
-	exposeCapturePredicates(t, builder)
+	matcher, _ := destinationTestMatcher(t, "domain(full: service.example) && dport(443) -> dnat(198.51.100.1)")
+	exposeCapturePredicates(t, matcher)
 	for _, host := range []string{"", "outside.example", "service.example"} {
 		for _, port := range []uint16{22, 443} {
 			address := make([]byte, 16)

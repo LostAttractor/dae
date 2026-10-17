@@ -60,8 +60,8 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 		plane := &ControlPlane{routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None,
 			core:      &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()},
 			outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}}
-		builder.bpf = state
-		if err := builder.BuildKernspace(); err != nil {
+		matcher.bpf = state
+		if err := matcher.BuildKernspace(); err != nil {
 			t.Fatal(err)
 		}
 		// Read back a new table slot beyond kernel end: exact destination

@@ -90,7 +90,7 @@ wg0: tunnel }`)
 		if member {
 			members = append(members, mac)
 		}
-		if err := b.SetClientMembers(m, "gaming", members, false); err != nil {
+		if err := m.SetClientMembers("gaming", members, false); err != nil {
 			t.Fatal(err)
 		}
 		for index, profile := range b.profiles {

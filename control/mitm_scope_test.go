@@ -41,10 +41,10 @@ func testMITMScopeRouting(t *testing.T, scopes []plugin.HTTPScope, hosts []scope
 				t.Fatal("module capture replaced the explicit direct route")
 			}
 			userspace, _ := routingMatcherForTest(t, preparation.rules)
-			capture, builder := routingMatcherForTest(t, preparation.rules)
+			capture, _ := routingMatcherForTest(t, preparation.rules)
 			// Keep the kernel's match conditions, replacing only its terminal
 			// action so the userspace evaluator exposes capture without BPF maps.
-			exposeCapturePredicates(t, builder)
+			exposeCapturePredicates(t, capture)
 			for _, target := range hosts {
 				t.Run(target.host, func(t *testing.T) {
 

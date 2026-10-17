@@ -119,7 +119,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	outer := attachClientKernelMaps(t, plane.routingMatcherBuilder)
+	outer := attachClientKernelMaps(t, plane.routingMatcher)
 	plane.clients = map[string]config.Client{
 		"gaming":    {IPSet: "dae_rollback", NFTSet: "inet/dae_rollback/gaming"},
 		"streaming": {NFTSet: "inet/dae_rollback/streaming"},
@@ -139,8 +139,8 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 	if err := plane.syncClientExports(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range plane.routingMatcherBuilder.ClientSets() {
-		if err := plane.routingMatcherBuilder.SetClientMembers(plane.routingMatcher, name, store.Members(name), true); err != nil {
+	for _, name := range plane.routingMatcher.ClientSets() {
+		if err := plane.routingMatcher.SetClientMembers(name, store.Members(name), true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -154,7 +154,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 		requireClientRoute(t, plane.routingMatcher, previous, 443, consts.OutboundUserDefinedMin)
 		requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)
 		var inner *ebpf.Map
-		if err := outer.Lookup(uint32(plane.routingMatcherBuilder.clientSetSlots["gaming"]), &inner); err != nil {
+		if err := outer.Lookup(uint32(plane.routingMatcher.clientSetSlots["gaming"]), &inner); err != nil {
 			t.Fatal(err)
 		}
 		defer inner.Close()

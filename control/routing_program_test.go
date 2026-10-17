@@ -107,14 +107,14 @@ func TestDestinationPredicatesDoNotConsumeKernelInstructions(t *testing.T) {
 }
 
 func TestDestinationInterfaceUpdateStaysInUserspace(t *testing.T) {
-	_, b := destinationTestMatcher(t, "interface(lan0) -> dnat(198.51.100.20)")
+	m, b := destinationTestMatcher(t, "interface(lan0) -> dnat(198.51.100.20)")
 	// No BPF handles exist in this test. Updating the destination half of an
 	// interface predicate must neither access nor publish a kernel table slot.
 	i := int(b.profiles[0].Destination.predicates[0].span.Start)
-	if err := b.updateIfindex(i, 42, true); err != nil {
+	if err := m.updateIfindex(i, 42, true); err != nil {
 		t.Fatal(err)
 	}
-	if binary.LittleEndian.Uint32(b.rules[i].Value[:]) != 42 || b.rules[i].Action != uint8(consts.MatchActionMatch) {
+	if binary.LittleEndian.Uint32(m.matches[i].Value[:]) != 42 || m.matches[i].Action != uint8(consts.MatchActionMatch) {
 		t.Fatal("interface update replaced the destination action")
 	}
 }

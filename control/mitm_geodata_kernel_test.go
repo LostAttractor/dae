@@ -45,9 +45,9 @@ func TestMITMGeodataReloadKernelCapture(t *testing.T) {
 			&net.IPNet{IP: net.ParseIP("198.51.100.254"), Mask: net.CIDRMask(24, 32)},
 			&net.IPNet{IP: net.ParseIP("203.0.113.254"), Mask: net.CIDRMask(24, 32)},
 		})
-		matcher, builder := routingMatcherForTest(t, rules)
-		builder.bpf = state
-		if err := builder.BuildKernspace(); err != nil {
+		matcher, _ := routingMatcherForTest(t, rules)
+		matcher.bpf = state
+		if err := matcher.BuildKernspace(); err != nil {
 			t.Fatal(err)
 		}
 		for i, test := range []struct{ name, destination, domain string }{

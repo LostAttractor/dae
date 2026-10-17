@@ -16,15 +16,15 @@ func TestCaptureAPIPrefixAndIndependentActions(t *testing.T) {
 			prepared.enableMITMPlan(mitmRoutingPlugin("service.example").Plan())
 		}
 		prepared.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-		matcher, builder := routingMatcherForTest(t, prepared)
-		for i := range builder.rules {
-			if ((builder.rules[i].Flags >> 3) & 3) != 0 {
+		matcher, _ := routingMatcherForTest(t, prepared)
+		for i := range matcher.matches {
+			if ((matcher.matches[i].Flags >> 3) & 3) != 0 {
 				if i < 3 {
 					t.Fatal("capture precedes API bypass")
 				}
-				builder.rules[i].Flags &^= 3 << 3
-				builder.rules[i].Action = uint8(consts.MatchActionRoute)
-				builder.rules[i].Outbound = 2
+				matcher.matches[i].Flags &^= 3 << 3
+				matcher.matches[i].Action = uint8(consts.MatchActionRoute)
+				matcher.matches[i].Outbound = 2
 			}
 		}
 		for _, address := range []string{"10.0.0.1", "192.0.2.1"} {
@@ -48,14 +48,14 @@ func TestCaptureAPIPrefixAndIndependentActions(t *testing.T) {
 // Keep production predicates, exposing only their action. Merely checking the
 // final userspace outbound would miss the regression: a captured flow can still
 // be dialed with "direct" after leaving the kernel fast path.
-func exposeCapturePredicates(t *testing.T, builder *RoutingMatcherBuilder) {
+func exposeCapturePredicates(t *testing.T, matcher *RoutingMatcher) {
 	t.Helper()
 	count := 0
-	for i := range builder.rules {
-		if ((builder.rules[i].Flags >> 3) & 3) != 0 {
-			builder.rules[i].Flags &^= 3 << 3
-			builder.rules[i].Action = uint8(consts.MatchActionRoute)
-			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
+	for i := range matcher.matches {
+		if ((matcher.matches[i].Flags >> 3) & 3) != 0 {
+			matcher.matches[i].Flags &^= 3 << 3
+			matcher.matches[i].Action = uint8(consts.MatchActionRoute)
+			matcher.matches[i].Outbound = uint8(consts.OutboundUserDefinedMin)
 			count++
 		}
 	}

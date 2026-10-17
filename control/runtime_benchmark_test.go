@@ -57,13 +57,13 @@ func runtimeRefreshFixture(t testing.TB) (*ControlPlane, *ebpf.Collection) {
 		fmt.Fprintf(&rules, "dip(10.%d.0.0/16) -> direct(mark: %d)\n", i, i+1)
 	}
 	rules.WriteString("client(gaming) -> block\n")
-	matcher, builder := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", rules.String()))
-	builder.bpf = state
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", rules.String()))
+	matcher.bpf = state
 	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &ControlPlane{core: &controlPlaneCore{bpf: state, closed: t.Context()}, settings: store, routingMatcher: matcher, routingMatcherBuilder: builder, routingState: builder.routingState}
+	c := &ControlPlane{core: &controlPlaneCore{bpf: state, closed: t.Context()}, settings: store, routingMatcher: matcher, routingState: matcher.routingState}
 	if err := c.PrepareKernel(); err != nil {
 		t.Fatal(err)
 	}

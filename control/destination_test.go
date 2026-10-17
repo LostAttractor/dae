@@ -132,13 +132,13 @@ dip(192.0.2.1) -> block`)
 }
 
 func TestDestinationCaptureMatchesOnlyConfiguredIPs(t *testing.T) {
-	matcher, builder := destinationTestMatcher(t, "dip(91.108.56.100, '2001:db8::100') -> dnat(198.51.100.1)")
+	matcher, _ := destinationTestMatcher(t, "dip(91.108.56.100, '2001:db8::100') -> dnat(198.51.100.1)")
 	// Expose the capture predicate's decision without userspace's marker skip.
-	for i := range builder.rules {
-		if ((builder.rules[i].Flags >> 3) & 3) != 0 {
-			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
-			builder.rules[i].Flags &^= 3 << 3 // Expose the capture predicate as a test terminal.
-			builder.rules[i].Action = uint8(consts.MatchActionRoute)
+	for i := range matcher.matches {
+		if ((matcher.matches[i].Flags >> 3) & 3) != 0 {
+			matcher.matches[i].Outbound = uint8(consts.OutboundUserDefinedMin)
+			matcher.matches[i].Flags &^= 3 << 3 // Expose the capture predicate as a test terminal.
+			matcher.matches[i].Action = uint8(consts.MatchActionRoute)
 		}
 	}
 	for _, address := range []string{"91.108.56.100", "91.108.56.101", "2001:db8::100", "2001:db8::101"} {

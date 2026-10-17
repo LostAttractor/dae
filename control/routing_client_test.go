@@ -80,7 +80,7 @@ func TestClientMembershipUpdatesSharedMACMatches(t *testing.T) {
 	requireClientRoute(t, m, mac, 443, consts.OutboundDirect)
 	staticMAC := [6]byte{2, 1, 2, 3, 4, 7}
 	requireClientRoute(t, m, staticMAC, 443, consts.OutboundUserDefinedMin)
-	if err := b.SetClientMembers(m, name, [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers(name, [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	requireClientRoute(t, m, mac, 443, consts.OutboundUserDefinedMin)
@@ -88,7 +88,7 @@ func TestClientMembershipUpdatesSharedMACMatches(t *testing.T) {
 	requireClientRoute(t, m, [6]byte{}, 443, consts.OutboundDirect)
 	requireClientRoute(t, m, [6]byte{2, 1, 2, 3, 4, 6}, 443, consts.OutboundDirect)
 
-	if err := b.SetClientMembers(m, name, nil, false); err != nil {
+	if err := m.SetClientMembers(name, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	requireClientRoute(t, m, mac, 443, consts.OutboundDirect)
@@ -102,12 +102,12 @@ func TestClientEmptyAndNegatedSetsKeepRuleSemantics(t *testing.T) {
 		t.Fatalf("negated client rules were merged: sets %v, rules %+v", b.ClientSets(), b.rules)
 	}
 	requireClientRoute(t, m, mac, 443, consts.OutboundUserDefinedMin)
-	if err := b.SetClientMembers(m, "first", [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers("first", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	// !first does not match, but !second must still match its empty set.
 	requireClientRoute(t, m, mac, 443, consts.OutboundUserDefinedMin)
-	if err := b.SetClientMembers(m, "second", [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers("second", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	requireClientRoute(t, m, mac, 443, consts.OutboundDirect)
@@ -130,7 +130,7 @@ func TestClientSetRejectsInvalidSyntax(t *testing.T) {
 }
 
 func TestClientMembershipConcurrentMatching(t *testing.T) {
-	b, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
+	_, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
 	mac := [6]byte{2, 0, 0, 0, 0, 1}
 	var workers sync.WaitGroup
 	workers.Go(func() {
@@ -139,7 +139,7 @@ func TestClientMembershipConcurrentMatching(t *testing.T) {
 			if i%2 == 0 {
 				members = nil
 			}
-			if err := b.SetClientMembers(m, "gaming", members, false); err != nil {
+			if err := m.SetClientMembers("gaming", members, false); err != nil {
 				t.Error(err)
 				return
 			}
@@ -159,7 +159,7 @@ func TestClientMembershipConcurrentMatching(t *testing.T) {
 	workers.Wait()
 }
 
-func attachClientKernelMaps(t *testing.T, b *RoutingMatcherBuilder) *ebpf.Map {
+func attachClientKernelMaps(t *testing.T, b *RoutingMatcher) *ebpf.Map {
 	t.Helper()
 	innerSpec := &ebpf.MapSpec{Type: ebpf.LPMTrie, KeySize: uint32(unsafe.Sizeof(_bpfLpmKey{})), ValueSize: 4,
 		MaxEntries: 8, Flags: unix.BPF_F_NO_PREALLOC}
@@ -186,8 +186,8 @@ func attachClientKernelMaps(t *testing.T, b *RoutingMatcherBuilder) *ebpf.Map {
 }
 
 func TestClientMembershipSwapsKernelMap(t *testing.T) {
-	b, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
-	outer := attachClientKernelMaps(t, b)
+	_, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
+	outer := attachClientKernelMaps(t, m)
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
 	key := cidrToBpfLpmKey(sourceMacPrefixes([][6]byte{mac})[0])
 	for _, enabled := range []bool{false, true, false} {
@@ -195,7 +195,7 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 		if enabled {
 			members = [][6]byte{mac}
 		}
-		if err := b.SetClientMembers(m, "gaming", members, true); err != nil {
+		if err := m.SetClientMembers("gaming", members, true); err != nil {
 			t.Fatal(err)
 		}
 		var inner *ebpf.Map
@@ -216,7 +216,7 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{settings: store, routingState: b.routingState, routingMatcher: m, kernelReady: true}
+	plane := &ControlPlane{settings: store, routingState: m.routingState, routingMatcher: m, kernelReady: true}
 	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{"gaming":["02:01:02:03:04:05"]},"mitm":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}

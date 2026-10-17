@@ -64,10 +64,10 @@ func TestRoutingProfilesUsePrivateGenerations(t *testing.T) {
 	for generation := uint32(1); generation <= 3; generation++ {
 		profiles := newRoutingLayoutTestMap(t, "routing_profile_map", maxRoutingInterfaces+1)
 		interfaces := newRoutingLayoutTestMap(t, "routing_interface_map", maxRoutingInterfaces)
-		b := &RoutingMatcherBuilder{routingState: &routingState{bpf: &BPFState{bpfObjects: &bpfObjects{RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces}}}}
-		b.profiles = []routingProfile{{ID: 0, Spans: []routingSpan{{Start: 0, End: 1}}}}
+		b := &RoutingMatcher{routingState: &routingState{bpf: &BPFState{bpfObjects: &bpfObjects{RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces}}}}
+		b.profileInfo = []routingProfile{{ID: 0, Spans: []routingSpan{{Start: 0, End: 1}}}}
 		for i := uint32(1); i <= maxRoutingInterfaces; i++ {
-			b.profiles = append(b.profiles, routingProfile{ID: generation*70000 + i,
+			b.profileInfo = append(b.profileInfo, routingProfile{ID: generation*70000 + i,
 				Spans: []routingSpan{{Start: generation, End: generation + 1}}})
 		}
 		if err := b.uploadRoutingProfiles(); err != nil {
@@ -78,7 +78,7 @@ func TestRoutingProfilesUsePrivateGenerations(t *testing.T) {
 			t.Fatalf("stale interface binding: %v", err)
 		}
 		var value bpfRoutingProfile
-		for _, p := range b.profiles {
+		for _, p := range b.profileInfo {
 			if err := profiles.Lookup(p.ID, &value); err != nil || value.Length != 1 || value.Steps[0] != uint16(p.Spans[0].Start) {
 				t.Fatalf("generation %d, profile %d: %v, %+v", generation, p.ID, err, value)
 			}

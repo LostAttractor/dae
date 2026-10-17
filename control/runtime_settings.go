@@ -107,7 +107,7 @@ func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
 func (c *ControlPlane) restoreClientSets() error {
 	for _, name := range c.routingState.ClientSets() {
 		members := c.settings.Members(name)
-		if err := c.routingState.SetClientMembers(c.routingMatcher, name, members, c.kernelReady); err != nil {
+		if err := c.routingState.SetClientMembers(name, members, c.kernelReady); err != nil {
 			return err
 		}
 	}

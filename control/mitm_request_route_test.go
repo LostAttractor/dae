@@ -60,7 +60,7 @@ func TestHTTPRequestRewritePoolUsesCurrentRouteAndMark(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
 	defer upstream.Close()
 	var dials atomic.Int32
-	plane, builder, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
+	plane, _, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
 		rewriteTestPlugin(t, map[string]string{"/old": "http://198.51.100.9/new"}),
 		func(ctx context.Context, _, _ string) (net.Conn, error) {
 			dials.Add(1)
@@ -85,14 +85,14 @@ func TestHTTPRequestRewritePoolUsesCurrentRouteAndMark(t *testing.T) {
 	if dials.Load() != 1 {
 		t.Fatal("unchanged route did not reuse its upstream connection")
 	}
-	if err := builder.SetClientMembers(plane.routingMatcher, "marked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+	if err := plane.routingMatcher.SetClientMembers("marked", [][6]byte{param.routingResult.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	request(200)
 	if dials.Load() != 2 {
 		t.Fatal("new mark reused a connection from the previous route")
 	}
-	if err := builder.SetClientMembers(plane.routingMatcher, "blocked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+	if err := plane.routingMatcher.SetClientMembers("blocked", [][6]byte{param.routingResult.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	request(502)
@@ -108,7 +108,7 @@ func TestHTTPOriginalPoolKeepsRouteAndMark(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
 	defer upstream.Close()
 	var dials atomic.Int32
-	plane, builder, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
+	plane, _, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
 		rewriteTestPlugin(t, map[string]string{"/old": "http://original.example/new"}),
 		func(ctx context.Context, _, address string) (net.Conn, error) {
 			if address != "192.0.2.20:80" {
@@ -143,7 +143,7 @@ func TestHTTPOriginalPoolKeepsRouteAndMark(t *testing.T) {
 		}
 	}
 	request(handler, 200)
-	if err := builder.SetClientMembers(plane.routingMatcher, "marked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+	if err := plane.routingMatcher.SetClientMembers("marked", [][6]byte{param.routingResult.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	request(handler, 200)
@@ -156,7 +156,7 @@ func TestHTTPOriginalPoolKeepsRouteAndMark(t *testing.T) {
 	if dials.Load() != 2 || len(marks) != 2 || marks[1] != 91 {
 		t.Fatalf("new connection missed current route: dials=%d marks=%v", dials.Load(), marks)
 	}
-	if err := builder.SetClientMembers(plane.routingMatcher, "blocked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+	if err := plane.routingMatcher.SetClientMembers("blocked", [][6]byte{param.routingResult.Mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	blocked, closeBlocked := plane.mitmHost.Handler("http", "original.example", 80, observePlan)

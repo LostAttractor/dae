@@ -61,7 +61,7 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 	collection, state := dnsKernelCollection(t)
 	prepared := prepareFlowRulesForTest(t, "dip(192.0.2.54) -> must\ndip(192.0.2.56) -> dnat(198.51.100.53)", "dip(192.0.2.55) -> block\ndport(53) -> direct(mark:37)")
 	prepared.bypassAPI(53, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	_, builder := routingMatcherForTest(t, prepared)
+	builder, _ := routingMatcherForTest(t, prepared)
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 
 func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 	collection, state := dnsKernelCollection(t)
-	_, builder := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.53) && dport(53) -> must", "dport(443) -> proxy(mark:11)\ndport(53) -> proxy(mark:37)"))
+	builder, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.53) && dport(53) -> must", "dport(443) -> proxy(mark:11)\ndport(53) -> proxy(mark:37)"))
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)

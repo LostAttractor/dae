@@ -26,7 +26,7 @@ func TestPolicyFlowKernelIsolation(t *testing.T) {
  }
  tor { fallback: direct }
 } default: main interface { tor0: tor }`)
-	m, b := routingMatcherForTest(t, preparedRules{routing: &conf.Routing})
+	m, _ := routingMatcherForTest(t, preparedRules{routing: &conf.Routing})
 	ids := flowPolicyIDs(m)
 	// BPF_PROG_TEST_RUN supplies the loopback ifindex for its test skb.
 	// Bind it only in private maps; no host interface is watched or attached.
@@ -34,11 +34,11 @@ func TestPolicyFlowKernelIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range b.profiles {
-		b.profiles[i].InterfaceNames = nil
+	for i := range m.profileInfo {
+		m.profileInfo[i].InterfaceNames = nil
 	}
-	b.bpf = state
-	if err := b.BuildKernspace(); err != nil {
+	m.bpf = state
+	if err := m.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
 	sequence := uint16(45000)

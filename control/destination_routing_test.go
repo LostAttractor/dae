@@ -26,7 +26,7 @@ interface(lan) && domain(full: original.example) && ipversion(6) && dip('2001:db
 dip(192.0.2.20) -> block`)
 			matcher, builder := routingMatcherForTest(t, prepared)
 			for _, patch := range builder.interfaceRulePatches {
-				if err := builder.updateIfindex(patch.matchIndex, 8, false); err != nil {
+				if err := matcher.updateIfindex(patch.matchIndex, 8, false); err != nil {
 					t.Fatal(err)
 				}
 			}

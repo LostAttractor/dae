@@ -24,13 +24,12 @@ func (c *ControlPlane) PrepareKernel() error {
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}
-	if err := c.commitKernelState(c.routingMatcherBuilder); err != nil {
+	if err := c.commitKernelState(); err != nil {
 		return err
 	}
 	if err := c.core.publishOutboundConnectivity(); err != nil {
 		return err
 	}
-	c.routingMatcherBuilder = nil
 	c.kernelReady = true
 	return nil
 }
@@ -75,7 +74,7 @@ func (c *ControlPlane) activateLinks() error {
 	return nil
 }
 
-func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
+func (c *ControlPlane) commitKernelState() error {
 	core := c.core
 	if err := c.publishAPIObservation(); err != nil {
 		return err
@@ -86,8 +85,8 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	if err := c.publishHTTPClients(); err != nil {
 		return err
 	}
-	if err := builder.BuildKernspace(); err != nil {
-		return fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	if err := c.routingMatcher.BuildKernspace(); err != nil {
+		return fmt.Errorf("publish routing: %w", err)
 	}
 	if !core.isReload && c.domainRegistryPath != "" {
 		if err := core.domainRegistry.Restore(c.domainRegistryPath, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {

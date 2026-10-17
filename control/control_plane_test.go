@@ -557,12 +557,11 @@ func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 		outbounds: []*outbound.DialerGroup{group},
 		routingMatcher: &RoutingMatcher{
 			profiles: map[uint32][]routingSpan{0: {{End: 1}}},
-			rulesMu:  new(sync.RWMutex),
-			matches: []bpfMatchSet{{
+			routingState: &routingState{matches: []bpfMatchSet{{
 				Type:     uint8(consts.MatchType_Fallback),
 				Outbound: uint8(consts.OutboundDirect),
 				Mark:     42,
-			}},
+			}}},
 		},
 	}
 	request, _, err := c.dnsRequest(nil, "udp", netip.MustParseAddrPort("192.0.2.2:12345"), netip.MustParseAddrPort("192.0.2.1:53"), routingResult{})

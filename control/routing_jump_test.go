@@ -43,10 +43,10 @@ func TestCompiledRoutingJumpsSurviveFragmentReuseAndInterfaceUpdates(t *testing.
 	}
 	for _, patch := range b.interfaceRulePatches {
 		before := b.rules[patch.matchIndex]
-		if err := b.updateIfindex(patch.matchIndex, 7, false); err != nil {
+		if err := m.updateIfindex(patch.matchIndex, 7, false); err != nil {
 			t.Fatal(err)
 		}
-		after := b.rules[patch.matchIndex]
+		after := m.matches[patch.matchIndex]
 		if before.Mark != after.Mark || before.Flags != after.Flags || before.Action != after.Action {
 			t.Fatal("interface resolution overwrote instruction control metadata")
 		}
@@ -91,7 +91,7 @@ func TestRoutingThreeValuedExpressions(t *testing.T) {
 	if err := encodeRoutingJumps(rules); err != nil {
 		t.Fatal(err)
 	}
-	m := &RoutingMatcher{matches: rules}
+	m := &RoutingMatcher{routingState: &routingState{matches: rules}}
 	spans := []routingSpan{{End: uint32(len(rules))}}
 	input := routingInput{src: netip.MustParseAddrPort("192.0.2.1:12345"), dst: netip.MustParseAddrPort("198.51.100.1:443"), l4proto: consts.L4ProtoType_TCP, kernel: true}
 	for not := 0; not < 8; not++ {
@@ -150,10 +150,10 @@ func TestUserspaceRoutingRejectsInvalidJumps(t *testing.T) {
 			if action == consts.MatchActionAnd {
 				typeID = consts.MatchType_Port
 			}
-			m := &RoutingMatcher{matches: []bpfMatchSet{
+			m := &RoutingMatcher{routingState: &routingState{matches: []bpfMatchSet{
 				{Type: uint8(typeID), Action: uint8(action), Mark: distance},
 				{Type: uint8(consts.MatchType_Fallback)},
-			}}
+			}}}
 			_, err := m.evaluateSpans([]routingSpan{{End: 2}}, routingInput{src: netip.MustParseAddrPort("192.0.2.1:12345"), dst: netip.MustParseAddrPort("198.51.100.1:443")})
 			if err == nil {
 				t.Fatalf("accepted action %d jump %d", action, distance)

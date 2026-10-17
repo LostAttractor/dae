@@ -157,7 +157,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 	objects := new(bpfObjects)
 	must(spec.LoadAndAssign(objects, nil))
 	defer objects.Close()
-	_, builder := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dport(4444) -> must", "dport(4444) -> proxy(mark:37)"))
+	builder, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dport(4444) -> must", "dport(4444) -> proxy(mark:37)"))
 	builder.bpf = &BPFState{bpfObjects: objects}
 	must(builder.BuildKernspace())
 	for _, family := range []uint8{4, 6} {

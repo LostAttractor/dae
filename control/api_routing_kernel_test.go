@@ -20,7 +20,7 @@ func TestAPIAddressReloadKernelCapture(t *testing.T) {
 		// API bypass must precede explicit capture as well as ordinary routing.
 		rules := prepareFlowRulesForTest(t, "dip(192.0.2.0/24) && dport(8081) -> bump", "dport(8081) -> block\ndport(443) -> direct(mark:37)")
 		rules.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP(host), Mask: net.CIDRMask(24, 32)}})
-		_, builder := routingMatcherForTest(t, rules)
+		builder, _ := routingMatcherForTest(t, rules)
 		builder.bpf = state
 		if err := builder.BuildKernspace(); err != nil {
 			t.Fatal(err)

@@ -23,9 +23,9 @@ func TestConditionalUseKernelIntegration(t *testing.T) {
  sip(192.0.2.0/24, '2001:db8:1::/64') -> use(domains)`)
 	prepared.enableMITMPlan(mitmRoutingPlugin("mitm.example").Plan())
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	m, b := routingMatcherForTest(t, prepared)
-	b.bpf = state
-	if err := b.BuildKernspace(); err != nil {
+	m, _ := routingMatcherForTest(t, prepared)
+	m.bpf = state
+	if err := m.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
 	for i, test := range []struct {

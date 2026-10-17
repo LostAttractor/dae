@@ -7,24 +7,25 @@ package control
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
-	"sync"
+	"slices"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/pkg/trie"
 )
 
 type RoutingMatcher struct {
-	defaultProfileID uint32
-	profiles         map[uint32][]routingSpan
-	destinations     map[uint32]DestinationProgram
-	lpmMatcher       []*trie.Trie
-	domainMatcher    routing.DomainMatcher // All domain matchSets use one DomainMatcher.
-
-	matches []bpfMatchSet
-	rulesMu *sync.RWMutex
+	*routingState
+	ifmgr                *network.InterfaceManager
+	interfaceRulePatches []routingInterfaceRulePatch
+	defaultProfileID     uint32
+	profiles             map[uint32][]routingSpan
+	destinations         map[uint32]DestinationProgram
+	domainMatcher        routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	// outboundUsable reports whether an outbound group can serve the given
 	// network type; it backs skip_while_noalive rule evaluation. It may be
@@ -79,25 +80,48 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		return nil, err
 	}
 
+	profileInfo := slices.Clone(b.profiles)
+	for i := range profileInfo {
+		p := &profileInfo[i]
+		p.InterfaceNames = slices.Clone(p.InterfaceNames)
+		p.Spans = slices.Clone(p.Spans)
+		p.Destination.predicates = slices.Clone(p.Destination.predicates)
+		for j := range p.Destination.predicates {
+			p.Destination.predicates[j].targets = slices.Clone(p.Destination.predicates[j].targets)
+		}
+	}
+	prefixes := slices.Clone(b.simulatedLpmTries)
+	for i := range prefixes {
+		prefixes[i] = slices.Clone(prefixes[i])
+	}
+	metadata := maps.Clone(b.ruleMetadata)
+	for i, value := range metadata {
+		value.sources = slices.Clone(value.sources)
+		metadata[i] = value
+	}
+	inactive := slices.Clone(b.inactiveRules)
+	for i := range inactive {
+		inactive[i].sources = slices.Clone(inactive[i].sources)
+	}
 	profiles := make(map[uint32][]routingSpan, len(b.profiles))
 	destinations := make(map[uint32]DestinationProgram, len(b.profiles))
-	for _, profile := range b.profiles {
-		profiles[profile.ID] = append([]routingSpan(nil), profile.Spans...)
+	for _, profile := range profileInfo {
+		profiles[profile.ID] = profile.Spans
 		destinations[profile.ID] = profile.Destination
 	}
 
 	return &RoutingMatcher{
+		routingState: &routingState{bpf: b.bpf, matches: slices.Clone(b.rules), lpmMatcher: lpmMatcher,
+			simulatedLpmTries: prefixes, clientSetSlots: maps.Clone(b.clientSetSlots), kernelLpmLen: b.kernelLpmLen, routing: b.routing},
+		ifmgr: b.ifmgr, interfaceRulePatches: slices.Clone(b.interfaceRulePatches),
 		defaultProfileID: b.defaultProfileID,
 		destinations:     destinations,
 		profiles:         profiles,
-		lpmMatcher:       lpmMatcher,
 		domainMatcher:    domainMatcher,
-		matches:          b.rules,
-		rulesMu:          &b.rulesMu,
-		ruleMetadata:     b.ruleMetadata,
-		matchMetadata:    b.matchMetadata,
-		profileInfo:      b.profiles,
-		inactiveRules:    b.inactiveRules,
+		ruleMetadata:     metadata,
+		matchMetadata:    maps.Clone(b.matchMetadata),
+		profileInfo:      profileInfo,
+		inactiveRules:    inactive,
 	}, nil
 }
 

@@ -43,7 +43,7 @@ func TestRoutingInstallationDerivesSniffingFromProgram(t *testing.T) {
 			if err := plane.installRouting(&rules, outbounds.nameToID, conf.Group, nil); err != nil {
 				t.Fatal(err)
 			}
-			if plane.routingMatcher == before || plane.routingState != plane.routingMatcherBuilder.routingState {
+			if plane.routingMatcher == before || plane.routingState != plane.routingMatcher.routingState {
 				t.Fatal("routing installation retained an old matcher or state")
 			}
 			want := time.Duration(0)

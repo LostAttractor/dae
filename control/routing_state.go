@@ -14,11 +14,12 @@ import (
 	"github.com/daeuniverse/dae/pkg/trie"
 )
 
-// routingState owns the compiled routing tables and their dynamic bindings.
-// Matchers and interface callbacks retain this state, not the compiler.
+// routingState owns live instruction bindings and client tries. Each matcher
+// gets its own state; compilation and diagnostic snapshots never share mutations.
 type routingState struct {
 	bpf               *BPFState
-	rules             []bpfMatchSet
+	matches           []bpfMatchSet
+	lpmMatcher        []*trie.Trie
 	rulesMu           sync.RWMutex
 	simulatedLpmTries [][]netip.Prefix
 	clientSetSlots    map[string]int
@@ -35,7 +36,7 @@ func (s *routingState) ClientSets() []string {
 
 // SetClientMembers prepares both replacements before publishing either one.
 // The caller serializes business updates and owns persistence/exports.
-func (s *routingState) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, kernelReady bool) error {
+func (s *routingState) SetClientMembers(name string, members [][6]byte, kernelReady bool) error {
 	if s == nil {
 		return nil
 	}
@@ -70,20 +71,28 @@ func (s *routingState) SetClientMembers(matcher *RoutingMatcher, name string, me
 		}
 	}
 	s.simulatedLpmTries[slot] = prefixes
-	matcher.lpmMatcher[slot] = next
+	s.lpmMatcher[slot] = next
 	return nil
 }
 
 func (s *routingState) updateIfindex(index int, ifindex uint32, active bool) error {
 	s.rulesMu.Lock()
 	defer s.rulesMu.Unlock()
-	current := s.rules[index]
+	current := s.matches[index]
 	binary.LittleEndian.PutUint32(current.Value[:], ifindex)
 	if active && index < s.routing.end {
 		if err := s.bpf.RoutingMap.Update(uint32(index), current, ebpf.UpdateAny); err != nil {
 			return err
 		}
 	}
-	s.rules[index] = current
+	s.matches[index] = current
 	return nil
+}
+
+// snapshot copies only evaluation state, without kernel handles or writers.
+// Published tries are immutable and can be shared until a membership replacement.
+func (s *routingState) snapshot() *routingState {
+	s.rulesMu.RLock()
+	defer s.rulesMu.RUnlock()
+	return &routingState{matches: slices.Clone(s.matches), lpmMatcher: slices.Clone(s.lpmMatcher)}
 }

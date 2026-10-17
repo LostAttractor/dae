@@ -59,7 +59,7 @@ func TestPolicyFlowIsolationAndSharedPrograms(t *testing.T) {
 	m, b := routingMatcherForTest(t, preparedRules{routing: &conf.Routing})
 	ids := flowPolicyIDs(m)
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
-	if err := b.SetClientMembers(m, "work", [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers("work", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	main, shared := m.destinationProgram(ids["main"]), m.destinationProgram(ids["copy"])
@@ -135,14 +135,14 @@ func TestPolicyFlowIsolationAndSharedPrograms(t *testing.T) {
 
 func TestPolicyFlowUDPSnapshotRetainsPolicyAndMembership(t *testing.T) {
 	conf := parseStructuredTestConfig(t, policyFlowFixture)
-	m, b := routingMatcherForTest(t, preparedRules{routing: &conf.Routing})
+	m, _ := routingMatcherForTest(t, preparedRules{routing: &conf.Routing})
 	ids := flowPolicyIDs(m)
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
-	if err := b.SetClientMembers(m, "work", [][6]byte{mac}, false); err != nil {
+	if err := m.SetClientMembers("work", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)
 	}
 	frozen := m.snapshotDestinations()
-	if err := b.SetClientMembers(m, "work", nil, false); err != nil {
+	if err := m.SetClientMembers("work", nil, false); err != nil {
 		t.Fatal(err)
 	}
 	m.defaultProfileID = ids["tor"]

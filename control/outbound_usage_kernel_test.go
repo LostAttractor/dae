@@ -54,7 +54,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := builder.BuildKernspace(); err != nil {
+	if err := matcher.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
 	for round, alive := range []bool{false, true} {

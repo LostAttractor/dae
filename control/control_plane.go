@@ -33,22 +33,21 @@ type ControlPlane struct {
 	dnsRelay           *dnsRelay
 	domainRegistryPath string
 
-	kernelReady           bool
-	routingGeneration     uint32
-	deviceRoutes          *deviceRoutes
-	closeOnRouteChange    bool
-	routingMatcher        *RoutingMatcher
-	routingState          *routingState
-	routingMatcherBuilder *RoutingMatcherBuilder
-	muRealDomainSet       sync.Mutex
-	realDomainSet         *bloom.BloomFilter
-	dialTargetOverride    bool
-	rerouteMode           consts.RerouteMode
-	sniffingTimeout       time.Duration
-	sniffVerifyMode       consts.SniffVerifyMode
-	soMarkFromDae         uint32
-	mptcp                 bool
-	markedDirectDialers   sync.Map
+	kernelReady         bool
+	routingGeneration   uint32
+	deviceRoutes        *deviceRoutes
+	closeOnRouteChange  bool
+	routingMatcher      *RoutingMatcher
+	routingState        *routingState
+	muRealDomainSet     sync.Mutex
+	realDomainSet       *bloom.BloomFilter
+	dialTargetOverride  bool
+	rerouteMode         consts.RerouteMode
+	sniffingTimeout     time.Duration
+	sniffVerifyMode     consts.SniffVerifyMode
+	soMarkFromDae       uint32
+	mptcp               bool
+	markedDirectDialers sync.Map
 
 	wanInterface              []string
 	autoWan                   bool

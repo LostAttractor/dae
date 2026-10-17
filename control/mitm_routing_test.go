@@ -154,10 +154,10 @@ func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 	}}}}}
 	preparation := &ControlPlanePreparation{}
 	preparation.rules.enableMITMPlan(extension.Plan())
-	matcher, builder := routingMatcherForTest(t, preparation.rules)
+	matcher, _ := routingMatcherForTest(t, preparation.rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
-	exposeCapturePredicates(t, builder)
+	exposeCapturePredicates(t, matcher)
 	for _, test := range []struct {
 		host    string
 		proto   consts.L4ProtoType

@@ -44,7 +44,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		plane := &ControlPlane{mitmHost: controlTestHost(t, extension, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+		plane := &ControlPlane{mitmHost: controlTestHost(t, extension, authority), settings: store, mitmClients: clients}
 		if err := plane.restoreHTTPClients(); err != nil {
 			t.Fatal(err)
 		}

@@ -59,7 +59,7 @@ func matchIfindex(t *testing.T, matcher *RoutingMatcher, ifindex uint32) consts.
 }
 
 func TestRoutingMatcherDynamicInterface(t *testing.T) {
-	matcher, builder := buildInterfaceRoutingMatcher(t)
+	matcher, _ := buildInterfaceRoutingMatcher(t)
 
 	if got := matchIfindex(t, matcher, 0); got != consts.OutboundDirect {
 		t.Fatalf("daemon download matched an unresolved interface: outbound %v", got)
@@ -68,13 +68,13 @@ func TestRoutingMatcherDynamicInterface(t *testing.T) {
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
 		t.Fatalf("unresolved interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
-	if err := builder.updateIfindex(0, 7, false); err != nil {
+	if err := matcher.updateIfindex(0, 7, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundUserDefinedMin {
 		t.Fatalf("resolved interface selected outbound %v, want %v", got, consts.OutboundUserDefinedMin)
 	}
-	if err := builder.updateIfindex(0, 0, false); err != nil {
+	if err := matcher.updateIfindex(0, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
@@ -83,7 +83,7 @@ func TestRoutingMatcherDynamicInterface(t *testing.T) {
 }
 
 func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
-	matcher, builder := buildInterfaceRoutingMatcher(t)
+	matcher, _ := buildInterfaceRoutingMatcher(t)
 
 	const iterations = 10_000
 	start := make(chan struct{})
@@ -93,7 +93,7 @@ func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < iterations; i++ {
-			if err := builder.updateIfindex(0, uint32(i%2+7), false); err != nil {
+			if err := matcher.updateIfindex(0, uint32(i%2+7), false); err != nil {
 				t.Error(err)
 				return
 			}
@@ -148,9 +148,8 @@ func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {
 	ipVersion consts.IpVersionType
 }) *RoutingMatcher {
 	m := &RoutingMatcher{
-		rulesMu:  new(sync.RWMutex),
 		profiles: map[uint32][]routingSpan{0: {{End: 2}}},
-		matches: []bpfMatchSet{
+		routingState: &routingState{matches: []bpfMatchSet{
 			{
 				Type:     uint8(consts.MatchType_Port),
 				Value:    _bpfPortRange{PortStart: 80, PortEnd: 80}.Encode(),
@@ -161,7 +160,7 @@ func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {
 				Type:     uint8(consts.MatchType_Fallback),
 				Outbound: uint8(consts.OutboundDirect),
 			},
-		},
+		}},
 	}
 	if usable != nil {
 		m.outboundUsable = func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {

@@ -19,7 +19,7 @@ func TestReloadKernelPreservesEstablishedTCP(t *testing.T) {
 	prepared := prepareFlowRulesForTest(t, "dport(8443) -> must", "dport(8443) -> direct(mark:37)")
 	prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: plugin.Scope{{Host: "198.51.100.1", Ports: []uint16{443}}, {Host: "service.example", Ports: []uint16{443}}}, PreserveRoute: true}}})
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	_, builder := routingMatcherForTest(t, prepared)
+	builder, _ := routingMatcherForTest(t, prepared)
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestReloadKernelPreservesEstablishedTCP(t *testing.T) {
 	next, nextState := dnsKernelGeneration(t, map[string]*ebpf.Map{"tcp_flow_map": collection.Maps["tcp_flow_map"], "routing_tuples_map": collection.Maps["routing_tuples_map"]}, 1)
 	// Publish an intentionally incompatible new policy while attachments remain
 	// active. Established flows must not consult either old or partial new rules.
-	_, replacement := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "l4proto(tcp) -> block"))
+	replacement, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "l4proto(tcp) -> block"))
 	replacement.bpf = nextState
 	if err := replacement.BuildKernspace(); err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestReloadKernelPreservesEstablishedTCP(t *testing.T) {
 func TestReloadKernelRejectsStaleUDPCache(t *testing.T) {
 	collection, state := dnsKernelCollection(t)
 	state.RoutingGeneration = collection.Variables["routing_generation"]
-	_, builder := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
+	builder, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestReloadKernelRejectsStaleUDPCache(t *testing.T) {
 	}
 	run(collection, ^uint32(0))
 	next, nextState := dnsKernelGeneration(t, map[string]*ebpf.Map{"udp_routing_cache_map": collection.Maps["udp_routing_cache_map"]}, 1)
-	_, replacement := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "l4proto(udp) -> block"))
+	replacement, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "l4proto(udp) -> block"))
 	replacement.bpf = nextState
 	if err := replacement.BuildKernspace(); err != nil {
 		t.Fatal(err)

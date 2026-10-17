@@ -174,8 +174,8 @@ func TestUnusedOutboundsDoNotConsumeRuntimeCapacity(t *testing.T) {
 	}
 	conf := outboundUsageConfig(t, "global {}\ngroup {\n"+groups.String()+"}\nrouting {\nrule_set { unused {\n"+rules.String()+"} }\nfallback: direct\n}")
 	plane := outboundUsagePlane(t, conf, nil, nil)
-	if len(plane.outbounds) != 2 || len(plane.routingMatcherBuilder.outboundName2Id) != 2 {
-		t.Fatalf("unused groups consumed runtime IDs: %+v", plane.routingMatcherBuilder.outboundName2Id)
+	if len(plane.outbounds) != 2 {
+		t.Fatalf("unused groups consumed runtime IDs: %+v", plane.outbounds)
 	}
 	if len(plane.core.pendingOutboundConnectivity) != 0 {
 		t.Fatal("unused groups registered connectivity checks")
@@ -272,7 +272,7 @@ routing { dport(80) -> base(skip_while_noalive)
 	}
 	plane := outboundUsagePlane(t, conf, nil, load)
 	if len(plane.outbounds) != 5 {
-		t.Fatalf("plugin targets = %+v", plane.routingMatcherBuilder.outboundName2Id)
+		t.Fatalf("plugin targets = %+v", plane.outbounds)
 	}
 	for index, group := range plane.outbounds {
 		if group.Name == "unused" {
@@ -306,9 +306,9 @@ routing { fallback: direct }
 	}
 	plane := outboundUsagePlane(t, conf, nil, load)
 	if len(plane.outbounds) != 3 || len(plane.Selectors()) != 1 || plane.Selectors()[0].Name != "script_only" {
-		t.Fatalf("required HTTP policy not available: %+v", plane.routingMatcherBuilder.outboundName2Id)
+		t.Fatalf("required HTTP policy not available: %+v", plane.outbounds)
 	}
-	index := plane.routingMatcherBuilder.outboundName2Id["script_only"]
+	index := slices.IndexFunc(plane.outbounds, func(g *outbound.DialerGroup) bool { return g.Name == "script_only" })
 	if !plane.criticalOutbounds[index] || plane.outboundCheckAsync[index] {
 		t.Fatal("required policy skipped initial connectivity checks")
 	}

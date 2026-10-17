@@ -19,14 +19,14 @@ type routingInterfaceRulePatch struct {
 	matchIndex int
 }
 
-func (b *RoutingMatcherBuilder) activateInterfaceRulePatches() error {
-	for _, patch := range b.interfaceRulePatches {
-		if b.ifmgr == nil {
+func (m *RoutingMatcher) activateInterfaceRulePatches() error {
+	for _, patch := range m.interfaceRulePatches {
+		if m.ifmgr == nil {
 			return fmt.Errorf("interface manager is required for routing rule interface %q", patch.ifname)
 		}
-		state := b.routingState
+		state := m.routingState
 		update := func(ifindex uint32) error { return state.updateIfindex(patch.matchIndex, ifindex, true) }
-		cancel, err := b.ifmgr.RegisterSyncCancelable(patch.ifname,
+		cancel, err := m.ifmgr.RegisterSyncCancelable(patch.ifname,
 			func(link netlink.Link) error { return update(uint32(link.Attrs().Index)) },
 			func(link netlink.Link) {
 				log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
@@ -44,15 +44,15 @@ func (b *RoutingMatcherBuilder) activateInterfaceRulePatches() error {
 		if err != nil {
 			return fmt.Errorf("register interface %q: %w", patch.ifname, err)
 		}
-		b.bpf.routingRegistrationCancels = append(b.bpf.routingRegistrationCancels, cancel)
+		m.bpf.routingRegistrationCancels = append(m.bpf.routingRegistrationCancels, cancel)
 	}
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) activateProfileBindings() error {
-	ifmgr := b.ifmgr
-	routingInterfaceMap := b.bpf.RoutingInterfaceMap
-	for _, profile := range b.profiles {
+func (m *RoutingMatcher) activateProfileBindings() error {
+	ifmgr := m.ifmgr
+	routingInterfaceMap := m.bpf.RoutingInterfaceMap
+	for _, profile := range m.profileInfo {
 		for _, ifname := range profile.InterfaceNames {
 			if ifmgr == nil {
 				return fmt.Errorf("interface manager is required for routing profiles")
@@ -78,7 +78,7 @@ func (b *RoutingMatcherBuilder) activateProfileBindings() error {
 			if err != nil {
 				return err
 			}
-			b.bpf.routingRegistrationCancels = append(b.bpf.routingRegistrationCancels, cancel)
+			m.bpf.routingRegistrationCancels = append(m.bpf.routingRegistrationCancels, cancel)
 		}
 	}
 	return nil

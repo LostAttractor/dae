@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/consts"
@@ -35,12 +34,8 @@ func newRoutingExecution() *routingExecution {
 // Capture mutable instruction/interface bindings and dynamic tries together.
 // Published tries and source metadata are immutable; membership replaces tries.
 func (m *RoutingMatcher) diagnosticSnapshot() *RoutingMatcher {
-	m.rulesMu.RLock()
-	defer m.rulesMu.RUnlock()
 	copy := *m
-	copy.matches = slices.Clone(m.matches)
-	copy.lpmMatcher = slices.Clone(m.lpmMatcher)
-	copy.rulesMu = new(sync.RWMutex)
+	copy.routingState = m.routingState.snapshot()
 	return &copy
 }
 

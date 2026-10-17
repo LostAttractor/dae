@@ -40,7 +40,7 @@ func (c *ControlPlane) prepareClientExports() (*clientset.Transaction, error) {
 // The caller holds settingsMu. Keep the routing matcher and external sets on
 // the same accepted snapshot; persistence failures use this path to undo updates.
 func (c *ControlPlane) setClientMembers(name string, previous, next [][6]byte) error {
-	if err := c.routingState.SetClientMembers(c.routingMatcher, name, next, c.kernelReady); err != nil {
+	if err := c.routingState.SetClientMembers(name, next, c.kernelReady); err != nil {
 		return err
 	}
 	if !c.kernelReady {
@@ -48,7 +48,7 @@ func (c *ControlPlane) setClientMembers(name string, previous, next [][6]byte) e
 	}
 	client := c.clients[name]
 	if err := clientset.Replace(client.IPSet, client.NFTSet, next); err != nil {
-		err = errors.Join(err, c.routingState.SetClientMembers(c.routingMatcher, name, previous, true))
+		err = errors.Join(err, c.routingState.SetClientMembers(name, previous, true))
 		return fmt.Errorf("sync client %q: %w", name, err)
 	}
 	return nil

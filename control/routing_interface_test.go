@@ -34,7 +34,7 @@ func TestRoutingInterfaceBridgeMember(t *testing.T) {
 			matcher, builder := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", test.predicate+" && dport(443) -> proxy(mark:37)"))
 			indices := map[string]uint32{"br-lan": 7, "lan": 8, "direct": 9}
 			for _, patch := range builder.interfaceRulePatches {
-				if err := builder.updateIfindex(patch.matchIndex, indices[patch.ifname], false); err != nil {
+				if err := matcher.updateIfindex(patch.matchIndex, indices[patch.ifname], false); err != nil {
 					t.Fatal(err)
 				}
 			}

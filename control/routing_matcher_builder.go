@@ -20,7 +20,12 @@ import (
 )
 
 type RoutingMatcherBuilder struct {
-	*routingState
+	bpf                  *BPFState
+	rules                []bpfMatchSet
+	simulatedLpmTries    [][]netip.Prefix
+	clientSetSlots       map[string]int
+	kernelLpmLen         int
+	routing              RoutingProgram
 	outboundName2Id      map[string]uint8
 	ifmgr                *network.InterfaceManager
 	domainSetIDs         map[string]uint32
@@ -38,7 +43,7 @@ type RoutingMatcherBuilder struct {
 
 func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) *RoutingMatcherBuilder {
 	b := &RoutingMatcherBuilder{
-		routingState:    &routingState{bpf: bpf, clientSetSlots: make(map[string]int)},
+		bpf: bpf, clientSetSlots: make(map[string]int),
 		outboundName2Id: outboundName2Id,
 		ifmgr:           ifmgr,
 		domainSetIDs:    make(map[string]uint32),

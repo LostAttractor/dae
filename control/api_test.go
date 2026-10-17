@@ -43,8 +43,8 @@ func newAPITestPlaneWithPolicy(t *testing.T, store *settings.Store, policy diale
 	}
 	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, policy, nil)
 	t.Cleanup(func() { _ = group.Close() })
-	builder, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
-	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingMatcherBuilder: builder, routingState: builder.routingState, routingMatcher: matcher}
+	_, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
+	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingState: matcher.routingState, routingMatcher: matcher}
 }
 func apiTestRequest(handler http.Handler, method, path, body, token string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "http://192.0.2.1:9080"+path, strings.NewReader(body))
@@ -389,7 +389,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 }
 
 func TestHostOnlyAPIDisablesCertificateAndMITM(t *testing.T) {
-	plane := &ControlPlane{mitmHost: controlTestHost(t, &controlTestPlugin{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, &controlTestPlugin{}, nil)}
 	handler := plane.apiHandler("test", testClientIngress, nil, nil)
 	if w := apiTestRequest(handler, "GET", "/ca.cer", "", ""); w.Code != 404 {
 		t.Fatalf("certificate without CA: %d", w.Code)

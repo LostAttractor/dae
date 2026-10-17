@@ -5,7 +5,9 @@ package control
 import (
 	"context"
 	"github.com/daeuniverse/dae/common/consts"
+	"maps"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/assets"
@@ -76,4 +78,8 @@ func destinationRulesForTest(t testing.TB, text string) routing.DestinationRewri
 		t.Fatal(err)
 	}
 	return plan.Destinations
+}
+
+func (b *RoutingMatcherBuilder) ClientSets() []string {
+	return slices.Sorted(maps.Keys(b.clientSetSlots))
 }

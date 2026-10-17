@@ -9,10 +9,8 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
-	"slices"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 const (
@@ -25,16 +23,12 @@ const (
 // UDP lifetimes retain their predicate program across reloads and client-set
 // updates, without retaining the old plane through the outbound callback.
 func (m *RoutingMatcher) snapshotDestinations() *RoutingMatcher {
-	m.rulesMu.RLock()
-	defer m.rulesMu.RUnlock()
 	return &RoutingMatcher{
+		routingState:     m.routingState.snapshot(),
 		defaultProfileID: m.defaultProfileID,
 		profiles:         m.profiles,
 		destinations:     m.destinations,
-		matches:          m.matches,
-		lpmMatcher:       slices.Clone(m.lpmMatcher),
 		domainMatcher:    m.domainMatcher,
-		rulesMu:          new(sync.RWMutex),
 	}
 }
 
