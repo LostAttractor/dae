@@ -47,18 +47,18 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 	if !snapshot.Usable {
 		return selectorCandidate{}, false
 	}
-	return g.scoreCandidate(d, snapshot), true
+	return g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded), true
 }
 
-func (g *DialerGroup) scoreCandidate(d *dialer.Dialer, snapshot dialer.SelectionSnapshot) selectorCandidate {
-	latency := candidateLatency(g.selectionPolicy.Policy, snapshot.Latency)
+func (g *DialerGroup) scoreCandidate(d *dialer.Dialer, measurements api.LatencyStats, degraded bool) selectorCandidate {
+	latency := candidateLatency(g.selectionPolicy.Policy, measurements)
 	sortingLatency := saturatingDurationAdd(latency, g.dialerToAnnotation[d].AddLatency)
 	return selectorCandidate{
 		dialer:         d,
 		latency:        latency,
 		sortingLatency: sortingLatency,
 		priority:       g.dialerToAnnotation[d].PriorityAt(latency),
-		degraded:       snapshot.Degraded,
+		degraded:       degraded,
 	}
 }
 

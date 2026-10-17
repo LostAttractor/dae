@@ -8,6 +8,7 @@
 package stats
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,7 @@ type Store struct {
 	groups         map[string]*groupStats
 	lastReload     atomic.Int64
 	metrics        storeMetrics
+	selections     []SelectionMetricsSource
 }
 
 var DefaultStore = newStoreAt(time.Now())
@@ -88,7 +90,7 @@ func (s *Store) LastReload() time.Time {
 // Reconcile removes availability state that does not belong to the newly
 // committed control plane. Retained identities preserve their process-lifetime
 // history; identities removed and later re-added start fresh.
-func (s *Store) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[string]struct{}) {
+func (s *Store) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[string]struct{}, sources ...SelectionMetricsSource) {
 	s.availabilityMu.Lock()
 	nodes := make(map[string]*nodeStats, len(activeNodes))
 	for key, identity := range activeNodes {
@@ -109,6 +111,6 @@ func (s *Store) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[
 		groups[name] = group
 	}
 	s.groups = groups
+	s.selections = slices.Clone(sources)
 	s.availabilityMu.Unlock()
-	s.metrics.resetCurrent()
 }

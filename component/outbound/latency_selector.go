@@ -5,9 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
 )
@@ -65,23 +63,5 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 		log.WithFields(fields).Info("Group selected node")
 	} else {
 		log.WithFields(fields).Info("Group changed node")
-	}
-}
-
-func (s *latencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *dialer.Dialer, networkType *common.NetworkType) {
-	snapshot := d.SelectionSnapshot(networkType)
-	if snapshot.Support != api.NetworkSupportConfirmed || !snapshot.HasLatency {
-		return
-	}
-	selectionLatency := candidateLatency(s.dialerGroup.selectionPolicy.Policy, snapshot.Latency)
-	selectionLatency = saturatingDurationAdd(selectionLatency, s.dialerGroup.dialerToAnnotation[d].AddLatency)
-	stats.DefaultStore.RecordCheckMetrics(
-		d.StatsPath(s.dialerGroup.Name, networkType),
-		snapshot.Latency.Last,
-		snapshot.Latency.MovingAvg,
-		selectionLatency,
-	)
-	for i, candidate := range candidates {
-		stats.DefaultStore.RecordSelectionIndex(candidate.dialer.StatsPath(s.dialerGroup.Name, networkType), i)
 	}
 }

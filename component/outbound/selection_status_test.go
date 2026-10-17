@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
@@ -28,10 +29,14 @@ func TestSelectionStatusDoesNotWakeSleepingPeer(t *testing.T) {
 			if active.Tracking != "selected" || sleeping.Tracking != "standby" || !runtime.Dormant || runtime.Healthy || !runtime.HasLatency || sleeping.MeasuredAt.IsZero() {
 				t.Fatalf("selection status lost physical dormancy or historical samples: active=%+v sleeping=%+v runtime=%+v", active, sleeping, runtime)
 			}
+			metric := selectionMetric(t, g, g.Dialers[1], common.NetworkTCP4)
+			if !metric.HasLatency || metric.Latency != runtime.Latency || metric.Ranked {
+				t.Fatalf("dormant metric lost measurements or kept a live rank: %+v", metric)
+			}
 			time.Sleep(time.Second)
 		}
 		if peer.attempts.Load() != before {
-			t.Fatal("reading selection status generated probe traffic")
+			t.Fatal("reading selection status or metrics generated probe traffic")
 		}
 	})
 }

@@ -216,7 +216,7 @@ func (s *automaticSelection) scheduleLocked() time.Time {
 			var best selectorCandidate
 			for _, d := range s.g.Dialers {
 				snapshot := d.SelectionSnapshot(index.NetworkType())
-				candidate := s.g.scoreCandidate(d, snapshot)
+				candidate := s.g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded)
 				if d == current.dialer || !s.prefer(candidate, current, state.force) {
 					delete(state.standby, d)
 					continue

@@ -438,7 +438,6 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 	if g.automatic != nil {
 		newObservation := false
 		for network := range common.NetworkIndex(common.NetworkTypeCount) {
-			g.selector.recordMetrics(g.selector.sortedCandidates(network.NetworkType()), dialer, network.NetworkType())
 			snapshot := dialer.SelectionSnapshot(network.NetworkType())
 			state := &g.automatic.networks[network]
 			if !snapshot.Proof.SameObservation(state.observed[dialer]) {

@@ -14,9 +14,6 @@ import (
 )
 
 type storeMetrics struct {
-	checkLatency     *prometheus.GaugeVec
-	selectionRank    *prometheus.GaugeVec
-	selectionScore   *prometheus.GaugeVec
 	dialDuration     *prometheus.HistogramVec
 	errors           *prometheus.CounterVec
 	relayFailures    *prometheus.CounterVec
@@ -31,18 +28,6 @@ func newStoreMetrics() storeMetrics {
 		resourceFailures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_resource_failures_total", Help: "Authoritative shared resource failure episodes."}, nodeLabels),
 		reconnects:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_reconnect_attempts_total", Help: "Background session connection requests by recovery executor."}, []string{"id", "subtag", "dialer", "executor"}),
 		nodeUnavailable:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_node_unavailable_total", Help: "Transitions from available to unavailable."}, nodeLabels),
-		checkLatency: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "dae_check_latency_seconds",
-			Help: "Connectivity-check latency in seconds by sample type.",
-		}, checkLatencyLabels),
-		selectionRank: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "dae_selection_rank",
-			Help: "Current selection rank of an outbound path.",
-		}, pathLabels),
-		selectionScore: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "dae_selection_score_seconds",
-			Help: "Policy latency plus configured offset; may be negative and is not measured latency.",
-		}, pathLabels),
 		dialDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "dae_dial_duration_seconds",
 			Help:    "Duration of outbound dial attempts in seconds.",
@@ -57,9 +42,6 @@ func newStoreMetrics() storeMetrics {
 
 func (m *storeMetrics) describe(ch chan<- *prometheus.Desc) {
 	for _, collector := range []prometheus.Collector{
-		m.checkLatency,
-		m.selectionRank,
-		m.selectionScore,
 		m.dialDuration,
 		m.errors,
 		m.relayFailures, m.resourceFailures, m.reconnects, m.nodeUnavailable,
@@ -69,9 +51,6 @@ func (m *storeMetrics) describe(ch chan<- *prometheus.Desc) {
 }
 
 func (m *storeMetrics) collect(ch chan<- prometheus.Metric) {
-	m.checkLatency.Collect(ch)
-	m.selectionRank.Collect(ch)
-	m.selectionScore.Collect(ch)
 	m.dialDuration.Collect(ch)
 	m.errors.Collect(ch)
 	m.relayFailures.Collect(ch)
@@ -118,12 +97,6 @@ func (s *Store) RecordReconnectAttempt(key, executor string) {
 		executor = boundedFailureLabel(executor, "daemon", "library_managed")
 		s.metrics.reconnects.WithLabelValues(append(labels, executor)...).Inc()
 	}
-}
-
-func (m *storeMetrics) resetCurrent() {
-	m.checkLatency.Reset()
-	m.selectionRank.Reset()
-	m.selectionScore.Reset()
 }
 
 var (
@@ -210,6 +183,7 @@ var (
 
 func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 	for _, descriptor := range []*prometheus.Desc{
+		checkLatencyDesc, selectionRankDesc, selectionScoreDesc,
 		activeConnectionsDesc,
 		totalConnectionsDesc,
 		fallbackConnectionsDesc,
@@ -230,17 +204,6 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 
 func pathLabelValues(path Path) []string {
 	return []string{path.NodeID, path.Outbound, path.Subtag, path.Dialer, path.Network.String()}
-}
-
-func (s *Store) RecordCheckMetrics(path Path, check, moving, selection time.Duration) {
-	labels := pathLabelValues(path)
-	s.metrics.checkLatency.WithLabelValues(append(labels, "last")...).Set(check.Seconds())
-	s.metrics.checkLatency.WithLabelValues(append(labels, "moving")...).Set(moving.Seconds())
-	s.metrics.selectionScore.WithLabelValues(labels...).Set(selection.Seconds())
-}
-
-func (s *Store) RecordSelectionIndex(path Path, index int) {
-	s.metrics.selectionRank.WithLabelValues(pathLabelValues(path)...).Set(float64(index))
 }
 
 func (s *Store) RecordDial(path Path, elapsed time.Duration) {
@@ -336,5 +299,6 @@ func (s *Store) collectAvailability(ch chan<- prometheus.Metric) {
 func (s *Store) Collect(ch chan<- prometheus.Metric) {
 	s.collectConnections(ch)
 	s.collectAvailability(ch)
+	s.collectSelections(ch)
 	s.metrics.collect(ch)
 }

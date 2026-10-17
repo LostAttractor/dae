@@ -46,11 +46,18 @@ func gatheredPathMetric(t *testing.T, registry *prometheus.Registry, familyName 
 	return nil, false
 }
 
+type testSelectionSource struct{ snapshots []SelectionMetrics }
+
+func (s *testSelectionSource) SelectionMetrics() []SelectionMetrics { return s.snapshots }
+
 func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	store := newStoreAt(time.Now())
 	path := trafficTestPath(t.Name())
-	store.RecordCheckMetrics(path, 42*time.Millisecond, 50*time.Millisecond, 60*time.Millisecond)
-	store.RecordSelectionIndex(path, 2)
+	source := &testSelectionSource{snapshots: []SelectionMetrics{{
+		Path: path, HasLatency: true, Latency: api.LatencyStats{Last: 42 * time.Millisecond, MovingAvg: 50 * time.Millisecond},
+		HasScore: true, Score: 60 * time.Millisecond, Ranked: true, Rank: 2,
+	}}}
+	store.Reconcile(nil, nil, source)
 	store.RecordDial(path, 25*time.Millisecond)
 	store.RecordError(path)
 	registry := prometheus.NewRegistry()
@@ -71,12 +78,17 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	if metric, ok := gatheredPathMetric(t, registry, "dae_selection_rank", path, nil); !ok || metric.GetGauge().GetValue() != 2 {
 		t.Fatalf("selection rank = %+v, present=%v", metric, ok)
 	}
-	store.RecordCheckMetrics(path, 0, 0, -time.Second)
+	source.snapshots[0].Latency = api.LatencyStats{}
+	source.snapshots[0].Score = -time.Second
 	if metric, ok := gatheredPathMetric(t, registry, "dae_check_latency_seconds", path, map[string]string{"sample": "moving"}); !ok || metric.GetGauge().GetValue() != 0 {
 		t.Fatalf("zero measured latency = %+v, present=%v", metric, ok)
 	}
 	if metric, ok := gatheredPathMetric(t, registry, "dae_selection_score_seconds", path, nil); !ok || metric.GetGauge().GetValue() != -1 {
 		t.Fatalf("signed selection score = %+v, present=%v", metric, ok)
+	}
+	source.snapshots[0].Ranked = false
+	if _, ok := gatheredPathMetric(t, registry, "dae_selection_rank", path, nil); ok {
+		t.Fatal("ineligible path retained a stale rank")
 	}
 	if metric, ok := gatheredPathMetric(t, registry, "dae_path_errors_total", path, nil); !ok || metric.GetCounter().GetValue() != 1 {
 		t.Fatalf("path error counter = %+v, present=%v", metric, ok)

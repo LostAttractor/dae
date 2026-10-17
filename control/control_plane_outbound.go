@@ -412,9 +412,11 @@ func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map
 func (c *ControlPlane) reconcileStats() {
 	nodes := make(map[string]stats.NodeIdentity)
 	groups := make(map[string]struct{}, len(c.outbounds))
+	var selections []stats.SelectionMetricsSource
 	for _, group := range c.outbounds {
 		if group.ChecksConnectivity() {
 			groups[group.Name] = struct{}{}
+			selections = append(selections, group)
 		}
 		for _, d := range group.Dialers {
 			key := d.StatsKey()
@@ -424,7 +426,7 @@ func (c *ControlPlane) reconcileStats() {
 			}
 		}
 	}
-	stats.DefaultStore.Reconcile(nodes, groups)
+	stats.DefaultStore.Reconcile(nodes, groups, selections...)
 }
 
 func parseGroupOverrideOption(group config.Group, global config.Global) *dialer.GlobalOption {
