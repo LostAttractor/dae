@@ -29,7 +29,7 @@ func (m *RequestMatcher) matchValue(i int, qtype uint16, ifindex uint32, dip, si
 	case consts.MatchType_SourceIpSet:
 		return m.ipSet[match.Value].HasPrefix(sip), nil
 	case consts.MatchType_IfIndex:
-		return ifindex != 0 && ifindex == match.loadIfindex(), nil
+		return ifindex != 0 && ifindex == match.Ifindex.Load(), nil
 	case consts.MatchType_Fallback:
 		return true, nil
 	default:

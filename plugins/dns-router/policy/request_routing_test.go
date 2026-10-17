@@ -176,7 +176,7 @@ func TestRequestMatcherConcurrentIfindexUpdate(t *testing.T) {
 	wg.Go(func() {
 		<-start
 		for i := range iterations {
-			matcher.matches[0].storeIfindex(uint32(i%2 + 1))
+			matcher.matches[0].Ifindex.Store(uint32(i%2 + 1))
 		}
 	})
 	wg.Go(func() {

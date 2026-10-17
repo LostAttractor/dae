@@ -14,7 +14,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -27,13 +26,9 @@ type interfaceReg struct {
 }
 
 type RequestMatcherBuilder struct {
-	upstreamName2Id    map[string]uint8
-	simulatedDomainSet []routing.DomainSet
-	rules              []requestMatchSet
-	ipSet              []*trie.Trie
-	interfaceRegs      []interfaceReg
-	ifmgr              *network.InterfaceManager
-	sources            map[int]*config_parser.RoutingRule
+	matcherBuilder[DnsRequestOutboundIndex, atomic.Uint32]
+	interfaceRegs []interfaceReg
+	ifmgr         *network.InterfaceManager
 }
 
 func NewRequestMatcherBuilder(
@@ -43,21 +38,15 @@ func NewRequestMatcherBuilder(
 	ifmgr *network.InterfaceManager,
 ) (b *RequestMatcherBuilder, err error) {
 	b = &RequestMatcherBuilder{upstreamName2Id: upstreamName2Id, ifmgr: ifmgr}
+	b.resolve = b.upstreamToId
+	b.stage = "request"
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_QName, routing.PlainParserFactory(b.addQName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addDestIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourceIp, routing.IpParserFactory(b.addSip))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
-	b.sources = make(map[int]*config_parser.RoutingRule)
-	for _, rule := range rules {
-		b.sources[len(b.rules)] = rule
-		if err = rulesBuilder.Apply([]*config_parser.RoutingRule{rule}); err != nil {
-			return nil, err
-		}
-	}
-
-	if err = b.addFallback(fallback); err != nil {
+	if err = b.applyRules(rulesBuilder, rules, fallback); err != nil {
 		return nil, err
 	}
 
@@ -84,63 +73,6 @@ func (b *RequestMatcherBuilder) upstreamToId(upstream string) (upstreamId DnsReq
 	return upstreamId, nil
 }
 
-func (b *RequestMatcherBuilder) addQName(f *config_parser.Function, key string, values []string, upstream *routing.Outbound) (err error) {
-	switch consts.RoutingDomainKey(key) {
-	case consts.RoutingDomainKey_Regex,
-		consts.RoutingDomainKey_Full,
-		consts.RoutingDomainKey_Keyword,
-		consts.RoutingDomainKey_Suffix:
-	default:
-		return fmt.Errorf("addQName: unsupported key: %v", key)
-	}
-	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
-		Key:       consts.RoutingDomainKey(key),
-		RuleIndex: len(b.rules),
-		Domains:   values,
-	})
-	upstreamId, err := b.upstreamToId(upstream.Name)
-	if err != nil {
-		return err
-	}
-	b.rules = append(b.rules, requestMatchSet{
-		Type:     consts.MatchType_DomainSet,
-		Not:      f.Not,
-		Upstream: uint8(upstreamId),
-	})
-	return nil
-}
-
-func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []uint16, upstream *routing.Outbound) (err error) {
-	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value uint16, upstreamId DnsRequestOutboundIndex) error {
-		b.rules = append(b.rules, requestMatchSet{
-			Type:     consts.MatchType_QType,
-			Value:    value,
-			Not:      f.Not,
-			Upstream: uint8(upstreamId),
-		})
-		return nil
-	})
-}
-
-func (b *RequestMatcherBuilder) addIpSet(f *config_parser.Function, cidrs []netip.Prefix, upstream *routing.Outbound, matchType consts.MatchType) (err error) {
-	upstreamId, err := b.upstreamToId(upstream.Name)
-	if err != nil {
-		return err
-	}
-	t, err := trie.NewTrieFromPrefixes(cidrs)
-	if err != nil {
-		return err
-	}
-	b.ipSet = append(b.ipSet, t)
-	b.rules = append(b.rules, requestMatchSet{
-		Value:    uint16(len(b.ipSet) - 1),
-		Type:     matchType,
-		Not:      f.Not,
-		Upstream: uint8(upstreamId),
-	})
-	return nil
-}
-
 func (b *RequestMatcherBuilder) addDestIp(f *config_parser.Function, cidrs []netip.Prefix, upstream *routing.Outbound) (err error) {
 	return b.addIpSet(f, cidrs, upstream, consts.MatchType_IpSet)
 }
@@ -164,61 +96,21 @@ func (b *RequestMatcherBuilder) addInterface(f *config_parser.Function, values [
 	})
 }
 
-func (b *RequestMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	fallback, err := config.ParseFunctionOrString(fallbackOutbound)
+func (b *RequestMatcherBuilder) Build() (*RequestMatcher, error) {
+	compiled, err := b.build()
 	if err != nil {
-		return fmt.Errorf("invalid DNS request fallback: %w", err)
-	}
-	upstream, err := routing.ParseOutbound(fallback)
-	if err != nil {
-		return err
-	}
-	if upstream.Must {
-		return fmt.Errorf("unsupported param: must")
-	}
-	if upstream.Mark != 0 {
-		return fmt.Errorf("unsupported param: mark")
-	}
-	upstreamId, err := b.upstreamToId(upstream.Name)
-	if err != nil {
-		return err
-	}
-	b.rules = append(b.rules, requestMatchSet{
-		Type:     consts.MatchType_Fallback,
-		Upstream: uint8(upstreamId),
-	})
-	return nil
-}
-
-func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
-	var m RequestMatcher
-	// Build domainMatcher
-	m.domainMatcher = domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
-	for _, domains := range b.simulatedDomainSet {
-		m.domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = m.domainMatcher.Build(); err != nil {
 		return nil, err
 	}
-	m.ipSet = b.ipSet
-
-	// Write routings.
-	// Fallback rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != consts.MatchType_Fallback {
-		return nil, fmt.Errorf("fallback rule MUST be the last")
-	}
-	m.matches = b.rules
-	m.sources = b.sources
-
+	m := RequestMatcher{matcher: compiled}
 	if b.ifmgr != nil {
 		for _, reg := range b.interfaceRegs {
 			matchSet := &m.matches[reg.ruleIndex]
 			initIndex := func(link netlink.Link) error {
-				matchSet.storeIfindex(uint32(link.Attrs().Index))
+				matchSet.Ifindex.Store(uint32(link.Attrs().Index))
 				return nil
 			}
-			updateIndex := func(link netlink.Link) { matchSet.storeIfindex(uint32(link.Attrs().Index)) }
-			resetIndex := func(netlink.Link) { matchSet.storeIfindex(0) }
+			updateIndex := func(link netlink.Link) { matchSet.Ifindex.Store(uint32(link.Attrs().Index)) }
+			resetIndex := func(netlink.Link) { matchSet.Ifindex.Store(0) }
 			if err := b.ifmgr.RegisterSync(reg.interfaceName, initIndex, updateIndex, resetIndex); err != nil {
 				return nil, fmt.Errorf("initialize request interface %q: %w", reg.interfaceName, err)
 			}
@@ -229,28 +121,10 @@ func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
 }
 
 type RequestMatcher struct {
-	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
-	ipSet         []*trie.Trie
-
-	matches []requestMatchSet
-	sources map[int]*config_parser.RoutingRule
+	matcher[atomic.Uint32]
 }
 
-type requestMatchSet struct {
-	Value    uint16
-	Ifindex  atomic.Uint32
-	Not      bool
-	Type     consts.MatchType
-	Upstream uint8
-}
-
-func (m *requestMatchSet) loadIfindex() uint32 {
-	return m.Ifindex.Load()
-}
-
-func (m *requestMatchSet) storeIfindex(ifindex uint32) {
-	m.Ifindex.Store(ifindex)
-}
+type requestMatchSet = matchRule[atomic.Uint32]
 
 func addrToBin128(addr netip.Addr) string {
 	return trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(addr.As16()), 128))
@@ -274,42 +148,8 @@ func (m *RequestMatcher) Match(
 	dipBin := addrToBin128(dip)
 	sipBin := addrToBin128(sip)
 
-	goodSubrule := false
-	badRule := false
-	for i := range m.matches {
-		match := &m.matches[i]
-		if badRule || goodSubrule {
-			goto beforeNextLoop
-		}
-		goodSubrule, err = m.matchValue(i, qType, ifindex, dipBin, sipBin, domainMatchBitmap)
-		if err != nil {
-			return 0, err
-		}
-	beforeNextLoop:
-		upstream := DnsRequestOutboundIndex(match.Upstream)
-		if upstream != DnsRequestOutboundIndex_LogicalOr {
-			// This match_set reaches the end of subrule.
-			// We are now at end of rule, or next match_set belongs to another
-			// subrule.
-
-			if goodSubrule == match.Not {
-				// This subrule does not hit.
-				badRule = true
-			}
-
-			// Reset goodSubrule.
-			goodSubrule = false
-		}
-
-		if upstream&DnsRequestOutboundIndex_LogicalMask !=
-			DnsRequestOutboundIndex_LogicalMask {
-			// Tail of a rule (line).
-			// Decide whether to hit.
-			if !badRule {
-				return upstream, nil
-			}
-			badRule = false
-		}
-	}
-	return 0, fmt.Errorf("no match set hit")
+	selected, err := m.matches.match(uint8(DnsRequestOutboundIndex_LogicalOr), uint8(DnsRequestOutboundIndex_LogicalMask), func(i int) (bool, error) {
+		return m.matchValue(i, qType, ifindex, dipBin, sipBin, domainMatchBitmap)
+	})
+	return DnsRequestOutboundIndex(selected), err
 }
