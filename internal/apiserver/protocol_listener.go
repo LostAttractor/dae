@@ -7,9 +7,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
+
+const maxPendingClassifications = 128
+const maxPendingClassificationsPerSource = 16
 
 // protocolListener delivers HTTP connections and concrete *tls.Conn values to
 // one http.Server. Classification happens outside Accept, so an idle peer cannot
@@ -21,17 +25,17 @@ type protocolListener struct {
 	ready   chan net.Conn
 	closed  chan struct{}
 	done    chan struct{}
-	slots   chan struct{}
 	once    sync.Once
 	workers sync.WaitGroup
 	mu      sync.Mutex
 	pending map[net.Conn]struct{}
+	sources map[netip.Addr]int
 	err     error
 }
 
 func newProtocolListener(listener net.Listener, configuration *tls.Config) *protocolListener {
 	l := &protocolListener{Listener: listener, tls: configuration, ready: make(chan net.Conn),
-		closed: make(chan struct{}), done: make(chan struct{}), slots: make(chan struct{}, 128), pending: make(map[net.Conn]struct{})}
+		closed: make(chan struct{}), done: make(chan struct{}), pending: make(map[net.Conn]struct{}), sources: make(map[netip.Addr]int)}
 	go l.run()
 	return l
 }
@@ -59,33 +63,41 @@ func (l *protocolListener) run() {
 			return
 		}
 		retry = 0
-		select {
-		case l.slots <- struct{}{}:
-		default:
+		peer, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok {
 			_ = conn.Close()
 			continue
 		}
+		source := peer.AddrPort().Addr().Unmap()
 		l.mu.Lock()
 		select {
 		case <-l.closed:
 			l.mu.Unlock()
 			_ = conn.Close()
-			<-l.slots
 			return
 		default:
-			l.pending[conn] = struct{}{}
 		}
+		if len(l.pending) >= maxPendingClassifications || l.sources[source] >= maxPendingClassificationsPerSource {
+			l.mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		l.pending[conn] = struct{}{}
+		l.sources[source]++
 		l.mu.Unlock()
-		l.workers.Go(func() { l.classify(conn) })
+		l.workers.Go(func() { l.classify(conn, source) })
 	}
 }
 
-func (l *protocolListener) classify(conn net.Conn) {
+func (l *protocolListener) classify(conn net.Conn, source netip.Addr) {
 	defer func() {
 		l.mu.Lock()
 		delete(l.pending, conn)
+		l.sources[source]--
+		if l.sources[source] == 0 {
+			delete(l.sources, source)
+		}
 		l.mu.Unlock()
-		<-l.slots
 	}()
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	reader := bufio.NewReader(conn)
