@@ -126,7 +126,7 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 		if err := validator.finish(); err != nil {
 			return err
 		}
-		if _, err := validator.builder.BuildUserspace(); err != nil {
+		if err := validator.builder.validatePredicates(); err != nil {
 			return err
 		}
 		c.builder.rememberInactive(validator.builder, "policy/"+policy.Name)
@@ -237,8 +237,7 @@ func validateEmptyRoutingUse(condition []*config_parser.Function) error {
 	if err := b.validate(); err != nil {
 		return err
 	}
-	_, err := b.BuildUserspace()
-	return err
+	return b.validatePredicates()
 }
 
 func (c *routingCompiler) compileRuleBatch(rules []*config_parser.RoutingRule, owner string) (routingSpan, error) {
@@ -279,7 +278,7 @@ func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSe
 		if err := validator.finish(); err != nil {
 			return err
 		}
-		if _, err := validator.builder.BuildUserspace(); err != nil {
+		if err := validator.builder.validatePredicates(); err != nil {
 			return err
 		}
 		c.builder.rememberInactive(validator.builder, "rule_set/"+set.Name)

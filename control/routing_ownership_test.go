@@ -3,13 +3,63 @@
 package control
 
 import (
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/routing"
 )
+
+func TestRoutingReusesOnlyUnchangedDomainSets(t *testing.T) {
+	b := newRoutingMatcherBuilder(nil, nil, nil)
+	b.simulatedDomainSet = []routing.DomainSet{{Key: consts.RoutingDomainKey_Suffix, RuleIndex: 0, Domains: []string{"example.com"}}}
+	first, err := b.BuildUserspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := b.buildUserspace(first)
+	if err != nil || second.domainMatcher != first.domainMatcher || second.routingState == first.routingState {
+		t.Fatalf("immutable matcher reuse or mutable state isolation failed: %v", err)
+	}
+	b.simulatedDomainSet[0].Domains[0] = "other.test"
+	third, err := b.buildUserspace(first)
+	if err != nil || third.domainMatcher == first.domainMatcher {
+		t.Fatalf("changed predicates reused stale matcher: %v", err)
+	}
+	if !bitmapHas(first.domainMatcher.MatchDomainBitmap("example.com"), 0) || bitmapHas(third.domainMatcher.MatchDomainBitmap("example.com"), 0) {
+		t.Fatal("rebuilt matcher or compiler changed an installed domain set")
+	}
+}
+
+func BenchmarkRoutingDomainRebuild(b *testing.B) {
+	builder := newRoutingMatcherBuilder(nil, nil, nil)
+	domains := make([]string, 2048)
+	for i := range domains {
+		domains[i] = fmt.Sprintf("d%d.example.com", i)
+	}
+	builder.simulatedDomainSet = []routing.DomainSet{{Key: consts.RoutingDomainKey_Suffix, RuleIndex: 0, Domains: domains}}
+	previous, err := builder.BuildUserspace()
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, reuse := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reuse=%t", reuse), func(b *testing.B) {
+			var old *RoutingMatcher
+			if reuse {
+				old = previous
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := builder.buildUserspace(old); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestBuiltRoutingOwnsInterfaceBindings(t *testing.T) {
 	first, builder := buildInterfaceRoutingMatcher(t)

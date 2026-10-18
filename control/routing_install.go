@@ -18,7 +18,7 @@ func (c *ControlPlane) installRouting(rules *preparedRules, outbounds map[string
 	if err != nil {
 		return fmt.Errorf("compile routing: %w", err)
 	}
-	matcher, err := builder.BuildUserspace()
+	matcher, err := builder.buildUserspace(c.routingMatcher)
 	if err != nil {
 		return fmt.Errorf("build userspace routing: %w", err)
 	}

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -28,8 +29,8 @@ type RoutingMatcherBuilder struct {
 	routing              RoutingProgram
 	outboundName2Id      map[string]uint8
 	ifmgr                *network.InterfaceScope
-	domainSetIDs         map[string]uint32
-	staticLpmIDs         map[string]int
+	domainSetIDs         map[[32]byte][]uint32
+	staticLpmIDs         map[[32]byte][]int
 	simulatedDomainSet   []routing.DomainSet
 	rulesBuilder         *routing.RulesBuilder
 	defaultProfileID     uint32
@@ -46,8 +47,8 @@ func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, i
 		bpf: bpf, clientSetSlots: make(map[string]int),
 		outboundName2Id: outboundName2Id,
 		ifmgr:           ifmgr,
-		domainSetIDs:    make(map[string]uint32),
-		staticLpmIDs:    make(map[string]int),
+		domainSetIDs:    make(map[[32]byte][]uint32),
+		staticLpmIDs:    make(map[[32]byte][]int),
 		fallbackSpans:   make(map[bpfMatchSet]routingSpan),
 	}
 	rulesBuilder := routing.NewRulesBuilder()
@@ -125,14 +126,33 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 	values = slices.Clone(values)
 	slices.Sort(values)
 	values = slices.Compact(values)
-	signature := fmt.Sprintf("%q:%q", key, values)
-	id, exists := b.domainSetIDs[signature]
+	hash := sha256.New()
+	var size [8]byte
+	writeValue := func(value string) {
+		binary.LittleEndian.PutUint64(size[:], uint64(len(value)))
+		hash.Write(size[:])
+		hash.Write([]byte(value))
+	}
+	writeValue(key)
+	for _, value := range values {
+		writeValue(value)
+	}
+	signature := [32]byte(hash.Sum(nil))
+	var id uint32
+	var exists bool
+	for _, candidate := range b.domainSetIDs[signature] {
+		set := b.simulatedDomainSet[candidate]
+		if string(set.Key) == key && slices.Equal(set.Domains, values) {
+			id, exists = candidate, true
+			break
+		}
+	}
 	if !exists {
 		id = uint32(len(b.simulatedDomainSet))
 		if id >= uint32(consts.MaxMatchSetLen) {
 			return fmt.Errorf("too many distinct domain predicates: limit %d", consts.MaxMatchSetLen)
 		}
-		b.domainSetIDs[signature] = id
+		b.domainSetIDs[signature] = append(b.domainSetIDs[signature], id)
 		b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
 			Key: consts.RoutingDomainKey(key), RuleIndex: int(id), Domains: values,
 		})
@@ -162,12 +182,20 @@ func (b *RoutingMatcherBuilder) internLPM(values []netip.Prefix) int {
 	}
 	slices.SortFunc(values, func(a, z netip.Prefix) int { return a.Compare(z) })
 	values = slices.Compact(values)
-	key := fmt.Sprint(values)
-	if id, ok := b.staticLpmIDs[key]; ok {
-		return id
+	hash := sha256.New()
+	for _, prefix := range values {
+		address := prefix.Addr().As16()
+		hash.Write(address[:])
+		hash.Write([]byte{byte(prefix.Bits()), byte(prefix.Addr().BitLen())})
+	}
+	key := [32]byte(hash.Sum(nil))
+	for _, id := range b.staticLpmIDs[key] {
+		if slices.Equal(b.simulatedLpmTries[id], values) {
+			return id
+		}
 	}
 	id := len(b.simulatedLpmTries)
-	b.staticLpmIDs[key] = id
+	b.staticLpmIDs[key] = append(b.staticLpmIDs[key], id)
 	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
 	return id
 }

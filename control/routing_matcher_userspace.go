@@ -26,6 +26,7 @@ type RoutingMatcher struct {
 	profiles             map[uint32][]routingSpan
 	destinations         map[uint32]DestinationProgram
 	domainMatcher        routing.DomainMatcher // All domain matchSets use one DomainMatcher.
+	domainSets           []routing.DomainSet   // Immutable inputs for reuse during preparation.
 
 	// outboundUsable reports whether an outbound group can serve the given
 	// network type; it backs skip_while_noalive rule evaluation. It may be
@@ -62,10 +63,34 @@ type routingEvaluation struct {
 }
 
 func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
+	return b.buildUserspace(nil)
+}
+
+func (b *RoutingMatcherBuilder) validatePredicates() error {
+	for _, set := range b.simulatedDomainSet {
+		if err := domain_matcher.ValidateSet(set.Domains, set.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) buildUserspace(previous *RoutingMatcher) (matcher *RoutingMatcher, err error) {
 	// Build domainMatcher
-	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
-	for _, domains := range b.simulatedDomainSet {
-		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	var domainMatcher routing.DomainMatcher
+	if previous != nil && slices.EqualFunc(previous.domainSets, b.simulatedDomainSet, func(a, z routing.DomainSet) bool {
+		return a.Key == z.Key && a.RuleIndex == z.RuleIndex && slices.Equal(a.Domains, z.Domains)
+	}) {
+		domainMatcher = previous.domainMatcher
+	} else {
+		built := domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+		for _, domains := range b.simulatedDomainSet {
+			built.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+		}
+		if err := built.Build(); err != nil {
+			return nil, err
+		}
+		domainMatcher = built
 	}
 	// Build Ip matcher.
 	var lpmMatcher []*trie.Trie
@@ -76,8 +101,9 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		}
 		lpmMatcher = append(lpmMatcher, t)
 	}
-	if err = domainMatcher.Build(); err != nil {
-		return nil, err
+	domainSets := slices.Clone(b.simulatedDomainSet)
+	for i := range domainSets {
+		domainSets[i].Domains = slices.Clone(domainSets[i].Domains)
 	}
 
 	profileInfo := slices.Clone(b.profiles)
@@ -118,6 +144,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		destinations:     destinations,
 		profiles:         profiles,
 		domainMatcher:    domainMatcher,
+		domainSets:       domainSets,
 		ruleMetadata:     metadata,
 		matchMetadata:    maps.Clone(b.matchMetadata),
 		profileInfo:      profileInfo,

@@ -137,10 +137,11 @@ func deduplicateParams(list []*config_parser.Param) []*config_parser.Param {
 	res := make([]*config_parser.Param, 0, len(list))
 	m := make(map[string]struct{})
 	for _, v := range list {
-		if _, ok := m[v.String(true, false)]; ok {
+		key := v.String(true, false)
+		if _, ok := m[key]; ok {
 			continue
 		}
-		m[v.String(true, false)] = struct{}{}
+		m[key] = struct{}{}
 		res = append(res, v)
 	}
 	return res
