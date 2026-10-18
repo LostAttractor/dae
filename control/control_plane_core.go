@@ -109,6 +109,7 @@ func newControlPlaneCore(
 		consts.DefaultDNSRetentionWindow,
 		core.writeDomainBitmaps, core.deleteDomainBitmaps,
 	)
+	core.domainRegistry.kernel.batchUpdate = core.writeDomainBitmapBatch
 	if bpf.Runtime != nil {
 		core.domainRegistry.activityLag = tcpMonitorInterval
 	}
@@ -266,6 +267,28 @@ func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uin
 	key := ipv6BytesToWords(ip6[:])
 	if err := c.bpf.DomainRoutingMap.Update(key, value, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("update domain bitmap %s: %w", ip, err)
+	}
+	return nil
+}
+
+func (c *controlPlaneCore) writeDomainBitmapBatch(entries []domainMapEntry) error {
+	keys := make([][4]uint32, len(entries))
+	values := make([]bpfDomainRouting, len(entries))
+	for i, entry := range entries {
+		if len(entry.bump) != len(values[i].Bump) || len(entry.routing) != len(values[i].Routing) {
+			panic("domain bitmap length not sync with kern program")
+		}
+		ip := entry.ip.As16()
+		keys[i] = ipv6BytesToWords(ip[:])
+		copy(values[i].Bump[:], entry.bump)
+		copy(values[i].Routing[:], entry.routing)
+	}
+	n, err := c.bpf.DomainRoutingMap.BatchUpdate(keys, values, &ebpf.BatchOptions{ElemFlags: uint64(ebpf.UpdateAny)})
+	if err != nil {
+		return err
+	}
+	if n != len(entries) {
+		return fmt.Errorf("domain bitmap batch updated %d of %d entries", n, len(entries))
 	}
 	return nil
 }

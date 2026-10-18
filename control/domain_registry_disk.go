@@ -118,9 +118,23 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.installRecords(records, matchBitmap)
 	now = g.clock(now)
-	g.gc(now)
+	// Validate the entire snapshot first, but avoid allocating reverse indexes
+	// and evaluating current rules for evidence that cold restore would collect.
+	cutoff := now.Add(-g.activityLag)
+	for name, record := range records {
+		for ip, pair := range record.addresses {
+			if !pair.retainUntil.After(cutoff) {
+				delete(record.addresses, ip)
+				g.gcCount++
+				g.generation++
+			}
+		}
+		if len(record.addresses) == 0 {
+			delete(records, name)
+		}
+	}
+	g.installRecords(records, matchBitmap)
 	if err := g.rebuildProjection(now); err != nil {
 		return err
 	}

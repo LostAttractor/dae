@@ -85,7 +85,12 @@ func TestDomainRegistryDiskRoundTrip(t *testing.T) {
 	}
 	restored, fake := newTestRegistry(2, 7*24*time.Hour)
 	activity := restored.activity
-	if err := restored.Restore(path, func(string) []uint32 { return testBitmap(3) }, now.Add(30*time.Minute)); err != nil {
+	if err := restored.Restore(path, func(name string) []uint32 {
+		if name == stale {
+			t.Fatal("evaluated expired domain during restore")
+		}
+		return testBitmap(3)
+	}, now.Add(30*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if restored.activity != activity {

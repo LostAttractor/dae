@@ -16,6 +16,11 @@ type domainMapUpdate func(ip netip.Addr, bump, routing []uint32) error
 
 type domainBitmaps struct{ bump, routing []uint32 }
 
+type domainMapEntry struct {
+	ip netip.Addr
+	domainBitmaps
+}
+
 func (b domainBitmaps) equal(other domainBitmaps) bool {
 	return slices.Equal(b.bump, other.bump) && slices.Equal(b.routing, other.routing)
 }
@@ -42,6 +47,7 @@ type domainProjection struct {
 	err         error
 	force       bool
 	update      domainMapUpdate
+	batchUpdate func([]domainMapEntry) error
 	remove      func(netip.Addr) error
 }
 
@@ -175,6 +181,9 @@ func (k *domainProjection) want(ip netip.Addr, s *ipRecord, force bool) {
 // later changes supersede earlier requests without allocating another job.
 func (k *domainProjection) publish(now time.Time) {
 	for _, removing := range []bool{true, false} {
+		if !removing && k.force && k.batchUpdate != nil && len(k.pending) > 1 {
+			k.publishBatch(now)
+		}
 		for ip, request := range k.pending {
 			value, wanted := k.desired[ip]
 			if removing == wanted || now.Before(request.due) {
@@ -209,6 +218,45 @@ func (k *domainProjection) publish(now time.Time) {
 	}
 	if len(k.pending) == 0 {
 		k.err = nil
+	}
+}
+
+// Batch only full reconstruction, after removals free any required slots.
+// On any batch failure, scalar publication retries every unconfirmed entry:
+// kernels may have applied a prefix, and updates are deliberately idempotent.
+func (k *domainProjection) publishBatch(now time.Time) {
+	const batchSize = 256
+	batch := make([]domainMapEntry, 0, min(batchSize, len(k.pending)))
+	remaining := k.max - len(k.resident)
+	flush := func() bool {
+		if err := k.batchUpdate(batch); err != nil {
+			return false
+		}
+		for _, entry := range batch {
+			k.resident[entry.ip] = entry.domainBitmaps
+			delete(k.pending, entry.ip)
+		}
+		batch = batch[:0]
+		return true
+	}
+	for ip, request := range k.pending {
+		value, wanted := k.desired[ip]
+		if !wanted || now.Before(request.due) {
+			continue
+		}
+		if _, resident := k.resident[ip]; !resident {
+			if remaining <= 0 {
+				continue
+			}
+			remaining--
+		}
+		batch = append(batch, domainMapEntry{ip, value})
+		if len(batch) == batchSize && !flush() {
+			return
+		}
+	}
+	if len(batch) != 0 {
+		flush()
 	}
 }
 
