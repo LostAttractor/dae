@@ -26,7 +26,7 @@ type httpClientAdmission struct {
 
 // Retain only the inner map template, not the full program collection.
 var httpClientMapSpec = sync.OnceValues(func() (*ebpf.MapSpec, error) {
-	spec, err := loadBpf()
+	spec, err := loadBPFSpec()
 	if err != nil {
 		return nil, err
 	}

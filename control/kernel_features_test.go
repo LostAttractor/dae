@@ -9,11 +9,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
+
+func TestKernelProbesDoNotLoadProductionResources(t *testing.T) {
+	production, err := loadBPFSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := kernelProbeSpec(production)
+	if len(probe.Maps) != 1 || probe.Maps["exited_map"].MaxEntries != 1 || probe.Maps["exited_map"].Pinning != ebpf.PinNone {
+		t.Fatal("preflight allocates production or pinned maps")
+	}
+	for name, program := range probe.Programs {
+		if len(program.Instructions) != 2 || program.Type != production.Programs[name].Type || program.AttachType != production.Programs[name].AttachType {
+			t.Fatalf("invalid attachment probe %s", name)
+		}
+	}
+}
 
 func TestKernelChecksReportIndependentFailures(t *testing.T) {
 	unsupported := errors.New("unsupported")

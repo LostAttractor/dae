@@ -16,9 +16,23 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	log "github.com/sirupsen/logrus"
 )
+
+// The embedded ELF is immutable. Callers rewrite constants and map definitions
+// on private copies; kernel BTF is shared across startup and reload generations.
+var parsedBPFSpec = sync.OnceValues(loadBpf)
+var kernelBTFCache = btf.NewCache()
+
+func loadBPFSpec() (*ebpf.CollectionSpec, error) {
+	spec, err := parsedBPFSpec()
+	if err != nil {
+		return nil, err
+	}
+	return spec.Copy(), nil
+}
 
 // BPFState is one configuration generation. Its programs reference private
 // routing maps and Runtime-owned connection maps. Closing it never closes traffic.
@@ -61,7 +75,7 @@ func detectCgroupPath() (string, error) {
 }
 
 func loadBpfObjectsWithConstants(obj any, opts *ebpf.CollectionOptions, constants map[string]any) error {
-	spec, err := loadBpf()
+	spec, err := loadBPFSpec()
 	if err != nil {
 		return err
 	}

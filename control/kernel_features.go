@@ -16,7 +16,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common/consts"
@@ -46,8 +45,8 @@ func runKernelChecks(ctx context.Context, checks ...kernelCheck) error {
 }
 
 // CheckKernelFeatures verifies the running kernel before startup resources are
-// prepared. It loads the production collection with private, unpinned maps, then
-// probes attachment APIs. Network probes live in an unnamed network namespace;
+// prepared. Small programs probe attachment APIs; the real collection load
+// validates production programs and helpers once. Network probes live in an unnamed network namespace;
 // cgroup probes only attach allow-only programs. All probe resources are closed.
 func CheckKernelFeatures(ctx context.Context) error {
 	return checkKernelFeatures(ctx, netlink.LinkAdd)
@@ -59,7 +58,7 @@ func checkKernelFeatures(ctx context.Context, addLink func(netlink.Link) error) 
 		kernelCheck{"kernel version", kernel.CheckVersion},
 		kernelCheck{"BPF memory limit", rlimit.RemoveMemlock},
 		kernelCheck{"kernel BTF (CONFIG_DEBUG_INFO_BTF)", func() error {
-			_, err := btf.LoadKernelSpec()
+			_, err := kernelBTFCache.Kernel()
 			return err
 		}},
 	); err != nil {
@@ -76,27 +75,13 @@ func checkKernelFeatures(ctx context.Context, addLink func(netlink.Link) error) 
 }
 
 func checkKernelFeaturesForLink(ctx context.Context, ns *DaeNetns) error {
-	spec, err := loadBpf()
+	spec, err := loadBPFSpec()
 	if err != nil {
 		return fmt.Errorf("kernel preflight: read embedded eBPF collection: %w", err)
 	}
-	currentTask, err := probeBPFCurrentTask()
+	collection, err := ebpf.NewCollection(kernelProbeSpec(spec))
 	if err != nil {
-		return fmt.Errorf("kernel preflight: %w", err)
-	}
-	// Nonzero constants keep the same verifier paths alive as normal startup.
-	if err := spec.Variables["PARAM"].Set(bpfDaeParam{
-		ControlPlanePid: uint32(os.Getpid()), Dae0Ifindex: uint32(ns.dae0.Attrs().Index), Dae0peerIfindex: uint32(ns.dae0peer.Attrs().Index),
-		Dae0peerMac: [6]uint8(ns.dae0peer.Attrs().HardwareAddr), HasBpfGetCurrentTask: currentTask,
-	}); err != nil {
-		return fmt.Errorf("kernel preflight: set eBPF constants: %w", err)
-	}
-	for _, m := range spec.Maps {
-		m.Pinning = ebpf.PinNone
-	}
-	collection, err := ebpf.NewCollection(spec)
-	if err != nil {
-		return fmt.Errorf("kernel preflight: production eBPF programs/maps/helpers: %w", explainBPFLoadError(err))
+		return fmt.Errorf("kernel preflight: eBPF attachment probes: %w", explainBPFLoadError(err))
 	}
 	defer collection.Close()
 	if err := runKernelChecks(ctx,
@@ -116,6 +101,27 @@ func checkKernelFeaturesForLink(ctx context.Context, ns *DaeNetns) error {
 		return fmt.Errorf("kernel preflight failed (check kernel support, mounts and process capabilities): %w", err)
 	}
 	return ctx.Err()
+}
+
+func kernelProbeSpec(production *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+	spec := &ebpf.CollectionSpec{
+		Maps: map[string]*ebpf.MapSpec{
+			"exited_map": {Name: "dae_probe", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1},
+		},
+		Programs: make(map[string]*ebpf.ProgramSpec),
+	}
+	for _, name := range []string{"tproxy_sk_lookup", "tproxy_dae0peer_ingress", "tproxy_dae0_ingress", "lan_ingress_l2", "tproxy_wan_egress_l2", "handle_exit"} {
+		p := production.Programs[name]
+		var verdict int32
+		if p.Type == ebpf.SkLookup {
+			verdict = 1 // SK_PASS
+		}
+		spec.Programs[name] = &ebpf.ProgramSpec{
+			Name: p.Name, Type: p.Type, AttachType: p.AttachType, License: "GPL",
+			Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, verdict), asm.Return()},
+		}
+	}
+	return spec
 }
 
 func probeBPFPinning(m *ebpf.Map) (err error) {
@@ -218,8 +224,8 @@ func probeNetworkFeatures(ctx context.Context, ns *DaeNetns, collection *ebpf.Co
 			return errors.Join(err, closeBpfLinks(links))
 		}},
 	}
-	// The collection load verifies every host program. TCX attachment and
-	// replacement use the same API for all of them; probe each direction once.
+	// TCX attachment and replacement use the same API for all host programs;
+	// probe each direction once without verifying production programs again.
 	for _, target := range []struct {
 		name   string
 		attach ebpf.AttachType

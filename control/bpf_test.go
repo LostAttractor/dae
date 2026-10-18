@@ -18,6 +18,45 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestCachedBPFSpecIsIndependent(t *testing.T) {
+	first, err := loadBPFSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadBPFSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := second.Maps["routing_tuples_map"].MaxEntries
+	first.Maps["routing_tuples_map"].MaxEntries = 1
+	if err := first.Variables["PARAM"].Set(bpfDaeParam{ControlPlanePid: 123}); err != nil {
+		t.Fatal(err)
+	}
+	var param bpfDaeParam
+	if err := second.Variables["PARAM"].Get(&param); err != nil {
+		t.Fatal(err)
+	}
+	if second.Maps["routing_tuples_map"].MaxEntries != want || param.ControlPlanePid == 123 {
+		t.Fatal("map or constant mutation escaped the private collection")
+	}
+}
+
+func BenchmarkBPFSpec(b *testing.B) {
+	for _, test := range []struct {
+		name string
+		load func() (*ebpf.CollectionSpec, error)
+	}{{"parse", loadBpf}, {"copy", loadBPFSpec}} {
+		b.Run(test.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := test.load(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // The caller supplies expectations after building with make capacity overrides.
 func TestConfiguredBPFMapCapacities(t *testing.T) {
 	raw := os.Getenv("DAE_TEST_MAP_CAPACITIES")

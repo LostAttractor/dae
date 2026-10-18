@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -96,7 +95,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	}
 	collectionOpts := &ebpf.CollectionOptions{
 		MapReplacements: runtime.shared,
-		Cache:           btf.NewCache(),
+		Cache:           kernelBTFCache,
 		Maps:            ebpf.MapOptions{PinPath: pinPath},
 		Programs:        programOptions,
 	}
