@@ -117,6 +117,32 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	if err != nil {
 		return errors.Join(fmt.Errorf("local API: %w", err), candidate.discard())
 	}
+	// Register both transparent sockets and start their readers before any
+	// host program can hand traffic to this generation.
+	ingressErrors := make(chan error, 1)
+	ready := make(chan bool, 1)
+	go func() {
+		_, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
+			return datapath.ListenAndServe(ready, conf.Global.TproxyPort)
+		})
+		if err == nil {
+			err = errors.New("datapath ingress stopped")
+		}
+		ingressErrors <- err
+	}()
+	select {
+	case started := <-ready:
+		if !started {
+			local.Close()
+			return errors.Join(<-ingressErrors, candidate.discard())
+		}
+	case err := <-ingressErrors:
+		local.Close()
+		return errors.Join(err, candidate.discard())
+	case <-ctx.Done():
+		local.Close()
+		return candidate.discard()
+	}
 	if err := app.publishPlane(candidate, false); err != nil {
 		local.Close()
 		return errors.Join(err, datapath.Close(), candidate.plane.Close())
@@ -142,27 +168,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(sigs)
-	ingressErrors := make(chan error, 1)
-	ready := make(chan bool, 1)
-	go func() {
-		_, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
-			return datapath.ListenAndServe(ready, conf.Global.TproxyPort)
-		})
-		if err == nil {
-			err = errors.New("datapath ingress stopped")
-		}
-		ingressErrors <- err
-	}()
-	select {
-	case started := <-ready:
-		if !started {
-			return <-ingressErrors
-		}
-	case err := <-ingressErrors:
-		return err
-	case <-ctx.Done():
-		return nil
-	}
 	resolver.SetRoute(plane.DNSResolverDialer())
 	app.publishAPI()
 	if management != nil {
