@@ -98,6 +98,8 @@ type UdpEndpoint struct {
 	pending      *udpSetup
 	firstDst     netip.AddrPort
 	firstIfindex uint32
+	writeDst     netip.AddrPort // source key lock
+	writeAddr    *net.UDPAddr
 }
 
 // udpSetup exists only while collecting the first destination's packets.

@@ -597,12 +597,14 @@ func TestControlPlaneRetireClosesAdmissionBeforeWaitAndDrainsUDPWithLiveContext(
 	finishSetup := func() { finishSetupOnce.Do(plane.tcpConnections.finishSetup) }
 	t.Cleanup(finishSetup)
 	taskContextErrors := make(chan error, 2)
-	if !emitUDPTask(plane.udpTaskPool, testUdpKey(11001), func() {
+	plane.udpTaskPool.close()
+	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
 		taskContextErrors <- plane.ctx.Err()
 		close(taskStarted)
 		<-releaseTask
 		taskContextErrors <- plane.ctx.Err()
-	}) {
+	})
+	if !plane.udpTaskPool.emit(nil, udpPacketWork{src: testUdpKey(11001)}) {
 		t.Fatal("failed to enqueue UDP task")
 	}
 	<-taskStarted
@@ -694,7 +696,8 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	release := func() { releaseTaskOnce.Do(func() { close(releaseTask) }) }
 	t.Cleanup(release)
 	replacementPublished := make(chan *testPacketConn, 1)
-	if !emitUDPTask(plane.udpTaskPool, key, func() {
+	plane.udpTaskPool.close()
+	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
 		close(taskStarted)
 		<-releaseTask
 		if err := plane.ctx.Err(); err != nil {
@@ -707,7 +710,8 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 			NatTimeout: time.Hour,
 		}))
 		replacementPublished <- conn
-	}) {
+	})
+	if !plane.udpTaskPool.emit(nil, udpPacketWork{src: key}) {
 		t.Fatal("failed to enqueue UDP task")
 	}
 	<-taskStarted

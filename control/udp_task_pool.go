@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -16,32 +17,33 @@ const (
 	udpTaskMaxPending  = 8192
 )
 
-type udpTask = func()
-
 type queuedUDPTask struct {
-	run    udpTask
+	work   udpPacketWork
 	packet udpPacket
 	next   *queuedUDPTask
 }
 
+var queuedUDPTasks = sync.Pool{New: func() any { return new(queuedUDPTask) }}
+
 // A source is either being processed by one worker or on the ready list.
 // Only pending tasks retain a queue; NAT association lifetime is independent.
-type udpTaskQueue[K comparable] struct {
-	key        K
+type udpTaskQueue struct {
+	key        netip.AddrPort
 	head, tail *queuedUDPTask
 	pending    int
-	next       *udpTaskQueue[K]
+	next       *udpTaskQueue
 }
 
-type udpTaskPool[K comparable] struct {
+type udpTaskPool struct {
 	// Cancel packet work independently of ingress, which still delivers QUIC
 	// packets during MITM's graceful shutdown.
 	ctx                              context.Context
 	cancel                           context.CancelFunc
 	mu                               sync.Mutex
 	ready                            *sync.Cond
-	queues                           map[K]*udpTaskQueue[K]
-	head, tail                       *udpTaskQueue[K]
+	queues                           map[netip.AddrPort]*udpTaskQueue
+	head, tail                       *udpTaskQueue
+	execute                          func(udpPacketWork, []byte)
 	workers                          int
 	workersDone                      sync.WaitGroup
 	closed                           bool
@@ -51,22 +53,23 @@ type udpTaskPool[K comparable] struct {
 	maxWorkers, maxSources, maxTasks int
 }
 
-func newUdpTaskPool[K comparable]() *udpTaskPool[K] {
+func newUdpTaskPool(execute func(udpPacketWork, []byte)) *udpTaskPool {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &udpTaskPool[K]{
+	p := &udpTaskPool{
 		ctx: ctx, cancel: cancel,
-		queues: make(map[K]*udpTaskQueue[K]), memory: udpPacketMemory,
+		queues: make(map[netip.AddrPort]*udpTaskQueue), memory: udpPacketMemory,
+		execute:    execute,
 		maxWorkers: udpTaskMaxWorkers, maxSources: udpTaskMaxSources, maxTasks: udpTaskMaxPending,
 	}
 	p.ready = sync.NewCond(&p.mu)
 	return p
 }
 
-// emit checks capacity before copying the borrowed datagram or preparing work.
-// prepare runs synchronously under the pool lock and must only construct the
-// task, without blocking or reentering the pool. The task may use the owned
-// datagram until it returns; the pool then releases its buffer and budget.
-func (p *udpTaskPool[K]) emit(key K, data []byte, prepare func([]byte) udpTask) bool {
+// emit checks capacity before copying the borrowed datagram. Work is ordered by
+// source, and execute may use the owned data until it returns. The pool then
+// releases the buffer and budget. The executor is fixed for the pool's lifetime.
+func (p *udpTaskPool) emit(data []byte, work udpPacketWork) bool {
+	key := work.src
 	p.mu.Lock()
 	if p.closed || p.ctx.Err() != nil {
 		p.mu.Unlock()
@@ -93,9 +96,10 @@ func (p *udpTaskPool[K]) emit(key K, data []byte, prepare func([]byte) udpTask) 
 		p.drops.report("packet_memory_limit")
 		return false
 	}
-	task := &queuedUDPTask{run: prepare(packet.data), packet: packet}
+	task := queuedUDPTasks.Get().(*queuedUDPTask)
+	task.packet, task.work = packet, work
 	if q == nil {
-		q = &udpTaskQueue[K]{key: key}
+		q = &udpTaskQueue{key: key}
 		p.queues[key] = q
 		p.enqueue(q)
 	}
@@ -119,7 +123,7 @@ func (p *udpTaskPool[K]) emit(key K, data []byte, prepare func([]byte) udpTask) 
 }
 
 // enqueue appends a source to the round-robin ready list with mu held.
-func (p *udpTaskPool[K]) enqueue(q *udpTaskQueue[K]) {
+func (p *udpTaskPool) enqueue(q *udpTaskQueue) {
 	if p.tail == nil {
 		p.head = q
 	} else {
@@ -128,7 +132,7 @@ func (p *udpTaskPool[K]) enqueue(q *udpTaskQueue[K]) {
 	p.tail = q
 }
 
-func (p *udpTaskPool[K]) run() {
+func (p *udpTaskPool) run() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for {
@@ -151,9 +155,11 @@ func (p *udpTaskPool[K]) run() {
 		q.pending--
 		p.mu.Unlock()
 		if p.ctx.Err() == nil {
-			task.run()
+			p.execute(task.work, task.packet.data)
 		}
 		task.packet.release()
+		*task = queuedUDPTask{}
+		queuedUDPTasks.Put(task)
 		p.mu.Lock()
 		p.tasks--
 		if q.head == nil {
@@ -168,7 +174,7 @@ func (p *udpTaskPool[K]) run() {
 
 // close rejects new tasks and waits for all accepted tasks to release their
 // resources. Concurrent callers wait for the same workers.
-func (p *udpTaskPool[K]) close() {
+func (p *udpTaskPool) close() {
 	p.mu.Lock()
 	p.closed = true
 	p.ready.Broadcast()

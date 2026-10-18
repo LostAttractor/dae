@@ -62,16 +62,14 @@ func TestMITMPacketPairDatagrams(t *testing.T) {
 
 func TestUDPPacketMemorySharedByIngressAndMITM(t *testing.T) {
 	budget := membuffer.NewBudget(16)
-	p := newUdpTaskPool[int]()
+	started, unblock := make(chan struct{}), make(chan struct{})
+	p := newUdpTaskPool(func(udpPacketWork, []byte) { close(started); <-unblock })
 	p.memory = budget
 	t.Cleanup(p.close)
-	started, unblock := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	release := func() { once.Do(func() { close(unblock) }) }
 	t.Cleanup(release)
-	require.True(t, p.emit(1, []byte("12345"), func([]byte) udpTask {
-		return func() { close(started); <-unblock }
-	}))
+	require.True(t, p.emit([]byte("12345"), udpPacketWork{src: testUdpKey(1)}))
 	<-started
 
 	client, dest := netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("198.51.100.1:443")

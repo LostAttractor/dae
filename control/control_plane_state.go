@@ -4,7 +4,6 @@ package control
 
 import (
 	"context"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 
@@ -31,7 +30,7 @@ type planeOutbounds struct {
 
 type planeTraffic struct {
 	tcpConnections   *tcpConnectionTracker
-	udpTaskPool      *udpTaskPool[netip.AddrPort]
+	udpTaskPool      *udpTaskPool
 	udpSetups        atomic.Int32
 	udpSetupDrops    udpPacketDrops
 	udpEndpoints     *UdpEndpointPool

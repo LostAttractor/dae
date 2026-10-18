@@ -20,22 +20,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func emitUDPTask[K comparable](pool *udpTaskPool[K], key K, task udpTask) bool {
-	return pool.emit(key, nil, func([]byte) udpTask { return task })
-}
-
 func testUdpKey(port uint16) netip.AddrPort {
 	return netip.MustParseAddrPort(fmt.Sprintf("10.0.0.1:%d", port))
 }
 
 func TestUdpTaskPool_TaskExecution(t *testing.T) {
-	pool := newUdpTaskPool[netip.AddrPort]()
-	t.Cleanup(pool.close)
-	key := testUdpKey(10001)
-
 	done := make(chan struct{})
-	require.True(t, emitUDPTask(pool, key, func() { close(done) }))
-
+	pool := newUdpTaskPool(func(udpPacketWork, []byte) { close(done) })
+	t.Cleanup(pool.close)
+	require.True(t, pool.emit(nil, udpPacketWork{src: testUdpKey(10001)}))
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -44,73 +37,60 @@ func TestUdpTaskPool_TaskExecution(t *testing.T) {
 }
 
 func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
-	pool := newUdpTaskPool[netip.AddrPort]()
-	t.Cleanup(pool.close)
-	key := testUdpKey(10002)
-
 	const n = 100
 	var mu sync.Mutex
-	executed := make([]int, 0, n)
+	var executed []byte
 	done := make(chan struct{})
+	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		executed = append(executed, data[0])
+		if len(executed) == n {
+			close(done)
+		}
+	})
+	t.Cleanup(pool.close)
 	for i := range n {
-		emitUDPTask(pool, key, func() {
-			mu.Lock()
-			executed = append(executed, i)
-			mu.Unlock()
-			if i == n-1 {
-				close(done)
-			}
-		})
+		require.True(t, pool.emit([]byte{byte(i)}, udpPacketWork{src: testUdpKey(10002)}))
 	}
-
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("tasks were not fully executed")
 	}
 	for i := range n {
-		if executed[i] != i {
-			t.Fatalf("tasks executed out of order: executed[%v] = %v", i, executed[i])
-		}
+		require.Equal(t, byte(i), executed[i], "tasks executed out of order")
 	}
 }
 
 func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
-	pool := newUdpTaskPool[netip.AddrPort]()
+	started, unblock := make(chan struct{}), make(chan struct{})
+	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+		if string(data) == "hold" {
+			close(started)
+			<-unblock
+		}
+	})
 	t.Cleanup(pool.close)
-	key := testUdpKey(10003)
-
-	// Block the convoy goroutine so the queue channel can be filled.
-	unblock := make(chan struct{})
-	var unblockOnce sync.Once
-	release := func() { unblockOnce.Do(func() { close(unblock) }) }
+	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(release)
-	started := make(chan struct{})
-	require.True(t, emitUDPTask(pool, key, func() {
-		close(started)
-		<-unblock
-	}))
+	work := udpPacketWork{src: testUdpKey(10003)}
+	require.True(t, pool.emit([]byte("hold"), work))
 	<-started
-
-	// Fill the queue channel.
 	for range udpTaskQueueLength {
-		require.True(t, emitUDPTask(pool, key, func() {}))
+		require.True(t, pool.emit(nil, work))
 	}
-
-	// The queue is full now: this task should be dropped instead of blocking.
 	emitDone := make(chan bool)
-	go func() {
-		emitDone <- emitUDPTask(pool, key, func() {})
-	}()
+	go func() { emitDone <- pool.emit(nil, work) }()
 	select {
 	case accepted := <-emitDone:
 		require.False(t, accepted)
 	case <-time.After(3 * time.Second):
-		t.Fatal("EmitTask blocked on a full queue")
+		t.Fatal("emit blocked on a full queue")
 	}
 	firstLog := pool.drops.lastLog.Load()
 	require.NotZero(t, firstLog, "queue saturation was not reported")
-	require.False(t, emitUDPTask(pool, key, func() {}))
+	require.False(t, pool.emit(nil, work))
 	require.Equal(t, firstLog, pool.drops.lastLog.Load(), "queue saturation warning was not rate limited")
 	futureLog := time.Now().Add(time.Hour).UnixNano()
 	pool.drops.lastLog.Store(futureLog)
@@ -120,14 +100,12 @@ func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 }
 
 func TestUdpTaskPool_ReleasesIdleSources(t *testing.T) {
-	pool := newUdpTaskPool[int]()
+	done := make(chan struct{})
+	pool := newUdpTaskPool(func(udpPacketWork, []byte) { done <- struct{}{} })
 	t.Cleanup(pool.close)
 	pool.memory = membuffer.NewBudget(4096)
 	for i := range 100 {
-		done := make(chan struct{})
-		require.True(t, pool.emit(i, []byte("packet"), func([]byte) udpTask {
-			return func() { close(done) }
-		}))
+		require.True(t, pool.emit([]byte("packet"), udpPacketWork{src: testUdpKey(uint16(i))}))
 		<-done
 	}
 	require.Eventually(t, func() bool {
@@ -136,42 +114,41 @@ func TestUdpTaskPool_ReleasesIdleSources(t *testing.T) {
 		return len(pool.queues) == 0 && pool.tasks == 0 && pool.memory.Status().Used == 0
 	}, time.Second, time.Millisecond)
 	// Reusing an idle source must create a fresh queue and remain executable.
-	done := make(chan struct{})
-	require.True(t, emitUDPTask(pool, 0, func() { close(done) }))
+	require.True(t, pool.emit(nil, udpPacketWork{src: testUdpKey(0)}))
 	<-done
 }
 
 func TestUdpTaskPool_CloseDrainsAcceptedTasks(t *testing.T) {
-	pool := newUdpTaskPool[netip.AddrPort]()
-	key := testUdpKey(10005)
-	started := make(chan struct{})
-	unblock := make(chan struct{})
-	secondDone := make(chan struct{})
-	require.True(t, emitUDPTask(pool, key, func() {
-		close(started)
-		<-unblock
-	}))
+	started, unblock, secondDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+		if string(data) == "hold" {
+			close(started)
+			<-unblock
+		} else {
+			close(secondDone)
+		}
+	})
+	t.Cleanup(pool.close)
+	release := sync.OnceFunc(func() { close(unblock) })
+	t.Cleanup(release)
+	work := udpPacketWork{src: testUdpKey(10005)}
+	require.True(t, pool.emit([]byte("hold"), work))
 	<-started
-	require.True(t, emitUDPTask(pool, key, func() { close(secondDone) }))
-
+	require.True(t, pool.emit(nil, work))
 	closeDone := make(chan struct{})
-	go func() {
-		pool.close()
-		close(closeDone)
-	}()
+	go func() { pool.close(); close(closeDone) }()
 	require.Eventually(t, func() bool {
 		pool.mu.Lock()
 		defer pool.mu.Unlock()
 		return pool.closed
 	}, time.Second, time.Millisecond)
-	require.False(t, emitUDPTask(pool, key, func() {}), "closed pool accepted a task")
+	require.False(t, pool.emit(nil, work), "closed pool accepted a task")
 	select {
 	case <-closeDone:
 		t.Fatal("Close returned before accepted tasks finished")
 	case <-time.After(20 * time.Millisecond):
 	}
-
-	close(unblock)
+	release()
 	select {
 	case <-secondDone:
 	case <-time.After(3 * time.Second):
@@ -185,60 +162,73 @@ func TestUdpTaskPool_CloseDrainsAcceptedTasks(t *testing.T) {
 }
 
 func TestUdpTaskPool_ConcurrentEmitAndClose(t *testing.T) {
-	pool := newUdpTaskPool[netip.AddrPort]()
-	key := testUdpKey(10006)
+	var executed atomic.Int64
+	pool := newUdpTaskPool(func(udpPacketWork, []byte) { executed.Add(1) })
+	work := udpPacketWork{src: testUdpKey(10006)}
 	start := make(chan struct{})
 	var producers sync.WaitGroup
 	var accepted atomic.Int64
-	var executed atomic.Int64
 	for range 8 {
 		producers.Go(func() {
 			<-start
 			for range 100 {
-				if emitUDPTask(pool, key, func() { executed.Add(1) }) {
+				if pool.emit(nil, work) {
 					accepted.Add(1)
 				}
 			}
 		})
 	}
-
 	close(start)
 	closeDone := make(chan struct{})
-	go func() {
-		pool.close()
-		close(closeDone)
-	}()
+	go func() { pool.close(); close(closeDone) }()
 	producers.Wait()
 	<-closeDone
 	require.Equal(t, accepted.Load(), executed.Load())
-	require.False(t, emitUDPTask(pool, key, func() {}))
+	require.False(t, pool.emit(nil, work))
 }
 
 func TestUdpTaskPool_RoundRobin(t *testing.T) {
-	p := newUdpTaskPool[string]()
+	started, unblock := make(chan struct{}), make(chan struct{})
+	var order []netip.AddrPort
+	p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+		if string(data) == "hold" {
+			close(started)
+			<-unblock
+		} else {
+			order = append(order, work.src)
+		}
+	})
 	p.maxWorkers = 1
 	t.Cleanup(p.close)
-	started, unblock := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(unblock) }) }
+	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(release)
-	require.True(t, emitUDPTask(p, "busy", func() { close(started); <-unblock }))
+	busy, other, third := testUdpKey(1), testUdpKey(2), testUdpKey(3)
+	require.True(t, p.emit([]byte("hold"), udpPacketWork{src: busy}))
 	<-started
-	var order []string
 	for range 3 {
-		require.True(t, emitUDPTask(p, "busy", func() { order = append(order, "busy") }))
-		require.True(t, emitUDPTask(p, "other", func() { order = append(order, "other") }))
+		require.True(t, p.emit(nil, udpPacketWork{src: busy}))
+		require.True(t, p.emit(nil, udpPacketWork{src: other}))
 	}
-	require.True(t, emitUDPTask(p, "third", func() { order = append(order, "third") }))
+	require.True(t, p.emit(nil, udpPacketWork{src: third}))
 	release()
 	p.close()
-	require.Equal(t, []string{"other", "third", "busy", "other", "busy", "other", "busy"}, order)
+	require.Equal(t, []netip.AddrPort{other, third, busy, other, busy, other, busy}, order)
 }
 
-func TestUdpTaskPool_AdmissionBeforePreparing(t *testing.T) {
+func TestUdpTaskPool_AdmissionBeforeCopying(t *testing.T) {
 	for _, limit := range []string{"sources", "tasks", "memory"} {
 		t.Run(limit, func(t *testing.T) {
-			p := newUdpTaskPool[int]()
+			started, unblock := make(chan struct{}), make(chan struct{})
+			var received string
+			var executed atomic.Int32
+			p := newUdpTaskPool(func(work udpPacketWork, owned []byte) {
+				executed.Add(1)
+				if work.src == testUdpKey(1) {
+					close(started)
+					<-unblock
+					received = string(owned)
+				}
+			})
 			p.maxWorkers = 1
 			p.memory = membuffer.NewBudget(64)
 			t.Cleanup(p.close)
@@ -250,58 +240,46 @@ func TestUdpTaskPool_AdmissionBeforePreparing(t *testing.T) {
 			case "memory":
 				p.memory = membuffer.NewBudget(8)
 			}
-			started, unblock := make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			release := func() { once.Do(func() { close(unblock) }) }
+			release := sync.OnceFunc(func() { close(unblock) })
 			t.Cleanup(release)
 			borrowed := []byte("12345")
-			var received string
-			require.True(t, p.emit(1, borrowed, func(owned []byte) udpTask {
-				return func() { close(started); <-unblock; received = string(owned) }
-			}))
+			require.True(t, p.emit(borrowed, udpPacketWork{src: testUdpKey(1)}))
 			<-started
 			borrowed[0] = 'X'
 			require.EqualValues(t, 8, p.memory.Status().Used, "running buffer capacity must remain charged")
-			prepared := false
-			require.False(t, p.emit(2, borrowed, func([]byte) udpTask {
-				prepared = true
-				return func() {}
-			}))
-			require.False(t, prepared, "overload allocated per-packet work")
+			require.False(t, p.emit(borrowed, udpPacketWork{src: testUdpKey(2)}))
 			require.EqualValues(t, 8, p.memory.Status().Used)
+			require.EqualValues(t, 8, p.memory.Status().Peak, "rejected packet allocated a buffer")
 			release()
 			require.Eventually(t, func() bool {
 				p.mu.Lock()
 				defer p.mu.Unlock()
 				return p.tasks == 0 && len(p.queues) == 0
 			}, time.Second, time.Millisecond)
-			require.True(t, p.emit(2, borrowed, func([]byte) udpTask { return func() {} }), "released capacity was not reusable")
+			require.True(t, p.emit(borrowed, udpPacketWork{src: testUdpKey(2)}), "released capacity was not reusable")
 			p.close()
 			require.Equal(t, "12345", received)
+			require.EqualValues(t, 2, executed.Load())
 			require.Zero(t, p.memory.Status().Used)
-			require.False(t, p.emit(3, borrowed, func([]byte) udpTask {
-				t.Fatal("prepared work after shutdown")
-				return nil
-			}))
+			require.False(t, p.emit(borrowed, udpPacketWork{src: testUdpKey(3)}))
 		})
 	}
 }
 
 func TestUdpTaskPool_BoundedWorkers(t *testing.T) {
-	p := newUdpTaskPool[int]()
+	started, unblock := make(chan struct{}, 20), make(chan struct{})
+	var executed atomic.Int32
+	p := newUdpTaskPool(func(udpPacketWork, []byte) {
+		started <- struct{}{}
+		<-unblock
+		executed.Add(1)
+	})
 	p.maxWorkers = 2
 	t.Cleanup(p.close)
-	started, unblock := make(chan struct{}, 20), make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(unblock) }) }
+	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(release)
-	var executed atomic.Int32
 	for key := range 20 {
-		require.True(t, emitUDPTask(p, key, func() {
-			started <- struct{}{}
-			<-unblock
-			executed.Add(1)
-		}))
+		require.True(t, p.emit(nil, udpPacketWork{src: testUdpKey(uint16(key))}))
 	}
 	for range 2 {
 		select {
@@ -325,35 +303,40 @@ func TestUdpTaskPool_BoundedWorkers(t *testing.T) {
 }
 
 func BenchmarkUdpTaskPoolRejectedPacket(b *testing.B) {
-	p := newUdpTaskPool[netip.AddrPort]()
-	p.maxTasks = 1
 	unblock := make(chan struct{})
+	p := newUdpTaskPool(func(udpPacketWork, []byte) { <-unblock })
+	p.maxTasks = 1
 	source := testUdpKey(12345)
-	emitUDPTask(p, source, func() { <-unblock })
+	p.emit(nil, udpPacketWork{src: source})
 	defer p.close()
 	defer close(unblock)
-	plane := &ControlPlane{ctx: context.Background(), udpTaskPool: p}
+	plane := &ControlPlane{ctx: b.Context(), udpTaskPool: p}
 	data := make([]byte, 1500)
 	p.drops.lastLog.Store(time.Now().UnixNano())
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		plane.enqueueUDPPacket(data, source, source, nil)
 	}
 }
 
 func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
-	p := newUdpTaskPool[netip.AddrPort]()
+	started, unblock := make(chan struct{}), make(chan struct{})
+	p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+		if string(data) == "hold" {
+			close(started)
+			<-unblock
+		} else {
+			work.execute(data)
+		}
+	})
 	p.memory = membuffer.NewBudget(4096)
 	t.Cleanup(p.close)
-	source := testUdpKey(12346)
-	started, unblock := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(unblock) }) }
+	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(release)
-	require.True(t, emitUDPTask(p, source, func() { close(started); <-unblock }))
+	source := testUdpKey(12346)
+	require.True(t, p.emit([]byte("hold"), udpPacketWork{src: source}))
 	<-started
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	plane := &ControlPlane{ctx: ctx, udpTaskPool: p}
 	plane.enqueueUDPPacket([]byte("canceled"), source, source, nil)
@@ -361,27 +344,32 @@ func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 	cancel()
 	release()
 	p.close()
-	// A canceled queued packet must release storage without touching routing
-	// state (the plane intentionally has no core or endpoints).
+	// The canceled packet must release storage without touching routing state.
 	require.Zero(t, p.memory.Status().Used)
 }
 
 func TestUdpTaskPoolAbortDiscardsQueuedWork(t *testing.T) {
-	p := newUdpTaskPool[int]()
+	started, unblock := make(chan struct{}), make(chan struct{})
+	queuedRan := false
+	p := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+		if string(data) == "hold" {
+			close(started)
+			<-unblock
+		} else {
+			queuedRan = true
+		}
+	})
 	p.memory = membuffer.NewBudget(4096)
 	t.Cleanup(p.close)
-	started, release := make(chan struct{}), make(chan struct{})
-	finish := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(finish)
-	require.True(t, emitUDPTask(p, 1, func() { close(started); <-release }))
+	release := sync.OnceFunc(func() { close(unblock) })
+	t.Cleanup(release)
+	work := udpPacketWork{src: testUdpKey(1)}
+	require.True(t, p.emit([]byte("hold"), work))
 	<-started
-	queuedRan := false
-	require.True(t, p.emit(1, []byte("discard on shutdown"), func([]byte) udpTask {
-		return func() { queuedRan = true }
-	}))
+	require.True(t, p.emit([]byte("discard on shutdown"), work))
 	require.NotZero(t, p.memory.Status().Used)
 	p.cancel()
-	finish()
+	release()
 	p.close()
 	require.False(t, queuedRan, "aborted pool executed queued business work")
 	require.Zero(t, p.memory.Status().Used)
@@ -389,7 +377,14 @@ func TestUdpTaskPoolAbortDiscardsQueuedWork(t *testing.T) {
 
 func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		p := newUdpTaskPool[netip.AddrPort]()
+		unblock := make(chan struct{})
+		p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+			if string(data) == "hold" {
+				<-unblock
+			} else {
+				work.execute(data)
+			}
+		})
 		defer p.close()
 		endpoints := new(UdpEndpointPool)
 		defer endpoints.closeAll()
@@ -401,10 +396,8 @@ func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 		endpoints.add(source, endpoint)
 		plane := &ControlPlane{ctx: t.Context(), udpTaskPool: p, udpEndpoints: endpoints}
 
-		// Hold this source's queue until only one second of the packet's
-		// original timeout remains, then let its write block on the socket.
-		unblock := make(chan struct{})
-		require.True(t, emitUDPTask(p, source, func() { <-unblock }))
+		// Hold this source until only one second of the original timeout remains.
+		require.True(t, p.emit([]byte("hold"), udpPacketWork{src: source}))
 		queuedAt := time.Now()
 		plane.enqueueUDPPacket([]byte("packet"), source, destination, nil)
 		time.Sleep(consts.DefaultDialTimeout - time.Second)

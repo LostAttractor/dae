@@ -121,21 +121,31 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	return n, err
 }
 
-// enqueueUDPPacket borrows data only until emit returns. Queued packets retain
-// an absolute deadline, but allocate their context/timer only when dispatched.
+type udpPacketWork struct {
+	plane         *ControlPlane
+	src, dst      netip.AddrPort
+	routingResult *routingResult
+	deadline      time.Time
+}
+
+func (w udpPacketWork) execute(data []byte) {
+	c := w.plane
+	if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(w.deadline) {
+		return
+	}
+	ctx, cancel := context.WithDeadline(c.udpTaskPool.ctx, w.deadline)
+	defer cancel()
+	if err := c.handlePkt(ctx, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil {
+		log.WithError(err).WithFields(log.Fields{"source": w.src, "destination": w.dst}).Debug("UDP packet handling failed")
+	}
+}
+
+// enqueueUDPPacket copies borrowed data into a pooled typed task. Deadlines
+// include queue time; contexts/timers are allocated only when dispatched.
 func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *routingResult) {
-	deadline := time.Now().Add(consts.DefaultDialTimeout)
-	c.udpTaskPool.emit(src, data, func(owned []byte) udpTask {
-		return func() {
-			if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(deadline) {
-				return
-			}
-			ctx, cancel := context.WithDeadline(c.udpTaskPool.ctx, deadline)
-			defer cancel()
-			if err := c.handlePkt(ctx, owned, src, dst, routingResult); err != nil && ctx.Err() == nil {
-				log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP packet handling failed")
-			}
-		}
+	c.udpTaskPool.emit(data, udpPacketWork{
+		plane: c, src: src, dst: dst, routingResult: routingResult,
+		deadline: time.Now().Add(consts.DefaultDialTimeout),
 	})
 }
 
@@ -421,7 +431,12 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 	conn, err := ue.socket(ctx, c.udpEndpoints, src, dst)
 	var n int
 	if err == nil {
-		n, err = writePacket(ctx, conn, data, net.UDPAddrFromAddrPort(dst))
+		// Writes are serialized by the source key lock. Cache the common
+		// destination without retaining an unbounded per-source address map.
+		if ue.writeAddr == nil || ue.writeDst != dst {
+			ue.writeDst, ue.writeAddr = dst, net.UDPAddrFromAddrPort(dst)
+		}
+		n, err = writePacket(ctx, conn, data, ue.writeAddr)
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))

@@ -2,16 +2,13 @@
 
 package control
 
-import (
-	"context"
-	"net/netip"
-)
+import "context"
 
 func newPlaneTraffic(parent context.Context, connections *tcpConnectionSet, endpoints *UdpEndpointPool) planeTraffic {
 	ctx, cancel := context.WithCancel(parent)
 	return planeTraffic{
 		tcpConnections:  &tcpConnectionTracker{connections: connections},
-		udpTaskPool:     newUdpTaskPool[netip.AddrPort](),
+		udpTaskPool:     newUdpTaskPool(udpPacketWork.execute),
 		udpEndpoints:    endpoints,
 		tcpSetupCtx:     ctx,
 		cancelTCPSetups: cancel,

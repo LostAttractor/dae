@@ -210,17 +210,19 @@ func TestRuntimeShutdownCancelsAllUDPGenerationsBeforeSweeping(t *testing.T) {
 		plane.routingGeneration = uint32(i + 1)
 		plane.tcpConnections.connections = &r.tcpConnections
 		r.planes[plane.routingGeneration] = plane
-		t.Cleanup(plane.udpTaskPool.cancel)
 		src := netip.MustParseAddrPort("192.0.2.1:5000")
 		src = netip.AddrPortFrom(src.Addr(), src.Port()+uint16(i))
 		r.udpEndpoints.pool.Store(src, new(UdpEndpoint))
 		locked := make(chan struct{})
-		if !emitUDPTask(plane.udpTaskPool, src, func() {
+		plane.udpTaskPool.close()
+		plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
 			lock, _ := r.udpEndpoints.UdpEndpointKeyLocker.Lock(src)
 			defer r.udpEndpoints.UdpEndpointKeyLocker.Unlock(src, lock)
 			close(locked)
 			<-plane.udpTaskPool.ctx.Done() // an in-flight dial holds the source lock
-		}) {
+		})
+		t.Cleanup(plane.udpTaskPool.cancel)
+		if !plane.udpTaskPool.emit(nil, udpPacketWork{src: src}) {
 			t.Fatal("task rejected")
 		}
 		<-locked
