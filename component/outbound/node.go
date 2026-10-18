@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
 	log "github.com/sirupsen/logrus"
 	"strconv"
@@ -215,16 +216,25 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 	if err != nil {
 		return errors.New("node parser rejected link")
 	}
-	node := &NodeInfo{
-		Link:     link,
-		Property: &dialer.Property{Property: *property},
-		Dialers:  []D.Builder{builder},
-	}
-	created, err := new(DialerSet).BuildPath(NodePath(node), option, "validation")
+	name := property.Name
+	// Validate the same entry and protocol constructors used by BuildPath.
+	// Group members, presentation keys and dormant-session watchers belong to
+	// serving paths and provide no additional validation here.
+	base, err := new(PathSpec).entryDialer(option)
 	if err != nil {
 		return errors.New("node dialer construction failed")
 	}
-	return created.Close()
+	created, err := D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builder)
+	if err != nil {
+		return errors.New("node dialer construction failed")
+	}
+	created.Retire()
+	go func() {
+		if err := created.Wait(context.Background()); err != nil {
+			log.WithField("node", name).WithError(err).Debug("Outbound cleanup completed with an error")
+		}
+	}()
+	return nil
 }
 
 func (s *DialerSet) NodesNamed(name string) []*NodeInfo {
