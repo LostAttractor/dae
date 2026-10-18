@@ -36,21 +36,52 @@ type Anyfrom struct {
 	idleTTL        time.Duration
 	idleDeadline   time.Time
 	writeMu        sync.Mutex
+	rawOnce        sync.Once
+	raw            syscall.RawConn
+	family         int
+	rawErr         error
+	closed         atomic.Bool
 }
 
 // Activity advances the deadline; the eviction callback rearms itself if early.
-func (a *Anyfrom) refreshIdleDeadline() {
+func (a *Anyfrom) refreshIdleDeadline() bool {
 	a.idleMu.Lock()
 	defer a.idleMu.Unlock()
+	if a.closed.Load() {
+		return false
+	}
 	a.idleDeadline = time.Now().Add(a.idleTTL)
+	return true
 }
 
 // Close can interrupt an in-flight write without waiting for its deadline.
-func (a *Anyfrom) Close() error { return a.conn.Close() }
+func (a *Anyfrom) Close() error {
+	a.closed.Store(true)
+	return a.conn.Close()
+}
 
 func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
+	// Keep the allocation-free net path when uncontended. A concurrent writer
+	// may send immediately without waiting for the shared deadline owner.
+	if a.writeMu.TryLock() {
+		defer a.writeMu.Unlock()
+		return a.writeWithDeadlineLocked(b, addr, deadline)
+	}
+	if n, err, attempted := a.tryWrite(b, addr, deadline); attempted {
+		a.refreshIdleDeadline()
+		return n, err
+	}
+	return a.writeWithDeadline(b, addr, deadline)
+}
+
+// Only a would-block write needs a socket-wide deadline and serialization.
+func (a *Anyfrom) writeWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
+	return a.writeWithDeadlineLocked(b, addr, deadline)
+}
+
+func (a *Anyfrom) writeWithDeadlineLocked(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
 	if err := a.conn.SetWriteDeadline(deadline); err != nil {
 		return 0, err
 	}
@@ -90,8 +121,13 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	af, ok := p.pool[lAddr]
 	if ok {
-		af.refreshIdleDeadline()
-		return af, false, nil
+		if af.refreshIdleDeadline() {
+			return af, false, nil
+		}
+		delete(p.pool, lAddr)
+		if af.idleEvictTimer != nil {
+			af.idleEvictTimer.Stop()
+		}
 	}
 
 	lc := net.ListenConfig{

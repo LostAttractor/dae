@@ -197,7 +197,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if err != nil {
 			return err
 		}
-		mark := c.soMarkFromDae
+		replies := &udpReplySender{pool: DefaultAnyfromPool, to: src, mark: c.soMarkFromDae}
 		ue = &UdpEndpoint{
 			destinationSeed: maphash.MakeSeed(),
 			generation:      c.routingGeneration,
@@ -208,9 +208,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			firstIfindex:    routingResult.Ifindex,
 			NatTimeout:      udpSniffingTimeout,
 			unbind:          unbind,
-			handler: func(data []byte, from netip.AddrPort) error {
-				return sendPktWithMark(data, from, src, mark)
-			},
+			handler:         replies.send,
 		}
 		ue.setupOwner.Store(c)
 		if !p.addLocked(src, ue) {

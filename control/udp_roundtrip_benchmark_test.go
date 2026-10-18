@@ -136,6 +136,7 @@ func newUDPRoundTripTargets(t testing.TB, flows, size, targets int) *udpRoundTri
 			t.Fatal(err)
 		}
 		conn := &destinationPacketConn{PacketConn: upstream, original: destination, target: echo.LocalAddr().(*net.UDPAddr).AddrPort()}
+		replySender := &udpReplySender{pool: replies, to: source}
 		endpoint := &UdpEndpoint{conn: conn, firstDst: destination, domain: "bench.test.", activity: registry.activity,
 			NatTimeout: time.Hour, lease: netproxy.NewLease(netproxy.NewResourceRef()),
 			traffic: stats.DefaultStore.OpenDeviceConnection(stats.Path{Outbound: "benchmark", Dialer: "loopback"}, false, [6]byte{}),
@@ -143,12 +144,7 @@ func newUDPRoundTripTargets(t testing.TB, flows, size, targets int) *udpRoundTri
 				if from != destination {
 					return fmt.Errorf("unexpected reply source %s", from)
 				}
-				socket, _, err := replies.GetOrCreate(replySource, time.Hour)
-				if err != nil {
-					return err
-				}
-				_, err = socket.WriteToUDPAddrPortWithDeadline(data, source, time.Now().Add(time.Second))
-				return err
+				return replySender.send(data, replySource)
 			},
 		}
 		runtime.udpEndpoints.add(source, endpoint)
