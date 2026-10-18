@@ -6,6 +6,7 @@ package control
 import (
 	"errors"
 	"io"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -32,25 +33,17 @@ func watchAbort(resource, policy, route *netproxy.Lease, abort func()) (stop fun
 	if resource == nil && policy == nil && route == nil {
 		return func() {}
 	}
-	done := make(chan struct{})
-	go func() {
-		resourceDone, policyDone, routeDone := resource.Done(), policy.Done(), route.Done()
-		for resourceDone != nil || policyDone != nil || routeDone != nil {
-			select {
-			case <-resourceDone:
-				resourceDone = nil
-			case <-policyDone:
-				policyDone = nil
-			case <-routeDone:
-				routeDone = nil
-			case <-done:
-				return
-			}
-			if connectionAbortCause(resource, policy, route) != nil {
-				abort()
-				return
-			}
+	var finished atomic.Bool
+	invoke := func() {
+		if finished.CompareAndSwap(false, true) {
+			abort()
 		}
-	}()
-	return func() { close(done) }
+	}
+	stops := [...]func() bool{resource.AfterAbort(invoke), policy.AfterAbort(invoke), route.AfterAbort(invoke)}
+	return func() {
+		finished.Store(true)
+		for _, stop := range stops {
+			stop()
+		}
+	}
 }

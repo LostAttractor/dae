@@ -27,6 +27,54 @@ type Lease struct {
 	children map[*Lease]struct{}
 	parents  []*Lease
 	done     chan struct{}
+	onAbort  map[*leaseAbortCallback]struct{}
+}
+
+type leaseAbortCallback struct {
+	state atomic.Uint32 // pending, scheduled, or stopped
+	run   func()
+}
+
+// AfterAbort invokes f asynchronously if the first invalidation is an Abort.
+// Ordinary invalidation releases the callback without invoking it. The returned
+// stop removes the registration; it does not wait for an already started call.
+// Idle registrations require no goroutine.
+func (l *Lease) AfterAbort(f func()) (stop func() bool) {
+	if l == nil {
+		return func() bool { return false }
+	}
+	callback := &leaseAbortCallback{run: f}
+	l.mu.Lock()
+	if l.cause != nil {
+		aborted := l.aborted
+		l.mu.Unlock()
+		if aborted {
+			callback.start()
+		} else {
+			callback.state.Store(2)
+		}
+	} else {
+		if l.onAbort == nil {
+			l.onAbort = make(map[*leaseAbortCallback]struct{})
+		}
+		l.onAbort[callback] = struct{}{}
+		l.mu.Unlock()
+	}
+	return func() bool {
+		if !callback.state.CompareAndSwap(0, 2) {
+			return false
+		}
+		l.mu.Lock()
+		delete(l.onAbort, callback)
+		l.mu.Unlock()
+		return true
+	}
+}
+
+func (c *leaseAbortCallback) start() {
+	if c.state.CompareAndSwap(0, 1) {
+		go c.run()
+	}
 }
 
 func NewLease(ref ResourceRef, parents ...*Lease) *Lease { return newLease(ref, nil, parents) }
@@ -145,6 +193,8 @@ func (l *Lease) invalidate(cause error, aborted bool) bool {
 		children = append(children, c)
 	}
 	clear(l.children)
+	callbacks := l.onAbort
+	l.onAbort = nil
 	close(l.done)
 	l.mu.Unlock()
 	for _, child := range children {
@@ -155,6 +205,13 @@ func (l *Lease) invalidate(cause error, aborted bool) bool {
 			parent.mu.Lock()
 			delete(parent.children, l)
 			parent.mu.Unlock()
+		}
+	}
+	for callback := range callbacks {
+		if aborted {
+			callback.start()
+		} else {
+			callback.state.CompareAndSwap(0, 2)
 		}
 	}
 	return true
