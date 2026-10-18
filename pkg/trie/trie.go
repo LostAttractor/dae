@@ -234,6 +234,33 @@ func (ss *Trie) HasPrefix(word string) bool {
 	return getBit(ss.leaves, nodeId) != 0
 }
 
+// HasPrefixIP queries a trie built with ValidCidrChars directly from the
+// network-order address, avoiding a temporary 128-character binary string.
+// IPv4 callers supply the IPv4-mapped representation returned by Addr.As16.
+func (ss *Trie) HasPrefixIP(address [16]byte) bool {
+	if ss == nil || ss.chars != ValidCidrChars {
+		return false
+	}
+	node, bitmap := 0, 0
+	for bit := range 128 {
+		if getBit(ss.leaves, node) != 0 {
+			return true
+		}
+		label := uint64(address[bit/8] >> (7 - bit%8) & 1)
+		for ; ; bitmap++ {
+			if getBit(ss.labelBitmap, bitmap) != 0 {
+				return false
+			}
+			if ss.labels.Get(bitmap-node) == label {
+				break
+			}
+		}
+		node = countZeros(ss.labelBitmap, ss.ranksBL, bitmap+1)
+		bitmap = selectIthOne(ss.labelBitmap, ss.ranksBL, ss.selectsBL, node-1) + 1
+	}
+	return getBit(ss.leaves, node) != 0
+}
+
 func setBit(bm *[]uint64, i int, v int) {
 	for i>>6 >= len(*bm) {
 		*bm = append(*bm, 0)

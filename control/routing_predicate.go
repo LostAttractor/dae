@@ -8,7 +8,6 @@ import (
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/pkg/trie"
 )
 
 // Same truth ordering as match_result in kern/routing.h. OR takes max;
@@ -25,15 +24,11 @@ const (
 type routingPredicates struct {
 	input                                routingInput
 	ipVersion                            consts.IpVersionType
-	lpmKeys                              [consts.MatchType_Mac + 1]string
 	domainLoaded                         bool
 	httpClientChecked, httpClientAllowed bool
 }
 
-func (p *routingPredicates) lpmKey(kind consts.MatchType) string {
-	if key := p.lpmKeys[kind]; key != "" {
-		return key
-	}
+func (p *routingPredicates) lpmKey(kind consts.MatchType) [16]byte {
 	var address netip.Addr
 	switch kind {
 	case consts.MatchType_IpSet:
@@ -45,9 +40,7 @@ func (p *routingPredicates) lpmKey(kind consts.MatchType) string {
 		copy(mac[10:], p.input.mac[:])
 		address = netip.AddrFrom16(mac)
 	}
-	key := trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(address.As16()), 128))
-	p.lpmKeys[kind] = key
-	return key
+	return address.As16()
 }
 
 func (p *routingPredicates) match(m *RoutingMatcher, match *bpfMatchSet) (predicateResult, error) {
@@ -61,7 +54,7 @@ func (p *routingPredicates) match(m *RoutingMatcher, match *bpfMatchSet) (predic
 		hit = p.httpClientAllowed
 	case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 		index := binary.LittleEndian.Uint32(match.Value[:])
-		hit = m.lpmMatcher[index].HasPrefix(p.lpmKey(consts.MatchType(match.Type)))
+		hit = m.lpmMatcher[index].HasPrefixIP(p.lpmKey(consts.MatchType(match.Type)))
 	case consts.MatchType_DomainSet:
 		if !p.domainLoaded {
 			if p.input.domainBitmap == nil && p.input.domain != "" {
