@@ -5,8 +5,6 @@
 *.tmp
 bpf*_bpfeb*.go
 bpf*_bpfel*.go
-bpf*_*_bpfeb*.go
-bpf*_*_bpfel*.go
 dae
 outline.json
 go-mod/
@@ -17,12 +15,9 @@ node_modules/
 /go.work.sum
 .checkpatch-camelcase.git.
 venv
-/build/ebpf-audit/
-/build/ebpf-test/
-/build/tools/
+/build/
 
 /dae-client
-/build/web/
 /dae-web/
 /internal/webui/assets/
 
