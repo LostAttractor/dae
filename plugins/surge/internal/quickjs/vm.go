@@ -223,6 +223,34 @@ func (vm *VM) Eval(source string) error {
 	return vm.result(vm.context.Eval(source, qjs.EvalFileName("surge.js")))
 }
 
+// Compile produces bytecode within this invocation's memory and time limits.
+// Only these in-process results may be passed to EvalBytecode.
+func (vm *VM) Compile(source string) ([]byte, error) {
+	if err := vm.check(); err != nil {
+		return nil, err
+	}
+	if uint64(len(source)) > vm.memoryLimit {
+		return nil, errors.New("quickjs: source exceeds memory limit")
+	}
+	bytecode, err := vm.context.Compile(source, qjs.EvalFileName("surge.js"))
+	if stopped := vm.check(); stopped != nil {
+		return nil, stopped
+	}
+	return bytecode, err
+}
+
+// EvalBytecode accepts only trusted, locally compiled bytecode. QuickJS's
+// deserializer does not validate hostile bytecode; no disk/network cache is used.
+func (vm *VM) EvalBytecode(bytecode []byte) error {
+	if err := vm.check(); err != nil {
+		return err
+	}
+	if uint64(len(bytecode)) > vm.memoryLimit {
+		return errors.New("quickjs: bytecode exceeds memory limit")
+	}
+	return vm.result(vm.context.EvalBytecode(bytecode))
+}
+
 // SetInputJSON installs invocation data without compiling the request/response
 // body as a JavaScript literal alongside the bootstrap.
 func (vm *VM) SetInputJSON(data []byte) error {

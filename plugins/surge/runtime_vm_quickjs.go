@@ -29,7 +29,8 @@ func (*runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
 
 type quickJSVM struct {
 	*quickjs.VM
-	stop func() bool
+	stop        func() bool
+	memoryLimit uint64
 }
 
 func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) {
@@ -52,11 +53,28 @@ func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) {
 		runtime.UnlockOSThread()
 		return nil, err
 	}
-	return &quickJSVM{VM: vm, stop: context.AfterFunc(ctx, vm.Interrupt)}, nil
+	return &quickJSVM{VM: vm, stop: context.AfterFunc(ctx, vm.Interrupt), memoryLimit: b.memoryLimit}, nil
 }
 
 func (vm *quickJSVM) Bootstrap() error {
 	return vm.Eval(runtimeBootstrapSource)
+}
+
+func (vm *quickJSVM) Eval(source string) error {
+	// Check source size even on hits from a runtime with a larger memory limit.
+	if uint64(len(source)) > vm.memoryLimit {
+		return vm.VM.Eval(source)
+	}
+	bytecode := runtimeBytecode.get(source)
+	if bytecode == nil {
+		var err error
+		bytecode, err = vm.Compile(source)
+		if err != nil {
+			return err
+		}
+		runtimeBytecode.put(source, bytecode)
+	}
+	return vm.EvalBytecode(bytecode)
 }
 
 func (vm *quickJSVM) Close() {
