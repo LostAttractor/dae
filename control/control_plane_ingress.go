@@ -27,11 +27,11 @@ func RetrieveOriginalDest(oob []byte) netip.AddrPort {
 		return netip.AddrPort{}
 	}
 	for _, msg := range msgs {
-		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR {
+		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR && len(msg.Data) >= unix.SizeofSockaddrInet4 {
 			ip := msg.Data[4:8]
 			port := binary.BigEndian.Uint16(msg.Data[2:4])
 			return netip.AddrPortFrom(netip.AddrFrom4([4]byte(ip)), port)
-		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
+		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == unix.IPV6_RECVORIGDSTADDR && len(msg.Data) >= unix.SizeofSockaddrInet6 {
 			ip := msg.Data[8:24]
 			port := binary.BigEndian.Uint16(msg.Data[2:4])
 			return netip.AddrPortFrom(netip.AddrFrom16([16]byte(ip)), port)
@@ -153,12 +153,18 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 				return
 			default:
 			}
-			n, oobn, _, src, err := serveUdpConn.ReadMsgUDPAddrPort(buf, oob)
+			n, oobn, flags, src, err := serveUdpConn.ReadMsgUDPAddrPort(buf, oob)
 			if err != nil {
 				reportIngressError(fmt.Errorf("read UDP datagram: %w", err))
 				return
 			}
+			if flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+				continue
+			}
 			dst := RetrieveOriginalDest(oob[:oobn])
+			if !src.IsValid() || !dst.IsValid() {
+				continue
+			}
 
 			src = common.ConvergeAddrPort(src)
 			dst = common.ConvergeAddrPort(dst)

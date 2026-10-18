@@ -7,10 +7,27 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 )
+
+func TestUDPOriginalDestinationRejectsShortControlMessage(t *testing.T) {
+	for _, option := range []struct{ level, kind int32 }{
+		{unix.SOL_IP, unix.IP_RECVORIGDSTADDR},
+		{unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR},
+	} {
+		// Valid ancillary framing with an incomplete IPv4 or IPv6 sockaddr.
+		buffer := make([]byte, unix.CmsgSpace(4))
+		header := (*unix.Cmsghdr)(unsafe.Pointer(&buffer[0]))
+		header.Level, header.Type = option.level, option.kind
+		header.SetLen(unix.CmsgLen(4))
+		if RetrieveOriginalDest(buffer).IsValid() {
+			t.Fatal("accepted truncated destination")
+		}
+	}
+}
 
 func TestServeReportsIngressFailure(t *testing.T) {
 	for _, test := range []struct {
