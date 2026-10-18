@@ -25,7 +25,8 @@ type Tls struct {
 	fragmentMinInterval int64
 	fragmentMaxInterval int64
 
-	tlsConfig *tls.Config
+	tlsConfig  *tls.Config
+	utlsConfig *utls.Config
 }
 
 type TLSConfig struct {
@@ -56,9 +57,14 @@ func (s *TLSConfig) Build(option *dialer.ExtraOption, upstream dialer.Upstream) 
 	t.tlsConfig = &tls.Config{
 		ServerName:         s.Sni,
 		InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
+		ClientSessionCache: tls.NewLRUClientSessionCache(8),
 	}
 	if len(s.Alpn) > 0 {
 		t.tlsConfig.NextProtos = strings.Split(s.Alpn, ",")
+	}
+	if t.tlsImplentation == "utls" {
+		t.utlsConfig = uTLSConfigFromTLSConfig(t.tlsConfig)
+		t.utlsConfig.ClientSessionCache = utls.NewLRUClientSessionCache(8)
 	}
 
 	if option.TlsFragment {
@@ -114,7 +120,9 @@ func (s *Tls) DialContext(ctx context.Context, network, addr string) (c net.Conn
 				return nil, err
 			}
 
-			tlsConn = &leasedUTLSConn{UConn: utls.UClient(rc, uTLSConfigFromTLSConfig(s.tlsConfig), *clientHelloID), lease: netproxy.DependencyOf(rc)}
+			// uTLS extensions modify their config while applying the fingerprint.
+			// Clone per handshake, retaining the node's shared session cache.
+			tlsConn = &leasedUTLSConn{UConn: utls.UClient(rc, s.utlsConfig.Clone(), *clientHelloID), lease: netproxy.DependencyOf(rc)}
 
 		default:
 			return nil, fmt.Errorf("unknown tls implementation: %v", s.tlsImplentation)
