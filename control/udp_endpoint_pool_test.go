@@ -110,6 +110,8 @@ func (c *testPacketConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *testPacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 type deadlineInterruptPacketConn struct {
+	deadlineMu    sync.Mutex
+	deadlineTimer *time.Timer
 	writeStarted  chan struct{}
 	interrupted   chan struct{}
 	closeStarted  chan struct{}
@@ -140,6 +142,11 @@ func (c *deadlineInterruptPacketConn) WriteTo([]byte, net.Addr) (int, error) {
 }
 
 func (c *deadlineInterruptPacketConn) Close() error {
+	c.deadlineMu.Lock()
+	if c.deadlineTimer != nil {
+		c.deadlineTimer.Stop()
+	}
+	c.deadlineMu.Unlock()
 	c.closeOnce.Do(func() { close(c.closeStarted) })
 	<-c.releaseClose
 	return nil
@@ -149,8 +156,17 @@ func (c *deadlineInterruptPacketConn) LocalAddr() net.Addr             { return 
 func (c *deadlineInterruptPacketConn) SetDeadline(time.Time) error     { return nil }
 func (c *deadlineInterruptPacketConn) SetReadDeadline(time.Time) error { return nil }
 func (c *deadlineInterruptPacketConn) SetWriteDeadline(deadline time.Time) error {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	if c.deadlineTimer != nil {
+		c.deadlineTimer.Stop()
+	}
 	if !deadline.IsZero() && !deadline.After(time.Now()) {
 		c.interruptOnce.Do(func() { close(c.interrupted) })
+	} else if !deadline.IsZero() {
+		c.deadlineTimer = time.AfterFunc(time.Until(deadline), func() {
+			c.interruptOnce.Do(func() { close(c.interrupted) })
+		})
 	}
 	return nil
 }

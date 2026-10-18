@@ -12,6 +12,7 @@ import (
 	"hash/maphash"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -95,12 +96,30 @@ func sendPktWithMark(data []byte, from, to netip.AddrPort, mark uint32) (err err
 }
 
 func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
+	deadline, _ := ctx.Deadline()
+	return writePacketUntil(ctx, deadline, conn, data, dst)
+}
+
+// Established associations can use the packet connection's deadline directly.
+// Only transports without deadline support need another context timer.
+func writePacketUntil(ctx context.Context, deadline time.Time, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	deadlineSet := false
-	if deadline, ok := ctx.Deadline(); ok {
+	if !deadline.IsZero() {
+		if !time.Now().Before(deadline) {
+			return 0, context.DeadlineExceeded
+		}
 		deadlineSet = conn.SetWriteDeadline(deadline) == nil
+		if !deadlineSet {
+			inherited, exists := ctx.Deadline()
+			if !exists || deadline.Before(inherited) {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, deadline)
+				defer cancel()
+			}
+		}
 	}
 	interrupted := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
@@ -114,6 +133,8 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	if !stopInterrupt() {
 		<-interrupted
 		err = ctx.Err()
+	} else if errors.Is(err, os.ErrDeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+		err = context.DeadlineExceeded
 	}
 	if deadlineSet {
 		_ = conn.SetWriteDeadline(time.Time{})
@@ -133,15 +154,15 @@ func (w udpPacketWork) execute(data []byte) {
 	if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(w.deadline) {
 		return
 	}
-	ctx, cancel := context.WithDeadline(c.udpTaskPool.ctx, w.deadline)
-	defer cancel()
-	if err := c.handlePkt(ctx, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil {
+	ctx := c.udpTaskPool.ctx
+	if err := c.handlePktUntil(ctx, w.deadline, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil && time.Now().Before(w.deadline) {
 		log.WithError(err).WithFields(log.Fields{"source": w.src, "destination": w.dst}).Debug("UDP packet handling failed")
 	}
 }
 
 // enqueueUDPPacket copies borrowed data into a pooled typed task. Deadlines
-// include queue time; contexts/timers are allocated only when dispatched.
+// include queue time; context timers are needed only for setup and transports
+// that cannot enforce socket deadlines.
 func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *routingResult) {
 	c.udpTaskPool.emit(data, udpPacketWork{
 		plane: c, src: src, dst: dst, routingResult: routingResult,
@@ -152,9 +173,17 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 // handlePkt serializes the complete source lifetime, including sniffing and
 // setup. An endpoint's first routing result never changes while it is in the pool.
 func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
+	deadline, _ := ctx.Deadline()
+	return c.handlePktUntil(ctx, deadline, data, src, dst, routingResult)
+}
+
+func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
 		}
 		c.handleDNSUDP(data, src, dst, *routingResult)
 		c.domainActivity().observe(dst.Addr(), "", time.Now())
@@ -166,7 +195,16 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
 	ue, exists := p.Get(src)
+	if !deadline.IsZero() && (!exists || ue.conn == nil || ue.sockets != nil || ue.mitm) {
+		// Setup, target socket creation and MITM may wait on non-socket work.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
 	if exists && ue.conn == nil {
 		if owner := ue.setupOwner.Load(); owner != nil && owner != c {
 			// A packet can queue before a predecessor publishes its endpoint.
@@ -226,7 +264,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	}
 	if ue.conn != nil {
 		ue.setupOwner.Store(nil)
-		return c.writeUDP(ctx, ue, src, dst, data)
+		return c.writeUDPUntil(ctx, deadline, ue, src, dst, data)
 	}
 
 	return c.initializeUDP(ctx, ue, src, dst, data)
@@ -415,6 +453,11 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 }
 
 func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
+	deadline, _ := ctx.Deadline()
+	return c.writeUDPUntil(ctx, deadline, ue, src, dst, data)
+}
+
+func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
 	ue.observeDomain(dst)
 	// Request-routing HTTP/3 has no connection-wide outbound. Its source
 	// lifetime is scoped to the admitted destination; it cannot migrate.
@@ -425,7 +468,7 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 		c.udpEndpoints.removeInBackgroundLocked(src, ue)
 		return cause
 	}
-	// The dispatch context already includes the packet's queue time in its deadline.
+	// Both the explicit deadline and setup contexts include the packet's queue time.
 	conn, err := ue.socket(ctx, c.udpEndpoints, src, dst)
 	var n int
 	if err == nil {
@@ -434,7 +477,7 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 		if ue.writeAddr == nil || ue.writeDst != dst {
 			ue.writeDst, ue.writeAddr = dst, net.UDPAddrFromAddrPort(dst)
 		}
-		n, err = writePacket(ctx, conn, data, ue.writeAddr)
+		n, err = writePacketUntil(ctx, deadline, conn, data, ue.writeAddr)
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))
