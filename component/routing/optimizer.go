@@ -159,6 +159,8 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
 	mmdbCaches     map[string]map[string]map[string]*mmdbNetworks // filename -> field -> value -> networks
+	datParams      map[datParamsKey][]datParam
+	datParamsBytes int
 	ctx            context.Context
 }
 
@@ -181,7 +183,8 @@ func (n *mmdbNetworks) params() []*config_parser.Param {
 	return paramsFromSubnets(n.subnets)
 }
 
-// NewDatReaderOptimizer creates an optimizer with a per-preparation MMDB cache.
+// NewDatReaderOptimizer creates an optimizer with preparation-scoped geodata
+// caches. Like the mutable rules it optimizes, it is used sequentially.
 func NewDatReaderOptimizer(ctx context.Context, locationFinder *assets.LocationFinder) *DatReaderOptimizer {
 	return &DatReaderOptimizer{
 		LocationFinder: locationFinder,
@@ -215,59 +218,66 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	}
 	log.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
 	code, attr, _ := strings.Cut(code, "@")
-	geoSite, err := geodata.UnmarshalGeoSite(filePath, code)
-	if err != nil {
-		return nil, err
-	}
-	if err := o.contextErr(); err != nil {
-		return nil, err
-	}
-	for _, item := range geoSite.Domain {
+	return o.cachedDatParams(filePath, code, "GeoSite", attr, func(data []byte) (params []*config_parser.Param, err error) {
+		geoSite := new(geodata.GeoSite)
+		if data == nil {
+			geoSite, err = geodata.UnmarshalGeoSite(filePath, code)
+		} else {
+			err = decodeDatEntry(data, geoSite, filePath, code, "GeoSite")
+		}
+		if err != nil {
+			return nil, err
+		}
 		if err := o.contextErr(); err != nil {
 			return nil, err
 		}
-		if attr != "" {
-			// Filter by attr.
-			attrHit := false
-			for _, itemAttr := range item.Attribute {
-				if strings.EqualFold(itemAttr.Key, attr) {
-					attrHit = true
-					break
+		for _, item := range geoSite.Domain {
+			if err := o.contextErr(); err != nil {
+				return nil, err
+			}
+			if attr != "" {
+				// Filter by attr.
+				attrHit := false
+				for _, itemAttr := range item.Attribute {
+					if strings.EqualFold(itemAttr.Key, attr) {
+						attrHit = true
+						break
+					}
+				}
+				if !attrHit {
+					continue
 				}
 			}
-			if !attrHit {
-				continue
+
+			switch item.Type {
+			case geodata.Domain_Full:
+				// Full.
+				params = append(params, &config_parser.Param{
+					Key: string(consts.RoutingDomainKey_Full),
+					Val: item.Value,
+				})
+			case geodata.Domain_RootDomain:
+				// Suffix.
+				params = append(params, &config_parser.Param{
+					Key: string(consts.RoutingDomainKey_Suffix),
+					Val: item.Value,
+				})
+			case geodata.Domain_Plain:
+				// Keyword.
+				params = append(params, &config_parser.Param{
+					Key: string(consts.RoutingDomainKey_Keyword),
+					Val: item.Value,
+				})
+			case geodata.Domain_Regex:
+				// Regex.
+				params = append(params, &config_parser.Param{
+					Key: string(consts.RoutingDomainKey_Regex),
+					Val: item.Value,
+				})
 			}
 		}
-
-		switch item.Type {
-		case geodata.Domain_Full:
-			// Full.
-			params = append(params, &config_parser.Param{
-				Key: string(consts.RoutingDomainKey_Full),
-				Val: item.Value,
-			})
-		case geodata.Domain_RootDomain:
-			// Suffix.
-			params = append(params, &config_parser.Param{
-				Key: string(consts.RoutingDomainKey_Suffix),
-				Val: item.Value,
-			})
-		case geodata.Domain_Plain:
-			// Keyword.
-			params = append(params, &config_parser.Param{
-				Key: string(consts.RoutingDomainKey_Keyword),
-				Val: item.Value,
-			})
-		case geodata.Domain_Regex:
-			// Regex.
-			params = append(params, &config_parser.Param{
-				Key: string(consts.RoutingDomainKey_Regex),
-				Val: item.Value,
-			})
-		}
-	}
-	return params, nil
+		return params, nil
+	})
 }
 
 func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*config_parser.Param, err error) {
@@ -279,30 +289,37 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 		return nil, fmt.Errorf("read geoip %q: %w", filename, err)
 	}
 	log.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
-	geoIp, err := geodata.UnmarshalGeoIp(filePath, code)
-	if err != nil {
-		return nil, err
-	}
-	if err := o.contextErr(); err != nil {
-		return nil, err
-	}
-	if geoIp.InverseMatch {
-		return nil, fmt.Errorf("not support inverse match yet")
-	}
-	for _, item := range geoIp.Cidr {
+	return o.cachedDatParams(filePath, code, "GeoIP", "", func(data []byte) (params []*config_parser.Param, err error) {
+		geoIp := new(geodata.GeoIP)
+		if data == nil {
+			geoIp, err = geodata.UnmarshalGeoIp(filePath, code)
+		} else {
+			err = decodeDatEntry(data, geoIp, filePath, code, "GeoIP")
+		}
+		if err != nil {
+			return nil, err
+		}
 		if err := o.contextErr(); err != nil {
 			return nil, err
 		}
-		ip, ok := netip.AddrFromSlice(item.Ip)
-		if !ok {
-			return nil, fmt.Errorf("bad geoip file: %v", filename)
+		if geoIp.InverseMatch {
+			return nil, fmt.Errorf("not support inverse match yet")
 		}
-		params = append(params, &config_parser.Param{
-			Key: "",
-			Val: netip.PrefixFrom(ip, int(item.Prefix)).String(),
-		})
-	}
-	return params, nil
+		for _, item := range geoIp.Cidr {
+			if err := o.contextErr(); err != nil {
+				return nil, err
+			}
+			ip, ok := netip.AddrFromSlice(item.Ip)
+			if !ok {
+				return nil, fmt.Errorf("bad geoip file: %v", filename)
+			}
+			params = append(params, &config_parser.Param{
+				Key: "",
+				Val: netip.PrefixFrom(ip, int(item.Prefix)).String(),
+			})
+		}
+		return params, nil
+	})
 }
 
 func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value string) (params []*config_parser.Param, err error) {
