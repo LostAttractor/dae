@@ -99,10 +99,10 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		geoDirs: geoDirs, operations: newOperations(),
 	}
 	loadCtx, refresh := app.resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
-	inputs, err := loadControlInputs(loadCtx, conf, false, geoDirs, options.ConfigFile, nil)
+	inputs, preparation, err := loadStartupInputs(loadCtx, datapath, conf, geoDirs, options.ConfigFile)
 	var candidate *preparedPlane
 	if err == nil {
-		candidate, err = app.preparePlane(loadCtx, conf, inputs, func(client *http.Client) (control.PreparedMITM, error) {
+		candidate, err = app.assemblePlane(loadCtx, preparation, conf, inputs, func(client *http.Client) (control.PreparedMITM, error) {
 			return loadMITM(loadCtx, conf, certificates.Authority(), client, worker, plugins, nil, geoDirs, datapath)
 		})
 	}

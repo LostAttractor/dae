@@ -49,11 +49,11 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			preparation := &ControlPlanePreparation{rules: preparedRules{routing: &configuration.Routing}}
+			rules := preparedRules{routing: &configuration.Routing}
 			// Only one of the IP's hostnames belongs to the plugin: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
-			preparation.rules.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
-			matcher, _ := routingMatcherForTest(t, preparation.rules)
+			rules.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
+			matcher, _ := routingMatcherForTest(t, rules)
 			matcher.outboundUsable = func(uint8, consts.L4ProtoType, consts.IpVersionType) bool { return !test.unavailable }
 			first := matcher.domainMatcher.MatchDomainBitmap("one.example")
 			second := matcher.domainMatcher.MatchDomainBitmap("two.example")
@@ -128,15 +128,15 @@ func TestMITMCapturePreservesUserspaceRoute(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
-			preparation := &ControlPlanePreparation{rules: preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}}
+			rules := preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}
 			if test.must {
-				preparation.rules.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "domain(full: service.example) -> must", "").routing.Policies[0].Rules
+				rules.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "domain(full: service.example) -> must", "").routing.Policies[0].Rules
 			}
-			preparation.rules.enableMITMPlan(extension.Plan())
-			if len(preparation.rules.routing.Policies[0].Statements) != 1 || preparation.rules.routing.Policies[0].Statements[0].Rule != original || len(preparation.rules.capture.http) == 0 {
-				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)
+			rules.enableMITMPlan(extension.Plan())
+			if len(rules.routing.Policies[0].Statements) != 1 || rules.routing.Policies[0].Statements[0].Rule != original || len(rules.capture.http) == 0 {
+				t.Fatalf("overlay replaced original routing: %+v", rules.routing)
 			}
-			matcher, _ := routingMatcherForTest(t, preparation.rules)
+			matcher, _ := routingMatcherForTest(t, rules)
 			got, mark, must := matchTestRoute(t, matcher, "service.example", consts.L4ProtoType_TCP)
 			if got != test.want || mark != test.mark || must != test.must {
 				t.Fatalf("route=(%v,%d,%v), want (%v,%d,%v)", got, mark, must, test.want, test.mark, test.must)
@@ -152,9 +152,9 @@ func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 		{Host: "node?.test", Ports: []uint16{80, 8443}},
 		{Host: "UPPER.EXAMPLE.", Ports: []uint16{80, 443}},
 	}}}}}
-	preparation := &ControlPlanePreparation{}
-	preparation.rules.enableMITMPlan(extension.Plan())
-	matcher, _ := routingMatcherForTest(t, preparation.rules)
+	var rules preparedRules
+	rules.enableMITMPlan(extension.Plan())
+	matcher, _ := routingMatcherForTest(t, rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
 	exposeCapturePredicates(t, matcher)

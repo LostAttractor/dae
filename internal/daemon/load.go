@@ -172,7 +172,37 @@ func sameControlConfig(previous, next *config.Config) bool {
 	return reflect.DeepEqual(project(previous), project(next))
 }
 
-func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, inputs *controlInputs, runtimeSettings *settings.Store, loadMITM func(*http.Client) (control.PreparedMITM, error)) (*control.ControlPlane, error) {
+// Startup can prepare kernel resources while external inputs are loading.
+// Reload retains its input-first order so unchanged resources skip rebuilding.
+func loadStartupInputs(ctx context.Context, datapath *control.Runtime, conf *config.Config, dirs []string, configFile string) (*controlInputs, *control.ControlPlanePreparation, error) {
+	mark := common.EffectiveSoMarkFromDae(conf.Global.SoMarkFromDae)
+	if err := common.ValidateSoMarkFromDae(mark); err != nil {
+		return nil, nil, err
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	var inputs *controlInputs
+	var preparation *control.ControlPlanePreparation
+	group.Go(func() error {
+		var err error
+		inputs, err = loadControlInputs(groupCtx, conf, false, dirs, configFile, nil)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		preparation, err = control.PrepareControlPlane(groupCtx, datapath, mark)
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return nil, nil, errors.Join(err, preparation.Close())
+	}
+	return inputs, preparation, nil
+}
+
+func newControlPlane(ctx context.Context, datapath *control.Runtime, preparation *control.ControlPlanePreparation, conf *config.Config, inputs *controlInputs, runtimeSettings *settings.Store, loadMITM func(*http.Client) (control.PreparedMITM, error)) (*control.ControlPlane, error) {
+	// Own an optional startup preparation even when validation fails.
+	if preparation != nil {
+		defer preparation.Close()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -180,14 +210,16 @@ func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *confi
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
 	}
-	preparation, err := control.PrepareControlPlane(ctx, datapath, mark, inputs.rules)
-	if err != nil {
-		return nil, err
+	if preparation == nil {
+		var err error
+		preparation, err = control.PrepareControlPlane(ctx, datapath, mark)
+		if err != nil {
+			return nil, err
+		}
+		defer preparation.Close()
 	}
-	defer preparation.Close()
-
 	assemblyStarted := time.Now()
-	c, err := control.NewControlPlane(ctx, preparation, inputs.nodes, conf, runtimeSettings, loadMITM)
+	c, err := control.NewControlPlane(ctx, preparation, inputs.rules, inputs.nodes, conf, runtimeSettings, loadMITM)
 	if err != nil {
 		return nil, err
 	}

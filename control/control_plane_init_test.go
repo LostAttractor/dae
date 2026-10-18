@@ -32,11 +32,25 @@ func TestControlPlaneValidationPreservesPreparation(t *testing.T) {
 	bpf := &BPFState{}
 	preparation := &ControlPlanePreparation{bpf: bpf}
 	store := newControlPlaneTestBuilder(t).withSettings().build().settings
-	if plane, err := NewControlPlane(t.Context(), preparation, nil, conf, store, nil); err == nil || plane != nil {
+	rules := &PreparedRules{rules: preparedRules{routing: &conf.Routing}}
+	if plane, err := NewControlPlane(t.Context(), preparation, rules, nil, conf, store, nil); err == nil || plane != nil {
 		t.Fatalf("invalid configuration constructed plane: %v %v", plane, err)
 	}
 	if preparation.bpf != bpf {
 		t.Fatal("configuration validation consumed prepared kernel resources")
+	}
+}
+
+func TestControlPlaneRequiresRulesBeforeConsumingPreparation(t *testing.T) {
+	conf := outboundUsageConfig(t, "global {}\nrouting { fallback: direct }")
+	store := newControlPlaneTestBuilder(t).withSettings().build().settings
+	for _, rules := range []*PreparedRules{nil, {}} {
+		bpf := &BPFState{}
+		preparation := &ControlPlanePreparation{bpf: bpf}
+		plane, err := NewControlPlane(t.Context(), preparation, rules, nil, conf, store, nil)
+		if err == nil || plane != nil || preparation.bpf != bpf {
+			t.Fatalf("invalid rules consumed kernel resources: plane=%v err=%v", plane, err)
+		}
 	}
 }
 
@@ -55,8 +69,8 @@ func TestControlPlaneConstructionFailureClosesOwnedHost(t *testing.T) {
 				t.Fatal(err)
 			}
 			preparation := &ControlPlanePreparation{
-				bpf:   &BPFState{bpfObjects: new(bpfObjects), Runtime: runtime},
-				rules: preparedRules{routing: &conf.Routing}, isReload: true,
+				bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: runtime},
+				isReload: true,
 			}
 			closeErr := errors.New("plugin cleanup failed")
 			extension := &constructionTestPlugin{closeErr: closeErr}
@@ -67,7 +81,7 @@ func TestControlPlaneConstructionFailureClosesOwnedHost(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			store := newControlPlaneTestBuilder(t).withSettings().build().settings
-			plane, err := NewControlPlane(ctx, preparation, nil, conf, store, func(*http.Client) (PreparedMITM, error) {
+			plane, err := NewControlPlane(ctx, preparation, &PreparedRules{rules: preparedRules{routing: &conf.Routing}}, nil, conf, store, func(*http.Client) (PreparedMITM, error) {
 				if canceled {
 					cancel()
 				}

@@ -22,21 +22,19 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// ControlPlanePreparation owns a candidate generation until NewControlPlane
-// consumes it. Its cloned Runtime map descriptors can be discarded independently.
+// ControlPlanePreparation owns prepared kernel resources until NewControlPlane
+// consumes them. Its cloned Runtime map descriptors can be discarded independently.
 type ControlPlanePreparation struct {
 	bpf      *BPFState
-	rules    preparedRules
 	isReload bool
 }
 
-// PrepareControlPlane pairs loaded rules with private kernel resources. External
-// inputs have already been refreshed before deciding whether routing must change.
+// PrepareControlPlane prepares private kernel resources independently of rule
+// and subscription loading. NewControlPlane receives both prepared inputs.
 func PrepareControlPlane(
 	ctx context.Context,
 	runtime *Runtime,
 	soMarkFromDae uint32,
-	loaded *PreparedRules,
 ) (*ControlPlanePreparation, error) {
 	started := time.Now()
 	bpf, err := prepareBPF(ctx, runtime, soMarkFromDae)
@@ -44,7 +42,7 @@ func PrepareControlPlane(
 		return nil, err
 	}
 	log.WithField("duration", time.Since(started)).Debug("Prepared eBPF resources")
-	return &ControlPlanePreparation{bpf: bpf, rules: loaded.copy(), isReload: runtime.IsReload()}, nil
+	return &ControlPlanePreparation{bpf: bpf, isReload: runtime.IsReload()}, nil
 }
 
 func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ *BPFState, err error) {
@@ -127,18 +125,16 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	return bpf, nil
 }
 
-func (p *ControlPlanePreparation) take() (*BPFState, preparedRules, bool, error) {
+func (p *ControlPlanePreparation) take() (*BPFState, bool, error) {
 	if p == nil {
-		return nil, preparedRules{}, false, errors.New("control plane preparation is nil")
+		return nil, false, errors.New("control plane preparation is nil")
 	}
 	if p.bpf == nil {
-		return nil, preparedRules{}, false, errors.New("control plane preparation has no BPF state")
+		return nil, false, errors.New("control plane preparation has no BPF state")
 	}
 	bpf := p.bpf
-	rules := p.rules
 	p.bpf = nil
-	p.rules = preparedRules{}
-	return bpf, rules, p.isReload, nil
+	return bpf, p.isReload, nil
 }
 
 func (p *ControlPlanePreparation) Close() error {

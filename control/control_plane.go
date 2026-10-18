@@ -68,14 +68,15 @@ type ControlPlane struct {
 // TODO: Hy2 的 mark 支持
 // TODO: HandlePkt HandleConn 分割 Route 和 Dial
 //
-// NewControlPlane consumes prepared kernel and rule resources and builds the
-// userspace control plane. It does not modify shared BPF maps or bind programs
-// to traffic interfaces. Call PrepareKernel and Runtime.Publish to activate it.
+// NewControlPlane consumes prepared kernel resources and copies prepared rules
+// to build the userspace control plane. It does not modify shared BPF maps or
+// bind programs to traffic interfaces. Call PrepareKernel and Runtime.Publish to activate it.
 // loadMITM runs after initial connectivity checks, using the configured DNS
 // and routing policies. Module rules are compiled after downloads finish.
 func NewControlPlane(
 	startupCtx context.Context,
 	preparation *ControlPlanePreparation,
+	loadedRules *PreparedRules,
 	nodes []outbound.NodeDescriptor,
 	conf *config.Config,
 	runtimeSettings *settings.Store,
@@ -86,7 +87,11 @@ func NewControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	bpf, preparedRules, isReload, err := preparation.take()
+	if loadedRules == nil || loadedRules.rules.routing == nil {
+		return nil, errors.New("prepared routing rules are required")
+	}
+	preparedRules := loadedRules.copy()
+	bpf, isReload, err := preparation.take()
 	if err != nil {
 		return nil, err
 	}

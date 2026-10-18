@@ -37,3 +37,18 @@ func ruleWithFunctionAlias(name string) *config_parser.RoutingRule {
 		Outbound: config_parser.Function{Name: "direct"},
 	}
 }
+
+func TestPreparationTransfersKernelOwnershipOnce(t *testing.T) {
+	bpf := &BPFState{}
+	p := &ControlPlanePreparation{bpf: bpf, isReload: true}
+	owned, reload, err := p.take()
+	if err != nil || owned != bpf || !reload || p.bpf != nil {
+		t.Fatalf("failed to transfer kernel resources: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if owned, _, err := p.take(); err == nil || owned != nil {
+		t.Fatal("consumed preparation transferred kernel resources again")
+	}
+}

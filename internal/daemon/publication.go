@@ -33,7 +33,11 @@ func (p *preparedPlane) discard() error {
 }
 
 func (a *application) preparePlane(ctx context.Context, conf *config.Config, inputs *controlInputs, load func(*http.Client) (control.PreparedMITM, error)) (*preparedPlane, error) {
-	plane, err := newControlPlane(ctx, a.datapath, conf, inputs, a.settings, load)
+	return a.assemblePlane(ctx, nil, conf, inputs, load)
+}
+
+func (a *application) assemblePlane(ctx context.Context, preparation *control.ControlPlanePreparation, conf *config.Config, inputs *controlInputs, load func(*http.Client) (control.PreparedMITM, error)) (*preparedPlane, error) {
+	plane, err := newControlPlane(ctx, a.datapath, preparation, conf, inputs, a.settings, load)
 	if err != nil {
 		return nil, fmt.Errorf("prepare control plane: %w", err)
 	}

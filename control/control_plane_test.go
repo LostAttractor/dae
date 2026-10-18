@@ -68,14 +68,13 @@ routing {
 	// Reload preparation borrows the map; construction only reads its capacity.
 	preparation := &ControlPlanePreparation{
 		bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: NewRuntime()},
-		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}
 	store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane, err := NewControlPlane(context.Background(), preparation, nodes, conf, store, nil)
+	plane, err := NewControlPlane(t.Context(), preparation, &PreparedRules{rules: preparedRules{routing: &conf.Routing}}, nodes, conf, store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

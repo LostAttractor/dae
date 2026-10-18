@@ -53,12 +53,11 @@ func outboundUsagePlane(t *testing.T, conf *config.Config, store *settings.Store
 	}
 	preparation := &ControlPlanePreparation{
 		bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: NewRuntime()},
-		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	plane, err := NewControlPlane(ctx, preparation, outboundUsageNodes(conf), conf, store, load)
+	plane, err := NewControlPlane(ctx, preparation, &PreparedRules{rules: preparedRules{routing: &conf.Routing}}, outboundUsageNodes(conf), conf, store, load)
 	if err != nil {
 		t.Fatal(err)
 	}
