@@ -3,6 +3,7 @@
 package control
 
 import (
+	"hash/maphash"
 	"net/netip"
 	"sync"
 	"time"
@@ -15,13 +16,33 @@ type domainActivityKey struct {
 	domain string
 }
 
+const domainActivityShards = 32
+
+var domainActivitySeed = maphash.MakeSeed()
+
+type domainActivityBatch [domainActivityShards]map[domainActivityKey]time.Time
+
 // Connections retain this handle, not a control plane or rule matcher. A reload
 // moves its destination under the queue lock. This lock is never held while
 // waiting for the registry or applying observations / writing kernel maps.
 type domainActivity struct {
-	mu       sync.Mutex
+	shards   [domainActivityShards]sync.Mutex
 	registry *DomainRegistry
-	pending  map[domainActivityKey]time.Time
+	pending  domainActivityBatch
+}
+
+// Lifecycle transitions acquire all shards in a fixed order. Packet I/O takes
+// only its destination's shard; kernel publication never holds these locks.
+func (a *domainActivity) lock() {
+	for i := range a.shards {
+		a.shards[i].Lock()
+	}
+}
+
+func (a *domainActivity) unlock() {
+	for i := len(a.shards) - 1; i >= 0; i-- {
+		a.shards[i].Unlock()
+	}
 }
 
 func newDomainActivityKey(ip netip.Addr, domain string) domainActivityKey {
@@ -42,19 +63,28 @@ func newDomainActivityKey(ip netip.Addr, domain string) domainActivityKey {
 // earlier observations before changing evidence, including unknown-key events.
 // Keys come from valid original flow destinations; nil handles disable observing.
 func (a *domainActivity) enqueue(key domainActivityKey, at time.Time) *DomainRegistry {
+	return a.enqueueShard(key, maphash.Comparable(domainActivitySeed, key)%domainActivityShards, at)
+}
+
+func (a *domainActivity) enqueueShard(key domainActivityKey, shard uint64, at time.Time) *DomainRegistry {
 	if a == nil {
 		return nil
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.shards[shard].Lock()
+	defer a.shards[shard].Unlock()
 	g := a.registry
 	// Runtime redirects the owner before retiring a generation. Only terminal
 	// closure clears it, so a retained connection has no observation gap.
 	if g == nil {
 		return nil
 	}
-	if at.After(a.pending[key]) {
-		a.pending[key] = at
+	pending := a.pending[shard]
+	if pending == nil {
+		pending = make(map[domainActivityKey]time.Time)
+		a.pending[shard] = pending
+	}
+	if at.After(pending[key]) {
+		pending[key] = at
 	}
 	return g
 }
@@ -81,27 +111,29 @@ func (g *DomainRegistry) flushActivity() {
 // batch; they can proceed while this operation updates registry membership.
 func (g *DomainRegistry) drainActivity() bool {
 	a := g.activity
-	a.mu.Lock()
+	a.lock()
 	if a.registry != g {
-		a.mu.Unlock()
+		a.unlock()
 		return false
 	}
 	a.pending, g.activityBatch = g.activityBatch, a.pending
-	a.mu.Unlock()
+	a.unlock()
 	return g.applyActivity()
 }
 
 func (g *DomainRegistry) applyActivity() bool {
 	reconsider := false
-	for key, at := range g.activityBatch {
-		g.clock(at)
-		if g.touch(key, at) {
-			if _, resident := g.kernel.resident[key.ip]; !resident {
-				reconsider = true
+	for _, batch := range g.activityBatch {
+		for key, at := range batch {
+			g.clock(at)
+			if g.touch(key, at) {
+				if _, resident := g.kernel.resident[key.ip]; !resident {
+					reconsider = true
+				}
 			}
 		}
+		clear(batch)
 	}
-	clear(g.activityBatch)
 	return reconsider
 }
 

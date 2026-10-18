@@ -3,6 +3,7 @@
 package control
 
 import (
+	"hash/maphash"
 	"net"
 	"net/netip"
 	"time"
@@ -61,7 +62,8 @@ func (c *activitySniffer) CloseWrite() error {
 
 func (a *domainActivity) connection(ip netip.Addr, domain string) func() {
 	key := newDomainActivityKey(ip, domain)
-	return func() { a.enqueue(key, time.Now()) }
+	shard := maphash.Comparable(domainActivitySeed, key) % domainActivityShards
+	return func() { a.enqueueShard(key, shard, time.Now()) }
 }
 
 // A UDP source can address several destinations. Only the first sniffed

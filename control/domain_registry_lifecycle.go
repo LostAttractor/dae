@@ -76,13 +76,13 @@ func (g *DomainRegistry) Close() error {
 		return nil
 	}
 	a := g.activity
-	a.mu.Lock()
+	a.lock()
 	g.closed = true
 	if a.registry == g {
 		a.pending, g.activityBatch = g.activityBatch, a.pending
 		a.registry = nil
 	}
-	a.mu.Unlock()
+	a.unlock()
 	// Only the queue's current owner takes a final batch. Closing a predecessor
 	// must not drain activity destined for its successor.
 	reconsider := g.applyActivity()
@@ -145,19 +145,24 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	a := old.activity
 	// Copy queued activity into the candidate without consuming it. On a map
 	// failure the old owner must still be able to process the complete queue.
-	a.mu.Lock()
-	maps.Copy(g.activityBatch, a.pending)
+	a.lock()
+	for i, pending := range a.pending {
+		if g.activityBatch[i] == nil && len(pending) != 0 {
+			g.activityBatch[i] = make(map[domainActivityKey]time.Time, len(pending))
+		}
+		maps.Copy(g.activityBatch[i], pending)
+	}
 	g.applyActivity()
 	now = g.clock(now)
 	g.gc(now)
-	a.mu.Unlock()
+	a.unlock()
 	if err := g.rebuildProjection(now); err != nil {
 		return err
 	}
-	a.mu.Lock()
+	a.lock()
 	g.activity = a
 	a.registry = g
-	a.mu.Unlock()
+	a.unlock()
 	old.diskPath = ""
 	g.generation++
 	return nil

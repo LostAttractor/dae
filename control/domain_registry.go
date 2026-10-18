@@ -41,7 +41,7 @@ type DomainRegistry struct {
 	gcCount       uint64
 	generation    uint64
 	activity      *domainActivity
-	activityBatch map[domainActivityKey]time.Time // reusable drain buffer, owned by mu
+	activityBatch domainActivityBatch // reusable drain buffers, owned by mu
 
 	closed     bool
 	stopCh     chan struct{}
@@ -62,9 +62,9 @@ func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpda
 	g := &DomainRegistry{
 		byName: make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
 		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]domainBitmaps), desired: make(map[netip.Addr]domainBitmaps), pending: make(map[netip.Addr]domainPublication), update: update, remove: remove},
-		stopCh: make(chan struct{}), closeDone: make(chan struct{}), activityBatch: make(map[domainActivityKey]time.Time),
+		stopCh: make(chan struct{}), closeDone: make(chan struct{}),
 	}
-	g.activity = &domainActivity{registry: g, pending: make(map[domainActivityKey]time.Time)}
+	g.activity = &domainActivity{registry: g}
 	return g
 }
 
