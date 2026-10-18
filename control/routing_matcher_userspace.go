@@ -93,13 +93,19 @@ func (b *RoutingMatcherBuilder) buildUserspace(previous *RoutingMatcher) (matche
 		domainMatcher = built
 	}
 	// Build Ip matcher.
-	var lpmMatcher []*trie.Trie
-	for _, prefixes := range b.simulatedLpmTries {
+	lpmMatcher := make([]*trie.Trie, len(b.simulatedLpmTries))
+	if previous != nil {
+		previous.reuseStaticTries(lpmMatcher, b.simulatedLpmTries, b.clientSetSlots)
+	}
+	for i, prefixes := range b.simulatedLpmTries {
+		if lpmMatcher[i] != nil {
+			continue
+		}
 		t, err := trie.NewTrieFromPrefixes(prefixes)
 		if err != nil {
 			return nil, err
 		}
-		lpmMatcher = append(lpmMatcher, t)
+		lpmMatcher[i] = t
 	}
 	domainSets := slices.Clone(b.simulatedDomainSet)
 	for i := range domainSets {

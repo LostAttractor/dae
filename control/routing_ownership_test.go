@@ -127,3 +127,68 @@ func TestDestinationSnapshotOwnsInterfaceBindings(t *testing.T) {
 	}
 	worker.Wait()
 }
+
+func TestRoutingReusesOnlyUnchangedStaticTries(t *testing.T) {
+	b := newRoutingMatcherBuilder(nil, nil, nil)
+	b.simulatedLpmTries = [][]netip.Prefix{{netip.MustParsePrefix("192.0.2.0/24")}, {netip.MustParsePrefix("2001:db8::/32")}, {netip.MustParsePrefix("198.51.100.0/24")}}
+	b.clientSetSlots["dynamic"] = 2
+	first, err := b.BuildUserspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.simulatedLpmTries[1] = []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")}
+	second, err := b.buildUserspace(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.lpmMatcher[0] != first.lpmMatcher[0] || second.lpmMatcher[1] == first.lpmMatcher[1] || second.lpmMatcher[2] == first.lpmMatcher[2] {
+		t.Fatal("static reuse did not isolate changed predicates and dynamic membership")
+	}
+	ip := netip.MustParseAddr("2001:db8:2::1").As16()
+	if !first.lpmMatcher[1].HasPrefixIP(ip) || second.lpmMatcher[1].HasPrefixIP(ip) {
+		t.Fatal("rebuild changed the old predicate")
+	}
+	if err := first.SetClientMembers("dynamic", [][6]byte{{2, 0, 0, 0, 0, 1}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !second.lpmMatcher[2].HasPrefixIP(netip.MustParseAddr("198.51.100.1").As16()) {
+		t.Fatal("membership update changed successor")
+	}
+	// A slot changing from dynamic to static must not reuse predecessor state.
+	delete(b.clientSetSlots, "dynamic")
+	b.simulatedLpmTries[2] = first.simulatedLpmTries[2]
+	third, err := b.buildUserspace(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.lpmMatcher[2] == first.lpmMatcher[2] {
+		t.Fatal("reused a previous dynamic slot")
+	}
+}
+
+func BenchmarkRoutingLPMRebuild(b *testing.B) {
+	builder := newRoutingMatcherBuilder(nil, nil, nil)
+	prefixes := make([]netip.Prefix, 4096)
+	for i := range prefixes {
+		prefixes[i] = netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 0}), 24)
+	}
+	builder.simulatedLpmTries = [][]netip.Prefix{prefixes}
+	previous, err := builder.BuildUserspace()
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, reuse := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reuse=%t", reuse), func(b *testing.B) {
+			var old *RoutingMatcher
+			if reuse {
+				old = previous
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := builder.buildUserspace(old); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

@@ -27,6 +27,25 @@ type routingState struct {
 	routing           RoutingProgram
 }
 
+// Reuse only immutable predicates at matching slots. Client membership can
+// change while a successor is being prepared, and belongs to each generation.
+func (s *routingState) reuseStaticTries(dst []*trie.Trie, prefixes [][]netip.Prefix, clients map[string]int) {
+	dynamic := make(map[int]bool, len(clients)+len(s.clientSetSlots))
+	for _, slot := range clients {
+		dynamic[slot] = true
+	}
+	for _, slot := range s.clientSetSlots {
+		dynamic[slot] = true
+	}
+	s.rulesMu.RLock()
+	defer s.rulesMu.RUnlock()
+	for i := range min(len(dst), len(s.lpmMatcher)) {
+		if !dynamic[i] && slices.Equal(prefixes[i], s.simulatedLpmTries[i]) {
+			dst[i] = s.lpmMatcher[i]
+		}
+	}
+}
+
 func (s *routingState) ClientSets() []string {
 	if s == nil {
 		return nil
