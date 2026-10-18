@@ -118,9 +118,5 @@ func Decode(filename, code string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	geoBytes, err := emitBytes(f, code)
-	if err != nil {
-		return nil, err
-	}
-	return geoBytes, nil
+	return decodedFiles.decode(f, code)
 }
