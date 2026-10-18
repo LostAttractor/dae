@@ -22,6 +22,8 @@ type Definition struct {
 	// Resources refreshes external inputs without creating a runtime instance.
 	// Plugins consuming files or remote resources implement this capability so
 	// reload can compare their contents before constructing a replacement.
+	// Calls for different instances may run concurrently. The context belongs
+	// only to resource loading and must not be retained by the resulting inputs.
 	Resources func(context.Context, Spec, Services) (Resources, error)
 	Commands  func(CommandServices) []*cobra.Command
 }

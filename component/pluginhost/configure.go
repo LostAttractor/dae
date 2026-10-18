@@ -13,7 +13,10 @@ import (
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
+
+const maxConcurrentResourceLoads = 4
 
 type Configuration struct{ instances []configuredPlugin }
 type configuredPlugin struct {
@@ -102,37 +105,56 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 	if c == nil {
 		return nil, nil
 	}
-	old := make(map[string]*Instance, len(previous))
-	for _, instance := range previous {
-		old[instance.ID] = instance
-	}
-	for _, configured := range c.instances {
-		if err = ctx.Err(); err != nil {
-			return instances, err
-		}
-		spec := configured.spec
+	locals := make([]plugin.Services, len(c.instances))
+	resources := make([]plugin.Resources, len(c.instances))
+	group, loadCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrentResourceLoads)
+	for i, configured := range c.instances {
 		local := services
 		if local.Logger == nil {
 			local.Logger = log.NewEntry(log.StandardLogger())
 		}
-		local.Logger = local.Logger.WithField("plugin_instance", spec.ID)
-		var resources plugin.Resources
+		local.Logger = local.Logger.WithField("plugin_instance", configured.spec.ID)
+		locals[i] = local
 		if configured.resources != nil {
-			resources, err = configured.resources(ctx, spec, local)
-			if err != nil {
-				return instances, fmt.Errorf("plugins.%s resources: %w", spec.ID, err)
-			}
+			group.Go(func() error {
+				if err := loadCtx.Err(); err != nil {
+					return err
+				}
+				var err error
+				resources[i], err = configured.resources(loadCtx, configured.spec, local)
+				if err != nil {
+					return fmt.Errorf("plugins.%s resources: %w", configured.spec.ID, err)
+				}
+				return nil
+			})
 		}
-		configuration := resources.Config
+	}
+	if err = group.Wait(); err != nil {
+		return nil, err
+	}
+	// Factories keep their original context and declaration order. The resource
+	// group's context expires after Wait and must not own plugin runtime state.
+	old := make(map[string]*Instance, len(previous))
+	for _, instance := range previous {
+		old[instance.ID] = instance
+	}
+	for i, configured := range c.instances {
+		if err = ctx.Err(); err != nil {
+			return instances, err
+		}
+		spec := configured.spec
+		local, resource := locals[i], resources[i]
+		configuration := resource.Config
 		if configuration == nil {
 			configuration = spec.Config
 		}
-		input := instanceInput{services.Interfaces, configuration, resources.Key, services.BaseDir, services.BodyMemory}
+		input := instanceInput{services.Interfaces, configuration, resource.Key, services.BaseDir, services.BodyMemory}
 		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
-			instances = append(instances, PreparedInstance{existing, resources.Value})
+			instances = append(instances, PreparedInstance{existing, resource.Value})
 			continue
 		}
-		local.Prepared = resources.Value
+		local.Prepared = resource.Value
 		local.Storage, err = newPluginStorage(local.BaseDir, spec)
 		if err != nil {
 			return instances, fmt.Errorf("plugins.%s storage: %w", spec.ID, err)
@@ -150,7 +172,7 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		}
 		instance := Adopt(spec.ID, spec.Type, implementation)
 		instance.input, instance.Metrics, instance.logger = input, registry, local.Logger
-		instances = append(instances, PreparedInstance{instance, resources.Value})
+		instances = append(instances, PreparedInstance{instance, resource.Value})
 	}
 	return instances, nil
 }

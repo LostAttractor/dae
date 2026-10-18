@@ -35,7 +35,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 	var metrics Metrics
 	versions := map[string]string{"one": "1", "two": "1"}
 	var constructed []*reloadPlugin
-	refreshes := 0
+	var refreshes atomic.Int32
 	definition := testDefinition(func(_ context.Context, _ plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
 		p := &reloadPlugin{started: make(chan struct{}), stopped: make(chan struct{})}
 		p.counter = prometheus.NewCounter(prometheus.CounterOpts{Name: "fixture_events_total", Help: "Fixture events."})
@@ -43,7 +43,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 		return p, services.Metrics.Register(p.counter)
 	})
 	definition.Resources = func(_ context.Context, spec plugin.Spec, _ plugin.Services) (plugin.Resources, error) {
-		refreshes++
+		refreshes.Add(1)
 		if versions[spec.ID] == "error" {
 			return plugin.Resources{}, errors.New("refresh failed")
 		}
@@ -73,7 +73,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 		p.counter.Add(7)
 	}
 	abandoned := load(first, false)
-	if !first.SameRuntime(abandoned) || len(constructed) != 2 || refreshes != 4 {
+	if !first.SameRuntime(abandoned) || len(constructed) != 2 || refreshes.Load() != 4 {
 		t.Fatal("unchanged resource refresh reconstructed instances")
 	}
 	if err := abandoned.Close(); err != nil {
@@ -83,8 +83,8 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 	versions["one"] = "2"
 	versions["two"] = "error"
 	load(first, true)
-	if len(constructed) != 3 || !constructed[2].closed.Load() || constructed[0].closed.Load() {
-		t.Fatal("failed preparation did not isolate candidate ownership")
+	if len(constructed) != 2 || constructed[0].closed.Load() || constructed[1].closed.Load() {
+		t.Fatal("failed resource preparation constructed candidates or released live instances")
 	}
 	versions["two"] = "1"
 	next := load(first, false)
@@ -94,7 +94,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 	if err := next.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	<-constructed[3].started
+	<-constructed[2].started
 	first.StopWorkers()
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 	if err := next.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, index := range []int{1, 3} {
+	for _, index := range []int{1, 2} {
 		<-constructed[index].stopped
 		if !constructed[index].closed.Load() {
 			t.Fatal("final host leaked an instance")
