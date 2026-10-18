@@ -5,10 +5,12 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -26,12 +28,21 @@ import (
 // Destination rewriting sends the ingress address to the local echo fixture.
 // Initial routing/sniffing and proxy encryption are outside this benchmark.
 type udpRoundTripFixture struct {
-	clients     []*net.UDPConn
-	destination netip.AddrPort
-	reply       []byte
+	clients      []*net.UDPConn
+	destination  netip.AddrPort
+	reply        []byte
+	replySources []netip.AddrPort
+	clock        time.Time
+	sequence     uint64
+	latencies    []time.Duration
+	sampleIndex  int
 }
 
 func newUDPRoundTripFixture(t testing.TB, flows, size int) *udpRoundTripFixture {
+	return newUDPRoundTripTargets(t, flows, size, 1)
+}
+
+func newUDPRoundTripTargets(t testing.TB, flows, size, targets int) *udpRoundTripFixture {
 	t.Helper()
 	sockets, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.SockMap, KeySize: 4, ValueSize: 8, MaxEntries: 2})
 	if errors.Is(err, unix.EPERM) {
@@ -66,6 +77,9 @@ func newUDPRoundTripFixture(t testing.TB, flows, size int) *udpRoundTripFixture 
 		t.Fatal(err)
 	}
 	ingress := packets.(*net.UDPConn)
+	if err := ingress.SetReadBuffer(4 << 20); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = ingress.Close() })
 	destination := ingress.LocalAddr().(*net.UDPAddr).AddrPort()
 	echo, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -73,6 +87,9 @@ func newUDPRoundTripFixture(t testing.TB, flows, size int) *udpRoundTripFixture 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = echo.Close() })
+	if err := echo.SetReadBuffer(4 << 20); err != nil {
+		t.Fatal(err)
+	}
 	echoDone := make(chan struct{})
 	go func() {
 		defer close(echoDone)
@@ -88,12 +105,25 @@ func newUDPRoundTripFixture(t testing.TB, flows, size int) *udpRoundTripFixture 
 		}
 	}()
 	replies := NewAnyfromPool()
-	replies.pool[destination] = &Anyfrom{conn: ingress, idleTTL: time.Hour}
+	// Separate reply sockets model original destinations after transparent
+	// ingress. This keeps the same single ingress reader across target counts.
+	replySources := make([]netip.AddrPort, targets)
+	for i := range replySources {
+		socket, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = socket.Close() })
+		replySources[i] = socket.LocalAddr().(*net.UDPAddr).AddrPort()
+		replies.pool[replySources[i]] = &Anyfrom{conn: socket, idleTTL: time.Hour}
+	}
 	registry := newDomainRegistry(16, time.Hour, func(netip.Addr, []uint32, []uint32) error { return nil }, func(netip.Addr) error { return nil })
 	registry.Upsert("bench.test.", destination.Addr(), testBitmap(0), 3600, time.Now())
-	fixture := &udpRoundTripFixture{destination: destination, reply: make([]byte, size+1)}
+	fixture := &udpRoundTripFixture{destination: destination, reply: make([]byte, size+1), clock: time.Now(), latencies: make([]time.Duration, 0, 32768)}
 	var readers sync.WaitGroup
-	for range flows {
+	for i := range flows {
+		replySource := replySources[i%targets]
+		fixture.replySources = append(fixture.replySources, replySource)
 		client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		if err != nil {
 			t.Fatal(err)
@@ -113,7 +143,7 @@ func newUDPRoundTripFixture(t testing.TB, flows, size int) *udpRoundTripFixture 
 				if from != destination {
 					return fmt.Errorf("unexpected reply source %s", from)
 				}
-				socket, _, err := replies.GetOrCreate(from, time.Hour)
+				socket, _, err := replies.GetOrCreate(replySource, time.Hour)
 				if err != nil {
 					return err
 				}
@@ -149,7 +179,7 @@ func (f *udpRoundTripFixture) exchange(payload []byte) error {
 			return err
 		}
 	}
-	for _, client := range f.clients {
+	for i, client := range f.clients {
 		// Bound packet loss/failures without changing the production write deadline.
 		if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 			return err
@@ -158,7 +188,7 @@ func (f *udpRoundTripFixture) exchange(payload []byte) error {
 		if err != nil {
 			return err
 		}
-		if from != f.destination || !bytes.Equal(f.reply[:n], payload) {
+		if from != f.replySources[i] || !bytes.Equal(f.reply[:n], payload) {
 			return fmt.Errorf("wrong UDP reply from %s (%d bytes)", from, n)
 		}
 	}
@@ -174,23 +204,83 @@ func TestUDPRoundTripIngressFixture(t *testing.T) {
 	}
 }
 
+// Each operation exchanges window packets per flow. The payload carries a
+// sequence and source ID; timeout, duplicates and cross-flow replies fail the
+// benchmark instead of inflating throughput. Samples bound histogram memory.
+func (f *udpRoundTripFixture) exchangeWindow(payload []byte, window int) error {
+	base := f.sequence
+	f.sequence += uint64(window)
+	for packet := range window {
+		for i, client := range f.clients {
+			binary.LittleEndian.PutUint64(payload, uint64(time.Since(f.clock)))
+			binary.LittleEndian.PutUint64(payload[8:], base+uint64(packet))
+			binary.LittleEndian.PutUint64(payload[16:], uint64(i))
+			if _, err := client.WriteToUDPAddrPort(payload, f.destination); err != nil {
+				return err
+			}
+		}
+	}
+	for i, client := range f.clients {
+		if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			return err
+		}
+		var seen uint64
+		for range window {
+			n, from, err := client.ReadFromUDPAddrPort(f.reply)
+			if err != nil {
+				return err
+			}
+			if n != len(payload) || from != f.replySources[i] || binary.LittleEndian.Uint64(f.reply[16:]) != uint64(i) || !bytes.Equal(f.reply[24:n], payload[24:]) {
+				return fmt.Errorf("wrong UDP reply from %s (%d bytes)", from, n)
+			}
+			sequence := binary.LittleEndian.Uint64(f.reply[8:])
+			if sequence < base || sequence >= base+uint64(window) || seen&(1<<(sequence-base)) != 0 {
+				return fmt.Errorf("duplicate or unexpected UDP sequence %d", sequence)
+			}
+			seen |= 1 << (sequence - base)
+			latency := time.Since(f.clock) - time.Duration(binary.LittleEndian.Uint64(f.reply))
+			if len(f.latencies) < cap(f.latencies) {
+				f.latencies = append(f.latencies, latency)
+			} else {
+				f.latencies[f.sampleIndex%len(f.latencies)] = latency
+			}
+			f.sampleIndex++
+		}
+	}
+	return nil
+}
+
+func TestUDPRoundTripMultipleTargets(t *testing.T) {
+	fixture := newUDPRoundTripTargets(t, 8, 1200, 4)
+	for range 4 {
+		if err := fixture.exchangeWindow(make([]byte, 1200), 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkUDPRoundTrip(b *testing.B) {
-	for _, flows := range []int{1, 32} {
+	for _, scenario := range []struct{ flows, targets, window int }{{1, 1, 1}, {32, 1, 1}, {32, 32, 1}, {32, 1, 8}, {32, 32, 8}} {
 		for _, size := range []int{64, 1200} {
-			b.Run(fmt.Sprintf("flows=%d/bytes=%d", flows, size), func(b *testing.B) {
-				fixture := newUDPRoundTripFixture(b, flows, size)
+			b.Run(fmt.Sprintf("flows=%d/targets=%d/window=%d/bytes=%d", scenario.flows, scenario.targets, scenario.window, size), func(b *testing.B) {
+				fixture := newUDPRoundTripTargets(b, scenario.flows, size, scenario.targets)
 				payload := make([]byte, size)
-				if err := fixture.exchange(payload); err != nil {
+				if err := fixture.exchangeWindow(payload, scenario.window); err != nil {
 					b.Fatal(err)
 				}
+				fixture.latencies = fixture.latencies[:0]
+				fixture.sampleIndex = 0
+				packets := scenario.flows * scenario.window
 				b.ReportAllocs()
-				b.SetBytes(int64(size * flows * 2))
+				b.SetBytes(int64(size * packets * 2))
 				for b.Loop() {
-					if err := fixture.exchange(payload); err != nil {
+					if err := fixture.exchangeWindow(payload, scenario.window); err != nil {
 						b.Fatal(err)
 					}
 				}
-				b.ReportMetric(float64(flows*b.N)/b.Elapsed().Seconds(), "roundtrips/s")
+				b.ReportMetric(float64(packets*b.N)/b.Elapsed().Seconds(), "roundtrips/s")
+				slices.Sort(fixture.latencies)
+				b.ReportMetric(float64(fixture.latencies[(len(fixture.latencies)-1)*95/100])/float64(time.Microsecond), "p95-us")
 			})
 		}
 	}
