@@ -28,13 +28,22 @@ func (g *DomainRegistry) Save(path string) error {
 		g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
 	}
 	generation := g.generation
-	entries := make(map[string]map[string]time.Time, len(g.byName))
+	pairs := 0
+	for _, r := range g.byName {
+		pairs += len(r.addresses)
+	}
+	// Own the copied deadlines independently of live records. Pointer-valued
+	// maps also avoid a reflected time.Time allocation per pair during encoding.
+	deadlines := make([]time.Time, pairs)
+	entries := make(map[string]map[string]*time.Time, len(g.byName))
 	for name, r := range g.byName {
-		deadlines := make(map[string]time.Time, len(r.addresses))
+		addresses := make(map[string]*time.Time, len(r.addresses))
 		for ip, pair := range r.addresses {
-			deadlines[ip.String()] = pair.retainUntil
+			deadlines[0] = pair.retainUntil
+			addresses[ip.String()] = &deadlines[0]
+			deadlines = deadlines[1:]
 		}
-		entries[name] = deadlines
+		entries[name] = addresses
 	}
 	g.mu.Unlock()
 	if err := persist.MkdirAll(filepath.Dir(path), 0700); err != nil {

@@ -141,6 +141,19 @@ func benchmarkActivityRegistry(b *testing.B) (*DomainRegistry, []domainActivityK
 	return g, keys, now
 }
 
+// Include snapshot allocation, deterministic JSON encoding, gzip and atomic
+// publication. The retained-history fixture is shared with activity benchmarks.
+func BenchmarkDomainRegistrySave(b *testing.B) {
+	g, _, _ := benchmarkActivityRegistry(b)
+	path := filepath.Join(b.TempDir(), "domain-registry.json.gz")
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := g.Save(path); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkDomainRegistryActivity(b *testing.B) {
 	unknownIP := netip.MustParseAddr("203.0.113.1")
 	bitmap := testBitmap(0)

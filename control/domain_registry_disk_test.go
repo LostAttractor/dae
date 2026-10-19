@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -122,6 +123,107 @@ func TestDomainRegistryDiskRoundTrip(t *testing.T) {
 	}
 	if err := restored.Restore(path, func(string) []uint32 { t.Fatal("empty snapshot evaluated a domain"); return nil }, now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDomainRegistryDiskDeterministic(t *testing.T) {
+	g, _ := newTestRegistry(16, time.Second)
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 123456789, time.FixedZone("test", 5*3600+30*60))
+	entries := make(map[string]map[string]time.Time)
+	for _, name := range []string{"z.example.", `escaped\001.example.`, "a.example."} {
+		entries[name] = make(map[string]time.Time)
+		for i, address := range []string{"2001:db8::2", "192.0.2.2", "192.0.2.10", "2001:db8::10"} {
+			ttl := 60 + i
+			g.Upsert(name, netip.MustParseAddr(address), testBitmap(), ttl, now)
+			entries[name][address] = now.Add(time.Duration(ttl) * time.Second)
+		}
+	}
+	want, err := jsonv2.Marshal(entries, jsonv2.Deterministic(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "registry.json.gz")
+	for range 3 {
+		if err := g.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		if got := readGzipDomainSnapshot(t, path); !bytes.Equal(got, want) {
+			t.Fatalf("snapshot = %s, want %s", got, want)
+		}
+	}
+}
+
+func TestDomainRegistryDiskConcurrentUpdates(t *testing.T) {
+	g, _ := newTestRegistry(16, time.Second)
+	now := time.Now().UTC()
+	observations := make([]domainObservation, 64)
+	for i := range observations {
+		observations[i] = domainObservation{
+			name: fmt.Sprintf("d%d.example.", i), bitmap: testBitmap(), ttl: 60,
+			ips: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
+		}
+	}
+	g.ObserveDNS(observations, now)
+	var writers sync.WaitGroup
+	writers.Go(func() {
+		for i := range 128 {
+			// Every pair changes in the same registry transaction.
+			g.ObserveDNS(observations, now.Add(time.Duration(i)*time.Second))
+		}
+	})
+	defer writers.Wait()
+	path := filepath.Join(t.TempDir(), "registry.json.gz")
+	for range 8 {
+		if err := g.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		var entries map[string]map[string]time.Time
+		if err := jsonv2.Unmarshal(readGzipDomainSnapshot(t, path), &entries); err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != len(observations) {
+			t.Fatalf("saved %d domains, want %d", len(entries), len(observations))
+		}
+		var deadline time.Time
+		for _, observation := range observations {
+			for _, ip := range observation.ips {
+				got := entries[observation.name][ip.String()]
+				if got.Before(now.Add(time.Minute)) || got.After(now.Add(187*time.Second)) {
+					t.Fatalf("invalid saved deadline: %v", got)
+				}
+				if !deadline.IsZero() && !got.Equal(deadline) {
+					t.Fatalf("snapshot mixed concurrent updates: %v and %v", deadline, got)
+				}
+				deadline = got
+			}
+		}
+	}
+}
+
+func TestDomainRegistryDiskEncodingFailureKeepsSnapshot(t *testing.T) {
+	g, _ := newTestRegistry(16, time.Second)
+	ip := netip.MustParseAddr("192.0.2.1")
+	g.Upsert("saved.example.", ip, testBitmap(), 60, time.Now())
+	path := filepath.Join(t.TempDir(), "registry.json.gz")
+	if err := g.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	want := readGzipDomainSnapshot(t, path)
+	generation := g.savedGeneration
+	// A deadline outside RFC 3339's year range fails during JSON encoding.
+	g.Upsert("invalid.example.", ip, testBitmap(), 60, time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC))
+	if err := g.Save(path); err == nil {
+		t.Fatal("saved a deadline outside the JSON time range")
+	}
+	if got := readGzipDomainSnapshot(t, path); !bytes.Equal(got, want) {
+		t.Fatalf("encoding failure replaced the saved snapshot: %s", got)
+	}
+	if g.savedGeneration != generation || g.savedGeneration == g.generation {
+		t.Fatal("encoding failure marked unsaved changes as saved")
+	}
+	files, err := os.ReadDir(filepath.Dir(path))
+	if err != nil || len(files) != 1 || files[0].Name() != filepath.Base(path) {
+		t.Fatalf("encoding failure left temporary files: %v, %v", files, err)
 	}
 }
 
