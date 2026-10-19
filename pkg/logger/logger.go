@@ -76,7 +76,14 @@ func (f *textFormatter) Format(entry *log.Entry) ([]byte, error) {
 	local.Message = terminaltext.Plain(entry.Message)
 	local.Data = make(log.Fields, len(entry.Data))
 	for key, value := range entry.Data {
-		local.Data[terminaltext.Line(key)] = terminaltext.Plain(fmt.Sprint(value))
+		if str, ok := value.(string); ok {
+			if plain := terminaltext.Plain(str); plain != str {
+				value = plain
+			}
+		} else {
+			value = terminaltext.Plain(fmt.Sprint(value))
+		}
+		local.Data[terminaltext.Line(key)] = value
 	}
 	rendered, err := f.base.Format(&local)
 	if err != nil || !bytes.HasPrefix(rendered[start:], []byte("\x1b[")) {

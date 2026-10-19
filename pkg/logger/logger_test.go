@@ -3,6 +3,8 @@ package logger
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +119,58 @@ func TestTextFormatterRemovesExternalTerminalControls(t *testing.T) {
 		if entry.Message != payload || entry.Data["module"] != payload {
 			t.Fatal("text formatter mutated structured log data")
 		}
+	}
+}
+
+type logStringValue string
+
+func (v logStringValue) String() string { return string(v) }
+
+type logFormattedValue struct{}
+
+func (logFormattedValue) String() string { return "unused String method" }
+func (logFormattedValue) Format(s fmt.State, _ rune) {
+	fmt.Fprint(s, "formatted \x1b[31mvalue\x1b[0m")
+}
+
+func TestTextFormatterFieldValues(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"string", "ordinary text", "ordinary text"},
+		{"empty", "", ""},
+		{"unicode", "中文🙂", "中文🙂"},
+		{"controls", "re\x1b[31mmote\x1b[0m\r", "remote"},
+		{"invalid UTF-8", "a\xffb", "a\ufffdb"},
+		{"integer", uint32(1234), "1234"},
+		{"boolean", true, "true"},
+		{"nil", nil, "<nil>"},
+		{"bytes", []byte("hi"), "[104 105]"},
+		{"error", errors.New("bad\rvalue"), "badvalue"},
+		{"stringer", logStringValue("re\x1b[31mmote\x1b[0m"), "remote"},
+		{"formatter", logFormattedValue{}, "formatted value"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, color := range []bool{false, true} {
+				f := NewTextFormatter(true).(*textFormatter)
+				f.base.ForceColors = color
+				const key = "de\x1b[31mtail\x1b[0m\nname"
+				entry := &log.Entry{Logger: log.New(), Level: log.InfoLevel, Message: "check",
+					Data: log.Fields{key: test.value}}
+				want := "level=info msg=check detail name=" + test.want + "\n"
+				if color {
+					want = "\x1b[36mINFO\x1b[0m check \x1b[36mdetail name\x1b[0m=" + test.want + "\n"
+				}
+				got, err := f.Format(entry)
+				if err != nil || string(got) != want {
+					t.Fatalf("color=%v: got %q, %v; want %q", color, got, err, want)
+				}
+				if len(entry.Data) != 1 || !reflect.DeepEqual(entry.Data[key], test.value) || entry.Message != "check" {
+					t.Fatal("formatter changed the original typed fields or message")
+				}
+			}
+		})
 	}
 }
