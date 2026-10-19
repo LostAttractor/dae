@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/infra/socks"
 )
 
@@ -86,7 +87,9 @@ func ReadAddr(data io.Reader) (net.Addr, error) {
 // ReadAddrInfo shares the exact-length SOCKS address decoder used by the
 // other client protocols, including readers that fragment every field.
 func ReadAddrInfo(data io.Reader) (*AddressInfo, error) {
-	addr, err := socks.ReadAddr(data)
+	buf := pool.GetBuffer(socks.MaxAddrLen)
+	defer pool.PutBuffer(buf)
+	addr, err := socks.ReadAddrInto(data, buf)
 	if err != nil {
 		return nil, fmt.Errorf("read SOCKS address: %w", err)
 	}

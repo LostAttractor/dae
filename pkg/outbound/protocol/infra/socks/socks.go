@@ -82,7 +82,15 @@ func (a Addr) Network() string { return "socks" }
 
 // ReadAddr reads just enough bytes from r to get a valid Addr.
 func ReadAddr(r io.Reader) (Addr, error) {
-	b := make([]byte, MaxAddrLen)
+	return ReadAddrInto(r, make([]byte, MaxAddrLen))
+}
+
+// ReadAddrInto reads an address into b, which must have at least MaxAddrLen
+// bytes. The returned address aliases b; bytes after the address are not read.
+func ReadAddrInto(r io.Reader, b []byte) (Addr, error) {
+	if len(b) < MaxAddrLen {
+		return nil, io.ErrShortBuffer
+	}
 	_, err := io.ReadFull(r, b[:1]) // read 1st byte for address type
 	if err != nil {
 		return nil, err
