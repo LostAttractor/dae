@@ -17,6 +17,19 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
+var httpReaderPool = sync.Pool{New: func() any { return bufio.NewReader(nil) }}
+
+func getHTTPReader(r io.Reader) *bufio.Reader {
+	reader := httpReaderPool.Get().(*bufio.Reader)
+	reader.Reset(r)
+	return reader
+}
+
+func putHTTPReader(reader *bufio.Reader) {
+	reader.Reset(nil)
+	httpReaderPool.Put(reader)
+}
+
 type HTTPObfs struct {
 	net.Conn
 	reader                      *bufio.Reader
@@ -35,6 +48,9 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 	}
 	if c.readErr != nil {
 		return 0, c.readErr
+	}
+	if c.reader == nil {
+		c.reader = getHTTPReader(c.Conn)
 	}
 	for c.firstResponse {
 		line, err := c.reader.ReadSlice('\n')
@@ -59,7 +75,9 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 		if !bytes.HasSuffix(c.header.Bytes(), []byte("\r\n\r\n")) {
 			continue
 		}
-		response, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(c.header.Bytes())), nil)
+		headerReader := getHTTPReader(bytes.NewReader(c.header.Bytes()))
+		response, err := http.ReadResponse(headerReader, nil)
+		putHTTPReader(headerReader)
 		if err != nil {
 			c.readErr = wireError("invalid HTTP response")
 			return 0, c.readErr
@@ -72,6 +90,21 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 		c.firstResponse = false
 	}
 	return c.reader.Read(p)
+}
+
+func (c *HTTPObfs) Close() error {
+	// Interrupt a blocked Read before taking its lock. The reader remains owned
+	// by this connection until Close, including any prefetched data and errors.
+	err := c.Conn.Close()
+	c.rMu.Lock()
+	c.readErr = net.ErrClosed
+	if c.reader != nil {
+		putHTTPReader(c.reader)
+		c.reader = nil
+	}
+	c.header = bytes.Buffer{}
+	c.rMu.Unlock()
+	return err
 }
 
 func (c *HTTPObfs) Write(p []byte) (int, error) {
@@ -116,5 +149,5 @@ func NewHTTPObfs(conn net.Conn, host, port, path string) net.Conn {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	return &HTTPObfs{Conn: conn, reader: bufio.NewReader(conn), host: host, port: port, path: path, firstRequest: true, firstResponse: true}
+	return &HTTPObfs{Conn: conn, host: host, port: port, path: path, firstRequest: true, firstResponse: true}
 }
