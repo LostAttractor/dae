@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
+	cachepolicy "github.com/daeuniverse/dae/pkg/dnscache"
 	dns "github.com/miekg/dns"
 )
 
@@ -28,7 +28,10 @@ type settings struct {
 	FixedTTL    []string
 }
 
-type key struct{ context, network, query string }
+type key struct {
+	context, network string
+	query            cachepolicy.Query
+}
 type entry struct {
 	key      key
 	response *plugin.DNSResponse
@@ -88,57 +91,20 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 func (*Cache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
 func cacheKey(request *plugin.DNSExchange) (key, bool) {
-	if !request.Replayable() {
+	message := request.MessageCopy()
+	if !clientCacheEDNS(message) {
 		return key{}, false
 	}
-	m := request.MessageCopy()
-	if m.Question[0].Qclass != dns.ClassINET || len(m.Answer) != 0 || len(m.Ns) != 0 || m.Truncated || m.Rcode != 0 {
-		return key{}, false
-	}
-	q := m.Question[0]
-	for _, rr := range m.Extra {
-		if _, ok := rr.(*dns.OPT); !ok {
-			return key{}, false
-		}
-	}
-	if !replayableExtra(m.Extra) {
-		return key{}, false
-	}
-	canonical := m
-	canonical.Id = 0
-	canonical.Compress = false
-	canonical.Question[0].Name = dns.CanonicalName(q.Name)
-	wire, err := canonical.Pack()
-	if err != nil || len(wire) > 4096 {
-		return key{}, false
-	}
-	return key{request.ContextKey + "/" + request.Destination.String(), request.Network, string(wire)}, true
+	query, ok := cachepolicy.QueryKey(message)
+	return key{request.ContextKey + "/" + request.Destination.String(), request.Network, query}, ok
 }
 
-func replayableExtra(records []dns.RR) bool {
-	optSeen := false
-	for _, rr := range records {
-		opt, ok := rr.(*dns.OPT)
-		if !ok {
-			// Ordinary additional records are safe; transaction signatures are not.
-			if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
-				return false
-			}
-			continue
-		}
-		if optSeen || opt.Version() != 0 {
-			return false
-		}
-		optSeen = true
-		for _, option := range opt.Option {
-			switch option.(type) {
-			case *dns.EDNS0_SUBNET, *dns.EDNS0_PADDING, *dns.EDNS0_NSID:
-			default:
-				return false
-			}
-		}
-	}
-	return true
+// Until the client cache implements each option's response semantics, option
+// queries and replies pass through. Exact query matching alone cannot establish
+// ECS scope or make NSID, Cookies and other transaction data replayable.
+func clientCacheEDNS(m *dns.Msg) bool {
+	opt, valid := cachepolicy.EDNS(m)
+	return valid && (opt == nil || len(opt.Option) == 0)
 }
 
 func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
@@ -158,15 +124,8 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 					elapsed := uint32(now.Sub(e.response.ReceivedAt) / time.Second)
 					c.mu.Unlock()
 					message := response.MessageCopy()
-					for _, section := range [][]dns.RR{message.Answer, message.Ns, message.Extra} {
-						for _, rr := range section {
-							if rr.Header().Rrtype != dns.TypeOPT {
-								rr.Header().Ttl -= min(rr.Header().Ttl, elapsed)
-							}
-						}
-					}
-					message.Id = query.Id
-					message.Question = slices.Clone(query.Question)
+					cachepolicy.Age(message, elapsed)
+					cachepolicy.Replay(message, query)
 					response.DNSPacket = plugin.DNSMessage(message)
 					response.Cached = true
 					return response, nil
@@ -187,7 +146,7 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 				// Wire is authoritative. Never repair an opaque/malformed packet
 				// by unpacking loosely and then discarding the original bytes.
 				message := response.MessageCopy()
-				if message != nil && netutils.ValidateDnsResponse(query, message, query.Id) == nil && !signed(message) {
+				if clientCacheEDNS(message) && netutils.ValidateDnsResponse(query, message, query.Id) == nil && !cachepolicy.Signed(message) {
 					response = response.Copy()
 					for _, rr := range message.Answer {
 						rr.Header().Ttl = ttl
@@ -201,18 +160,6 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 	}
 }
 
-func signed(m *dns.Msg) bool {
-	for _, section := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
-		for _, rr := range section {
-			switch rr.Header().Rrtype {
-			case dns.TypeRRSIG, dns.TypeTSIG, dns.TypeSIG:
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, response *plugin.DNSResponse) {
 	if response.Cached {
 		return
@@ -222,52 +169,18 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, respo
 		return
 	}
 	m := response.MessageCopy()
-	// Signed messages pass through unchanged, including authentication flags.
-	// Retaining only unsigned responses avoids replaying transaction signatures.
-	if m == nil || !m.Response || m.Truncated || signed(m) || !replayableExtra(m.Extra) ||
-		(m.Rcode != dns.RcodeSuccess && m.Rcode != dns.RcodeNameError) {
+	if !clientCacheEDNS(m) {
 		return
 	}
 	query := request.MessageCopy()
 	if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists && ttl == 0 {
 		return
 	}
-	ttl := ^uint32(0) // No ordinary RR has contributed a lifetime yet.
-	negative := true
-	for _, rr := range m.Answer {
-		if rr.Header().Rrtype == query.Question[0].Qtype || query.Question[0].Qtype == dns.TypeANY {
-			negative = false
-		}
-	}
-	negative = negative || m.Rcode == dns.RcodeNameError
-	soa := false
-	if negative {
-		for _, rr := range m.Ns {
-			if record, ok := rr.(*dns.SOA); ok {
-				if record.Minttl >= 1<<31 {
-					return
-				}
-				ttl = min(ttl, record.Minttl)
-				soa = true
-			}
-		}
-	}
-	for _, section := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
-		for _, rr := range section {
-			if rr.Header().Rrtype == dns.TypeOPT {
-				continue
-			}
-			// RFC 2181: a high-bit TTL means zero. Reject before storing
-			// the original TTL, which aging could turn into a valid long TTL.
-			if rr.Header().Ttl >= 1<<31 {
-				return
-			}
-			ttl = min(ttl, rr.Header().Ttl)
-		}
-	}
-	if ttl == ^uint32(0) || ttl == 0 || negative && !soa {
+	ttl := cachepolicy.Prepare(query.Question[0].Qtype, m)
+	if ttl == 0 {
 		return
 	}
+	cachepolicy.StripOPT(m)
 	at := response.ReceivedAt
 	expires := at.Add(time.Duration(ttl) * time.Second)
 	if !time.Now().Before(expires) {
@@ -277,20 +190,11 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, respo
 	if err != nil {
 		return
 	}
-	bytes := 4*len(wire) + len(k.context) + len(k.query) + 256
+	bytes := 4*len(wire) + len(k.context) + len(k.query.Question.Name) + len(k.query.Options) + 512
 	if bytes > c.memoryLimit {
 		return
 	}
 	e := &entry{key: k, response: response.Copy(), expires: expires, bytes: bytes}
-	if negative {
-		// RFC 2308: clients must see the remaining negative lifetime too,
-		// rather than starting a new MINIMUM interval on every cache hit.
-		for _, rr := range m.Ns {
-			if record, ok := rr.(*dns.SOA); ok {
-				record.Hdr.Ttl = min(record.Hdr.Ttl, ttl)
-			}
-		}
-	}
 	e.response.DNSPacket = plugin.DNSMessage(m)
 	c.mu.Lock()
 	defer c.mu.Unlock()

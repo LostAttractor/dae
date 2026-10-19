@@ -4,6 +4,12 @@ Independent bounded, memory-only response cache for dae's `component/plugin` API
 It has no upstream selection or resolver transport. It caches final responses
 from both relayed servers and local DNS plugins, including Surge `[Host]`.
 
+Query identity, negative TTLs, TTL aging and ordinary OPT reconstruction use the
+shared `pkg/dnscache` library. This plugin owns EDNS option eligibility and retains
+its client-policy namespaces, final response metadata, fixed TTL settings,
+storage and diagnostics. dae's internal resolver cache uses a separate budget
+and never enters the client plugin chain.
+
 ## Build and test
 
 This plugin shares dae's root Go module and release version. From the repository
@@ -36,6 +42,13 @@ original receipt time, restore the caller's ID/question and age RR TTLs. Negativ
 responses require an SOA and use its minimum TTL. Truncated, zero-TTL, signed and
 transaction-specific responses are not replayed. `fixed_domain_ttl: 0` disables
 storage for that name; fixed TTL never changes signed answers.
+
+The cache stores ordinary answers without OPT control records and reconstructs
+OPT from the current query on every hit. Queries or replies with EDNS options,
+including ECS, NSID, Padding and Cookies, pass through without caching or fixed
+TTL rewriting. Their option-specific response semantics are not implemented;
+exact query matching alone does not make them replayable. The internal resolver
+cache makes its own eligibility decision and uses the same ordinary OPT helper.
 
 High-bit TTLs are treated as zero and are not cached (RFC 2181). Negative replay
 ages the SOA TTL from the negative caching lifetime (RFC 2308), so clients cannot
