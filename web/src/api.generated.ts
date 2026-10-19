@@ -1416,6 +1416,8 @@ export interface components {
         };
         MITMState: {
             ca_fingerprint: string;
+            /** @description Router configuration for this device. It applies when override is null and again after the override is cleared. */
+            default: boolean;
             enabled: boolean;
             override: boolean | null;
         };

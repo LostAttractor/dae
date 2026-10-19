@@ -81,6 +81,15 @@ func (p *Policy) Match(source netip.Addr, mac [6]byte) (enabled bool, override *
 			return enabled, new(enabled)
 		}
 	}
+	return p.Default(source, mac), nil
+}
+
+// Default is the configured decision for a client, ignoring its dynamic MAC
+// override: the value a device returns to when its override is cleared.
+func (p *Policy) Default(source netip.Addr, mac [6]byte) bool {
+	if p == nil {
+		return false
+	}
 	decision := p.fallback
 	if mac != [6]byte{} {
 		if candidate, exists := p.macs[mac]; exists && candidate.Order < decision.Order {
@@ -98,7 +107,7 @@ func (p *Policy) Match(source netip.Addr, mac [6]byte) (enabled bool, override *
 			}
 		}
 	}
-	return decision.Allow, nil
+	return decision.Allow
 }
 
 // Entries exports a stable value copy for kernel-map preparation. Mutating the

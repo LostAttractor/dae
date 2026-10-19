@@ -40,8 +40,11 @@ type ClientSetState struct {
 }
 
 type MITMState struct {
-	Enabled       bool   `json:"enabled"`
-	Override      *bool  `json:"override"`
+	Enabled  bool  `json:"enabled"`
+	Override *bool `json:"override"`
+	// Default is the router configuration for this device, which applies when
+	// Override is null and again after the override is cleared.
+	Default       bool   `json:"default"`
 	CAFingerprint string `json:"ca_fingerprint"`
 }
 

@@ -134,7 +134,7 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `PUT /api/session` | With a configured key, login using `Authorization: Bearer <api_key>` and receive a session cookie; without a key, verify LAN/Unix access and clear stale cookies. Empty body, `204` on success |
 | `DELETE /api/session` | Clear the browser session cookie; empty body, `204` on success |
 | `GET /api/status` | Full runtime snapshot; TCP uses the configured API key/session, or verified LAN ingress when no key is configured; Unix uses file system permissions |
-| `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `ca_fingerprint`); `403` for an unknown MAC |
+| `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `default`, `ca_fingerprint`); `403` for an unknown MAC |
 | `GET /api/device/status` | Caller device state and MAC-attributed userspace upstream statistics; verified direct LAN only |
 | `POST /api/device/mitm-tests` | Empty body; `201` with browser challenge URLs; does not change MITM settings |
 | `GET /api/device/mitm-tests/{id}` | This device's observations; `404` for expired, replaced or foreign challenges |
@@ -151,7 +151,7 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `GET /api/certificate/tests/{id}` | HTTPS only; a challenge handshake returns `id`, `ca_fingerprint` and `expires_at` and consumes the challenge; management or older challenge connections receive `409` and close for retry; consumed or expired challenges return `404` |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Download the public certificate without MAC identification |
 
-A `null` MITM `override` inherits the configuration. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.
+A `null` MITM `override` inherits the configuration; `default` is that configured value for the device, which applies again after the override is cleared. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.
 
 `POST /api/probes` is the shared manual probe API for instantiated, checked outbounds, including selectors, automatic policies and direct node references. It uses configured DNS probes, timeouts and concurrency bounds; arbitrary URLs and per-request probe configuration are not accepted. `202` acknowledges acceptance, including coalescing with queued/running work; it is not a health result or persistent job, and changes neither selection nor `track_all`. Poll `/api/selectors` for selector `checking`, `tested`, `checked_at`, `healthy` and `latency_ms`; other outbounds publish runtime health and latency through `/api/status`. Unknown outbound: `404`; node outside that outbound: `400`; unchecked builtin: `409`.
 

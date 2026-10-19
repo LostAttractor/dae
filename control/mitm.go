@@ -66,6 +66,15 @@ func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, 
 	return c.httpClients.policy.Match(ip, mac)
 }
 
+// mitmState reports the effective selection together with the configured
+// default from one policy generation.
+func (c *ControlPlane) mitmState(ip netip.Addr, mac [6]byte) (enabled bool, override *bool, configured bool) {
+	c.httpClients.mu.RLock()
+	defer c.httpClients.mu.RUnlock()
+	enabled, override = c.httpClients.policy.Match(ip, mac)
+	return enabled, override, c.httpClients.policy.Default(ip, mac)
+}
+
 // Request-transforming scopes are admitted before choosing any upstream route
 // or dialer. A candidate miss/client exclusion follows ordinary connection
 // routing, including destination rules; pure inspection retains its route.

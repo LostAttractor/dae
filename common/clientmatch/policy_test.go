@@ -34,9 +34,14 @@ func TestCompiledPolicyPreservesOrderedSelectors(t *testing.T) {
 				overrides := map[[6]byte]bool{mac: enabled}
 				policy = matcher.Compile(overrides)
 				overrides[mac] = !enabled
-				got, override := policy.Match(netip.MustParseAddr("192.0.2.1"), mac)
+				source := netip.MustParseAddr("192.0.2.1")
+				got, override := policy.Match(source, mac)
 				if got != enabled || override == nil || *override != enabled {
 					t.Fatalf("override did not precede %q %q", a, b)
+				}
+				// Clearing the override returns to the configured decision.
+				if configured := policy.Default(source, mac); configured != matcher.Match(source, mac) {
+					t.Fatalf("default for %q %q is %v, want the configured %v", a, b, configured, !configured)
 				}
 			}
 		}

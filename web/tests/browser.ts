@@ -226,7 +226,7 @@ const httpServer = createServer(async (req, res) => {
         if (req.method !== "DELETE") assert.equal(typeof body.enabled, "boolean");
         assert.equal(req.headers["x-dae-mitm"], fixture.device.mitm.ca_fingerprint);
         fixture.device.mitm.override = req.method === "DELETE" ? null : body.enabled!;
-        fixture.device.mitm.enabled = fixture.device.mitm.override ?? false;
+        fixture.device.mitm.enabled = fixture.device.mitm.override ?? fixture.device.mitm.default;
         return json(fixture.device);
       }
       if (url === "/api/device/mitm-tests") {
@@ -501,7 +501,7 @@ try {
 
   await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
     fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "browser-one", mitm_test_origins: mitmOrigins };
-    fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "browser-ca" };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
     await js('document.querySelector("#test-certificate").click()');
@@ -910,7 +910,7 @@ try {
 
   await test("certificate UI requires both browser proof and interception observation", async () => {
     fixture.certificate = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
-    fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "test-ca" };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
     await js(`
@@ -1521,7 +1521,7 @@ try {
       await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
       await until('document.querySelector("#diagnostic-result").textContent.includes("Analysis: flow")');
       const apply = async () => {
-        if (change === "mitm") fixture.device.mitm = { enabled: !fixture.device.mitm?.enabled, override: null, ca_fingerprint: "test-ca" };
+        if (change === "mitm") fixture.device.mitm = { enabled: !fixture.device.mitm?.enabled, override: null, default: !fixture.device.mitm?.enabled, ca_fingerprint: "test-ca" };
         else if (change === "generation") fixture.generation = (fixture.generation ?? 7) + 1;
         else {
           await visit("devices");
@@ -1679,7 +1679,7 @@ try {
     await js('document.querySelector(".client-toggle input").focus(); document.querySelector(".client-toggle input").click()');
     await ready();
     assert.equal(await js('document.activeElement.labels[0].textContent'), "Work network");
-    fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: "test-ca" };
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.activeElement.id'), "refresh");
@@ -1881,7 +1881,7 @@ try {
     fixture.tables = [{ name: "resolved_domains", used: 128, limit: 4096 }];
     fixture.plugins = [{ id: "request_rules", type: "http", state: "ready" }];
     fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", mitm_test_generation: "layout" };
-    fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: fixture.certificate.fingerprint };
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: fixture.certificate.fingerprint };
     fixture.selectors[0].name = "Long outbound group name · " + "subscription ".repeat(6);
     fixture.stats.history = {
       upload_bytes_per_second: [300, 500, 420, 1200, 850, 640, 760, 400, 1400, 1100, 900, 700].map(value => value * 1024),

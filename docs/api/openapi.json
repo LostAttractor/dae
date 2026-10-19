@@ -531,6 +531,10 @@
           "ca_fingerprint": {
             "type": "string"
           },
+          "default": {
+            "description": "Router configuration for this device. It applies when override is null and again after the override is cleared.",
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -548,6 +552,7 @@
         "required": [
           "enabled",
           "override",
+          "default",
           "ca_fingerprint"
         ],
         "type": "object"

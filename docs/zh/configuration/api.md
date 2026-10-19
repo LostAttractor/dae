@@ -132,7 +132,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `PUT /api/session` | 配置密钥时使用 `Authorization: Bearer <api_key>` 登录并设置会话 Cookie；未配置时校验 LAN/Unix 权限并清除旧 Cookie。空正文，成功返回 `204` |
 | `DELETE /api/session` | 清除浏览器会话 Cookie；空正文，成功返回 `204` |
 | `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix socket 使用文件系统权限 |
-| `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
+| `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`default`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `GET /api/device/status` | 当前设备设置及按 MAC 归属的用户态上游运行统计；仅已识别的直连 LAN 设备 |
 | `POST /api/device/mitm-tests` | 空正文，创建当前设备的透明 MITM 测试挑战；返回 `201`，不改变 MITM 设置 |
 | `GET /api/device/mitm-tests/{id}` | 当前设备的测试观测；过期、配置已更新或其他设备的挑战返回 `404` |
@@ -151,7 +151,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `GET /api/certificate` | CA 名称、SHA-256 指纹，以及可选 `mitm_test_generation`、`mitm_test_origins`；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
-MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
+MITM 的 `override` 为 `null` 时继承配置；`default` 是配置对该设备的取值，清除覆盖后重新生效。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
 `POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。
 

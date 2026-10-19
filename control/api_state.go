@@ -26,8 +26,8 @@ func (c *ControlPlane) deviceState(ip netip.Addr, mac [6]byte) api.DeviceState {
 		})
 	}
 	if c.mitmAuthority() != nil {
-		enabled, override := c.mitmSelection(ip, mac)
-		state.MITM = &api.MITMState{Enabled: enabled, Override: override, CAFingerprint: c.mitmAuthority().Fingerprint()}
+		enabled, override, configured := c.mitmState(ip, mac)
+		state.MITM = &api.MITMState{Enabled: enabled, Override: override, Default: configured, CAFingerprint: c.mitmAuthority().Fingerprint()}
 	}
 	return state
 }
