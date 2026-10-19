@@ -17,8 +17,9 @@ import (
 type ResolverDialContext func(context.Context, string, netip.AddrPort) (net.Conn, error)
 
 type resolverPolicy struct {
-	server netip.AddrPort
-	route  ResolverDialContext
+	server                 netip.AddrPort
+	route                  ResolverDialContext
+	application, bootstrap dnsDialFunc
 }
 
 // InternalResolver delegates DNS protocol, hosts lookup and UDP/TCP retry to
@@ -74,6 +75,7 @@ func NewBootstrapResolver(server string, dial func(context.Context, string, stri
 			return dial(ctx, network, server)
 		}
 	}
+	resolver.Dial = cacheDNSDial(internalDNSCache, resolver.Dial)
 	return resolver, nil
 }
 
@@ -98,7 +100,17 @@ func NewInternalResolver(mark uint32, server string) (*InternalResolver, error) 
 // Configure is called by the daemon's startup/reload owner. A nil route selects
 // direct bootstrap until the replacement control plane is ready.
 func (r *InternalResolver) Configure(server netip.AddrPort, route ResolverDialContext) {
-	r.policy.Store(&resolverPolicy{server, route})
+	p := &resolverPolicy{server: server, route: route}
+	p.bootstrap = cacheDNSDial(internalDNSCache, func(ctx context.Context, network, address string) (net.Conn, error) {
+		if p.server.IsValid() {
+			address = p.server.String()
+		}
+		return r.direct(ctx, network, address)
+	})
+	p.application = cacheDNSDial(internalDNSCache, func(ctx context.Context, network, address string) (net.Conn, error) {
+		return r.dialPolicy(p, ctx, network, address)
+	})
+	r.policy.Store(p)
 }
 
 func (r *InternalResolver) SetRoute(route ResolverDialContext) {
@@ -106,14 +118,14 @@ func (r *InternalResolver) SetRoute(route ResolverDialContext) {
 }
 
 func (r *InternalResolver) dialBootstrap(ctx context.Context, network, address string) (net.Conn, error) {
-	if server := r.policy.Load().server; server.IsValid() {
-		address = server.String()
-	}
-	return r.direct(ctx, network, address)
+	return r.policy.Load().bootstrap(ctx, network, address)
 }
 
 func (r *InternalResolver) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	p := r.policy.Load()
+	return r.policy.Load().application(ctx, network, address)
+}
+
+func (r *InternalResolver) dialPolicy(p *resolverPolicy, ctx context.Context, network, address string) (net.Conn, error) {
 	if !p.server.IsValid() {
 		return r.direct(ctx, network, address)
 	}

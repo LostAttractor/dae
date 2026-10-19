@@ -199,7 +199,7 @@ func TestInternalResolverHandoffPreservesInflightPolicy(t *testing.T) {
 		return nil, oldResult
 	})
 	go func() {
-		_, err := r.Resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+		err := testResolverTransport(r.Resolver)
 		result <- err
 	}()
 	<-entered
@@ -210,7 +210,7 @@ func TestInternalResolverHandoffPreservesInflightPolicy(t *testing.T) {
 		return nil, newResult
 	}
 	r.Configure(b, nil)
-	_, err := r.Resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+	err := testResolverTransport(r.Resolver)
 	if err != newResult {
 		t.Errorf("handoff did not use direct bootstrap: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestInternalResolverHandoffPreservesInflightPolicy(t *testing.T) {
 		}
 		return nil, newResult
 	})
-	_, err = r.Resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+	err = testResolverTransport(r.Resolver)
 	if err != newResult {
 		t.Errorf("new route result: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestInternalResolverSystemDefaultAndRoutingFailure(t *testing.T) {
 		return nil, want
 	}
 	r.SetRoute(route)
-	_, _ = r.Resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+	_ = testResolverTransport(r.Resolver)
 	if directCalls != 1 || routeCalls != 0 {
 		t.Fatal("omitted setting did not preserve system resolution")
 	}
@@ -284,9 +284,26 @@ func TestInternalResolverConcurrentPolicySwitch(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			for range 100 {
-				_, _ = r.Resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+				_ = testResolverTransport(r.Resolver)
 			}
 		})
 	}
 	wg.Wait()
+}
+
+// DNS transports are opened lazily so a cache hit needs no socket. Exercise a
+// complete query write when testing the underlying policy/dial error.
+func testResolverTransport(resolver *net.Resolver) error {
+	conn, err := resolver.Dial(context.Background(), "udp", "127.0.0.53:53")
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	query := new(dns.Msg).SetQuestion("policy-test.example.", dns.TypeA)
+	wire, err := query.Pack()
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(wire)
+	return err
 }

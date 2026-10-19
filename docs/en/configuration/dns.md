@@ -79,6 +79,41 @@ keeps standard-library system resolution. The setting does not change client
 DNS servers, enter the client DNS plugin chain or publish internal answers to
 the client-evidence Registry. Use DNS plugins for client query policy.
 
+### Internal lookup cache
+
+The default application resolver and each proxy bootstrap resolver cache ordinary
+DNS responses without requiring the `dns-cache` plugin. The cache wraps the Go
+resolver's DNS transport, covering ordinary queries such as A, AAAA and TXT. A
+hit opens no upstream DNS socket. Go still owns hosts-file and search-domain
+handling, in-flight lookup sharing, address sorting and TCP dial fallback.
+
+All internal resolvers share a bounded **4096-entry, 8 MiB** LRU budget. The byte
+budget is conservative accounting, not process RSS. Entries are memory-only;
+there is no additional maintenance goroutine. Expiration is checked on lookup,
+and capacity bounds all retained entries.
+
+- The shortest RR TTL, including CNAMEs, bounds lifetime. NXDOMAIN/NODATA require
+  an SOA and also respect its TTL and MINIMUM. Hits age TTLs without renewing them.
+- Zero/high-bit TTLs, truncated replies, errors such as SERVFAIL, signatures and
+  unsafe replay cases are not cached. Transport failures, timeouts and
+  cancellations are not negative DNS answers.
+- Resolver instance, DNS server, TCP/UDP, query type and flags separate entries.
+  Node resolver instances also separate mark/interface policies. Application and
+  direct bootstrap answers stay independent. Replacing internal resolver policy
+  or its routing callback creates a fresh namespace; old transactions cannot
+  populate the replacement namespace.
+- Internal caching accepts ordinary EDNS negotiation without options and builds
+  a new OPT on each hit. ECS, Cookies, NSID and other options retain the original
+  query path. Go still decides TCP retries after UDP truncation; the transports
+  have separate cache entries.
+
+The optional `dns-cache` plugin continues to cache final client answers, own
+client/policy isolation and fixed TTL settings, and expose its existing
+diagnostics. It shares query identity, TTL rules and ordinary OPT reconstruction
+with the internal cache, while keeping its own entries, capacity and EDNS option
+policy. Client queries or replies with EDNS options pass through without caching
+or fixed TTL rewriting until their option-specific semantics are supported.
+
 ## Sliding retention window
 
 DNS TTL expiry cannot prove that an application has stopped using an address.
