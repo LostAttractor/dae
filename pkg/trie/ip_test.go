@@ -3,10 +3,89 @@
 package trie
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"net/netip"
 	"testing"
 )
+
+func TestHasPrefixIPMappedBoundary(t *testing.T) {
+	for _, networks := range [][]string{
+		{"::/0"},
+		{"0.0.0.0/0"},
+		{"::/80"},
+		{"::fffe:0:0/95"},
+		{"::ffff:0:0/96"},
+		{"::ffff:192.0.2.0/120"},
+		{"192.0.2.0/24"},
+		{"192.0.2.1/32"},
+		{"2001:db8::/32"},
+		{"::/128"},
+		{"192.0.2.0/24", "198.51.100.0/24", "2001:db8::/32"},
+		{"::/80", "192.0.2.0/24", "2001:db8::/32"},
+	} {
+		t.Run(fmt.Sprint(networks), func(t *testing.T) {
+			prefixes := make([]netip.Prefix, len(networks))
+			for i, network := range networks {
+				prefixes[i] = netip.MustParsePrefix(network)
+			}
+			trie, err := NewTrieFromPrefixes(prefixes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ip := range []string{"0.0.0.0", "192.0.2.0", "192.0.2.1", "192.0.2.255", "198.51.100.1", "255.255.255.255", "::", "::1", "::fffe:c000:201", "::ffff:192.0.2.1", "2001:db8::1", "2001:db9::1"} {
+				address := netip.MustParseAddr(ip)
+				want := false
+				for _, prefix := range prefixes {
+					n := prefix.Bits()
+					if prefix.Addr().Is4() {
+						n += 96
+					}
+					want = want || netip.PrefixFrom(netip.AddrFrom16(prefix.Addr().As16()), n).Contains(netip.AddrFrom16(address.As16()))
+				}
+				if got := trie.HasPrefixIP(address.As16()); got != want {
+					t.Errorf("address=%s: got %v, want %v", address, got, want)
+				}
+			}
+		})
+	}
+}
+
+// Mix hits and misses in both single-family and mixed-family sets.
+func BenchmarkTrieIPLookup(b *testing.B) {
+	for _, family := range []string{"ipv4", "ipv6", "mixed"} {
+		for _, count := range []int{1, 256, 8192} {
+			b.Run(fmt.Sprintf("%s/prefixes=%d", family, count), func(b *testing.B) {
+				var prefixes []netip.Prefix
+				var queries [][16]byte
+				for i := range count {
+					if family != "ipv6" {
+						addr := netip.AddrFrom4([4]byte{198, byte(i >> 8), byte(i), 0})
+						prefixes = append(prefixes, netip.PrefixFrom(addr, 24))
+						queries = append(queries, addr.Next().As16(), netip.AddrFrom4([4]byte{199, byte(i >> 8), byte(i), 1}).As16())
+					}
+					if family != "ipv4" {
+						addr := netip.AddrFrom16([16]byte{0x20, 1, 0x0d, 0xb8, 8: byte(i >> 8), 9: byte(i)})
+						prefixes = append(prefixes, netip.PrefixFrom(addr, 112))
+						queries = append(queries, addr.Next().As16(), [16]byte{0x20, 1, 0x0d, 0xb8, 8: byte(i >> 8), 9: byte(i), 10: 1})
+					}
+				}
+				trie, err := NewTrieFromPrefixes(prefixes)
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				i := 0
+				for b.Loop() {
+					if got := trie.HasPrefixIP(queries[i%len(queries)]); got != (i%2 == 0) {
+						b.Fatal("incorrect prefix result")
+					}
+					i++
+				}
+			})
+		}
+	}
+}
 
 func TestHasPrefixIP(t *testing.T) {
 	random := rand.New(rand.NewPCG(1, 2))

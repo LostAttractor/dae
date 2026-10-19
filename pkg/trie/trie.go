@@ -94,7 +94,10 @@ type Trie struct {
 	ranksBL, selectsBL  *bitlist.CompactBitList
 
 	chars *ValidChars
+	ipv4  ipCursor
 }
+
+type ipCursor struct{ node, bitmap int }
 
 func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
 	n := prefix.Bits()
@@ -190,6 +193,11 @@ func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 	}
 
 	ss.init()
+	if chars == ValidCidrChars {
+		// IPv4 queries share the mapped prefix even in mixed IPv4/IPv6 sets.
+		// Retain an earlier leaf or a miss as well as the cursor at bit 96.
+		ss.ipv4 = ss.seekIP([16]byte{10: 0xff, 11: 0xff}, 0, 96, ipCursor{})
+	}
 
 	// Tighten.
 	ss.labels.Tighten()
@@ -241,15 +249,28 @@ func (ss *Trie) HasPrefixIP(address [16]byte) bool {
 	if ss == nil || ss.chars != ValidCidrChars {
 		return false
 	}
-	node, bitmap := 0, 0
-	for bit := range 128 {
+	cursor, start := ipCursor{}, 0
+	if netip.AddrFrom16(address).Is4In6() {
+		cursor, start = ss.ipv4, 96
+	}
+	cursor = ss.seekIP(address, start, 128, cursor)
+	return cursor.node >= 0 && getBit(ss.leaves, cursor.node) != 0
+}
+
+// seekIP stops at a matching leaf, a missing edge, or the requested bit depth.
+func (ss *Trie) seekIP(address [16]byte, start, end int, cursor ipCursor) ipCursor {
+	if cursor.node < 0 {
+		return cursor
+	}
+	node, bitmap := cursor.node, cursor.bitmap
+	for bit := start; bit < end; bit++ {
 		if getBit(ss.leaves, node) != 0 {
-			return true
+			return ipCursor{node, bitmap}
 		}
 		label := uint64(address[bit/8] >> (7 - bit%8) & 1)
 		for ; ; bitmap++ {
 			if getBit(ss.labelBitmap, bitmap) != 0 {
-				return false
+				return ipCursor{node: -1}
 			}
 			if ss.labels.Get(bitmap-node) == label {
 				break
@@ -258,7 +279,7 @@ func (ss *Trie) HasPrefixIP(address [16]byte) bool {
 		node = countZeros(ss.labelBitmap, ss.ranksBL, bitmap+1)
 		bitmap = selectIthOne(ss.labelBitmap, ss.ranksBL, ss.selectsBL, node-1) + 1
 	}
-	return getBit(ss.leaves, node) != 0
+	return ipCursor{node, bitmap}
 }
 
 func setBit(bm *[]uint64, i int, v int) {
