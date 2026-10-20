@@ -111,17 +111,24 @@ func (b *BrutalSender) OnCongestionEvent(number congestion.PacketNumber, lostByt
 }
 
 func (b *BrutalSender) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime time.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo) {
+	var acked, lost uint64
+	for _, packet := range ackedPackets {
+		if packet.PacketNumber != congestion.InvalidPacketNumber {
+			acked++
+		}
+	}
+	for _, packet := range lostPackets {
+		if packet.PacketNumber != congestion.InvalidPacketNumber && !packet.IsPathMTUProbe {
+			lost++
+		}
+	}
 	currentTimestamp := eventTime.Unix()
 	slot := currentTimestamp % pktInfoSlotCount
-	if b.pktInfoSlots[slot].Timestamp == currentTimestamp {
-		b.pktInfoSlots[slot].LossCount += uint64(len(lostPackets))
-		b.pktInfoSlots[slot].AckCount += uint64(len(ackedPackets))
-	} else {
-		// uninitialized slot or too old, reset
-		b.pktInfoSlots[slot].Timestamp = currentTimestamp
-		b.pktInfoSlots[slot].AckCount = uint64(len(ackedPackets))
-		b.pktInfoSlots[slot].LossCount = uint64(len(lostPackets))
+	if b.pktInfoSlots[slot].Timestamp != currentTimestamp {
+		b.pktInfoSlots[slot] = pktInfo{Timestamp: currentTimestamp}
 	}
+	b.pktInfoSlots[slot].AckCount += acked
+	b.pktInfoSlots[slot].LossCount += lost
 	b.updateAckRate(currentTimestamp)
 }
 
