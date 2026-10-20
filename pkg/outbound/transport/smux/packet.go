@@ -2,7 +2,7 @@ package smux
 
 import (
 	"encoding/binary"
-	"fmt"
+	"io"
 	"net"
 
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -23,11 +23,17 @@ func (c *UDPConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	n, err = c.Conn.Read(b)
-	if n != int(length) {
-		return 0, nil, fmt.Errorf("read length mismatch: %d != %d", n, length)
+	n, err = io.ReadFull(&c.Conn, b[:min(len(b), int(length))])
+	if err != nil {
+		return n, addr, err
 	}
-	return n, addr, err
+	if n < int(length) {
+		if _, err = io.CopyN(io.Discard, &c.Conn, int64(int(length)-n)); err != nil {
+			return n, addr, err
+		}
+		return n, addr, io.ErrShortBuffer
+	}
+	return n, addr, nil
 }
 
 func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
