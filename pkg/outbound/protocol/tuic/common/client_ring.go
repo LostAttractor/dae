@@ -31,7 +31,7 @@ type ClientRing[C RingMember] struct {
 	cancel    context.CancelFunc
 	ring      *list.List
 	current   *list.Element
-	newClient func(capabilityCallback func(n int64)) C
+	newClient func(capabilityCallback func(streamType quic.StreamType, n int64)) C
 	reserved  int64
 	closed    bool
 	state     *netproxy.PoolState
@@ -39,12 +39,12 @@ type ClientRing[C RingMember] struct {
 
 type clientRingNode[C RingMember] struct {
 	cli C
-	// capability is updated by the QUIC callback and read atomically.
+	// capability tracks only bidirectional stream credit, independently of authentication and UDP streams.
 	capability atomic.Int64
 	resource   netproxy.ResourceRef
 }
 
-func NewClientRing[C RingMember](newClient func(capabilityCallback func(n int64)) C, reserved int64) *ClientRing[C] {
+func NewClientRing[C RingMember](newClient func(capabilityCallback func(streamType quic.StreamType, n int64)) C, reserved int64) *ClientRing[C] {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClientRing[C]{
 		ctx: ctx, cancel: cancel,
@@ -57,7 +57,7 @@ func NewClientRing[C RingMember](newClient func(capabilityCallback func(n int64)
 
 // Allocate cancels protocol I/O when the pool closes and rejects a late
 // handoff from a terminated member. The caller releases any returned resource
-// on error. Authentication on an existing stream bypasses stream reservations.
+// on error. Only new bidirectional streams need stream reservations.
 func (r *ClientRing[C]) Allocate(ctx context.Context, reserveStreams bool, allocate func(context.Context, C) error) error {
 	if r.ctx.Err() != nil {
 		return ErrClientClosed
@@ -217,7 +217,11 @@ func (r *ClientRing[C]) Connect(ctx context.Context, dialer netproxy.Dialer, dia
 		}
 		node := &clientRingNode[C]{}
 		node.capability.Store(-1)
-		node.cli = r.newClient(func(n int64) { node.capability.Store(n) })
+		node.cli = r.newClient(func(streamType quic.StreamType, n int64) {
+			if streamType == quic.StreamTypeBidi {
+				node.capability.Store(n)
+			}
+		})
 		elem := r.insertAfterCurrent(node)
 		r.current = elem
 		r.state.BeginConnect()

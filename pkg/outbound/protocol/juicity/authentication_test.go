@@ -49,7 +49,7 @@ func TestAuthenticationContinuesAfterConnectWithoutStreamCapacity(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := d.clientRing.Allocate(ctx, false, func(_ context.Context, client *clientImpl) error {
-		client.QuicConfig.CapabilityCallback(0)
+		client.QuicConfig.CapabilityCallback(quic.StreamTypeBidi, 0)
 		return nil
 	}); err != nil {
 		t.Fatal(err)

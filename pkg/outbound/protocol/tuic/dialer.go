@@ -43,7 +43,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 		udpRelayMode = common.QUIC
 	}
 	return &Dialer{
-		clientRing: newClientRing(func(capabilityCallback func(n int64)) *clientImpl {
+		clientRing: newClientRing(func(capabilityCallback func(streamType quic.StreamType, n int64)) *clientImpl {
 			return &clientImpl{
 				ClientOption: &ClientOption{
 					TlsConfig: header.TlsConfig,
