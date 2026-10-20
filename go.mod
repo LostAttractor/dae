@@ -6,7 +6,6 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/andybalholm/brotli v1.2.4
 	github.com/antlr4-go/antlr/v4 v4.13.1
-	github.com/awnumar/fastrand v0.0.0-20210315215012-30ee0990fa2d
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/buke/quickjs-go v0.7.8-0.20260823090719-48da2085b266
 	github.com/cilium/ebpf v0.22.0
@@ -55,8 +54,6 @@ require (
 )
 
 require (
-	github.com/awnumar/memcall v0.5.0 // indirect
-	github.com/awnumar/memguard v0.23.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.25.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
