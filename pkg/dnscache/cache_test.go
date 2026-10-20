@@ -45,7 +45,7 @@ func TestCacheExpiryAndOwnership(t *testing.T) {
 	if !ok || again.Answer[0].Header().Ttl != 1 || again.Question[0] != q.Question[0] {
 		t.Fatal("caller mutated cached state")
 	}
-	if _, ok := c.Get(Key{Namespace: "scope/query"}, at.Add(time.Minute)); ok || len(c.entries) != 0 || c.bytes != 0 {
+	if _, ok := c.Get(Key{Namespace: "scope/query"}, at.Add(time.Minute)); ok || len(c.store.entries) != 0 || c.store.bytes != 0 {
 		t.Fatal("expired response remained accessible")
 	}
 }
@@ -86,7 +86,7 @@ func TestCacheBypassesUnsafeResponses(t *testing.T) {
 		q, r := cacheMessages()
 		change(r)
 		c := New(4, 4096)
-		if c.Put(Key{Namespace: "q"}, q.Question[0].Qtype, r, time.Now()) || len(c.entries) != 0 {
+		if c.Put(Key{Namespace: "q"}, q.Question[0].Qtype, r, time.Now()) || len(c.store.entries) != 0 {
 			t.Fatalf("unsafe response cached: %v", r)
 		}
 	}
@@ -106,14 +106,14 @@ func TestCacheBoundsAndLRU(t *testing.T) {
 	for range 100 {
 		c.Put(Key{Namespace: "a"}, q.Question[0].Qtype, r, at)
 	}
-	if len(c.entries) != 2 || c.bytes > c.memoryLimit {
+	if len(c.store.entries) != 2 || c.store.bytes > c.store.memoryLimit {
 		t.Fatal("replacement leaked accounting")
 	}
-	c = New(10, c.bytes/2)
+	c = New(10, c.store.bytes/2)
 	for _, key := range []string{"a", "b", "c"} {
 		c.Put(Key{Namespace: key}, q.Question[0].Qtype, r, at)
 	}
-	if len(c.entries) != 1 || c.bytes > c.memoryLimit {
+	if len(c.store.entries) != 1 || c.store.bytes > c.store.memoryLimit {
 		t.Fatal("byte budget did not bound storage")
 	}
 	if New(0, 4096).Put(Key{Namespace: "q"}, q.Question[0].Qtype, r, at) || New(4, 1).Put(Key{Namespace: "q"}, q.Question[0].Qtype, r, at) {
