@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/control"
 )
 
 func observabilityState() (pprof *http.Server, pprofListenPort uint16, metrics *http.Server, metricsListenPort uint16) {
@@ -83,7 +84,9 @@ func TestMetricsPortChangeBindFailureKeepsOldServer(t *testing.T) {
 	}
 	defer occupied.Close()
 	occupiedPort := uint16(occupied.Addr().(*net.TCPAddr).Port)
-	startMetricsServer(occupiedPort)
+	if err := startMetricsServer(occupiedPort); err == nil {
+		t.Fatal("occupied port was accepted")
+	}
 	_, _, current, currentPort := observabilityState()
 	if current != oldServer || currentPort != oldPort {
 		t.Fatal("failed port change replaced the working metrics server")
@@ -130,7 +133,7 @@ func TestPprofUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 	pprofService.port = port
 	observabilityMu.Unlock()
 
-	serveHTTP("pprof", server, closedLocalListener(t), pprofService.clear)
+	serveHTTP("pprof", server, closedLocalListener(t), clearObservabilityServer)
 	current, currentPort, _, _ := observabilityState()
 	if current != nil || currentPort != 0 {
 		t.Fatal("unexpected exit did not clear the pprof server")
@@ -153,7 +156,7 @@ func TestMetricsUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 	metricsService.port = port
 	observabilityMu.Unlock()
 
-	serveHTTP("metrics", server, closedLocalListener(t), metricsService.clear)
+	serveHTTP("metrics", server, closedLocalListener(t), clearObservabilityServer)
 	_, _, current, currentPort := observabilityState()
 	if current != nil || currentPort != 0 {
 		t.Fatal("unexpected exit did not clear the metrics server")
@@ -181,11 +184,31 @@ func TestObservabilityServersCanSwapPorts(t *testing.T) {
 	startPprofServer(pprofInitial)
 	startMetricsServer(metricsInitial)
 
-	reconfigureObservabilityServers(metricsInitial, pprofInitial)
+	if err := reconfigureObservabilityServers(metricsInitial, pprofInitial); err != nil {
+		t.Fatal(err)
+	}
 	pprof, pprofPort, metrics, metricsPort := observabilityState()
 	if pprof == nil || metrics == nil || pprofPort != metricsInitial || metricsPort != pprofInitial {
 		t.Fatalf("swapped observability state = pprof %v:%d, metrics %v:%d", pprof, pprofPort, metrics, metricsPort)
 	}
+	for _, test := range []struct {
+		port       uint16
+		path, want string
+	}{
+		{pprofPort, "/debug/pprof/", "Types of profiles available"},
+		{metricsPort, "/metrics", "dae_process_timestamp_seconds"},
+	} {
+		response, err := http.Get(fmt.Sprintf("http://localhost:%d%s", test.port, test.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != 200 || !strings.Contains(string(body), test.want) {
+			t.Fatalf("swapped service handler: %s, %v", body, err)
+		}
+	}
+
 }
 
 func TestStopHTTPServerDoesNotDrainRequests(t *testing.T) {
@@ -230,5 +253,50 @@ func TestStopHTTPServerDoesNotDrainRequests(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Serve did not exit after forced server close")
+	}
+}
+
+func TestObservabilityPreparationRollback(t *testing.T) {
+	if err := reconfigureObservabilityServers(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reconfigureObservabilityServers(0, 0) })
+	oldPort := freeLocalPort(t)
+	if err := startMetricsServer(oldPort); err != nil {
+		t.Fatal(err)
+	}
+	_, _, oldServer, _ := observabilityState()
+	occupied, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	pprofTarget := freeLocalPort(t)
+	metricsTarget := uint16(occupied.Addr().(*net.TCPAddr).Port)
+	app := &application{conf: mitmConfigForTest(t, ""), datapath: control.NewRuntime()}
+	defer app.datapath.Close()
+	app.conf.Global.MetricsPort = oldPort
+	next := *app.conf
+	next.Global.PprofPort, next.Global.MetricsPort = pprofTarget, metricsTarget
+	if _, err := app.apply(t.Context(), &next, false, false, false); err == nil {
+		t.Fatal("reload accepted occupied metrics port")
+	}
+	pprof, _, current, currentPort := observabilityState()
+	if app.conf.Global.MetricsPort != oldPort || pprof != nil || current != oldServer || currentPort != oldPort {
+		t.Fatal("rejected reload changed configuration or live listeners")
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", pprofTarget))
+	if err != nil {
+		t.Fatalf("rejected preparation leaked reserved pprof port: %v", err)
+	}
+	listener.Close()
+	update, err := prepareObservabilityServers(oldPort, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update.Close()
+	_, _, current, _ = observabilityState()
+	if current != oldServer {
+		t.Fatal("discarding port transfer changed active metrics server")
 	}
 }

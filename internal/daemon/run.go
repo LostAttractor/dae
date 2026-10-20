@@ -74,8 +74,10 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	// Keep sampling through reloads and until all traffic producers have drained.
 	defer stopSampling()
-	startPprofServer(conf.Global.PprofPort)
-	defer startPprofServer(0)
+	if err := reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort); err != nil {
+		return err
+	}
+	defer reconfigureObservabilityServers(0, 0)
 	settingsPath := filepath.Join(common.CacheDirectory(), "runtime-state.json")
 	runtimeSettings, err := settings.Open(settingsPath)
 	if err != nil {
@@ -164,7 +166,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}()
 	pruneSubscriptions(conf, filepath.Dir(options.ConfigFile))
 	logStartupNodeStatus(plane.GroupsStatus())
-	startMetricsServer(conf.Global.MetricsPort)
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(sigs)

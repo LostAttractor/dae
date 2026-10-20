@@ -10,6 +10,7 @@ import (
 	_ "net/http/pprof"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
@@ -26,6 +27,7 @@ type observabilityServer struct {
 	server   *http.Server
 	listener net.Listener
 	port     uint16
+	dispatch *atomic.Pointer[http.Handler]
 }
 
 var (
@@ -75,66 +77,115 @@ func (s *observabilityServer) setActive(enabled bool) {
 	}
 }
 
-func (s *observabilityServer) clear(server *http.Server) {
+// A prepared update reserves every new port before publishing any change.
+// Existing bindings can move between services without releasing their ports.
+type observabilityUpdate struct {
+	targets [2]observabilityServer
+	opened  []net.Listener
+}
+
+func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabilityUpdate, error) {
+	if pprofTarget != 0 && pprofTarget == metricsTarget {
+		return nil, fmt.Errorf("pprof and metrics cannot share port %d", pprofTarget)
+	}
 	observabilityMu.Lock()
 	defer observabilityMu.Unlock()
-	if s.server == server {
-		s.server, s.listener, s.port = nil, nil, 0
-		s.setActive(false)
+	update := &observabilityUpdate{}
+	current := [2]*observabilityServer{&pprofService, &metricsService}
+	for i, port := range [2]uint16{pprofTarget, metricsTarget} {
+		if port == 0 {
+			continue
+		}
+		for _, service := range current {
+			if service.server != nil && service.port == port {
+				update.targets[i] = *service
+				break
+			}
+		}
+		if update.targets[i].server != nil {
+			continue
+		}
+		address := fmt.Sprintf("localhost:%d", port)
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			update.Close()
+			return nil, fmt.Errorf("listen for %s: %w", current[i].name, err)
+		}
+		dispatch := new(atomic.Pointer[http.Handler])
+		dispatch.Store(&current[i].handler)
+		server := &http.Server{Addr: address, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*dispatch.Load()).ServeHTTP(w, r) }),
+		}
+		update.targets[i] = observabilityServer{server: server, listener: listener, port: port, dispatch: dispatch}
+		update.opened = append(update.opened, listener)
 	}
+	return update, nil
 }
 
-func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16) {
+func (u *observabilityUpdate) Close() {
+	for _, listener := range u.opened {
+		_ = listener.Close()
+	}
+	u.opened = nil
+}
+
+func (u *observabilityUpdate) Commit() {
 	observabilityMu.Lock()
-	currentPprof := pprofService.port
-	currentMetrics := metricsService.port
+	old := [2]observabilityServer{pprofService, metricsService}
+	for i, service := range [2]*observabilityServer{&pprofService, &metricsService} {
+		target := u.targets[i]
+		service.server, service.listener, service.port, service.dispatch = target.server, target.listener, target.port, target.dispatch
+		if service.dispatch != nil {
+			service.dispatch.Store(&service.handler)
+		}
+		service.setActive(service.server != nil)
+	}
+	for _, listener := range u.opened {
+		for _, service := range [2]*observabilityServer{&pprofService, &metricsService} {
+			if service.listener == listener {
+				go serveHTTP(service.name, service.server, listener, clearObservabilityServer)
+			}
+		}
+	}
+	u.opened = nil
 	observabilityMu.Unlock()
-
-	// Release a port first when the other service needs to take it over.
-	if pprofTarget != 0 && pprofTarget == currentMetrics && metricsTarget != currentMetrics {
-		startMetricsServer(0)
+	for _, previous := range old {
+		if previous.server != nil && previous.server != u.targets[0].server && previous.server != u.targets[1].server {
+			stopHTTPServer(previous.name, previous.server, previous.listener)
+		}
 	}
-	if metricsTarget != 0 && metricsTarget == currentPprof && pprofTarget != currentPprof {
-		startPprofServer(0)
-	}
-	startPprofServer(pprofTarget)
-	startMetricsServer(metricsTarget)
 }
 
-func startPprofServer(port uint16) { pprofService.start(port) }
-
-// The registry remains stable across control-plane reloads.
-func startMetricsServer(port uint16) { metricsService.start(port) }
-
-func (s *observabilityServer) start(port uint16) {
+func clearObservabilityServer(server *http.Server) {
 	observabilityMu.Lock()
-	if s.server != nil && s.port == port && port != 0 {
-		observabilityMu.Unlock()
-		return
+	defer observabilityMu.Unlock()
+	for _, service := range [2]*observabilityServer{&pprofService, &metricsService} {
+		if service.server == server {
+			service.server, service.listener, service.port, service.dispatch = nil, nil, 0, nil
+			service.setActive(false)
+		}
 	}
-	old, oldListener := s.server, s.listener
-	if port == 0 {
-		s.server, s.listener, s.port = nil, nil, 0
-		s.setActive(false)
-		observabilityMu.Unlock()
-		stopHTTPServer(s.name, old, oldListener)
-		return
-	}
-	server := &http.Server{
-		Addr:              fmt.Sprintf("localhost:%d", port),
-		Handler:           s.handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-	listener, err := net.Listen("tcp", server.Addr)
+}
+
+func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16) error {
+	update, err := prepareObservabilityServers(pprofTarget, metricsTarget)
 	if err != nil {
-		observabilityMu.Unlock()
-		log.WithError(err).WithField("server", s.name).Warn("Failed to start HTTP server")
-		return
+		return err
 	}
-	s.server, s.listener, s.port = server, listener, port
-	s.setActive(true)
-	go serveHTTP(s.name, server, listener, s.clear)
+	update.Commit()
+	return nil
+}
+
+func startPprofServer(port uint16) error {
+	observabilityMu.Lock()
+	metricsPort := metricsService.port
 	observabilityMu.Unlock()
-	stopHTTPServer(s.name, old, oldListener)
+	return reconfigureObservabilityServers(port, metricsPort)
+}
+
+func startMetricsServer(port uint16) error {
+	observabilityMu.Lock()
+	pprofPort := pprofService.port
+	observabilityMu.Unlock()
+	return reconfigureObservabilityServers(pprofPort, port)
 }

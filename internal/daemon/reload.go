@@ -66,7 +66,7 @@ func (a *application) publishAPI() {
 	a.managementAPI.Configure(daemonAPIHandler(handler, targets...), a.certificates.Authority(), filepath.Join(common.CacheDirectory(), "api-tls"))
 }
 
-func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool) {
+func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool, observability *observabilityUpdate) {
 	a.datapath.RefreshTCPIdleTimeouts()
 	if routingChanged || a.conf.Global.DNSResolver != conf.Global.DNSResolver {
 		a.resolver.Configure(server, a.plane.DNSResolverDialer())
@@ -77,7 +77,7 @@ func (a *application) accept(conf *config.Config, inputs *controlInputs, server 
 	if a.conf.Global.APIKey != conf.Global.APIKey {
 		a.plane.SetAPIKey(conf.Global.APIKey)
 	}
-	reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
+	observability.Commit()
 	a.conf, a.inputs = conf, inputs
 	pruneSubscriptions(conf, filepath.Dir(a.options.ConfigFile))
 	stats.DefaultStore.RecordReload()
@@ -120,6 +120,11 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 			return "", err
 		}
 	}
+	observability, err := prepareObservabilityServers(next.Global.PprofPort, next.Global.MetricsPort)
+	if err != nil {
+		return "", err
+	}
+	defer observability.Close()
 	certificates := a.certificates
 	if !suspend {
 		certificates, err = prepareCertificates(next, a.certificates)
@@ -187,7 +192,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if result, err := a.replaceServices(next, inputs, server, certificates, &prepared, pauseAPI); result != "" || err != nil {
+		if result, err := a.replaceServices(next, inputs, server, certificates, &prepared, pauseAPI, observability); result != "" || err != nil {
 			if err == nil {
 				refresh.Commit()
 			}
@@ -210,7 +215,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		return "", err
 	}
 	a.setCertificates(certificates)
-	a.accept(next, inputs, server, true)
+	a.accept(next, inputs, server, true, observability)
 	if !suspend {
 		refresh.Commit()
 	}
@@ -223,7 +228,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 
 // replaceServices returns an empty result when changed plugin capture rules
 // require a new control plane. Otherwise it commits the in-place service update.
-func (a *application) replaceServices(next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func()) (string, error) {
+func (a *application) replaceServices(next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func(), observability *observabilityUpdate) (string, error) {
 	if !a.plane.CanReplaceMITM(*prepared) {
 		return "", nil
 	}
@@ -242,7 +247,7 @@ func (a *application) replaceServices(next *config.Config, inputs *controlInputs
 		result = "No changes"
 	}
 	a.setCertificates(certificates)
-	a.accept(next, inputs, server, false)
+	a.accept(next, inputs, server, false, observability)
 	if unchanged {
 		prepared.Host.CommitResources()
 	}
