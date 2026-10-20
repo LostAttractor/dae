@@ -73,6 +73,31 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				}
 			}()
 		}
+		controller := http.NewResponseController(w)
+		var upload *http1RequestBody
+		defer func() {
+			// An unstarted Expect: 100-continue body can defer its actual
+			// drain until net/http finishes the handler. Keep it interrupted.
+			if upload == nil || upload.eof.Load() {
+				_ = controller.SetReadDeadline(time.Time{})
+			}
+		}()
+		setReadDeadline := controller.SetReadDeadline
+		if r.ProtoMajor == 1 {
+			_ = controller.EnableFullDuplex()
+			if r.Body != nil && r.Body != http.NoBody {
+				body := &http1RequestBody{ReadCloser: r.Body, deadline: controller.SetReadDeadline}
+				upload = body
+				r.Body = body
+				source.Body = body
+				setReadDeadline = body.setReadDeadline
+				stopBody := context.AfterFunc(ctx, func() { _ = body.Close() })
+				defer func() {
+					stopBody()
+					_ = body.Close()
+				}()
+			}
+		}
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -101,14 +126,7 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		}
 		r.URL.Scheme, r.URL.Host = scheme, r.Host
 		r.RequestURI = ""
-		controller := http.NewResponseController(w)
-		if r.ProtoMajor == 1 {
-			// Upload and response forwarding run concurrently. The HTTP/1
-			// server must not drain the upload before sending an early response.
-			_ = controller.EnableFullDuplex()
-		}
-		defer controller.SetReadDeadline(time.Time{})
-		exchange := &plugin.Exchange{Request: r, Client: client, SetReadDeadline: controller.SetReadDeadline}
+		exchange := &plugin.Exchange{Request: r, Client: client, SetReadDeadline: setReadDeadline}
 		defer func() {
 			if exchange.Request.Body != nil {
 				_ = exchange.Request.Body.Close()
@@ -122,7 +140,7 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				exchange.Request = req
 				forwardRequestTrailers(req, source)
 				response, err := chain(exchange)
-				_ = controller.SetReadDeadline(time.Time{})
+				_ = setReadDeadline(time.Time{})
 				if err != nil {
 					return nil, err
 				}

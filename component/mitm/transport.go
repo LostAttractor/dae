@@ -15,6 +15,17 @@ import (
 )
 
 func (h *Host) httpTransport(dial DialContext) *http.Transport {
+	if dial != nil {
+		connect := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := connect(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			closed, cancel := context.WithCancel(context.Background())
+			return &httpTransportConn{Conn: conn, ctx: closed, cancel: cancel}, nil
+		}
+	}
 	transport := &http.Transport{
 		DialContext:            dial,
 		ForceAttemptHTTP2:      true,

@@ -125,6 +125,9 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 			body = &routeAttemptBody{ReadCloser: request.Body}
 			attempt.Body = body
 		}
+		if !p.packet {
+			attempt = watchHTTP1Upload(attempt)
+		}
 		response, err := pool.transport.RoundTrip(preserveRequestRejection(attempt, p.packet))
 		if p.packet {
 			err = preserveHTTP3Rejection(request, err)
