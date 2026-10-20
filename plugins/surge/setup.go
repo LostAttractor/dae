@@ -21,20 +21,7 @@ import (
 
 const maxConcurrentModuleLoads = 4
 
-var Plugin = plugin.Definition{Configure: Configure, Preflight: preflightRuntime, Resources: prepareResources, Commands: Commands}
-
-func preflightRuntime(ctx context.Context, spec plugin.Spec) error {
-	conf, err := ParseConfig(spec.Config)
-	if err != nil {
-		return err
-	}
-	backend, err := newRuntimeBackend(ctx, RuntimeOptions{NodePath: conf.NodePath, NodeWorkers: conf.MaxConcurrentScripts, MemoryLimit: conf.MemoryLimit})
-	if err != nil {
-		return err
-	}
-	defer backend.Close()
-	return backend.Warm(ctx)
-}
+var Plugin = plugin.Definition{Configure: Configure, Resources: prepareResources, Commands: Commands}
 
 func prepareModules(ctx context.Context, conf Config, services plugin.Services) (modules []*Module, err error) {
 	started := time.Now()

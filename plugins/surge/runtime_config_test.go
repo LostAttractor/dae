@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -54,20 +55,20 @@ func TestRuntimeBuildSelection(t *testing.T) {
 	defer r.Close()
 }
 
-func TestRuntimePreflightBuildSelection(t *testing.T) {
+func TestPreflightDefersRuntimeUntilModulesKnown(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	sections, err := config_parser.Parse(`surge { module { 'file:absent.sgmodule' } }`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Plugin.Preflight(t.Context(), plugin.Spec{ID: "surge", Type: "surge", Config: sections[0]})
-	if compiledJSRuntime == "nodejs" {
-		if err == nil || !strings.Contains(err.Error(), "find executable") {
-			t.Fatalf("Node.js preflight accepted an empty PATH: %v", err)
-		}
-	} else if err != nil {
-		t.Fatalf("QuickJS preflight required Node.js: %v", err)
+	configuration, err := pluginhost.Configure(map[string]plugin.Definition{"surge": Plugin}, []plugin.Spec{{ID: "surge", Type: "surge", Config: sections[0]}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := configuration.Preflight(t.Context()); err != nil {
+		t.Fatalf("runtime probed before modules were available: %v", err)
+	}
+
 }
 
 func TestPrepareCanceledRuntime(t *testing.T) {

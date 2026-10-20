@@ -6,18 +6,17 @@ package daemon
 
 import (
 	"fmt"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/plugins/surge"
 )
 
-func TestNodeRuntimePreflightBeforeStartup(t *testing.T) {
+func TestScriptRuntimeFailureRejectsPreparation(t *testing.T) {
 	for _, test := range []struct {
 		name, contents, want string
 		mode                 os.FileMode
@@ -41,33 +40,45 @@ func TestNodeRuntimePreflightBeforeStartup(t *testing.T) {
 			if test.name != "missing from PATH" {
 				setting = fmt.Sprintf("node_path: '%s'", path)
 			}
-			conf := mitmConfigForTest(t, `certificate { ca_cert:absent.pem ca_key:absent.key }
-mitm { enabled:true }
-plugins { surge { `+setting+` module { 'https://invalid.example/module' } } }`)
-			err := Run(conf, nil, map[string]plugin.Definition{"surge": surge.Plugin}, &netutils.InternalResolver{}, Options{})
-			if err == nil || !strings.Contains(err.Error(), "plugins.surge preflight") || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("startup did not reject Node.js before kernel and resource preparation: %v", err)
+			for name, contents := range map[string]string{
+				"local.sgmodule": "[Script]\ncheck=type=dns,pattern=.,script-path=local.js\n",
+				"local.js":       "$done({});",
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
-			entries, err := os.ReadDir(dir)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("Node.js preflight wrote resource files: %v %v", entries, err)
+			conf := mitmConfigForTest(t, `plugins { surge { `+setting+` module { 'file:local.sgmodule' } } }`)
+			host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+			if host != nil {
+				host.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("script runtime failure did not reject preparation: %v", err)
 			}
 		})
 	}
 }
 
-func TestNodeRuntimePreflightUsesConfiguredPath(t *testing.T) {
-	path, err := exec.LookPath("node")
-	if err != nil {
+func TestScriptFreeModuleWithoutNode(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DAE_LOCATION_CACHE", dir)
+	t.Setenv("PATH", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "local.sgmodule"), []byte("[Host]\nexample.test = 192.0.2.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", t.TempDir())
-	conf := mitmConfigForTest(t, fmt.Sprintf(`plugins { surge { node_path: '%s' module { 'file:absent.sgmodule' } } }`, path))
-	plugins, err := configurePlugins(conf, map[string]plugin.Definition{"surge": surge.Plugin})
+	conf := mitmConfigForTest(t, fmt.Sprintf(`plugins { surge { node_path:'%s' module { 'file:local.sgmodule' } } }`, filepath.Join(dir, "absent-node")))
+	definitions := map[string]plugin.Definition{"surge": surge.Plugin}
+	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := plugins.Preflight(t.Context()); err != nil {
-		t.Fatalf("configured Node.js path should work without PATH lookup or module loading: %v", err)
+		t.Fatal(err)
 	}
+	host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
 }
