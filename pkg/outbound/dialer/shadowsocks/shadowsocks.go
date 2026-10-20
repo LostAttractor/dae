@@ -93,7 +93,7 @@ func (s *Shadowsocks) Build(option *dialer.ExtraOption, upstream dialer.Upstream
 			wsConfig := ws.WsConfig{
 				Scheme:         "ws",
 				Host:           proxyAddress,
-				Path:           "/",
+				Path:           opts.Path,
 				Hostname:       opts.Host,
 				PassthroughUdp: true,
 			}
