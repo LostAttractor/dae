@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -65,7 +66,7 @@ type fixedSalt []byte
 func (s fixedSalt) Get() []byte { b := pool.GetBuffer(len(s)); copy(b, s); return b }
 
 // Peer codecs live only in tests and use the specified BLAKE3/AES construction.
-func peerCipher(t *testing.T, key, salt []byte) cipher.AEAD {
+func peerCipher(t testing.TB, key, salt []byte) cipher.AEAD {
 	t.Helper()
 	derived := make([]byte, len(key))
 	material := append(append([]byte(nil), key...), salt...)
@@ -80,7 +81,7 @@ func peerCipher(t *testing.T, key, salt []byte) cipher.AEAD {
 	}
 	return aead
 }
-func responseFrame(t *testing.T, key, requestSalt, payload []byte, seconds uint64) []byte {
+func responseFrame(t testing.TB, key, requestSalt, payload []byte, seconds uint64) []byte {
 	salt := bytes.Repeat([]byte{0x31}, len(key))
 	aead := peerCipher(t, key, salt)
 	header := binary.BigEndian.AppendUint64([]byte{1}, seconds)
@@ -92,7 +93,7 @@ func responseFrame(t *testing.T, key, requestSalt, payload []byte, seconds uint6
 	nonce[0] = 1
 	return aead.Seal(wire, nonce, payload, nil)
 }
-func newClientForTest(t *testing.T, raw net.Conn, key []byte) *TCPConn {
+func newClientForTest(t testing.TB, raw net.Conn, key []byte) *TCPConn {
 	t.Helper()
 	conf := ciphers.Aead2022CiphersConf["2022-blake3-aes-128-gcm"]
 	if len(key) == 32 {
@@ -140,8 +141,8 @@ func TestClientTCPResponseBufferOwnership(t *testing.T) {
 			if err := fresh.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if fresh.readBuf != nil || fresh.readOffset != 0 {
-				t.Fatal("Close retained payload storage")
+			if fresh.readBuf != nil || fresh.readOffset != 0 || fresh.reader != nil {
+				t.Fatal("Close retained read storage")
 			}
 		})
 	}
@@ -194,6 +195,102 @@ func TestClientTCPTruncatedFrameIsSticky(t *testing.T) {
 				t.Fatal("retry consumed more of an incomplete frame")
 			}
 		})
+	}
+}
+
+func TestClientTCPReadFrames(t *testing.T) {
+	for _, keySize := range []int{16, 32} {
+		for _, size := range []int{256, 4096, TCPChunkMaxLen} {
+			t.Run(fmt.Sprintf("key=%d/payload=%d", keySize, size), func(t *testing.T) {
+				key := bytes.Repeat([]byte{0x11}, keySize)
+				raw := new(memoryConn)
+				c := newClientForTest(t, raw, key)
+				defer c.Close()
+				payload := bytes.Repeat([]byte("x"), size)
+				raw.reader = bytes.NewReader(responseStream(t, key, c.requestSalt, payload, 3))
+				var got bytes.Buffer
+				buf := make([]byte, 137)
+				for {
+					n, err := c.Read(buf)
+					got.Write(buf[:n])
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !bytes.Equal(got.Bytes(), bytes.Repeat(payload, 3)) {
+					t.Fatal("response frames lost or corrupted")
+				}
+				if size == 256 && raw.reads != 2 {
+					t.Fatalf("coalesced frames used %d reads, want one data read and EOF", raw.reads)
+				}
+			})
+		}
+	}
+}
+
+func TestClientTCPBufferedAuthenticationFailure(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	raw := new(memoryConn)
+	c := newClientForTest(t, raw, key)
+	defer c.Close()
+	payload := []byte("authenticated payload")
+	wire := responseStream(t, key, c.requestSalt, payload, 2)
+	wire[len(wire)-1] ^= 1
+	raw.reader = bytes.NewReader(wire)
+	buf := make([]byte, len(payload))
+	if _, err := io.ReadFull(c, buf); err != nil || !bytes.Equal(buf, payload) {
+		t.Fatalf("valid first frame = %q, %v", buf, err)
+	}
+	if n, err := c.Read(buf); n != 0 || !errors.Is(err, protocol.ErrFailAuth) {
+		t.Fatalf("unauthenticated payload returned: %d, %v", n, err)
+	}
+	reads := raw.reads
+	if _, err := c.Read(buf); !errors.Is(err, protocol.ErrFailAuth) || raw.reads != reads {
+		t.Fatalf("authentication failure was not sticky: %v", err)
+	}
+}
+
+func TestClientTCPReadBoundaryTimeoutRetry(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	raw, peer := net.Pipe()
+	defer peer.Close()
+	c := newClientForTest(t, raw, key)
+	defer c.Close()
+	payload := []byte("retry after a boundary timeout")
+	wire := responseStream(t, key, c.requestSalt, payload, 2)
+	if err := raw.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expired deadline did not fail")
+	} else if timeout, ok := errors.AsType[net.Error](err); !ok || !timeout.Timeout() {
+		t.Fatalf("Read = %v, want timeout", err)
+	}
+	if err := raw.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		// Fragment the peer's stream across frame headers and payloads.
+		for len(wire) > 0 {
+			n, err := peer.Write(wire[:min(7, len(wire))])
+			if err != nil {
+				done <- err
+				return
+			}
+			wire = wire[n:]
+		}
+		done <- peer.Close()
+	}()
+	got, err := io.ReadAll(c)
+	if err != nil || !bytes.Equal(got, bytes.Repeat(payload, 2)) {
+		t.Fatalf("retry response = %q, %v", got, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

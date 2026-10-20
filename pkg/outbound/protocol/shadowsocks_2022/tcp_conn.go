@@ -1,6 +1,7 @@
 package shadowsocks_2022
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -31,6 +32,9 @@ const (
 	MaxPaddingLength       = 900
 )
 
+// Limit read-ahead copying for large frames while coalescing short frames.
+var tcpReaderPool = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 1024) }}
+
 type TCPConn struct {
 	net.Conn
 	addr                    *socks5.AddressInfo
@@ -43,6 +47,7 @@ type TCPConn struct {
 	nonceRead, nonceWrite   []byte
 	readErr, writeErr       error
 	readMutex, writeMutex   sync.Mutex
+	reader                  *bufio.Reader
 	readBuf                 []byte
 	readOffset              int
 	closeOnce               sync.Once
@@ -64,6 +69,11 @@ func (c *TCPConn) Read(b []byte) (int, error) {
 	}
 	if len(b) == 0 {
 		return 0, nil
+	}
+	if c.reader == nil {
+		// Read frame headers and payloads together when already available.
+		c.reader = tcpReaderPool.Get().(*bufio.Reader)
+		c.reader.Reset(c.Conn)
 	}
 	if c.readBuf == nil {
 		payload, err := c.readChunk()
@@ -95,7 +105,7 @@ func (c *TCPConn) readChunk() (payload []byte, err error) {
 	if !c.onceRead {
 		header := pool.GetBuffer(c.cipherConf.SaltLen + 11 + c.cipherConf.SaltLen + c.cipherConf.TagLen)
 		defer pool.PutBuffer(header)
-		n, readErr := io.ReadFull(c.Conn, header)
+		n, readErr := io.ReadFull(c.reader, header)
 		started = n > 0
 		if readErr != nil {
 			return nil, readErr
@@ -124,7 +134,7 @@ func (c *TCPConn) readChunk() (payload []byte, err error) {
 	} else {
 		header := pool.GetBuffer(2 + c.cipherConf.TagLen)
 		defer pool.PutBuffer(header)
-		n, readErr := io.ReadFull(c.Conn, header)
+		n, readErr := io.ReadFull(c.reader, header)
 		started = n > 0
 		if readErr != nil {
 			return nil, readErr
@@ -137,7 +147,7 @@ func (c *TCPConn) readChunk() (payload []byte, err error) {
 		length = binary.BigEndian.Uint16(plaintext)
 	}
 	ciphertext := pool.GetBuffer(int(length) + c.cipherConf.TagLen)
-	if _, err = io.ReadFull(c.Conn, ciphertext); err != nil {
+	if _, err = io.ReadFull(c.reader, ciphertext); err != nil {
 		pool.PutBuffer(ciphertext)
 		return nil, err
 	}
@@ -161,6 +171,11 @@ func (c *TCPConn) Close() error {
 		c.closeErr = c.Conn.Close() // Interrupt Read before acquiring its mutex.
 		c.readMutex.Lock()
 		defer c.readMutex.Unlock()
+		if c.reader != nil {
+			c.reader.Reset(nil)
+			tcpReaderPool.Put(c.reader)
+			c.reader = nil
+		}
 		if c.readBuf != nil {
 			pool.PutBuffer(c.readBuf)
 			c.readBuf = nil
