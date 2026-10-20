@@ -3,12 +3,53 @@
 package surge
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestRuntimeStoreRejectsFIFO(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open", true: "refresh"}[existing], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "store.json")
+			read := func() error { _, err := openRuntimeStore(path); return err }
+			if existing {
+				store, err := openRuntimeStore(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read = func() error { _, err := store.read(t.Context(), "key"); return err }
+			}
+			if err := unix.Mkfifo(path, 0600); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- read() }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, fs.ErrInvalid) {
+					t.Fatalf("FIFO error = %v, want invalid file", err)
+				}
+			case <-time.After(time.Second):
+				// Unblock a regressed opener so it cannot retain the global store lock.
+				writer, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = writer.WriteString("{}")
+				_ = writer.Close()
+				<-done
+				t.Fatal("store read waited for a FIFO writer")
+			}
+		})
+	}
+}
 
 func TestRuntimeStoreCacheExternalChanges(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")

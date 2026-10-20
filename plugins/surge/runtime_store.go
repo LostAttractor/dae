@@ -14,6 +14,7 @@ import (
 	"sync"
 	"weak"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"github.com/daeuniverse/dae/common/persist"
 )
 
@@ -67,7 +68,7 @@ func openRuntimeStore(path string) (*runtimeStore, error) {
 }
 
 func readRuntimeStoreSnapshot(path string) (map[string]string, os.FileInfo, error) {
-	f, err := os.Open(path)
+	f, info, err := fileio.OpenRegular(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return make(map[string]string), nil, nil
 	}
@@ -75,12 +76,6 @@ func readRuntimeStoreSnapshot(path string) (map[string]string, os.FileInfo, erro
 		return nil, nil, fmt.Errorf("open script persistent store: %w", err)
 	}
 	defer f.Close()
-	// Bind the cache stamp to this descriptor, not a later Stat(path): another
-	// process may atomically replace the path while this snapshot is being read.
-	info, err := f.Stat()
-	if err != nil {
-		return nil, nil, err
-	}
 	data, err := io.ReadAll(io.LimitReader(f, maxStoreSize+1))
 	if err != nil {
 		return nil, nil, err
