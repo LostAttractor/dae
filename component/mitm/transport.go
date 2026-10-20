@@ -45,10 +45,14 @@ func (h *Host) http3Transport(dial DialPacketContext) *http3Upstream {
 	transport := &http3.Transport{
 		DisableCompression:     true,
 		MaxResponseHeaderBytes: 1 << 20,
+		IdleConnTimeout:        90 * time.Second,
 		QUICConfig: &quic.Config{
 			HandshakeIdleTimeout: 10 * time.Second,
 			MaxIdleTimeout:       90 * time.Second,
-			MaxIncomingStreams:   -1,
+			// Downstream PINGs terminate locally. Keep active upstream
+			// exchanges alive; HTTP/3 separately reclaims idle connections.
+			KeepAlivePeriod:    10 * time.Second,
+			MaxIncomingStreams: -1,
 		},
 	}
 	if h.options.UpstreamTLSConfig != nil {
