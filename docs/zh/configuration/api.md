@@ -42,7 +42,7 @@ routing {
 
 - **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过 LAN 入口校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
-- **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留，进程重启归零。
+- **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留；设备无活动连接且最近一分钟历史过期后回收统计，重新出现时开始新的观察周期，`started_at` 表示该周期起点。
 - **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
 - **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](certificate.md)。**Test Certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
 

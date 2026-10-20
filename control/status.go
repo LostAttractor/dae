@@ -61,6 +61,24 @@ func indexPathStats(snapshot map[stats.Path]api.PathStats) pathStatsIndex {
 	return index
 }
 
+func indexTrafficStats(snapshot stats.TrafficSnapshot) pathStatsIndex {
+	index := indexPathStats(snapshot.Paths)
+	for name, networks := range snapshot.RetiredGroups {
+		group := index.groups[name]
+		for network, values := range networks {
+			addPathStats(&group.total, values)
+			addPathStats(&group.networks[network], values)
+		}
+		index.groups[name] = group
+	}
+	index.total = api.PathStats{}
+	index.networks = snapshot.Networks
+	for _, values := range snapshot.Networks {
+		addPathStats(&index.total, values)
+	}
+	return index
+}
+
 // Values come from one store snapshot, with aligned traffic history samples.
 func addPathStats(dst *api.PathStats, other api.PathStats) {
 	dst.ActiveConnections += other.ActiveConnections
@@ -220,7 +238,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 	// Read the fallback counter before path totals so concurrent opens cannot
 	// make it exceed the direct connections included in this snapshot.
 	directFallback := stats.DefaultStore.DirectFallbackConnections()
-	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
+	paths := indexTrafficStats(stats.DefaultStore.TrafficSnapshot())
 	snapshot := &api.StatusSnapshot{
 		Schema:                    api.StatusSchemaVersion,
 		Version:                   version,
@@ -237,8 +255,8 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 }
 
 func (c *ControlPlane) DeviceStatus(ip netip.Addr, mac [6]byte) api.DeviceStatus {
-	snapshot, fallback := stats.DefaultStore.DeviceSnapshot(mac)
-	paths := indexPathStats(snapshot)
+	snapshot := stats.DefaultStore.DeviceTrafficSnapshot(mac)
+	paths := indexTrafficStats(snapshot)
 	outbounds := make([]api.DeviceOutboundStatus, 0, len(paths.groups))
 	for name, group := range paths.groups {
 		outbounds = append(outbounds, api.DeviceOutboundStatus{Name: name, Stats: group.total})
@@ -246,16 +264,16 @@ func (c *ControlPlane) DeviceStatus(ip netip.Addr, mac [6]byte) api.DeviceStatus
 	slices.SortFunc(outbounds, func(a, b api.DeviceOutboundStatus) int { return strings.Compare(a.Name, b.Name) })
 	return api.DeviceStatus{
 		Device: c.DeviceState(ip, mac), Scope: "userspace_upstream",
-		StartedAt: stats.DefaultStore.StartedAt(), Stats: paths.total,
+		StartedAt: snapshot.StartedAt, Stats: paths.total,
 		Networks:                  api.NetworkValues[api.PathStats](paths.networks),
-		DirectFallbackConnections: fallback, Outbounds: outbounds,
+		DirectFallbackConnections: snapshot.DirectFallbackConnections, Outbounds: outbounds,
 	}
 }
 
 // GroupsStatus reads the current paths and their last observed connectivity.
 // It does not select nodes or wait for connectivity checks.
 func (c *ControlPlane) GroupsStatus() []api.GroupStatus {
-	return c.groupStatuses(indexPathStats(stats.DefaultStore.SnapshotWithHistory()))
+	return c.groupStatuses(indexTrafficStats(stats.DefaultStore.TrafficSnapshot()))
 }
 
 func (c *ControlPlane) groupStatuses(paths pathStatsIndex) []api.GroupStatus {

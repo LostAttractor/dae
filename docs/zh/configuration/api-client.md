@@ -194,7 +194,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend，非零 `ExpectedPID` 要求 daemon PID 匹配。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
-设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
+设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。设备空闲且最近一分钟历史过期后回收；再次出现时累计值重新开始，`started_at` 表示本次观察周期起点，无观察记录时为零时间。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
 
 CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以同一 API 端口的 HTTPS GET `/api/certificate/tests/{id}` 校验 ID 和 CA 指纹。POST 签发仅存内存的临时证书和新密钥，不修改持久化管理证书。GET 要求该源 IP 与路由器 IP 使用本次或更新挑战证书的握手，管理证书或更早挑战的连接返回 `409` 后关闭；重试仍须由被测浏览器执行。证明成功后消费挑战，已消费或过期的 ID 返回 `404`。挑战一分钟过期；该地址对没有剩余挑战后，新连接恢复管理证书。共享源 IP 的连接会临时使用同一组挑战证书。不要求设备身份，仅 CA 指纹变化时清除结果。浏览器成功和服务端观测都不能证明整个设备信任 CA。
 

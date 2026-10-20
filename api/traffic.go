@@ -20,8 +20,8 @@ type TrafficHistory struct {
 	DownloadBytesPerSecond []uint64 `json:"download_bytes_per_second"`
 }
 
-// PathStats is the process-lifetime state and recent traffic history of one
-// outbound path.
+// PathStats contains cumulative counters and recent traffic history. Process
+// totals survive detail retirement; individual paths reset after retirement.
 type PathStats struct {
 	ActiveConnections int64 `json:"active_connections"`
 	TotalConnections  int64 `json:"total_connections"`

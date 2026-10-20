@@ -55,9 +55,9 @@ function StatusDetails({ snapshot, global, prefix }: { prefix: string } & ({ sna
     <StatusSection className="connection-details" title="Connection statistics">
       <ConnectionMetrics stats={snapshot.stats} total />
       <dl className="status-facts">
-        <div><dt>{global ? "Uptime" : "Since daemon start"}</dt><dd>{global
+        <div><dt>{global ? "Uptime" : "Observed since"}</dt><dd>{global
           ? `${Math.floor(uptime / 1440)}d ${Math.floor(uptime / 60) % 24}h ${uptime % 60}m`
-          : new Date(snapshot.started_at).toLocaleString()}</dd></div>
+          : snapshot.started_at.startsWith("0001-") ? "No traffic observed" : new Date(snapshot.started_at).toLocaleString()}</dd></div>
         {global && <div><dt>Direct fallback connections</dt><dd>{snapshot.direct_fallback_connections}</dd></div>}
       </dl>
     </StatusSection>

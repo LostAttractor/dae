@@ -8,6 +8,7 @@ package stats
 import (
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -45,8 +46,10 @@ func (m *storeMetrics) collect(ch chan<- prometheus.Metric) {
 }
 
 var (
-	pathLabels    = []string{"id", "outbound", "subtag", "dialer", "network"}
-	trafficLabels = []string{"id", "outbound", "subtag", "dialer", "network", "direction"}
+	processConnectionsDesc = prometheus.NewDesc("dae_process_connections_total", "Process-lifetime established connections, including retired paths.", []string{"network"}, nil)
+	processTrafficDesc     = prometheus.NewDesc("dae_process_traffic_bytes_total", "Process-lifetime payload bytes, including retired paths.", []string{"network", "direction"}, nil)
+	pathLabels             = []string{"id", "outbound", "subtag", "dialer", "network"}
+	trafficLabels          = []string{"id", "outbound", "subtag", "dialer", "network", "direction"}
 
 	activeConnectionsDesc = prometheus.NewDesc(
 		"dae_active_connections",
@@ -89,6 +92,7 @@ var (
 func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 	for _, descriptor := range []*prometheus.Desc{
 		activeConnectionsDesc,
+		processConnectionsDesc, processTrafficDesc,
 		totalConnectionsDesc,
 		fallbackConnectionsDesc,
 		trafficBytesDesc,
@@ -106,10 +110,18 @@ func pathLabelValues(path Path) []string {
 }
 
 func (s *Store) RecordDial(path Path, elapsed time.Duration) {
+	s.pathsMu.Lock()
+	defer s.pathsMu.Unlock()
+	counters := s.pathCountersLocked(path)
+	s.track(counters)
 	s.metrics.dialDuration.WithLabelValues(pathLabelValues(path)...).Observe(elapsed.Seconds())
 }
 
 func (s *Store) RecordError(path Path) {
+	s.pathsMu.Lock()
+	defer s.pathsMu.Unlock()
+	counters := s.pathCountersLocked(path)
+	s.track(counters)
 	s.metrics.errors.WithLabelValues(pathLabelValues(path)...).Inc()
 }
 
@@ -129,9 +141,15 @@ func unixSeconds(value time.Time) float64 {
 
 func (s *Store) collectConnections(ch chan<- prometheus.Metric) {
 	fallback := s.DirectFallbackConnections()
-	snapshot := s.Snapshot()
+	snapshot := s.snapshot(false)
 	ch <- prometheus.MustNewConstMetric(fallbackConnectionsDesc, prometheus.CounterValue, float64(fallback))
-	for path, stats := range snapshot {
+	for network, values := range snapshot.Networks {
+		name := common.NetworkIndex(network).String()
+		ch <- prometheus.MustNewConstMetric(processConnectionsDesc, prometheus.CounterValue, float64(values.TotalConnections), name)
+		ch <- prometheus.MustNewConstMetric(processTrafficDesc, prometheus.CounterValue, float64(values.UploadBytes), name, trafficDirectionUpload)
+		ch <- prometheus.MustNewConstMetric(processTrafficDesc, prometheus.CounterValue, float64(values.DownloadBytes), name, trafficDirectionDownload)
+	}
+	for path, stats := range snapshot.Paths {
 		labels := pathLabelValues(path)
 		ch <- prometheus.MustNewConstMetric(activeConnectionsDesc, prometheus.GaugeValue, float64(stats.ActiveConnections), labels...)
 		ch <- prometheus.MustNewConstMetric(totalConnectionsDesc, prometheus.CounterValue, float64(stats.TotalConnections), labels...)

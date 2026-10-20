@@ -6,7 +6,8 @@ import "time"
 
 // DeviceStatus describes the requesting LAN device. Traffic has the same
 // upstream payload/connection semantics as global PathStats, excluding kernel
-// passthrough, local responses and daemon-originated work.
+// passthrough, local responses and daemon-originated work. StartedAt identifies
+// the current observation period, which expires after idle history is retired.
 type DeviceStatus struct {
 	Device                    DeviceState              `json:"device"`
 	Scope                     string                   `json:"scope"`

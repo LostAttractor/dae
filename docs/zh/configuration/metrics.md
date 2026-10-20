@@ -18,6 +18,14 @@ global {
 以下指标名称均省略 **`dae_plugin_`** 前缀。Histogram 包含 `_bucket`、`_sum`、`_count`，耗时单位为秒，内存单位为字节。
 部分有界 Counter 标签组合在首次事件发生后出现。采集只读取内存状态，与日志级别无关。
 
+## 核心流量统计
+
+`dae_process_connections_total{network}` 和 `dae_process_traffic_bytes_total{network,direction}`
+保留进程生命周期累计值，与全局 status 的总量共用数据源。明细回收不会减少这些总量。
+
+路径级连接、流量、拨号耗时和错误序列保留当前配置中的节点；移除路径在连接结束且最近一分钟历史过期后回收。
+路径重新出现时明细从零开始，查询历史趋势使用 `rate` 或 `increase`。设备统计不作为 Prometheus 标签导出。
+
 ## DNS 缓存
 
 | 指标 | 类型 | 含义 |

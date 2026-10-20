@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common"
 )
 
 // Store owns process-lifetime runtime statistics. Its zero value is not usable.
@@ -23,13 +24,20 @@ type Store struct {
 
 	pathsMu        sync.RWMutex
 	paths          map[Path]*pathCounters
+	currentNodes   map[string]NodeIdentity
+	currentGroups  map[string]struct{}
+	pathPeak       int
+	retiredGroups  map[string][common.NetworkTypeCount]api.PathStats
+	networks       [common.NetworkTypeCount]pathCounters
+	networkHistory [api.TrafficHistorySampleCount][common.NetworkTypeCount]trafficRate
 	directFallback atomic.Int64
 	samplePathsMu  sync.Mutex
 	samplePaths    map[*pathCounters]struct{}
 	samplePeak     int
 
-	devicesMu sync.RWMutex
-	devices   map[[6]byte]*Store
+	devicesMu  sync.RWMutex
+	devices    map[[6]byte]*Store
+	devicePeak int
 
 	externalReadErrors atomic.Uint64
 

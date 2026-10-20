@@ -300,8 +300,8 @@ func (c *ControlPlane) reconcileStats() {
 	groups := make(map[string]struct{}, len(c.outbounds))
 	var selections []stats.SelectionMetricsSource
 	for _, group := range c.outbounds {
+		groups[group.Name] = struct{}{}
 		if group.ChecksConnectivity() {
-			groups[group.Name] = struct{}{}
 			selections = append(selections, group)
 		}
 		for _, d := range group.Dialers {

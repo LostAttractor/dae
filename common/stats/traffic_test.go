@@ -140,7 +140,7 @@ func TestStoreCountsFallbackConnections(t *testing.T) {
 func TestSnapshotKeepsConcurrentFallbackCountsConsistent(t *testing.T) {
 	path := trafficTestPath(t.Name())
 	store := newStoreAt(time.Now())
-	store.pathCounters(path)
+	store.OpenConnection(path, false).Close()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
