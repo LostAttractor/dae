@@ -66,7 +66,7 @@ func (c *mitmUpstreamConn) CloseWrite() error {
 	if err == errors.ErrUnsupported {
 		return err
 	}
-	return c.failure(err, netproxy.OpWrite)
+	return c.failure(err, netproxy.OpCloseWrite)
 }
 
 func (c *mitmUpstreamConn) Read(p []byte) (int, error) {

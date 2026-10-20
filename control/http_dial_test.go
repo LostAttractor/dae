@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -44,6 +45,27 @@ func TestMITMUpstreamHalfClose(t *testing.T) {
 	}
 	if !lease.Valid() {
 		t.Fatal("read EOF retired resource before Close")
+	}
+}
+
+func TestMITMUpstreamHalfCloseFailure(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	raw := relayCloseWriteConn{Conn: client, closeWrite: func() error { return syscall.EPIPE }}
+	group := downloadTestGroup(t, t.Name(), func(context.Context, string, string) (net.Conn, error) { return raw, nil })
+	option := &DialOption{Direct: true, Dialer: group.Dialers[0], Outbound: group, NetworkType: *common.NetworkTCP4.NetworkType()}
+	upstream, err := dialHTTPUpstream(t.Context(), option)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	err = netproxy.CloseWrite(upstream)
+	if !errors.Is(err, syscall.EPIPE) {
+		t.Fatalf("lost half-close failure: %v", err)
+	}
+	if phase := netproxy.ClassifyFailure(err).Phase; phase != netproxy.OpCloseWrite {
+		t.Fatalf("half-close failure phase = %q, want %q", phase, netproxy.OpCloseWrite)
 	}
 }
 
