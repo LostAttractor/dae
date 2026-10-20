@@ -10,15 +10,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
-
-	"github.com/eknkc/basex"
 )
 
-const Alphabet = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM0123456789"
-const Alphabet64Grpc = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM0123456789_."
-
-var Base62Encoder, _ = basex.NewEncoding(Alphabet)
-var Base64GrpcEncoder, _ = basex.NewEncoding(Alphabet64Grpc)
 var IntSize = 32 << (^uint(0) >> 63)
 
 func SetValue(values *url.Values, key string, value string) {

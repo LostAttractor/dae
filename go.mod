@@ -15,7 +15,6 @@ require (
 	github.com/dgryski/go-idea v0.0.0-20170306091226-d2fb45a411fb
 	github.com/dgryski/go-rc2 v0.0.0-20150621095337-8a9021637152
 	github.com/dlclark/regexp2 v1.12.0
-	github.com/eknkc/basex v1.0.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
