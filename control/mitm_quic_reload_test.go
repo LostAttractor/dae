@@ -130,7 +130,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			selected := new(mitmQUICDialer)
 			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: selected}), &dialer.GlobalOption{}, &dialer.Property{Name: t.Name()}, false, "")
 			t.Cleanup(func() { _ = d.Close() })
-			src, dst := addrPortOf(clientPackets.LocalAddr()), addrPortOf(packets.LocalAddr())
+			src, dst := clientPackets.LocalAddr().(*net.UDPAddr).AddrPort(), packets.LocalAddr().(*net.UDPAddr).AddrPort()
 			retained, err := d.Retain()
 			if err != nil {
 				t.Fatal(err)

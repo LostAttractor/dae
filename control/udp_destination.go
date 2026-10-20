@@ -33,7 +33,11 @@ func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 		if err != nil {
 			return n, from, err
 		}
-		if common.ConvergeAddrPort(addrPortOf(from)) == c.target {
+		address, err := addrPortOf(from)
+		if err != nil {
+			return 0, nil, err
+		}
+		if common.ConvergeAddrPort(address) == c.target {
 			return n, net.UDPAddrFromAddrPort(c.original), nil
 		}
 	}

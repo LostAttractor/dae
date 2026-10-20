@@ -26,7 +26,11 @@ type udpLifecyclePacket struct {
 
 func (p *udpLifecyclePacket) DependencyLease() *netproxy.Lease { return p.lease }
 func (p *udpLifecyclePacket) WriteTo(data []byte, dst net.Addr) (int, error) {
-	p.writes <- addrPortOf(dst)
+	address, err := addrPortOf(dst)
+	if err != nil {
+		return 0, err
+	}
+	p.writes <- address
 	return p.testPacketConn.WriteTo(data, dst)
 }
 

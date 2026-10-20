@@ -38,7 +38,7 @@ func TestUdpEndpointPreservesLargeDatagrams(t *testing.T) {
 		return nil
 	}}
 	p := new(UdpEndpointPool)
-	src, dst := addrPortOf(conn.LocalAddr()), addrPortOf(sender.LocalAddr())
+	src, dst := conn.LocalAddr().(*net.UDPAddr).AddrPort(), sender.LocalAddr().(*net.UDPAddr).AddrPort()
 	p.add(src, ue)
 	finished := make(chan error, 1)
 	go func() { finished <- ue.run(p, src, dst, conn, nil) }()

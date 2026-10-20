@@ -52,11 +52,17 @@ type udpActivityTarget struct {
 
 // addrPortOf converts a net.Addr returned by a PacketConn into a netip.AddrPort.
 // It avoids the string round-trip for the common *net.UDPAddr case.
-func addrPortOf(addr net.Addr) netip.AddrPort {
+func addrPortOf(addr net.Addr) (netip.AddrPort, error) {
 	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		return udpAddr.AddrPort()
+		if udpAddr != nil && udpAddr.AddrPort().IsValid() {
+			return udpAddr.AddrPort(), nil
+		}
+		return netip.AddrPort{}, errors.New("invalid UDP reply address")
 	}
-	return netip.MustParseAddrPort(addr.String())
+	if addr == nil {
+		return netip.AddrPort{}, errors.New("missing UDP reply address")
+	}
+	return netip.ParseAddrPort(addr.String())
 }
 
 type UdpEndpoint struct {
@@ -138,8 +144,12 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 		if !endpointPool.refreshSocket(src, ue, child, time.Now()) {
 			break
 		}
-		ue.observeDomain(addrPortOf(from))
-		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
+		address, err := addrPortOf(from)
+		if err != nil {
+			return netproxy.WrapFailure(fmt.Errorf("receive UDP reply address: %w", err), netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
+		}
+		ue.observeDomain(address)
+		if err = ue.handler(buf[:n], address); err != nil {
 			return netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
 		}
 		if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {

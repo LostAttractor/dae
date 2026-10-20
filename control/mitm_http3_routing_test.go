@@ -51,7 +51,8 @@ func TestHTTP3RequestsRouteAfterRewriteAndBeforePoolLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer packets.Close()
-	rewritten := fmt.Sprintf("198.51.100.9:%d", addrPortOf(packets.LocalAddr()).Port())
+	port := packets.LocalAddr().(*net.UDPAddr).Port
+	rewritten := fmt.Sprintf("198.51.100.9:%d", port)
 	upstream := &http3.Server{TLSConfig: authority.TLSConfig("198.51.100.9"), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor != 3 || r.Host != rewritten {
 			t.Errorf("wrong final request: %s %s", r.Proto, r.Host)
@@ -84,7 +85,7 @@ l4proto(tcp) && dip(198.51.100.30) -> proxy(mark:73)
 l4proto(udp) && dip(127.0.0.1) && dport(%d) && sip(192.0.2.10) && sport(5000) && pname(app) && dscp(46) && client(marked) -> direct(mark:92)
 l4proto(udp) && dip(127.0.0.1) && dport(%d) && sip(192.0.2.10) && sport(5000) && pname(app) && dscp(46) -> direct(mark:91)
 domain(full: original.example) -> block
-dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(packets.LocalAddr()).Port()))
+dip(192.0.2.20) -> block`, port, port))
 	prepared.enableMITMPlan(host.Plan())
 	matcher, _ := routingMatcherForTest(t, prepared)
 	matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]

@@ -3,11 +3,67 @@
 package control
 
 import (
+	"bytes"
+	"encoding/binary"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/trojanc"
 )
+
+func TestUDPDomainReplyReturnsError(t *testing.T) {
+	for _, mode := range []string{"relay", "destination"} {
+		t.Run(mode, func(t *testing.T) {
+			left, right := net.Pipe()
+			defer left.Close()
+			defer right.Close()
+			var frame bytes.Buffer
+			if err := socks5.WriteAddr("reply.example:443", &frame); err != nil {
+				t.Fatal(err)
+			}
+			frame.Write(binary.BigEndian.AppendUint16(nil, 1))
+			frame.WriteString("\r\nx")
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_, _ = right.Write(frame.Bytes())
+				_ = right.Close()
+			}()
+			defer func() { _ = left.Close(); <-done }()
+			packet := &trojanc.PacketConn{Conn: left}
+			defer packet.Close()
+			source := netip.MustParseAddrPort("192.0.2.1:1000")
+			target := netip.MustParseAddrPort("192.0.2.2:443")
+			var err error
+			if mode == "destination" {
+				conn := &destinationPacketConn{PacketConn: packet, target: target, original: target}
+				_, _, err = conn.ReadFrom(make([]byte, 100))
+			} else {
+				endpoint := &UdpEndpoint{conn: packet, NatTimeout: time.Minute, handler: func([]byte, netip.AddrPort) error {
+					t.Error("forwarded a reply without an IP address")
+					return nil
+				}}
+				defer endpoint.Close()
+				err = endpoint.run(new(UdpEndpointPool), source, target, packet, nil)
+			}
+			if err == nil || !strings.Contains(err.Error(), "reply.example") {
+				t.Fatalf("domain reply error = %v", err)
+			}
+		})
+	}
+}
+
+func TestUDPReplyMissingAddress(t *testing.T) {
+	for _, address := range []net.Addr{nil, (*net.UDPAddr)(nil), new(net.UDPAddr)} {
+		if _, err := addrPortOf(address); err == nil {
+			t.Fatalf("accepted missing IP address: %v", address)
+		}
+	}
+}
 
 func TestUDPReplyCacheRefreshAndReplacement(t *testing.T) {
 	listen := func(address netip.AddrPort) *net.UDPConn {

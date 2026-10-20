@@ -176,7 +176,7 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 	var pool UdpEndpointPool
 	t.Cleanup(pool.closeAll)
 	source := netip.MustParseAddrPort("192.0.2.1:12345")
-	target := addrPortOf(server.LocalAddr())
+	target := server.LocalAddr().(*net.UDPAddr).AddrPort()
 	destinations := []netip.AddrPort{
 		netip.AddrPortFrom(netip.MustParseAddr("91.108.56.100"), target.Port()),
 		netip.AddrPortFrom(netip.MustParseAddr("91.108.56.101"), target.Port()),
