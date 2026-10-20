@@ -29,7 +29,7 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-var Plugin = plugin.Definition{Configure: Configure}
+var Plugin = plugin.Definition{Configure: Configure, Resources: prepareResources}
 
 type Router struct {
 	policy          *policy.Dns
@@ -121,15 +121,36 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 	}, nil
 }
 
-func prepare(ctx context.Context, conf policy.Config, prefer uint16, services plugin.Services) (plugin.Plugin, error) {
-	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{services.BaseDir}))
-	request, err := routing.ApplyRulesOptimizers(conf.Routing.Request.Rules, &routing.AliasOptimizer{}, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Services) (plugin.Resources, error) {
+	conf, _, err := parseSettings(spec)
 	if err != nil {
-		return nil, err
+		return plugin.Resources{}, err
 	}
-	response, err := routing.ApplyRulesOptimizers(conf.Routing.Response.Rules, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+	conf, err = expandRules(ctx, conf, services.BaseDir)
+	// Expanded rules are both the reuse identity and the immutable factory input.
+	return plugin.Resources{Config: conf, Value: conf}, err
+}
+
+func expandRules(ctx context.Context, conf policy.Config, baseDir string) (policy.Config, error) {
+	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{baseDir}))
+	var err error
+	conf.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(conf.Routing.Request.Rules, &routing.AliasOptimizer{}, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
 	if err != nil {
-		return nil, err
+		return conf, err
+	}
+	conf.Routing.Response.Rules, err = routing.ApplyRulesOptimizers(conf.Routing.Response.Rules, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+	return conf, err
+}
+
+func prepare(ctx context.Context, conf policy.Config, prefer uint16, services plugin.Services) (plugin.Plugin, error) {
+	var err error
+	if prepared, ok := services.Prepared.(policy.Config); ok {
+		conf = prepared
+	} else {
+		conf, err = expandRules(ctx, conf, services.BaseDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	source := services.Interfaces
 	var ownedInterfaces *network.InterfaceManager
@@ -141,7 +162,7 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 		return nil, err
 	}
 	r := &Router{prefer: prefer, interfaces: source.NewScope(), ownedInterfaces: ownedInterfaces, metrics: newRouterMetrics()}
-	p, err := policy.New(&conf, request, response, &policy.NewOption{InterfaceManager: r.interfaces})
+	p, err := policy.New(&conf, conf.Routing.Request.Rules, conf.Routing.Response.Rules, &policy.NewOption{InterfaceManager: r.interfaces})
 	if err != nil {
 		return nil, errors.Join(err, r.Close())
 	}
