@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -17,7 +18,7 @@ import (
 type PktConn struct {
 	net.PacketConn
 	ctrlConn    net.Conn
-	server      net.Addr
+	server      *net.UDPAddr
 	lease       *netproxy.Lease
 	closeOnce   sync.Once
 	closeErr    error
@@ -25,7 +26,7 @@ type PktConn struct {
 	leaseDone   chan struct{}
 }
 
-func NewPktConn(c net.PacketConn, ctrl net.Conn, server net.Addr) *PktConn {
+func NewPktConn(c net.PacketConn, ctrl net.Conn, server *net.UDPAddr) *PktConn {
 	pc := &PktConn{PacketConn: c, ctrlConn: ctrl, server: server,
 		lease:       netproxy.NewLease(netproxy.NewResourceRef(), netproxy.DependencyOf(c), netproxy.DependencyOf(ctrl)),
 		controlDone: make(chan struct{}), leaseDone: make(chan struct{})}
@@ -67,9 +68,24 @@ func (pc *PktConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 	buf := pool.GetBuffer(65535)
 	defer pool.PutBuffer(buf)
-	n, _, err := pc.PacketConn.ReadFrom(buf)
-	if err != nil {
-		return 0, nil, errors.Join(err, pc.lease.Cause())
+	server := pc.server.AddrPort()
+	var n int
+	for {
+		count, from, err := pc.PacketConn.ReadFrom(buf)
+		if err != nil {
+			return 0, nil, errors.Join(err, pc.lease.Cause())
+		}
+		var source netip.AddrPort
+		if udp, ok := from.(*net.UDPAddr); ok {
+			source = udp.AddrPort()
+		} else if from != nil {
+			source, _ = netip.ParseAddrPort(from.String())
+		}
+		// Verify the outer relay before trusting the embedded reply address.
+		if source.Port() == server.Port() && source.Addr().Unmap() == server.Addr().Unmap() {
+			n = count
+			break
+		}
 	}
 	if n < 4 || buf[0] != 0 || buf[1] != 0 || buf[2] != 0 {
 		return 0, nil, netproxy.WrapFailure(fmt.Errorf("invalid SOCKS5 UDP reserved/fragment fields"), netproxy.Failure{Scope: netproxy.ScopeOperation, Layer: netproxy.LayerProxy, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonProtocol, Phase: netproxy.OpRead})

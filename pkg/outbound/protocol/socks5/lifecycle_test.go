@@ -15,8 +15,9 @@ import (
 )
 
 type testParent struct {
-	conn   net.Conn
-	listen func(context.Context, string) (net.PacketConn, error)
+	conn    net.Conn
+	listen  func(context.Context, string) (net.PacketConn, error)
+	resolve func(context.Context, string) (*net.UDPAddr, error)
 }
 
 func (p testParent) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -24,6 +25,13 @@ func (p testParent) DialContext(context.Context, string, string) (net.Conn, erro
 }
 func (p testParent) ListenPacket(ctx context.Context, address string) (net.PacketConn, error) {
 	return p.listen(ctx, address)
+}
+
+func (p testParent) ResolveUDPAddr(ctx context.Context, address string) (*net.UDPAddr, error) {
+	if p.resolve != nil {
+		return p.resolve(ctx, address)
+	}
+	return netproxy.ResolveUDPAddr(ctx, nil, address)
 }
 
 type wireStep struct{ read, write []byte }
@@ -162,9 +170,14 @@ func TestUDPRelaySetupFailureClosesControl(t *testing.T) {
 		done <- runPeer(server, []wireStep{{[]byte{5, 1, 0}, []byte{5, 0}}, {request, []byte{5, 0, 0, 1, 0, 0, 0, 0, 0x12, 0x34}}})
 	}()
 	cause := errors.New("cannot open UDP carrier")
-	d, _ := NewSocks5("socks5://proxy.example:1080", testParent{conn: client, listen: func(_ context.Context, addr string) (net.PacketConn, error) {
+	d, _ := NewSocks5("socks5://proxy.example:1080", testParent{conn: client, resolve: func(_ context.Context, addr string) (*net.UDPAddr, error) {
 		if addr != "proxy.example:4660" {
 			t.Errorf("unspecified relay address was not replaced: %s", addr)
+		}
+		return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4660}, nil
+	}, listen: func(_ context.Context, addr string) (net.PacketConn, error) {
+		if addr != "127.0.0.1:4660" {
+			t.Errorf("relay address was not pinned: %s", addr)
 		}
 		return nil, cause
 	}})
@@ -296,7 +309,7 @@ func TestUDPParentInvalidationClosesBothCarriers(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent := netproxy.NewLease(netproxy.NewResourceRef())
-	pc := NewPktConn(packet, leasedControl{client, parent}, netproxy.NewAddr("udp", "127.0.0.1:53"))
+	pc := NewPktConn(packet, leasedControl{client, parent}, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53})
 	cause := netproxy.WrapFailure(errors.New("parent died"), netproxy.Failure{Scope: netproxy.ScopeSharedResource, Resource: parent.Resource(), Layer: netproxy.LayerQUIC})
 	parent.Invalidate(cause)
 	select {
@@ -334,7 +347,7 @@ func TestUDPControlTimeoutDoesNotHideCarrierFailure(t *testing.T) {
 	}
 	fatal := netproxy.WrapFailure(errors.New("QUIC carrier closed"), netproxy.Failure{Scope: netproxy.ScopeSharedResource, Layer: netproxy.LayerQUIC, Reason: netproxy.ReasonReset})
 	ctrl := &failedReadControl{Conn: client, cause: errors.Join(context.DeadlineExceeded, fatal)}
-	pc := NewPktConn(packet, ctrl, netproxy.NewAddr("udp", "127.0.0.1:53"))
+	pc := NewPktConn(packet, ctrl, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53})
 	defer pc.Close()
 	select {
 	case <-pc.controlDone:

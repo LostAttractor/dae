@@ -74,7 +74,11 @@ func (s *Socks5) ListenPacket(ctx context.Context, _ string) (net.PacketConn, er
 		}
 	}
 	relay := net.JoinHostPort(host, port)
-	conn, err := s.ParentDialer.ListenPacket(ctx, relay)
+	server, err := netproxy.ResolveUDPAddr(ctx, s.ParentDialer, relay)
+	if err != nil {
+		return nil, fmt.Errorf("socks5 resolve UDP relay: %w", err)
+	}
+	conn, err := s.ParentDialer.ListenPacket(ctx, server.String())
 	if err != nil {
 		return nil, fmt.Errorf("socks5 dial UDP relay: %w", err)
 	}
@@ -82,7 +86,7 @@ func (s *Socks5) ListenPacket(ctx context.Context, _ string) (net.PacketConn, er
 		_ = conn.Close()
 		return nil, err
 	}
-	pc := NewPktConn(conn, ctrl, netproxy.NewAddr("udp", relay))
+	pc := NewPktConn(conn, ctrl, server)
 	handedOff = true
 	if !pc.lease.Valid() {
 		_ = pc.Close()
