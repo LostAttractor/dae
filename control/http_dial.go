@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -76,6 +77,14 @@ func dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, err
 type mitmUpstreamConn struct {
 	net.Conn
 	*httpUpstream
+}
+
+func (c *mitmUpstreamConn) CloseWrite() error {
+	err := netproxy.CloseWrite(c.Conn)
+	if err == errors.ErrUnsupported {
+		return err
+	}
+	return c.failure(err, netproxy.OpWrite)
 }
 
 func (c *mitmUpstreamConn) Read(p []byte) (int, error) {

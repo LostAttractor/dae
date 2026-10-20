@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/internal/pluginctx"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // UpstreamPlanner runs before connection-pool lookup. The URL identifies the
@@ -328,6 +329,19 @@ type plannedResponseBody struct {
 type plannedReadWriteBody struct {
 	*plannedResponseBody
 	io.Writer
+}
+
+func (b *plannedReadWriteBody) CloseWrite() error {
+	if writer, ok := b.ReadCloser.(netproxy.CloseWriter); ok {
+		return writer.CloseWrite()
+	}
+	return errors.ErrUnsupported
+}
+
+// An upgrade's read EOF only closes one direction. Keep the pool leased until
+// ReverseProxy closes both directions, including any trailing client upload.
+func (b *plannedReadWriteBody) Read(data []byte) (int, error) {
+	return b.ReadCloser.Read(data)
 }
 
 func (b *plannedResponseBody) Read(data []byte) (int, error) {

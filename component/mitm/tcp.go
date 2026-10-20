@@ -20,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/http2"
 	"github.com/daeuniverse/dae/internal/pluginctx"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -140,6 +141,8 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
+func (c *bufferedConn) CloseWrite() error { return netproxy.CloseWrite(c.Conn) }
+
 type singleConnListener struct {
 	net.Conn
 	once     sync.Once
@@ -169,6 +172,8 @@ type acceptedConn struct {
 	once     sync.Once
 	err      error
 }
+
+func (c *acceptedConn) CloseWrite() error { return netproxy.CloseWrite(c.Conn) }
 
 func (c *acceptedConn) Close() error {
 	c.once.Do(func() { c.err = c.Conn.Close(); close(c.listener.finished); _ = c.listener.Close() })

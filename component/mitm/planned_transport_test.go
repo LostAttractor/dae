@@ -183,3 +183,22 @@ func TestPlannedTransportPreservesUpgradeBody(t *testing.T) {
 		t.Fatalf("upgrade echo=%q, %v", data, err)
 	}
 }
+
+func TestUpgradeReadEOFRetainsPool(t *testing.T) {
+	releases := 0
+	body := &plannedReadWriteBody{plannedResponseBody: &plannedResponseBody{ReadCloser: io.NopCloser(strings.NewReader("tail")), release: sync.OnceFunc(func() { releases++ })}, Writer: io.Discard}
+	data, err := io.ReadAll(body)
+	if err != nil || string(data) != "tail" || releases != 0 {
+		t.Fatalf("read=%q err=%v releases=%d", data, err, releases)
+	}
+	if err := body.CloseWrite(); err != errors.ErrUnsupported {
+		t.Fatalf("unsupported CloseWrite=%v", err)
+	}
+	if releases != 0 {
+		t.Fatal("half-close released active upgrade")
+	}
+	body.Close()
+	if releases != 1 {
+		t.Fatalf("closed upgrade releases=%d", releases)
+	}
+}
