@@ -26,22 +26,8 @@ func (c *ControlPlane) ReloadRuntimeSettings() (bool, error) {
 // API edits and file reloads share the same live-state update and rollback path.
 // The caller holds settingsMu; the store holds its write lock through persist.
 func (c *ControlPlane) applyRuntimeSettings(current, next settings.Snapshot, persist func() error) error {
-	changed := make(map[[6]byte]bool)
-	sets := c.routingState.ClientSets()
-	for _, name := range sets {
-		before, after := current.Members(name), next.Members(name)
-		for _, mac := range before {
-			if !slices.Contains(after, mac) {
-				changed[mac] = true
-			}
-		}
-		for _, mac := range after {
-			if !slices.Contains(before, mac) {
-				changed[mac] = true
-			}
-		}
-	}
-	return c.changeDeviceRoutes(changed, func(commit func() error) error {
+	changes, affected := c.clientMembershipChanges(current, next)
+	return c.changeDeviceRoutes(affected, func(commit func() error) error {
 		apply := func() (err error) {
 			var rollback []func() error
 			defer func() {
@@ -51,16 +37,12 @@ func (c *ControlPlane) applyRuntimeSettings(current, next settings.Snapshot, per
 					}
 				}
 			}()
-			for _, name := range c.clientSets() {
-				previous, members := current.Members(name), next.Members(name)
-				if slices.Equal(previous, members) {
-					continue
-				}
-				if err := c.setClientMembers(name, previous, members); err != nil {
+			for _, change := range changes {
+				if err := c.setClientMembers(change.name, change.previous, change.next); err != nil {
 					return err
 				}
 				rollback = append(rollback, func() error {
-					return c.setClientMembers(name, members, previous)
+					return c.setClientMembers(change.name, change.next, change.previous)
 				})
 			}
 			return c.changeHTTPClients(current, next, persist, commit)
@@ -77,6 +59,46 @@ func (c *ControlPlane) applyRuntimeSettings(current, next settings.Snapshot, per
 		}
 		return apply()
 	})
+}
+
+type clientMembershipChange struct {
+	name           string
+	previous, next [][6]byte
+}
+
+// Decode each changed set once for application and rollback. Only membership
+// changes in routing sets invalidate device connections; export-only sets do not.
+func (c *ControlPlane) clientMembershipChanges(current, next settings.Snapshot) ([]clientMembershipChange, map[[6]byte]bool) {
+	var changes []clientMembershipChange
+	affected := make(map[[6]byte]bool)
+	for _, name := range c.clientSets() {
+		if slices.Equal(current.Clients[name], next.Clients[name]) {
+			continue
+		}
+		change := clientMembershipChange{name: name, previous: current.Members(name), next: next.Members(name)}
+		changes = append(changes, change)
+		if c.routingState == nil {
+			continue
+		}
+		if _, routed := c.routingState.clientSetSlots[name]; !routed {
+			continue
+		}
+		removed := make(map[[6]byte]bool, len(change.previous))
+		for _, mac := range change.previous {
+			removed[mac] = true
+		}
+		for _, mac := range change.next {
+			if removed[mac] {
+				delete(removed, mac)
+			} else {
+				affected[mac] = true
+			}
+		}
+		for mac := range removed {
+			affected[mac] = true
+		}
+	}
+	return changes, affected
 }
 
 // Restore before checks/downloads, and once more after draining the old API on
