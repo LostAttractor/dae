@@ -73,9 +73,19 @@ func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Autho
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}
-		options.Diagnostic, err = mitmverify.New(authority.Fingerprint(), targets, addresses)
+		diagnostic, err := mitmverify.New(authority.Fingerprint(), targets, addresses)
 		if err != nil {
 			return control.PreparedMITM{}, err
+		}
+		for _, instance := range previous.Instances() {
+			if service, ok := instance.Plugin.(*mitmverify.Service); ok && service.SameConfiguration(diagnostic) {
+				options.Diagnostic = instance
+				break
+			}
+		}
+		if options.Diagnostic == nil {
+			options.Diagnostic = pluginhost.Adopt(mitmverify.InstanceID, "mitm-test", diagnostic)
+			defer options.Diagnostic.Release()
 		}
 	}
 

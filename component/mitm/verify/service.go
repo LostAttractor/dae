@@ -83,6 +83,10 @@ func (s *Service) Generation() string {
 	return s.generation
 }
 
+func (s *Service) SameConfiguration(other *Service) bool {
+	return s.fingerprint == other.fingerprint && s.targets == other.targets
+}
+
 // Invalidate also handles publication of a retained host (for example suspend).
 func (s *Service) Invalidate() {
 	s.mu.Lock()

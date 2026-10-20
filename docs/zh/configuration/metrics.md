@@ -11,7 +11,7 @@ global {
 采集地址为 `http://localhost:9091/metrics`，同时包含核心和活动插件指标。插件需已编译并启用。
 所有插件指标都有 `plugin_type`、`plugin_instance` 标签，Prometheus 的 `instance` 标签仍表示采集目标。
 
-插件准备期间指标不对外发布；准备失败保留当前实例指标。成功重载会重建实例，计数器及 Histogram 观测值从零开始。
+插件准备期间指标不对外发布；准备失败保留当前实例指标。重载复用配置和资源未变的实例及其统计；重建实例时计数器及 Histogram 观测值从零开始。
 关闭实例后移除其序列，`dae_plugin_instance_start_time_seconds` 表示实例激活时间。关闭或更改指标监听端口不会重置运行中插件的统计。
 累计指标使用 `rate`、`increase` 查询以处理重置。
 

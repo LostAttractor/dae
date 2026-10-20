@@ -42,12 +42,19 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance.Instance, resources: instance.Resources, resourcesPending: true})
 	}
 	if options.Diagnostic != nil {
-		local = append([]Instance{{ID: "dae-mitm-test", Type: "mitm-test", Plugin: options.Diagnostic}}, local...)
+		diagnostic := options.Diagnostic
+		if !diagnostic.Retain() {
+			for _, instance := range instances {
+				_ = instance.Release()
+			}
+			return nil, net.ErrClosed
+		}
+		local = append([]Instance{{ID: diagnostic.ID, Type: diagnostic.Type, Plugin: diagnostic.Plugin, owner: diagnostic}}, local...)
 	}
 	host, err := New(options, local...)
 	if err != nil {
-		for _, instance := range instances {
-			err = errors.Join(err, instance.Release())
+		for _, instance := range local {
+			err = errors.Join(err, instance.owner.Release())
 		}
 	} else if host.SameInstances(previous) {
 		host.dnsChain = previous.dnsChain
@@ -106,7 +113,8 @@ func (h *Host) PrepareSuccessor() (*Host, error) {
 }
 
 type Options struct {
-	Diagnostic        plugin.Plugin
+	// Load retains its own reference to this optional diagnostic instance.
+	Diagnostic        *pluginhost.Instance
 	DisableHTTP       bool
 	BufferMemoryLimit int64
 	BodyMemory        *membuffer.Budget
@@ -204,7 +212,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	}
 	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{}), dnsChain: dnsSerial.Add(1)}
 	if options.Diagnostic != nil {
-		h.diagnosticScopes = options.Diagnostic.Plan().Scopes
+		h.diagnosticScopes = options.Diagnostic.Plan.Scopes
 	}
 	for i := range h.instances {
 		instance := &h.instances[i]

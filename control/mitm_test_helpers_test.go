@@ -11,6 +11,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/verify"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 )
 
 // Control tests exercise the host contract without a concrete plugin runtime.
@@ -69,7 +70,8 @@ func controlTestHost(t *testing.T, extension plugin.Plugin, authority *localca.A
 	}
 	options := mitm.Options{Authority: authority}
 	if diagnostic, ok := extension.(*mitmverify.Service); ok {
-		options.Diagnostic = diagnostic
+		options.Diagnostic = pluginhost.Adopt("test", "test", diagnostic)
+		defer options.Diagnostic.Release()
 	}
 	host, err := mitm.New(options, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
 	if err != nil {
