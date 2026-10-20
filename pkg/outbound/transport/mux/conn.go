@@ -73,7 +73,7 @@ func (m *Conn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 
-		_, err = m.Conn.Read(m.status[:])
+		_, err = io.ReadFull(m.Conn, m.status[:])
 		if err != nil {
 			return 0, err
 		}
@@ -108,7 +108,11 @@ func (m *Conn) Read(b []byte) (int, error) {
 func (m *Conn) Write(b []byte) (int, error) {
 	if m.otb != nil {
 		// create a sub connection
-		if _, err := m.Conn.Write(m.otb); err != nil {
+		n, err := m.Conn.Write(m.otb)
+		if err == nil && n != len(m.otb) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
 			return 0, err
 		}
 		m.otb = nil
@@ -121,7 +125,14 @@ func (m *Conn) Write(b []byte) (int, error) {
 	binary.Write(&m.buf, binary.BigEndian, uint16(len(b)))
 	m.buf.Write(b)
 
-	return m.Conn.Write(m.buf.Bytes())
+	n, err := m.Conn.Write(m.buf.Bytes())
+	if n != m.buf.Len() {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return 0, err
+	}
+	return len(b), err
 }
 
 func (m *Conn) Close() error {
