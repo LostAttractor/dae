@@ -60,3 +60,48 @@ func TestDNSObserversHoldHostAdmission(t *testing.T) {
 		t.Fatal("observer ownership or close order violated")
 	}
 }
+
+type scopedDNSCache struct{ lookups, exchanges int }
+
+func (*scopedDNSCache) Plan() plugin.Plan {
+	return plugin.Plan{DNS: []plugin.DNSScope{{Names: []string{"cached.example"}, Types: []uint16{dns.TypeA}}}}
+}
+func (c *scopedDNSCache) WrapDNSUpstream(next plugin.DNSHandler) plugin.DNSHandler {
+	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		c.exchanges++
+		return next(ctx, request)
+	}
+}
+func (c *scopedDNSCache) LookupDNSUpstream(request *plugin.DNSExchange) *plugin.DNSResponse {
+	c.lookups++
+	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetReply(request.MessageCopy())), Cached: true}
+}
+
+func TestDNSFallbackCacheHonorsScope(t *testing.T) {
+	cache := new(scopedDNSCache)
+	h := testHost(t, Options{DisableHTTP: true}, Instance{ID: "cache", Plugin: cache})
+	for _, test := range []struct {
+		name string
+		kind uint16
+		hit  bool
+	}{
+		{"other.example.", dns.TypeA, false},
+		{"cached.example.", dns.TypeAAAA, false},
+		{"cached.example.", dns.TypeA, true},
+	} {
+		request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion(test.name, test.kind))}
+		prepared, err := (&plugin.DNSExchange{DNSRequest: request.DNSRequest, SelectCaches: h.selectDNSCaches}).PrepareUpstream(t.Context(), plugin.DNSUpstream{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response := prepared.Lookup(); (response != nil) != test.hit {
+			t.Fatalf("scope mismatch for %s/%d: %+v", test.name, test.kind, response)
+		}
+		if _, err := prepared.Exchange(t.Context(), func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cache.lookups != 1 || cache.exchanges != 1 {
+		t.Fatalf("cache paths disagree on scopes: lookups=%d exchanges=%d", cache.lookups, cache.exchanges)
+	}
+}

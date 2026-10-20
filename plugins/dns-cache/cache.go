@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package dnscache provides bounded DNS response caching independently of
-// upstream selection. It observes both relayed and plugin-local final responses.
+// upstream selection. Only raw upstream responses enter this cache.
 package dnscache
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/netutils"
@@ -29,24 +28,13 @@ type settings struct {
 }
 
 type key struct {
-	context, network string
-	query            cachepolicy.Query
+	upstream plugin.DNSUpstreamKey
+	query    cachepolicy.Query
 }
-type entry struct {
-	key      key
-	response *plugin.DNSResponse
-	expires  time.Time
-	bytes    int
-}
-
 type Cache struct {
-	mu                        sync.Mutex
-	entries                   map[key]*list.Element
-	lru                       list.List
-	limit, memoryLimit, bytes int
-	fixed                     map[string]uint32
-	hits, misses, bypasses    uint64
-	expired, evicted          uint64
+	store    *cachepolicy.Store[key, *plugin.DNSResponse]
+	fixed    map[string]uint32
+	bypasses atomic.Uint64
 }
 
 func Configure(spec plugin.Spec) (plugin.Factory, error) {
@@ -55,7 +43,7 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 		return nil, err
 	}
 	return func(_ context.Context, services plugin.Services) (plugin.Plugin, error) {
-		c := &Cache{entries: make(map[key]*list.Element), limit: conf.Size, memoryLimit: conf.MemoryLimit, fixed: fixed}
+		c := &Cache{store: cachepolicy.NewStore[key, *plugin.DNSResponse](conf.Size, conf.MemoryLimit), fixed: fixed}
 		if services.Metrics != nil {
 			if err := services.Metrics.Register(c); err != nil {
 				return nil, fmt.Errorf("cache metrics: %w", err)
@@ -96,7 +84,7 @@ func cacheKey(request *plugin.DNSExchange) (key, bool) {
 		return key{}, false
 	}
 	query, ok := cachepolicy.QueryKey(message)
-	return key{request.ContextKey + "/" + request.Destination.String(), request.Network, query}, ok
+	return key{upstream: request.UpstreamKey(), query: query}, ok
 }
 
 // Until the client cache implements each option's response semantics, option
@@ -107,41 +95,49 @@ func clientCacheEDNS(m *dns.Msg) bool {
 	return valid && (opt == nil || len(opt.Option) == 0)
 }
 
-func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
+// Speculative fallback misses must not duplicate the real exchange's counters.
+func (c *Cache) LookupDNSUpstream(request *plugin.DNSExchange) *plugin.DNSResponse {
+	k, ok := cacheKey(request)
+	if !ok {
+		return nil
+	}
+	now := time.Now()
+	if entry, hit := c.store.GetIfPresent(k, now); hit {
+		return replayResponse(entry, request.MessageCopy(), now)
+	}
+	return nil
+}
+
+func replayResponse(entry cachepolicy.Record[*plugin.DNSResponse], query *dns.Msg, now time.Time) *plugin.DNSResponse {
+	response := entry.Value.Copy()
+	elapsed := uint32(max(0, now.Sub(entry.ReceivedAt)/time.Second))
+	message := response.MessageCopy()
+	cachepolicy.Age(message, elapsed)
+	cachepolicy.Replay(message, query)
+	response.DNSPacket = plugin.DNSMessage(message)
+	response.Cached = true
+	return response
+}
+
+func (c *Cache) WrapDNSUpstream(next plugin.DNSHandler) plugin.DNSHandler {
 	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		k, ok := cacheKey(request)
 		var query *dns.Msg
 		if ok {
 			query = request.MessageCopy()
-			c.mu.Lock()
-			if elem := c.entries[k]; elem != nil {
-				e := elem.Value.(*entry)
-				now := time.Now()
-				if now.Before(e.expires) {
-					c.lru.MoveToFront(elem)
-					c.hits++
-					response := e.response.Copy()
-					elapsed := uint32(now.Sub(e.response.ReceivedAt) / time.Second)
-					c.mu.Unlock()
-					message := response.MessageCopy()
-					cachepolicy.Age(message, elapsed)
-					cachepolicy.Replay(message, query)
-					response.DNSPacket = plugin.DNSMessage(message)
-					response.Cached = true
-					return response, nil
-				}
-				c.remove(elem)
-				c.expired++
+			now := time.Now()
+			if e, hit := c.store.Get(k, now); hit {
+				return replayResponse(e, query, now), nil
 			}
-			c.misses++
-			c.mu.Unlock()
 		} else {
-			c.mu.Lock()
-			c.bypasses++
-			c.mu.Unlock()
+			c.bypasses.Add(1)
 		}
 		response, err := next(ctx, request)
-		if err == nil && response != nil && !response.Cached && ok {
+		if err == nil && ctx.Err() == nil && response != nil && !response.Cached && ok {
+			if response.ReceivedAt.IsZero() {
+				response = response.Copy()
+				response.ReceivedAt = time.Now()
+			}
 			if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists {
 				// Wire is authoritative. Never repair an opaque/malformed packet
 				// by unpacking loosely and then discarding the original bytes.
@@ -155,12 +151,13 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 					response.DNSPacket = plugin.DNSMessage(message)
 				}
 			}
+			c.storeResponse(request, response)
 		}
 		return response, err
 	}
 }
 
-func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, response *plugin.DNSResponse) {
+func (c *Cache) storeResponse(request *plugin.DNSExchange, response *plugin.DNSResponse) {
 	if response.Cached {
 		return
 	}
@@ -173,6 +170,9 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, respo
 		return
 	}
 	query := request.MessageCopy()
+	if netutils.ValidateDnsResponse(query, m, query.Id) != nil {
+		return
+	}
 	if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists && ttl == 0 {
 		return
 	}
@@ -190,30 +190,10 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, respo
 	if err != nil {
 		return
 	}
-	bytes := 4*len(wire) + len(k.context) + len(k.query.Question.Name) + len(k.query.Options) + 512
-	if bytes > c.memoryLimit {
-		return
-	}
-	e := &entry{key: k, response: response.Copy(), expires: expires, bytes: bytes}
-	e.response.DNSPacket = plugin.DNSMessage(m)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if old := c.entries[k]; old != nil {
-		c.remove(old)
-	}
-	for len(c.entries) >= c.limit || c.bytes+bytes > c.memoryLimit {
-		c.remove(c.lru.Back())
-		c.evicted++
-	}
-	c.entries[k] = c.lru.PushFront(e)
-	c.bytes += bytes
-}
-
-func (c *Cache) remove(elem *list.Element) {
-	e := elem.Value.(*entry)
-	delete(c.entries, e.key)
-	c.bytes -= e.bytes
-	c.lru.Remove(elem)
+	bytes := 4*len(wire) + len(k.upstream.Endpoint) + len(k.query.Question.Name) + len(k.query.Options) + 512
+	owned := response.Copy()
+	owned.DNSPacket = plugin.DNSMessage(m)
+	c.store.Put(k, cachepolicy.Record[*plugin.DNSResponse]{Value: owned, ReceivedAt: at, Expires: expires}, bytes)
 }
 
 func (c *Cache) Run(ctx context.Context, _ *http.Client) error {
@@ -224,24 +204,12 @@ func (c *Cache) Run(ctx context.Context, _ *http.Client) error {
 		case <-ctx.Done():
 			return nil
 		case now := <-ticker.C:
-			c.expire(now)
-		}
-	}
-}
-
-func (c *Cache) expire(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, elem := range c.entries {
-		if !now.Before(elem.Value.(*entry).expires) {
-			c.remove(elem)
-			c.expired++
+			c.store.Expire(now)
 		}
 	}
 }
 
 func (c *Cache) Report() any {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return map[string]any{"entries": len(c.entries), "limit": c.limit, "bytes": c.bytes, "memory_limit": c.memoryLimit, "hits": c.hits, "misses": c.misses}
+	s := c.store.Snapshot()
+	return map[string]any{"entries": s.Entries, "limit": s.Limit, "bytes": s.Bytes, "memory_limit": s.MemoryLimit, "hits": s.Hits, "misses": s.Misses}
 }

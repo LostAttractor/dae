@@ -28,14 +28,14 @@ func (p *diagnosticTestPlugin) Wrap(_ plugin.Flow, next plugin.Handler) plugin.H
 }
 
 func TestExplainDNSRewritePreservesCanonicalPacket(t *testing.T) {
-	for _, identity := range []string{"", "client/route"} {
+	for _, identity := range []plugin.DNSPolicyKey{{}, {Generation: 1}} {
 		query := new(dns.Msg).SetQuestion("original.example.", dns.TypeTXT)
 		query.Question[0].Qclass = dns.ClassCHAOS
 		query.RecursionDesired, query.CheckingDisabled = false, true
 		query.SetEdns0(1232, true)
 		query.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_LOCAL{Code: 65001, Data: []byte{1, 2, 3}}}
 		original := query.Copy()
-		ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query), ContextKey: identity})
+		ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query), PolicyKey: identity})
 		rewrite := &diagnosticTestPlugin{explain: func(ctx context.Context, _ api.ExplainRequest) plugin.Explanation {
 			request, _ := plugin.DiagnosticDNSRequest(ctx)
 			message := request.MessageCopy()
@@ -51,13 +51,13 @@ func TestExplainDNSRewritePreservesCanonicalPacket(t *testing.T) {
 			if !reflect.DeepEqual(request.MessageCopy(), expected) {
 				t.Fatalf("packet lost fields: %s", request.MessageCopy())
 			}
-			if (request.ContextKey != "") != (identity != "") {
-				t.Fatal("incomplete cache identity became exact")
+			if request.PolicyKey.Chain != 7 || request.PolicyKey.Generation != identity.Generation || request.Upstream != "" {
+				t.Fatal("plugin namespace or unknown upstream changed")
 			}
 			return plugin.Explanation{Complete: true}
 		}}
 		plan := plugin.Plan{DNS: []plugin.DNSScope{{}}}
-		host := &Host{dnsContext: "host/", instances: []Instance{{ID: "rewrite", Plugin: rewrite, plan: plan}, {ID: "inspect", Plugin: inspect, plan: plan}}}
+		host := &Host{dnsChain: 7, instances: []Instance{{ID: "rewrite", Plugin: rewrite, plan: plan}, {ID: "inspect", Plugin: inspect, plan: plan}}}
 		// Stale API fields must never reconstruct the downstream query.
 		result := host.Explain(ctx, api.ExplainRequest{DNS: &api.DiagnosticDNS{Name: "stale.example.", Type: "A", Class: "IN"}}, true)
 		if !result.Complete || !visited {

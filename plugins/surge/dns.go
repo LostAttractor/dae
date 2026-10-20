@@ -173,7 +173,6 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 			redirected := request.Copy()
 			redirected.Destination = target
 			redirected.ServerAssigned = true
-			redirected.ContextKey += "/surge-server/" + target.String()
 			return next(ctx, redirected)
 		}
 	}
@@ -205,7 +204,6 @@ func resolvePlainDNSServers(ctx context.Context, request *plugin.DNSExchange, ta
 			return nil, err
 		}
 		query.Destination, query.ServerAssigned = target, true
-		query.ContextKey += "/surge-server/" + target.String()
 		return next(ctx, query)
 	})
 }

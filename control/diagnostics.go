@@ -619,6 +619,27 @@ func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRe
 		return false
 	}
 	output := host.Explain(ctx, request, dns)
+	cacheHit := false
+	if dns && !output.Terminal && output.DNSQuery != nil {
+		query := *output.DNSQuery
+		candidates := output.Dials
+		if len(candidates) == 0 && query.Destination.IsValid() {
+			candidates = []plugin.DiagnosticDial{{Protocol: query.Network, Target: api.DiagnosticTarget{IP: query.Destination.Addr().String(), Port: int(query.Destination.Port())}}}
+		}
+		checkCache := true
+		if output.Complete && len(candidates) == 1 {
+			query, checkCache = diagnosticDNSUpstream(ctx, state, query, candidates[0])
+		}
+		if checkCache {
+			cache := host.ExplainDNSUpstream(ctx, request, query)
+			output.Steps = append(output.Steps, cache.Steps...)
+			output.Complete = output.Complete && cache.Complete
+			cacheHit = output.Complete && cache.CacheHit
+			if cacheHit {
+				output.Dials = nil
+			}
+		}
+	}
 	result.Steps = append(result.Steps, output.Steps...)
 	if !output.Complete {
 		result.Decision.Complete = false
@@ -635,6 +656,11 @@ func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRe
 		result.Decision.Outbound = ""
 		result.Decision.Targets = nil
 		result.Decision.Verdict = "local_response"
+	}
+	if cacheHit {
+		result.Decision.Outbound, result.Decision.Verdict = "", "userspace"
+		result.Decision.Targets = nil
+		result.Notes = append(result.Notes, "The raw upstream answer is cached; no transport or node selection is needed.")
 	}
 	if len(output.Dials) != 0 {
 		result.Decision.Targets = nil
@@ -689,5 +715,5 @@ func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRe
 			result.Notes = append(result.Notes, "DNS transport candidates are analyzed independently; no protocol/address race was executed.")
 		}
 	}
-	return len(output.Dials) != 0 || output.Terminal
+	return cacheHit || len(output.Dials) != 0 || output.Terminal
 }

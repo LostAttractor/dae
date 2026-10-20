@@ -71,7 +71,7 @@ func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
 	if o.BodyMemory == nil {
 		return nil, errors.New("surge: body memory budget is required")
 	}
-	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: &dnsScriptCache{}}
+	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: newDNSScriptCache()}
 	defer func() {
 		if err != nil && e.releaseJQ != nil {
 			_ = e.releaseJQ()

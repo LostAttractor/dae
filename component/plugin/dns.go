@@ -23,10 +23,34 @@ type DNSRequest struct {
 	// ServerAssigned prevents a later general resolver policy from overriding an
 	// explicit per-domain assignment. Caches must isolate the selected Destination.
 	ServerAssigned bool
-	// ContextKey isolates policy, source, destination, process and mark. Caches
-	// must include it, the transport and all response-varying query fields.
-	// The host scopes it to the active plugin chain during handling and observation.
-	ContextKey string
+	// PolicyKey identifies the active plugin chain and selected routing policy,
+	// never the client's address or port.
+	PolicyKey DNSPolicyKey
+	// Upstream identifies the actual resolver endpoint, including protocol and
+	// HTTP path/query. It is set only at the upstream exchange boundary.
+	Upstream string
+}
+
+// DNSPolicyKey identifies a resolver view independently of client identity.
+// Routed distinguishes an evaluated direct route from an unknown route.
+type DNSPolicyKey struct {
+	Chain      uint64
+	Generation uint32
+	Outbound   uint8
+	Mark       uint32
+	Routed     bool
+}
+
+// DNSUpstreamKey is shared by response caches and retained transport connections.
+type DNSUpstreamKey struct {
+	Policy   DNSPolicyKey
+	Network  string
+	Address  netip.AddrPort
+	Endpoint string
+}
+
+func (r DNSRequest) UpstreamKey() DNSUpstreamKey {
+	return DNSUpstreamKey{Policy: r.PolicyKey, Network: r.Network, Address: r.Destination, Endpoint: r.Upstream}
 }
 
 // DNSExchange belongs to one synchronous invocation. Copy retains its scoped
@@ -41,6 +65,11 @@ type DNSExchange struct {
 	DialContext  func(ctx context.Context, network, address, hostname string) (net.Conn, error)
 	ListenPacket func(ctx context.Context, address, hostname string) (net.PacketConn, error)
 	Resolve      func(context.Context, *DNSExchange, []string) (*DNSResponse, error)
+	// RouteUpstream evaluates access/routing without selecting a node and installs
+	// dial methods bound to that decision. Only PrepareUpstream calls this hook.
+	RouteUpstream func(context.Context, *DNSExchange, DNSUpstream) (*DNSExchange, error)
+	// SelectCaches runs once per prepared upstream, on the actual query packet.
+	SelectCaches func(DNSPacket) []DNSUpstreamCache
 	// Client routes auxiliary HTTP requests with the same intercepted identity.
 	// Its connection pools belong to this invocation; do not retain it afterwards.
 	Client *http.Client
@@ -56,6 +85,89 @@ type DNSResponse struct {
 }
 
 type DNSHandler func(context.Context, *DNSExchange) (*DNSResponse, error)
+
+// DNSUpstream describes one concrete transport attempt. Endpoint distinguishes
+// resolver protocols and HTTP URLs sharing an address; empty means plain DNS.
+type DNSUpstream struct {
+	Network  string
+	Address  netip.AddrPort
+	Hostname string
+	Endpoint string
+}
+
+// PreparedDNSExchange owns one route decision and its matching cache plugins.
+// Reuse it within a synchronous decision; prepare again after network I/O before
+// trying another upstream, because routing policy may have changed meanwhile.
+type PreparedDNSExchange struct {
+	request *DNSExchange
+	caches  []DNSUpstreamCache
+}
+
+func (p *PreparedDNSExchange) PolicyKey() DNSPolicyKey { return p.request.PolicyKey }
+
+// Lookup checks the selected caches without counting speculative misses.
+func (p *PreparedDNSExchange) Lookup() *DNSResponse {
+	for _, cache := range p.caches {
+		if response := cache.LookupDNSUpstream(p.request); response != nil {
+			return response
+		}
+	}
+	return nil
+}
+
+// Exchange runs the actual attempt, using the same route and cache selection.
+func (p *PreparedDNSExchange) Exchange(ctx context.Context, transport DNSHandler) (*DNSResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for i := len(p.caches) - 1; i >= 0; i-- {
+		transport = p.caches[i].WrapDNSUpstream(transport)
+	}
+	return transport(ctx, p.request)
+}
+
+// ExchangeUpstream is called after request policy and before response policy.
+func (r *DNSExchange) ExchangeUpstream(ctx context.Context, upstream DNSUpstream, transport DNSHandler) (*DNSResponse, error) {
+	prepared, err := r.PrepareUpstream(ctx, upstream)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.Exchange(ctx, transport)
+}
+
+// PrepareUpstream checks routing before exposing any cache or transport access.
+func (r *DNSExchange) PrepareUpstream(ctx context.Context, upstream DNSUpstream) (*PreparedDNSExchange, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	request := r.Copy()
+	if r.RouteUpstream != nil {
+		var err error
+		request, err = r.RouteUpstream(ctx, request, upstream)
+		if err != nil {
+			return nil, err
+		}
+	}
+	request.PolicyKey.Routed = true
+	request.Network, request.Destination = upstream.Network, upstream.Address
+	request.Upstream = upstream.Endpoint
+	if request.Upstream == "" {
+		request.Upstream = upstream.Network + "://" + upstream.Address.String()
+	}
+	prepared := &PreparedDNSExchange{request: request}
+	if r.SelectCaches != nil {
+		prepared.caches = r.SelectCaches(request.DNSPacket)
+	}
+	return prepared, nil
+}
+
+// DNSUpstreamCache caches only raw transport answers, outside response policy.
+// Lookup and Exchange use the same selected providers and scopes.
+type DNSUpstreamCache interface {
+	Plugin
+	WrapDNSUpstream(DNSHandler) DNSHandler
+	LookupDNSUpstream(*DNSExchange) *DNSResponse
+}
 
 // DNSPlugin may answer locally or call next synchronously. Configuration order
 // is request A -> B -> relay, response B -> A. Errors do not implicitly fall

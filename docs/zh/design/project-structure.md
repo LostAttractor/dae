@@ -76,7 +76,7 @@ MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins
 | `control/domain_registry_lifecycle.go` | 一个后台循环应用活动、执行 GC/脏保存，关闭与 reload 继承 |
 | `control/domain_registry_disk.go` | 分组 gzip JSON 编解码、完整校验和原子发布 |
 
-用户态暂不设容量上限，内核是按完整 IP 状态聚合、排序后的有容量子集。详见[DNS 设计与 TODO](../configuration/dns.md)。高级解析策略与传输位于 `plugins/dns-router`，完整应答缓存位于 `plugins/dns-cache`，均可选编译与配置。推荐插件顺序为 cache → Surge → router → 核心中继。
+用户态暂不设容量上限，内核是按完整 IP 状态聚合、排序后的有容量子集。详见[DNS 设计与 TODO](../configuration/dns.md)。高级解析策略与传输位于 `plugins/dns-router`，完整应答缓存位于 `plugins/dns-cache`，均可选编译与配置。请求顺序为 Surge → router → 核心中继；cache 在实际上游交换处生效，不受声明位置影响。
 
 ### 传输生命周期
 

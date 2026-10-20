@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 var (
@@ -134,6 +136,19 @@ func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4prot
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
 	}
 	return ipversions, l4protos
+}
+
+func (u *Upstream) TransportName(protocol consts.L4ProtoStr) string {
+	if u.Scheme == UpstreamScheme_TCP_UDP {
+		return string(protocol)
+	}
+	return string(u.Scheme)
+}
+
+// Target preserves resolver identity for execution and pure cache diagnostics.
+func (u *Upstream) Target(ip netip.Addr, protocol consts.L4ProtoStr) plugin.DNSUpstream {
+	endpoint := (&url.URL{Scheme: u.TransportName(protocol), Host: net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port))), Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}).String()
+	return plugin.DNSUpstream{Network: string(protocol), Address: netip.AddrPortFrom(ip, u.Port), Hostname: u.Hostname, Endpoint: endpoint}
 }
 
 func (u *Upstream) String() string {

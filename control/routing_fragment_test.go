@@ -11,6 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -242,21 +243,25 @@ func TestRoutingModulePriorityInEveryProfile(t *testing.T) {
 	}
 }
 
-func TestProfileSeparatesDNSReroutes(t *testing.T) {
+func TestDNSCacheUsesSelectedPolicyInsteadOfProfileIdentity(t *testing.T) {
 	source := netip.MustParseAddrPort("192.0.2.1:1234")
 	c := &ControlPlane{}
-	a, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{Ifindex: 7, ProfileId: 1})
-	if err != nil {
-		t.Fatal(err)
+	upstream := plugin.DNSUpstream{Network: "udp", Address: netip.MustParseAddrPort("192.0.2.53:53")}
+	contexts := make([]plugin.DNSPolicyKey, 3)
+	for i, mark := range []uint32{10, 10, 20} {
+		request, _, err := c.dnsRequest(nil, "udp", source, upstream.Address, routingResult{Ifindex: 7, ProfileId: uint32(i + 1), Mark: mark})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := request.PrepareUpstream(t.Context(), upstream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contexts[i] = prepared.PolicyKey()
 	}
-	b, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{Ifindex: 7, ProfileId: 2})
-	if err != nil {
-		t.Fatal(err)
+	if contexts[0] != contexts[1] || contexts[0] == contexts[2] {
+		t.Fatalf("cache contexts must follow selected policy: %v", contexts)
 	}
-	if a.ContextKey == b.ContextKey {
-		t.Fatal("DNS reroutes coalesce across profiles")
-	}
-
 }
 
 func TestStructuredCollectsTargetsInAllBlocks(t *testing.T) {

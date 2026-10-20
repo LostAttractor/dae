@@ -22,17 +22,14 @@ func (*Cache) Describe(ch chan<- *prometheus.Desc) {
 // Snapshot the same authoritative state used by Report. Never hold the cache
 // lock while sending to the collector channel.
 func (c *Cache) Collect(ch chan<- prometheus.Metric) {
-	c.mu.Lock()
-	entries, capacity, memory, limit := len(c.entries), c.limit, c.bytes, c.memoryLimit
-	hits, misses, bypasses, expired, evicted := c.hits, c.misses, c.bypasses, c.expired, c.evicted
-	c.mu.Unlock()
-	ch <- prometheus.MustNewConstMetric(entriesDesc, prometheus.GaugeValue, float64(entries))
-	ch <- prometheus.MustNewConstMetric(capacityDesc, prometheus.GaugeValue, float64(capacity))
-	ch <- prometheus.MustNewConstMetric(memoryDesc, prometheus.GaugeValue, float64(memory))
-	ch <- prometheus.MustNewConstMetric(memoryLimitDesc, prometheus.GaugeValue, float64(limit))
-	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(hits), "hit")
-	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(misses), "miss")
-	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(bypasses), "bypass")
-	ch <- prometheus.MustNewConstMetric(evictionsDesc, prometheus.CounterValue, float64(expired), "expired")
-	ch <- prometheus.MustNewConstMetric(evictionsDesc, prometheus.CounterValue, float64(evicted), "capacity")
+	s := c.store.Snapshot()
+	ch <- prometheus.MustNewConstMetric(entriesDesc, prometheus.GaugeValue, float64(s.Entries))
+	ch <- prometheus.MustNewConstMetric(capacityDesc, prometheus.GaugeValue, float64(s.Limit))
+	ch <- prometheus.MustNewConstMetric(memoryDesc, prometheus.GaugeValue, float64(s.Bytes))
+	ch <- prometheus.MustNewConstMetric(memoryLimitDesc, prometheus.GaugeValue, float64(s.MemoryLimit))
+	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(s.Hits), "hit")
+	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(s.Misses), "miss")
+	ch <- prometheus.MustNewConstMetric(lookupsDesc, prometheus.CounterValue, float64(c.bypasses.Load()), "bypass")
+	ch <- prometheus.MustNewConstMetric(evictionsDesc, prometheus.CounterValue, float64(s.Expired), "expired")
+	ch <- prometheus.MustNewConstMetric(evictionsDesc, prometheus.CounterValue, float64(s.Evicted), "capacity")
 }

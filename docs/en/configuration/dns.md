@@ -107,12 +107,23 @@ and capacity bounds all retained entries.
   query path. Go still decides TCP retries after UDP truncation; the transports
   have separate cache entries.
 
-The optional `dns-cache` plugin continues to cache final client answers, own
-client/policy isolation and fixed TTL settings, and expose its existing
-diagnostics. It shares query identity, TTL rules and ordinary OPT reconstruction
-with the internal cache, while keeping its own entries, capacity and EDNS option
-policy. Client queries or replies with EDNS options pass through without caching
-or fixed TTL rewriting until their option-specific semantics are supported.
+The optional `dns-cache` plugin caches raw upstream answers after request policy,
+server selection and routing admission. Response policy runs on every request,
+including hits. Keys include the routing generation, plugin chain, selected
+outbound/mark, actual resolver endpoint, transport and query; client addresses
+and source ports are excluded. Different client-selected servers stay separate
+unless policy redirects them to the same upstream and routing policy.
+
+Static diagnostics check caches after upstream selection and route policy. A
+known cache hit needs no available outbound node. Missing query or routing data,
+multiple candidates and runtime-dependent policies remain uncertain; diagnostics
+do not dial or change cache counters and LRU order.
+
+The internal resolver, `dns-cache` and Surge DNS script results reuse the bounded
+LRU storage in `pkg/dnscache`, while retaining their own entries and budgets.
+The response caches also share query identity, TTL handling and ordinary OPT
+reconstruction. Client queries or responses carrying EDNS options bypass caching
+and fixed TTL rewriting until their option-specific semantics are implemented.
 
 ## Sliding retention window
 
@@ -353,8 +364,8 @@ dns-cache:github.com/daeuniverse/dae/plugins/dns-cache
 dns-router:github.com/daeuniverse/dae/plugins/dns-router
 ```
 
-Recommended order: **cache → Surge Host → router → core relay**. Omit unused
-instances:
+Request order: **Surge Host → router → core relay**. Cache wraps actual upstream
+exchanges regardless of its declaration position. Omit unused instances:
 
 ```dae
 plugins {

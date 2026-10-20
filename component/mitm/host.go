@@ -50,7 +50,7 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 			err = errors.Join(err, instance.Release())
 		}
 	} else if host.SameInstances(previous) {
-		host.dnsContext = previous.dnsContext
+		host.dnsChain = previous.dnsChain
 	}
 	return host, err
 }
@@ -100,7 +100,7 @@ func (h *Host) PrepareSuccessor() (*Host, error) {
 			err = errors.Join(err, instance.owner.Release())
 		}
 	} else {
-		next.dnsContext = h.dnsContext
+		next.dnsChain = h.dnsChain
 	}
 	return next, err
 }
@@ -123,7 +123,8 @@ type Host struct {
 	options          Options
 	instances        []Instance
 	plan             plugin.Plan
-	dnsContext       string
+	dnsChain         uint64
+	dnsCaches        []*Instance
 	diagnosticScopes []plugin.HTTPScope
 	mu               sync.Mutex
 	started          bool
@@ -201,7 +202,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	if options.DrainTimeout <= 0 {
 		options.DrainTimeout = 5 * time.Second
 	}
-	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{}), dnsContext: fmt.Sprintf("dns-host/%d/", dnsSerial.Add(1))}
+	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{}), dnsChain: dnsSerial.Add(1)}
 	if options.Diagnostic != nil {
 		h.diagnosticScopes = options.Diagnostic.Plan().Scopes
 	}
@@ -213,6 +214,9 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		instance.plan = instance.owner.Plan
 		if options.DisableHTTP {
 			instance.plan.Scopes = nil
+		}
+		if _, ok := instance.Plugin.(plugin.DNSUpstreamCache); ok {
+			h.dnsCaches = append(h.dnsCaches, instance)
 		}
 		h.plan.DNS = append(h.plan.DNS, instance.plan.DNS...)
 		h.plan.RequiredOutbounds = append(h.plan.RequiredOutbounds, instance.plan.RequiredOutbounds...)

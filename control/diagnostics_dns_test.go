@@ -16,7 +16,7 @@ func TestDiagnosticDNSQuestionWithoutRoutingIdentity(t *testing.T) {
 	ctx := diagnosticDNSQuestion(t.Context(), request)
 	packet, ok := plugin.DiagnosticDNSRequest(ctx)
 	query := packet.MessageCopy()
-	if !ok || query == nil || packet.ContextKey != "" {
+	if !ok || query == nil || packet.PolicyKey != (plugin.DNSPolicyKey{}) {
 		t.Fatal("known question requires no routing identity")
 	}
 	if query.Question[0] != (dns.Question{Name: "example.test.", Qtype: dns.TypeTXT, Qclass: dns.ClassCHAOS}) || query.RecursionDesired || !query.CheckingDisabled || query.IsEdns0() == nil || !query.IsEdns0().Do() || query.IsEdns0().UDPSize() != 1232 {

@@ -18,8 +18,8 @@ import (
 func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
 	if dns {
-		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok && identity.ContextKey != "" {
-			identity.ContextKey = h.dnsContext + identity.ContextKey
+		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok {
+			identity.PolicyKey.Chain = h.dnsChain
 			ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
 		}
 	}
@@ -44,6 +44,11 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 	}
 
 	for _, instance := range h.instances {
+		if dns {
+			if _, cache := instance.Plugin.(plugin.DNSUpstreamCache); cache {
+				continue
+			}
+		}
 		if ctx.Err() != nil {
 			result.Complete = false
 			return result
@@ -143,6 +148,48 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 		} else {
 			result.Steps[len(result.Steps)-1].Status, result.Steps[len(result.Steps)-1].Reason = "unknown", "plugin_explanation_unavailable"
 			result.Complete = false
+		}
+	}
+	if dns && !result.Terminal {
+		identity, _ := plugin.DiagnosticDNSRequest(ctx)
+		result.DNSQuery = &identity
+	}
+	return result
+}
+
+// ExplainDNSUpstream runs only at the raw transport boundary, after route policy.
+// Like live execution it matches scopes against the actual upstream query.
+func (h *Host) ExplainDNSUpstream(ctx context.Context, input api.ExplainRequest, query plugin.DNSRequest) plugin.Explanation {
+	result := plugin.Explanation{Complete: true}
+	input.Kind = "dns"
+	query.PolicyKey.Chain = h.dnsChain
+	ctx = plugin.WithDiagnosticDNSRequest(ctx, query)
+	for _, instance := range h.dnsCaches {
+		if !instance.matchesDNS(query.DNSPacket) {
+			if _, known := query.Question(); !known && len(instance.plan.DNS) != 0 {
+				result.Complete = false
+				result.Steps = append(result.Steps, api.ExplainStep{ID: "dns_upstream_cache/" + instance.ID, Stage: "dns_cache", Status: "unknown", Match: "unknown", Reason: "missing_dns_question"})
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			result.Complete = false
+			break
+		}
+		explainer, ok := instance.Plugin.(plugin.Explainer)
+		if !ok {
+			result.Complete = false
+			continue
+		}
+		output := explainer.Explain(ctx, input)
+		for _, step := range output.Steps {
+			step.ID = "dns_upstream_cache/" + instance.ID + "/" + step.ID
+			result.Steps = append(result.Steps, step)
+		}
+		result.Complete = result.Complete && output.Complete
+		if output.CacheHit && result.Complete {
+			result.CacheHit = true
+			break
 		}
 	}
 	return result

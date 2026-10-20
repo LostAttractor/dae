@@ -86,17 +86,20 @@ scope, CA or client MITM switch. All captured TCP/UDP port-53 flows can enter
 the DNS chain; DNS scopes do not expand HTTP capture.
 
 `DNSRequest` contains a `DNSPacket`, transport, source, original/effective
-destination, interface and an opaque policy `ContextKey`. `DNSExchange` embeds
+destination, interface and a structured `DNSPolicyKey`. `DNSExchange` embeds
 that data and adds invocation-scoped `DialContext`, `ListenPacket`, `Resolve` and
 `Client`. Handlers receive `*DNSExchange`; `Copy()` isolates query/routing changes
 while retaining the same services.
 
-During DNS handling and observation, the host scopes `ContextKey` to its ordered
+During DNS handling and observation, the host sets `PolicyKey.Chain` to its ordered
 plugin instances. An unchanged chain shares that namespace across reload;
 replacing or reordering instances creates a new namespace. Reused caches cannot
 replay old-policy answers into the new chain, while draining hosts retain their
-own answers. Exact diagnostics use the same namespace. Treat `ContextKey` as
-opaque and preserve it in derived requests.
+own answers. Preserve `PolicyKey` in derived requests: it contains the chain,
+routing generation, selected outbound and mark, plus whether routing is known.
+It never contains client IP/port. `DNSRequest.UpstreamKey()` combines that policy
+with the actual protocol, address and endpoint; raw answer caches and retained
+TCP streams use this same identity.
 
 `DNSPacket` is immutable and shared safely by copies. `DNSWire(bytes)` copies an
 exact received packet, including malformed/opaque bytes. `DNSMessage(message)`
@@ -104,6 +107,29 @@ copies a local message. `MessageCopy()` returns an owned editable message, or ni
 when strict decoding fails; assign `exchange.DNSPacket = plugin.DNSMessage(m)` to
 publish an edit. There is no separate Wire field to synchronize. `Wire()` returns
 read-only bytes or a local encoding error; `IsWire()` identifies exact packets.
+
+Resolver transports call `exchange.ExchangeUpstream(ctx, upstream, transport)`
+with the concrete network, address, trusted hostname and full endpoint identity
+(including HTTP path/query). The core prepares access/routing once before cache
+lookup and installs dial callbacks using that decision. Node selection and dial
+accounting happen only on misses. Use the prepared exchange inside `transport`.
+`DNSUpstreamCache` wraps this boundary independently of middleware order. Only
+raw upstream answers are stored; local answers and response policy remain
+outside it. `DNSRequest.Upstream` is set at this boundary.
+
+`exchange.PrepareUpstream(ctx, upstream)` returns a `PreparedDNSExchange` with a
+checked route and matching cache providers. Its `Lookup()` performs a speculative
+cache lookup without counting misses; `Exchange(ctx, transport)` uses the same
+selection for a real attempt. The router reuses the primary preparation when
+preflight misses, but prepares a fallback again after transport I/O so intervening
+policy changes take effect. A cached alternate protocol may skip the primary
+transport only for the same endpoint and equal prepared `PolicyKey()`.
+
+Diagnostics evaluate request middleware before upstream caches. Once a single
+endpoint and its route are known, the control layer applies the shared route-only
+evaluator to its snapshot and asks the host to explain the cache without I/O,
+LRU changes or counters. Scripts, unresolved endpoints, multiple candidates and
+unknown response policies remain explicitly uncertain.
 
 Use exchange-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
 preserve client identity and route the selected target, with marks, accounting

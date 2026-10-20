@@ -251,7 +251,8 @@ func (s *Dns) Explain(ctx context.Context, input api.ExplainRequest, names []str
 }
 
 func (u *UpstreamResolver) diagnosticDials(ctx context.Context) []plugin.DiagnosticDial {
-	scheme, hostname, port, _, _ := ParseRawUpstream(u.Raw)
+	scheme, hostname, port, path, _ := ParseRawUpstream(u.Raw)
+	endpoint := &Upstream{Scheme: scheme, Hostname: hostname, Port: port, Path: path, RawPath: u.Raw.RawPath, RawQuery: u.Raw.RawQuery}
 	addresses := plugin.SamplesForDiagnostics(ctx).Sample(u, func() []netip.Addr {
 		u.mu.Lock()
 		defer u.mu.Unlock()
@@ -272,7 +273,7 @@ func (u *UpstreamResolver) diagnosticDials(ctx context.Context) []plugin.Diagnos
 	for _, ip := range addresses {
 		if ip.IsValid() {
 			for _, proto := range protocols {
-				targets = append(targets, plugin.DiagnosticDial{Protocol: proto, Target: api.DiagnosticTarget{IP: ip.String(), Domain: hostname, Port: int(port)}})
+				targets = append(targets, plugin.DiagnosticDial{Protocol: proto, Endpoint: endpoint.Target(ip, consts.L4ProtoStr(proto)).Endpoint, Target: api.DiagnosticTarget{IP: ip.String(), Domain: hostname, Port: int(port)}})
 			}
 		}
 	}

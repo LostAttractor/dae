@@ -32,14 +32,24 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 	defer h.requests.Done()
 	// An unchanged cache instance can be shared with a new DNS chain. Keep
 	// their answers separate, including observers invoked by the finalizer.
-	previousContext := request.ContextKey
-	request.ContextKey = h.dnsContext + previousContext
-	defer func() { request.ContextKey = previousContext }()
+	previousChain := request.PolicyKey.Chain
+	request.PolicyKey.Chain = h.dnsChain
+	defer func() { request.PolicyKey.Chain = previousChain }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(h.forceContext, cancel)
 	defer stop()
 	request.Resolve = nil
+	previousCaches := request.SelectCaches
+	defer func() { request.SelectCaches = previousCaches }()
+	request.SelectCaches = nil
+	if len(h.dnsCaches) != 0 {
+		request.SelectCaches = h.selectDNSCaches
+	}
+	relay := terminal
+	terminal = func(ctx context.Context, query *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		return query.ExchangeUpstream(ctx, plugin.DNSUpstream{Network: query.Network, Address: query.Destination}, relay)
+	}
 	for _, instance := range h.instances {
 		if resolver, ok := instance.Plugin.(plugin.DNSResolver); ok {
 			request.Resolve = resolver.ResolveDNS
@@ -64,6 +74,25 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 		err = finalize(response)
 	}
 	return response, err
+}
+
+func (h *Host) selectDNSCaches(packet plugin.DNSPacket) []plugin.DNSUpstreamCache {
+	var selected []plugin.DNSUpstreamCache
+	for _, instance := range h.dnsCaches {
+		if instance.matchesDNS(packet) {
+			selected = append(selected, instance.Plugin.(plugin.DNSUpstreamCache))
+		}
+	}
+	return selected
+}
+
+func (i Instance) matchesDNS(packet plugin.DNSPacket) bool {
+	for _, scope := range i.plan.DNS {
+		if scope.MatchPacket(packet) {
+			return true
+		}
+	}
+	return false
 }
 
 // ObserveDNS must be called from HandleDNS's finalizer, under its admission.

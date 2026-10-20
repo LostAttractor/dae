@@ -64,7 +64,7 @@
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
 | 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用当前目标的 DNS/可信域名上下文，不匹配 URL 路径；未知选项整条跳过 |
 | 优先级 | 目的地址规则 → flow → pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本、URL Rewrite、Map Local 范围先执行 HTTP 处理，再按最终目标运行该流程；原目标 block 不抢先终止已准入请求。纯检查保留有效原路由。302/307 返回客户端自行请求 |
-| Host 范围 | 多个普通 IP DNS 服务器可并发解析，保留捕获身份并取消、等待其余查询；加密服务器需要 dns-router。DNS 脚本的正 TTL 地址结果按脚本、域名和路由身份缓存，命中递减 TTL；每实例最多 4096 条，重载清空。Linux system/syslib/force-syslib 使用 Go 内部解析器，默认系统 nameserver，可由 global.dns_resolver 覆盖；不模拟 macOS 分域解析或 libc-only NSS。用法见[DNS Host](surge-module.md#dns-host-与-ip-目标重写) |
+| Host 范围 | 多个普通 IP DNS 服务器可并发解析，保留捕获身份并取消、等待其余查询；加密服务器需要 dns-router。DNS 脚本的正 TTL 地址结果按脚本、域名和当前配置命名空间缓存，同一配置中的客户端共享结果，不区分客户端 IP/端口，命中递减 TTL；每实例最多 4096 条，配置变化后隔离旧结果；TTL 为 0 时每次执行。Linux system/syslib/force-syslib 使用 Go 内部解析器，默认系统 nameserver，可由 global.dns_resolver 覆盖；不模拟 macOS 分域解析或 libc-only NSS。用法见[DNS Host](surge-module.md#dns-host-与-ip-目标重写) |
 | 诊断 | 有执行事件和分级 console 日志，无 Surge 抓包查看器、notes 或证书固定诊断页面 |
 
 ## 资源限制

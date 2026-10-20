@@ -4,10 +4,10 @@ package surge
 
 import (
 	"net/netip"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/dnscache"
 	"github.com/miekg/dns"
 )
 
@@ -15,45 +15,34 @@ const maxDNSScriptCacheEntries = 4096
 
 // Only address results are cached. Scripts see the domain, not DNS wire fields;
 // each hit constructs a fresh reply for the current ID, flags and question type.
-// Routed HTTP calls can depend on the captured identity, which must stay isolated.
+// A script's TTL publishes its domain result to the active configuration's clients.
 type dnsScriptCacheKey struct {
-	script                        *Script
-	domain, context, network      string
-	source, destination, original netip.AddrPort
-	iface                         uint32
-	assigned                      bool
-}
-
-type dnsScriptCacheEntry struct {
-	addresses         []netip.Addr
-	received, expires time.Time
+	script *Script
+	domain string
+	policy plugin.DNSPolicyKey
 }
 
 type dnsScriptCache struct {
-	mu      sync.Mutex
-	entries map[dnsScriptCacheKey]dnsScriptCacheEntry
+	store *dnscache.Store[dnsScriptCacheKey, []netip.Addr]
+}
+
+func newDNSScriptCache() *dnsScriptCache {
+	return &dnsScriptCache{store: dnscache.NewStore[dnsScriptCacheKey, []netip.Addr](maxDNSScriptCacheEntries, 0)}
 }
 
 func dnsScriptKey(script *Script, request *plugin.DNSExchange) dnsScriptCacheKey {
 	question, _ := request.Question()
 	return dnsScriptCacheKey{script: script, domain: dns.CanonicalName(question.Name),
-		context: request.ContextKey, network: request.Network, source: request.Source,
-		destination: request.Destination, original: request.OriginalDestination, iface: request.Interface, assigned: request.ServerAssigned}
+		policy: request.PolicyKey}
 }
 
 func (c *dnsScriptCache) get(key dnsScriptCacheKey, request *plugin.DNSExchange) *plugin.DNSResponse {
-	c.mu.Lock()
-	entry, ok := c.entries[key]
-	if ok && !time.Now().Before(entry.expires) {
-		delete(c.entries, key)
-		ok = false
-	}
-	c.mu.Unlock()
+	entry, ok := c.store.Get(key, time.Now())
 	if !ok {
 		return nil
 	}
-	response := hostAddressResponse(request, entry.addresses, uint32(max(time.Until(entry.expires), 0)/time.Second))
-	response.Cached, response.ReceivedAt = true, entry.received
+	response := hostAddressResponse(request, entry.Value, uint32(max(time.Until(entry.Expires), 0)/time.Second))
+	response.Cached, response.ReceivedAt = true, entry.ReceivedAt
 	return response
 }
 
@@ -61,24 +50,6 @@ func (c *dnsScriptCache) put(key dnsScriptCacheKey, addresses []netip.Addr, ttl 
 	if ttl == 0 || ttl > 1<<31-1 || len(addresses) == 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = make(map[dnsScriptCacheKey]dnsScriptCacheEntry)
-	}
-	if len(c.entries) >= maxDNSScriptCacheEntries {
-		var earliest dnsScriptCacheKey
-		var expires time.Time
-		for key, entry := range c.entries {
-			if !received.Before(entry.expires) {
-				delete(c.entries, key)
-			} else if expires.IsZero() || entry.expires.Before(expires) {
-				earliest, expires = key, entry.expires
-			}
-		}
-		if len(c.entries) >= maxDNSScriptCacheEntries {
-			delete(c.entries, earliest)
-		}
-	}
-	c.entries[key] = dnsScriptCacheEntry{addresses: addresses, received: received, expires: received.Add(time.Duration(ttl) * time.Second)}
+	bytes := 16*len(addresses) + len(key.domain) + 512
+	c.store.Put(key, dnscache.Record[[]netip.Addr]{Value: addresses, ReceivedAt: received, Expires: received.Add(time.Duration(ttl) * time.Second)}, bytes)
 }

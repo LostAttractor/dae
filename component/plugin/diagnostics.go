@@ -28,17 +28,22 @@ type Explanation struct {
 	// Dials are possible first transport attempts owned by this middleware.
 	// Multiple entries remain candidates, never an invented race winner.
 	Dials []DiagnosticDial
+	// DNSQuery is the query reaching the raw upstream boundary after middleware.
+	DNSQuery *DNSRequest
+	// CacheHit describes a raw upstream answer, not a final policy response.
+	CacheHit bool
 }
 
 type DiagnosticDial struct {
 	Protocol string
+	Endpoint string // Full DNS resolver identity when known, including HTTP path/query.
 	Target   api.DiagnosticTarget
 }
 
 type diagnosticDNSKey struct{}
 
 // WithDiagnosticDNSRequest carries the canonical query and any known routing identity.
-// Leave ContextKey empty when the identity is incomplete.
+// Leave Upstream empty until the actual endpoint and routing policy are known.
 func WithDiagnosticDNSRequest(ctx context.Context, request DNSRequest) context.Context {
 	return context.WithValue(ctx, diagnosticDNSKey{}, request)
 }

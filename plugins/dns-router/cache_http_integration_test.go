@@ -83,9 +83,10 @@ func TestHTTPAgeCannotReviveCacheEntries(t *testing.T) {
 				request.ListenPacket = func(ctx context.Context, _, _ string) (net.PacketConn, error) {
 					return (&net.ListenConfig{}).ListenPacket(ctx, "udp", "127.0.0.1:0")
 				}
-				handler := c.WrapDNS(func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				request.SelectCaches = func(plugin.DNSPacket) []plugin.DNSUpstreamCache { return []plugin.DNSUpstreamCache{c} }
+				handler := func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 					return exchangeForTest(ctx, request, upstream)
-				})
+				}
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 				defer cancel()
 				for attempt := range 2 {
@@ -107,7 +108,6 @@ func TestHTTPAgeCannotReviveCacheEntries(t *testing.T) {
 					if response.Cached != (attempt > 0 && test.wantTTL > 0) {
 						t.Fatalf("cached=%v for attempt %d, effective TTL=%d", response.Cached, attempt, test.wantTTL)
 					}
-					c.ObserveDNS(ctx, request, response)
 				}
 				wantCalls := int32(2)
 				if test.wantTTL > 0 {

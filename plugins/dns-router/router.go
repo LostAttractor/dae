@@ -348,6 +348,28 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 		if version == consts.IpVersionStr_6 {
 			ip = upstream.Ip6
 		}
+		target := netip.AddrPortFrom(ip, upstream.Port)
+		// A cached fallback can skip transport failures only within the same
+		// routing policy. A different route may return a different DNS view.
+		var primary *plugin.PreparedDNSExchange
+		var primaryErr error
+		if len(protocols) > 1 && request.SelectCaches != nil {
+			var policyKey plugin.DNSPolicyKey
+			for i, protocol := range protocols {
+				endpoint := upstream.Target(ip, protocol)
+				prepared, err := request.PrepareUpstream(ctx, endpoint)
+				if i == 0 {
+					primary, primaryErr = prepared, err
+				}
+				if err != nil || i > 0 && prepared.PolicyKey() != policyKey {
+					break
+				}
+				policyKey = prepared.PolicyKey()
+				if response := prepared.Lookup(); response != nil {
+					return response, nil
+				}
+			}
+		}
 		var truncated *plugin.DNSResponse
 		for i, protocol := range protocols {
 			operation := ctx
@@ -355,17 +377,26 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 			if i+1 < len(protocols) || v+1 < len(versions) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
-			started := time.Now()
-			message, err := transport.Exchange(operation, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol), query)
-			transportName := string(upstream.Scheme)
-			if upstream.Scheme == policy.UpstreamScheme_TCP_UDP {
-				transportName = string(protocol)
+			endpoint := upstream.Target(ip, protocol)
+			attempt, err := primary, primaryErr
+			if i > 0 || attempt == nil && err == nil {
+				attempt, err = request.PrepareUpstream(operation, endpoint)
 			}
-			metrics.attempt(operation, name, transportName, purpose, err, message != nil && message.Truncated, started)
+			var response *plugin.DNSResponse
+			if err == nil {
+				response, err = attempt.Exchange(operation, func(ctx context.Context, prepared *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+					started := time.Now()
+					message, err := transport.Exchange(ctx, upstream, requestDialer{prepared, upstream.Hostname}, target, string(protocol), query)
+					metrics.attempt(ctx, name, upstream.TransportName(protocol), purpose, err, message != nil && message.Truncated, started)
+					if err != nil {
+						return nil, err
+					}
+					return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: upstream.String()}, nil
+				})
+			}
 			cancel()
 			if err == nil {
-				response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: upstream.String()}
-				if !message.Truncated || i+1 == len(protocols) {
+				if !response.MessageCopy().Truncated || i+1 == len(protocols) {
 					return response, nil
 				}
 				truncated = response

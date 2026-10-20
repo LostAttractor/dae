@@ -53,21 +53,20 @@ func TestCacheMetricsTrackAuthoritativeState(t *testing.T) {
 	}
 	c := p.(*Cache)
 	request := testRequest()
-	handler := c.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
+	handler := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
 	_, _ = handler(t.Context(), request) // miss
-	c.ObserveDNS(t.Context(), request, testResponse(request))
-	_, _ = handler(t.Context(), request)                      // hit
-	c.ObserveDNS(t.Context(), request, testResponse(request)) // replacement, not eviction
+	c.storeResponse(request, testResponse(request))
+	_, _ = handler(t.Context(), request)            // hit
+	c.storeResponse(request, testResponse(request)) // replacement, not eviction
 	other := request.Copy()
-	other.ContextKey = "other"
-	c.ObserveDNS(t.Context(), other, testResponse(other)) // capacity eviction
-	c.expire(time.Now().Add(time.Minute))                 // worker expiration
-	c.ObserveDNS(t.Context(), request, testResponse(request))
-	c.mu.Lock()
-	for _, elem := range c.entries {
-		elem.Value.(*entry).expires = time.Now().Add(-time.Second)
-	}
-	c.mu.Unlock()
+	other.PolicyKey = plugin.DNSPolicyKey{Generation: 2}
+	c.storeResponse(other, testResponse(other)) // capacity eviction
+	c.store.Expire(time.Now().Add(time.Minute)) // worker expiration
+	c.storeResponse(request, testResponse(request))
+	key, _ := cacheKey(request)
+	entry, _ := c.store.Peek(key)
+	entry.Expires = time.Now().Add(-time.Second)
+	c.store.Put(key, entry, 512)
 	_, _ = handler(t.Context(), request) // lazy expiration and miss
 	invalid := request.Copy()
 	invalid.DNSPacket = plugin.DNSPacket{}
@@ -98,9 +97,9 @@ func TestCacheMetricsConcurrentCollection(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			request := testRequest()
-			handler := c.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
+			handler := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
 			for range 50 {
-				c.ObserveDNS(t.Context(), request, testResponse(request))
+				c.storeResponse(request, testResponse(request))
 				_, _ = handler(t.Context(), request)
 				if _, err := registry.Gather(); err != nil {
 					t.Error(err)

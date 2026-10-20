@@ -97,7 +97,41 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 	}
 	request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: network,
 		Source: src, OriginalDestination: dst, Destination: target, Interface: identity.Ifindex,
-		ContextKey: fmt.Sprintf("%s/%s/%+v", src, dst, identity)}
+		PolicyKey: plugin.DNSPolicyKey{Generation: c.routingGeneration}}
+	request.RouteUpstream = func(ctx context.Context, query *plugin.DNSExchange, upstream plugin.DNSUpstream) (*plugin.DNSExchange, error) {
+		param, decision, err := c.routingMatcher.dnsRoute(ctx, upstream.Network, upstream.Address.String(), upstream.Hostname, query, identity)
+		if err != nil {
+			return nil, err
+		}
+		query.PolicyKey.Outbound, query.PolicyKey.Mark = uint8(decision.outbound), decision.mark
+		selectOption := func(network, address, hostname string) (*DialOption, error) {
+			if network != upstream.Network || address != upstream.Address.String() || hostname != upstream.Hostname {
+				return nil, errors.New("DNS transport changed its prepared upstream")
+			}
+			return c.selectDialOption(param, decision.outbound, decision.mark, false)
+		}
+		query.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
+			option, err := selectOption(network, address, hostname)
+			if err != nil {
+				return nil, err
+			}
+			if option.Outbound.IsBlock() {
+				return nil, errors.New("DNS destination blocked by routing")
+			}
+			return c.dialDNSUpstream(ctx, network, option, identity)
+		}
+		query.ListenPacket = func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
+			option, err := selectOption("udp", address, hostname)
+			if err != nil {
+				return nil, err
+			}
+			if option.Outbound.IsBlock() {
+				return nil, errors.New("DNS destination blocked by routing")
+			}
+			return c.listenDNSUpstream(ctx, option, identity)
+		}
+		return query, nil
+	}
 	request.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
 		option, err := c.dnsDialOption(ctx, network, address, hostname, request, identity)
 		if err != nil {
@@ -116,18 +150,30 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 }
 
 func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*DialOption, error) {
+	param, decision, err := c.routingMatcher.dnsRoute(ctx, network, address, hostname, request, identity)
+	if err != nil {
+		return nil, err
+	}
+	option, err := c.selectDialOption(param, decision.outbound, decision.mark, false)
+	if err == nil && option.Outbound.IsBlock() {
+		err = errors.New("DNS destination blocked by routing")
+	}
+	return option, err
+}
+
+func (matcher *RoutingMatcher) dnsRoute(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*RouteParam, routeDecision, error) {
 	if network != "tcp" && network != "udp" {
-		return nil, fmt.Errorf("unsupported DNS dial network %q", network)
+		return nil, routeDecision{}, fmt.Errorf("unsupported DNS dial network %q", network)
 	}
 	target, err := netip.ParseAddrPort(address)
 	if err != nil {
-		return nil, fmt.Errorf("DNS plugin dial target must be an IP:port: %w", err)
+		return nil, routeDecision{}, fmt.Errorf("DNS plugin dial target must be an IP:port: %w", err)
 	}
 	if target.Port() == 0 || target.Addr().Zone() != "" {
-		return nil, fmt.Errorf("DNS plugin dial target requires a nonzero port and an unzoned IP")
+		return nil, routeDecision{}, fmt.Errorf("DNS plugin dial target requires a nonzero port and an unzoned IP")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, routeDecision{}, err
 	}
 	if _, err := netip.ParseAddr(hostname); err == nil {
 		hostname = ""
@@ -138,22 +184,24 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 	}
 	param := &RouteParam{Src: request.Source, Dest: target, Domain: hostname, routingResult: &identity, explicitTarget: true,
 		networkType: common.NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStrFromAddr(target.Addr())}}
-	var option *DialOption
 	// Target transformation was performed once at ingress. Preserve the kernel
 	// decision only for the unchanged flow; plugin servers get fresh target policy.
 	decision, valid := kernelRoute(&identity)
-	if hostname == "" && target == request.OriginalDestination && request.Destination == request.OriginalDestination && network == request.Network && valid && identity.CaptureFlags&(captureDestination|captureHTTPRequest) == 0 {
-		option, err = c.selectDialOption(param, decision.outbound, decision.mark, false)
-	} else {
+	if !(hostname == "" && target == request.OriginalDestination && request.Destination == request.OriginalDestination && network == request.Network && valid && identity.CaptureFlags&(captureDestination|captureHTTPRequest) == 0) {
 		// DNS transports always use the selected IP even when hostname routing
 		// and dial_target_override are enabled.
 		param.destination = target
-		option, err = c.routeDestination(param, hostname)
+		input := param.routingInput(hostname, target).targetInput(hostname, true, nil, nil)
+		decision.outbound, decision.mark, decision.must, err = matcher.match(input)
 	}
-	if err == nil && option.Outbound.IsBlock() {
+	if err == nil && decision.outbound >= consts.OutboundMustRules {
+		err = fmt.Errorf("cannot resolve DNS routing for %s", target)
+	}
+	if err == nil && decision.outbound == consts.OutboundBlock {
 		err = errors.New("DNS destination blocked by routing")
 	}
-	return option, err
+	decision.apply(param.routingResult)
+	return param, decision, err
 }
 
 func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchange, identity routingResult, bypass bool, terminal plugin.DNSHandler, deliver func([]byte) error) error {
@@ -346,7 +394,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		refreshRead()
 		return nil
 	}
-	streams := make(map[netip.AddrPort]*dnsStream)
+	streams := make(map[plugin.DNSUpstreamKey]*dnsStream)
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -371,7 +419,8 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			return stream.exchange(operation, request)
 		}
 		streamsMu.Lock()
-		stream := streams[request.Destination]
+		key := request.UpstreamKey()
+		stream := streams[key]
 		if stream == nil {
 			if len(streams) >= 16 {
 				streamsMu.Unlock()
@@ -383,7 +432,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 				return nil, err
 			}
 			stream = newDNSStream(upstream, write, endRead)
-			streams[request.Destination] = stream
+			streams[key] = stream
 		}
 		streamsMu.Unlock()
 		return stream.exchange(operation, request)

@@ -97,7 +97,7 @@ func TestDNSPluginComposition(t *testing.T) {
 	for _, name := range []string{"local.example.", "alias.example.", "assigned.example.", "router.example."} {
 		t.Run(name, func(t *testing.T) {
 			m := new(dns.Msg).SetQuestion(name, dns.TypeA)
-			request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), ContextKey: "source/profile", DialContext: dial}
+			request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), PolicyKey: plugin.DNSPolicyKey{Generation: 1}, DialContext: dial}
 			var first time.Time
 			for attempt := range 2 {
 				m.Id++
@@ -117,12 +117,13 @@ func TestDNSPluginComposition(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if response.Cached != (attempt == 1) || response.MessageCopy().Id != request.MessageCopy().Id || len(response.MessageCopy().Answer) == 0 {
+				upstream := name == "assigned.example." || name == "router.example."
+				if response.Cached != (attempt == 1 && upstream) || response.MessageCopy().Id != request.MessageCopy().Id || len(response.MessageCopy().Answer) == 0 {
 					t.Fatalf("bad response: %+v", response)
 				}
 				if attempt == 0 {
 					first = response.ReceivedAt
-				} else if !first.Equal(response.ReceivedAt) {
+				} else if upstream && !first.Equal(response.ReceivedAt) {
 					t.Fatal("cache renewed receipt time")
 				}
 			}

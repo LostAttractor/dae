@@ -15,7 +15,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-func TestDNSScriptCachesTTLWithRoutingIsolation(t *testing.T) {
+func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
 	runtimeFakeClockTest(t, func(t *testing.T) {
 		module := moduleScopeModule(t, "dns", "", "[Host]\nscript.test=script:answer\n[Script]\nanswer=type=dns,script-path=answer.js", map[string]string{"answer": `
           const count = Number($persistentStore.read("count") || "0") + 1;
@@ -27,7 +27,8 @@ func TestDNSScriptCachesTTLWithRoutingIsolation(t *testing.T) {
 			return nil, errors.New("downstream")
 		})
 		query := hostDNSRequest(t, "script.test.", dns.TypeA)
-		query.ContextKey = "policy-one"
+		query.PolicyKey = plugin.DNSPolicyKey{Generation: 1}
+		query.Source = netip.MustParseAddrPort("192.0.2.1:40001")
 		first, err := handler(t.Context(), query)
 		if err != nil {
 			t.Fatal(err)
@@ -36,16 +37,17 @@ func TestDNSScriptCachesTTLWithRoutingIsolation(t *testing.T) {
 		otherID := query.MessageCopy()
 		otherID.Id++
 		query.DNSPacket = plugin.DNSMessage(otherID)
+		query.Source = netip.MustParseAddrPort("192.0.2.2:40002")
 		cached, err := handler(t.Context(), query)
 		if err != nil || !cached.Cached || cached.MessageCopy().Id != otherID.Id || cached.MessageCopy().Answer[0].Header().Ttl != 7 || !cached.ReceivedAt.Equal(first.ReceivedAt) {
 			t.Fatalf("cached response: %+v %v", cached, err)
 		}
-		query.ContextKey = "policy-two"
+		query.PolicyKey = plugin.DNSPolicyKey{Generation: 2}
 		isolated, err := handler(t.Context(), query)
 		if err != nil || isolated.Cached || isolated.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.2" {
 			t.Fatalf("routing cache collision: %+v %v", isolated, err)
 		}
-		query.ContextKey = "policy-one"
+		query.PolicyKey = plugin.DNSPolicyKey{Generation: 1}
 		time.Sleep(7 * time.Second)
 		expired, err := handler(t.Context(), query)
 		if err != nil || expired.Cached || expired.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.3" {
@@ -62,12 +64,12 @@ func TestDNSScriptCachesTTLWithRoutingIsolation(t *testing.T) {
 func TestDNSScriptMultiplePlainServersWithoutResolver(t *testing.T) {
 	request := hostDNSRequest(t, "script.test.", dns.TypeA)
 	request.Source = netip.MustParseAddrPort("192.0.2.10:53000")
-	request.ContextKey = "source-policy-mark"
+	request.PolicyKey = plugin.DNSPolicyKey{Generation: 1, Mark: 7}
 	var calls atomic.Int32
 	started := make(chan struct{})
 	response, err := resolveHostServers(t.Context(), request, []string{"192.0.2.53", "192.0.2.54"}, func(ctx context.Context, query *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		calls.Add(1)
-		if !query.Independent() || !query.ServerAssigned || query.Source != request.Source || query.ContextKey != request.ContextKey+"/surge-server/"+query.Destination.String() {
+		if !query.Independent() || !query.ServerAssigned || query.Source != request.Source || query.PolicyKey != request.PolicyKey {
 			t.Error("DNS routing identity/lifetime lost")
 		}
 		if query.Destination.Addr().String() == "192.0.2.53" {

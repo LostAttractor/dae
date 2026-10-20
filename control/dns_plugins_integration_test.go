@@ -61,7 +61,7 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "domain(full:test.example) -> proxy"))
 			c := &ControlPlane{mitmHost: host, core: &controlPlaneCore{domainRegistry: registry}, routingMatcher: matcher}
 			q := dnsTestRequest(t, "test.example.", 7)
-			q.ContextKey, q.Destination = "same-client", netip.MustParseAddrPort("192.0.2.53:53")
+			q.PolicyKey, q.Destination = plugin.DNSPolicyKey{Generation: 1}, netip.MustParseAddrPort("192.0.2.53:53")
 			calls := 0
 			terminal := func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				calls++
