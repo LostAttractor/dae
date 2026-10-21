@@ -4,17 +4,63 @@ package control
 
 import (
 	"compress/gzip"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common/persist"
 	dnsmessage "github.com/miekg/dns"
 )
+
+type domainDiskAddress struct {
+	address  string
+	deadline time.Time
+}
+
+type domainDiskEntry struct {
+	name      string
+	addresses []domainDiskAddress
+}
+
+type domainDiskSnapshot []domainDiskEntry
+
+// The registry already guarantees unique keys. A sorted, contiguous snapshot
+// avoids building another pair of hash indexes just to serialize the evidence.
+func (snapshot domainDiskSnapshot) MarshalJSONTo(enc *jsontext.Encoder) error {
+	slices.SortFunc(snapshot, func(a, b domainDiskEntry) int { return strings.Compare(a.name, b.name) })
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	for _, entry := range snapshot {
+		if err := enc.WriteToken(jsontext.String(entry.name)); err != nil {
+			return err
+		}
+		if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+			return err
+		}
+		slices.SortFunc(entry.addresses, func(a, b domainDiskAddress) int { return strings.Compare(a.address, b.address) })
+		for i := range entry.addresses {
+			pair := &entry.addresses[i]
+			if err := enc.WriteToken(jsontext.String(pair.address)); err != nil {
+				return err
+			}
+			if err := json.MarshalEncode(enc, &pair.deadline); err != nil {
+				return err
+			}
+		}
+		if err := enc.WriteToken(jsontext.EndObject); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
 
 // Save writes gzip-compressed JSON with absolute GC deadlines. Kernel bitmaps
 // are recomputed on restore, never serialized.
@@ -32,18 +78,15 @@ func (g *DomainRegistry) Save(path string) error {
 	for _, r := range g.byName {
 		pairs += len(r.addresses)
 	}
-	// Own the copied deadlines independently of live records. Pointer-valued
-	// maps also avoid a reflected time.Time allocation per pair during encoding.
-	deadlines := make([]time.Time, pairs)
-	entries := make(map[string]map[string]*time.Time, len(g.byName))
+	// Own all deadlines before releasing mu; sorting and encoding happen outside it.
+	addresses := make([]domainDiskAddress, 0, pairs)
+	entries := make(domainDiskSnapshot, 0, len(g.byName))
 	for name, r := range g.byName {
-		addresses := make(map[string]*time.Time, len(r.addresses))
+		start := len(addresses)
 		for ip, pair := range r.addresses {
-			deadlines[0] = pair.retainUntil
-			addresses[ip.String()] = &deadlines[0]
-			deadlines = deadlines[1:]
+			addresses = append(addresses, domainDiskAddress{ip.String(), pair.retainUntil})
 		}
-		entries[name] = addresses
+		entries = append(entries, domainDiskEntry{name, addresses[start:len(addresses):len(addresses)]})
 	}
 	g.mu.Unlock()
 	if err := persist.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -55,7 +98,8 @@ func (g *DomainRegistry) Save(path string) error {
 	}
 	defer os.Remove(f.Name())
 	compressed, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
-	err = json.MarshalWrite(compressed, entries, json.Deterministic(true))
+	// Names and canonical addresses came from maps, so duplicate tracking is redundant.
+	err = json.MarshalWrite(compressed, entries, jsontext.AllowDuplicateNames(true))
 	// Finish the stream (including its checksum) before syncing and publishing.
 	err = errors.Join(err, compressed.Close())
 	if err == nil {
