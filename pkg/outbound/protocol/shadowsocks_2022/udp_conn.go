@@ -31,6 +31,7 @@ type UdpConn struct {
 	blockCipherEncrypt, blockCipherDecrypt cipher.Block
 	pskList                                [][]byte
 	uPSK                                   []byte
+	cipherWrite                            cipher.AEAD
 	writeMutex, readMutex                  sync.Mutex
 	serverSessions                         [2]serverSession
 }
@@ -39,6 +40,7 @@ type UdpConn struct {
 // session is retained for at least 60 seconds after its last valid packet.
 type serverSession struct {
 	id          [8]byte
+	cipher      cipher.AEAD
 	lastSeen    time.Time
 	latest      uint64
 	seen        [16]uint64 // 1024 packet IDs, indexed circularly.
@@ -129,12 +131,16 @@ func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	if err := c.writeIdentityHeader(buf, separate[:]); err != nil {
 		return 0, err
 	}
-	aead, err := CreateCipher(c.uPSK, separate[:8], c.cipherConf)
-	if err != nil {
-		return 0, err
+	if c.cipherWrite == nil {
+		// The session ID is fixed; only the packet ID in the nonce changes.
+		aead, err := CreateCipher(c.uPSK, c.sessionID[:], c.cipherConf)
+		if err != nil {
+			return 0, err
+		}
+		c.cipherWrite = aead
 	}
-	buf.Grow(message.Len() + aead.Overhead())
-	buf.Write(aead.Seal(buf.AvailableBuffer(), separate[4:], message.Bytes(), nil))
+	buf.Grow(message.Len() + c.cipherWrite.Overhead())
+	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), separate[4:], message.Bytes(), nil))
 	n, err := c.Conn.Write(buf.Bytes())
 	if n == buf.Len() {
 		return len(payload), err
@@ -145,7 +151,7 @@ func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	return 0, err
 }
 
-func (c *UdpConn) acceptServerPacket(id [8]byte, packetID uint64, now time.Time) bool {
+func (c *UdpConn) acceptServerPacket(id [8]byte, packetID uint64, now time.Time, aead cipher.AEAD) bool {
 	selected := -1
 	for i := range c.serverSessions {
 		s := &c.serverSessions[i]
@@ -172,6 +178,7 @@ func (c *UdpConn) acceptServerPacket(id [8]byte, packetID uint64, now time.Time)
 		return false
 	}
 	s.lastSeen = now
+	s.cipher = aead
 	return true
 }
 
@@ -188,9 +195,21 @@ func (c *UdpConn) ReadFrom(b []byte) (int, net.Addr, error) {
 		return 0, nil, responseFailure(io.ErrUnexpectedEOF, netproxy.ScopeOperation)
 	}
 	c.blockCipherDecrypt.Decrypt(buf[:16], buf[:16])
-	aead, err := CreateCipher(c.uPSK, buf[:8], c.cipherConf)
-	if err != nil {
-		return 0, nil, err
+	var serverID [8]byte
+	copy(serverID[:], buf[:8])
+	var aead cipher.AEAD
+	for i := range c.serverSessions {
+		s := &c.serverSessions[i]
+		if s.id == serverID && s.cipher != nil {
+			aead = s.cipher
+			break
+		}
+	}
+	if aead == nil {
+		aead, err = CreateCipher(c.uPSK, serverID[:], c.cipherConf)
+		if err != nil {
+			return 0, nil, err
+		}
 	}
 	payload, err := aead.Open(buf[16:16], buf[4:16], buf[16:n], nil)
 	if err != nil {
@@ -217,9 +236,8 @@ func (c *UdpConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	if err != nil {
 		return 0, nil, responseFailure(err, netproxy.ScopeOperation)
 	}
-	var serverID [8]byte
-	copy(serverID[:], buf[:8])
-	if !c.acceptServerPacket(serverID, binary.BigEndian.Uint64(buf[8:16]), now) {
+	// Publish the cipher with the replay state only after all checks succeed.
+	if !c.acceptServerPacket(serverID, binary.BigEndian.Uint64(buf[8:16]), now, aead) {
 		return 0, nil, responseFailure(protocol.ErrReplayAttack, netproxy.ScopeOperation)
 	}
 	n = copy(b, payload[len(payload)-reader.Len():])

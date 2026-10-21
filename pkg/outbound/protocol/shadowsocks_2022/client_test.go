@@ -379,13 +379,13 @@ func TestClientUDPServerRestartHistoryIsBounded(t *testing.T) {
 	c, _ := newUDPForTest(t)
 	now := time.Now()
 	a, b, next := [8]byte{1}, [8]byte{2}, [8]byte{3}
-	if !c.acceptServerPacket(a, 0, now) || !c.acceptServerPacket(b, 0, now) {
+	if !c.acceptServerPacket(a, 0, now, nil) || !c.acceptServerPacket(b, 0, now, nil) {
 		t.Fatal("two server sessions rejected")
 	}
-	if c.acceptServerPacket(next, 0, now) {
+	if c.acceptServerPacket(next, 0, now, nil) {
 		t.Fatal("discarded a recent server session")
 	}
-	if !c.acceptServerPacket(next, 0, now.Add(time.Minute)) {
+	if !c.acceptServerPacket(next, 0, now.Add(time.Minute), nil) {
 		t.Fatal("expired server session prevented restart")
 	}
 	var window serverSession
