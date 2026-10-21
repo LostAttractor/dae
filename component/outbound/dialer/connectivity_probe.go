@@ -34,7 +34,7 @@ type checkDNSOption struct {
 	*netutils.Ip46
 }
 
-func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOption, error) {
+func parseCheckDNSOption(ctx context.Context, dnsHostPort []string, family consts.IpVersionStr) (*checkDNSOption, error) {
 	if len(dnsHostPort) == 0 {
 		return nil, fmt.Errorf("parseCheckDNSOption: bad format: empty")
 	}
@@ -71,9 +71,19 @@ func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOp
 			}
 		}
 	} else {
-		ip46, err = netutils.ParseOrResolveIp46Context(ctx, host)
+		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip"+string(family), host)
 		if err != nil {
 			return nil, fmt.Errorf("parseCheckDNSOption: failed to resolve ip for %v: %w", host, err)
+		}
+		ip46 = new(netutils.Ip46)
+		for _, address := range addresses {
+			address = address.Unmap()
+			if address.Is4() && !ip46.Ip4.IsValid() {
+				ip46.Ip4 = address
+			}
+			if address.Is6() && !ip46.Ip6.IsValid() {
+				ip46.Ip6 = address
+			}
 		}
 		if !ip46.IsValid() {
 			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", host)
@@ -83,26 +93,21 @@ func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOp
 }
 
 type CheckDnsOptionRaw struct {
-	opt *checkDNSOption
-	mu  sync.Mutex
 	Raw []string
 }
 
-func (c *CheckDnsOptionRaw) Option(ctx context.Context) (*checkDNSOption, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.opt == nil {
-		opt, err := parseCheckDNSOption(ctx, c.Raw)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
-		}
-		c.opt = opt
+func (c *CheckDnsOptionRaw) Option(ctx context.Context, family consts.IpVersionStr) (*checkDNSOption, error) {
+	// Hostnames use the internal resolver's TTL cache. Probes must test their
+	// requested family independently, without waiting for or using the other one.
+	opt, err := parseCheckDNSOption(ctx, c.Raw, family)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
 	}
-	return c.opt, nil
+	return opt, nil
 }
 
 func (d *pathRuntime) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) error {
-	opt, err := d.CheckDnsOptionRaw.Option(ctx)
+	opt, err := d.CheckDnsOptionRaw.Option(ctx, networkType.IpVersion)
 	if err != nil {
 		return err
 	}

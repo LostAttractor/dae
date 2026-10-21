@@ -20,6 +20,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
@@ -1133,7 +1134,7 @@ func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
 func TestCanceledCheckDNSResolutionReturns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := parseCheckDNSOption(ctx, []string{"cancel.invalid:53"})
+	_, err := parseCheckDNSOption(ctx, []string{"cancel.invalid:53"}, consts.IpVersionStr_4)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled DNS option resolution error = %v", err)
 	}

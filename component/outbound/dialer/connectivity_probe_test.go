@@ -7,12 +7,58 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
+	dns "github.com/miekg/dns"
 )
+
+func TestCheckDNSRefreshesOnlyRequestedFamily(t *testing.T) {
+	previous := net.DefaultResolver
+	t.Cleanup(func() { net.DefaultResolver = previous })
+	var octet, queries atomic.Uint32
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+		client, peer := net.Pipe()
+		go func() {
+			defer peer.Close()
+			conn := &dns.Conn{Conn: peer}
+			request, err := conn.ReadMsg()
+			if err != nil {
+				return
+			}
+			queries.Add(1)
+			q := request.Question[0]
+			if q.Qtype != dns.TypeA {
+				t.Errorf("IPv4 check queried type %d", q.Qtype)
+			}
+			reply := new(dns.Msg).SetReply(request)
+			reply.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0}, A: net.IPv4(192, 0, 2, byte(octet.Load()))}}
+			_ = conn.WriteMsg(reply)
+		}()
+		return client, nil
+	}}
+	options := CheckDnsOptionRaw{Raw: []string{"rotating-resolver.test.:53"}}
+	for _, value := range []uint32{1, 2} {
+		octet.Store(value)
+		option, err := options.Option(t.Context(), consts.IpVersionStr_4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if option.Ip4.As4()[3] != byte(value) || option.Ip6.IsValid() {
+			t.Fatalf("check addresses=%+v", option.Ip46)
+		}
+	}
+	before := queries.Load()
+	options.Raw = append(options.Raw, "192.0.2.53", "2001:db8::53")
+	option, err := options.Option(t.Context(), consts.IpVersionStr_6)
+	if err != nil || option.Ip6.String() != "2001:db8::53" || queries.Load() != before {
+		t.Fatalf("explicit addresses were resolved: option=%v error=%v", option, err)
+	}
+}
 
 func TestConnectivityProbesPreserveFailureCause(t *testing.T) {
 	for _, selection := range []bool{false, true} {
