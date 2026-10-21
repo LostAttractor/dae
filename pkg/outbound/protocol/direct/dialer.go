@@ -3,12 +3,15 @@ package direct
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
+	"net/netip"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/common"
+	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -67,6 +70,19 @@ func (d *directDialer) DialContext(ctx context.Context, network, addr string) (n
 			return nil, fmt.Errorf("network %s conflicts with entry IPv%s", network, d.ipVersion)
 		}
 		network = network[:3] + d.ipVersion
+	}
+	if network == "tcp" || network == "tcp4" || network == "tcp6" {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := netip.ParseAddr(host); err != nil {
+			return happyeyeballs.Race(ctx, func(ctx context.Context) iter.Seq2[netip.Addr, error] {
+				return happyeyeballs.Resolve(ctx, d.dialer.Resolver, "ip"+network[3:], host)
+			}, func(ctx context.Context, ip netip.Addr) (net.Conn, error) {
+				return d.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}, func(conn net.Conn) { _ = conn.Close() })
+		}
 	}
 	return d.dialer.DialContext(ctx, network, addr)
 }
