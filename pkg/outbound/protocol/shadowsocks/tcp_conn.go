@@ -1,6 +1,7 @@
 package shadowsocks
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/cipher"
 	"encoding/binary"
@@ -22,6 +23,9 @@ const (
 	TCPChunkMaxLen = (1 << 14) - 1
 )
 
+// Limit read-ahead copying for large frames while coalescing short frames.
+var tcpReaderPool = pool.NewReaderPool(1024)
+
 // TCPConn represents a Shadowsocks TCP connection
 type TCPConn struct {
 	net.Conn
@@ -42,6 +46,7 @@ type TCPConn struct {
 	readMutex  sync.Mutex
 	writeMutex sync.Mutex
 
+	reader     *bufio.Reader
 	readBuf    []byte
 	readOffset int
 }
@@ -86,11 +91,14 @@ func (c *TCPConn) Read(b []byte) (n int, err error) {
 		return n, nil
 	}
 
+	if c.reader == nil {
+		c.reader = tcpReaderPool.Get(c.Conn)
+	}
 	if !c.onceRead {
 		var salt = pool.GetBuffer(c.cipherConf.SaltLen)
 		defer pool.PutBuffer(salt)
 
-		n, err = io.ReadFull(c.Conn, salt)
+		n, err = io.ReadFull(c.reader, salt)
 		if err != nil {
 			if n > 0 {
 				c.readErr = err
@@ -124,7 +132,7 @@ func (c *TCPConn) Read(b []byte) (n int, err error) {
 func (c *TCPConn) readChunk() ([]byte, error) {
 	payloadLength := pool.GetBuffer(2 + c.cipherConf.TagLen)
 	defer pool.PutBuffer(payloadLength)
-	if n, err := io.ReadFull(c.Conn, payloadLength); err != nil {
+	if n, err := io.ReadFull(c.reader, payloadLength); err != nil {
 		if n > 0 {
 			c.readErr = err
 		}
@@ -138,7 +146,7 @@ func (c *TCPConn) readChunk() ([]byte, error) {
 	common.BytesIncLittleEndian(c.nonceRead)
 	l := binary.BigEndian.Uint16(payloadLength)
 	payload := pool.GetBuffer(int(l) + c.cipherConf.TagLen)
-	if _, err = io.ReadFull(c.Conn, payload); err != nil {
+	if _, err = io.ReadFull(c.reader, payload); err != nil {
 		pool.PutBuffer(payload)
 		c.readErr = err
 		return nil, err
@@ -157,6 +165,10 @@ func (c *TCPConn) Close() error {
 	err := c.Conn.Close()
 	c.readMutex.Lock()
 	c.readErr = net.ErrClosed
+	if c.reader != nil {
+		tcpReaderPool.Put(c.reader)
+		c.reader = nil
+	}
 	if c.readBuf != nil {
 		pool.PutBuffer(c.readBuf)
 		c.readBuf = nil

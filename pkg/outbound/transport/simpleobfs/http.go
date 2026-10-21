@@ -17,18 +17,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
-var httpReaderPool = sync.Pool{New: func() any { return bufio.NewReader(nil) }}
-
-func getHTTPReader(r io.Reader) *bufio.Reader {
-	reader := httpReaderPool.Get().(*bufio.Reader)
-	reader.Reset(r)
-	return reader
-}
-
-func putHTTPReader(reader *bufio.Reader) {
-	reader.Reset(nil)
-	httpReaderPool.Put(reader)
-}
+var httpReaderPool = pool.NewReaderPool(4096)
 
 type HTTPObfs struct {
 	net.Conn
@@ -50,7 +39,7 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 		return 0, c.readErr
 	}
 	if c.reader == nil {
-		c.reader = getHTTPReader(c.Conn)
+		c.reader = httpReaderPool.Get(c.Conn)
 	}
 	for c.firstResponse {
 		line, err := c.reader.ReadSlice('\n')
@@ -75,9 +64,9 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 		if !bytes.HasSuffix(c.header.Bytes(), []byte("\r\n\r\n")) {
 			continue
 		}
-		headerReader := getHTTPReader(bytes.NewReader(c.header.Bytes()))
+		headerReader := httpReaderPool.Get(bytes.NewReader(c.header.Bytes()))
 		response, err := http.ReadResponse(headerReader, nil)
-		putHTTPReader(headerReader)
+		httpReaderPool.Put(headerReader)
 		if err != nil {
 			c.readErr = wireError("invalid HTTP response")
 			return 0, c.readErr
@@ -99,7 +88,7 @@ func (c *HTTPObfs) Close() error {
 	c.rMu.Lock()
 	c.readErr = net.ErrClosed
 	if c.reader != nil {
-		putHTTPReader(c.reader)
+		httpReaderPool.Put(c.reader)
 		c.reader = nil
 	}
 	c.header = bytes.Buffer{}
