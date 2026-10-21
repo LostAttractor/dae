@@ -12,7 +12,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
-	"github.com/daeuniverse/dae/pkg/outbound/protocol/infra/socks"
 )
 
 type PktConn struct {
@@ -107,20 +106,15 @@ func (pc *PktConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if !pc.lease.Valid() {
 		return 0, pc.lease.Cause()
 	}
-	if addr == nil {
-		return 0, ErrInvalidAddress
-	}
-	target, err := socks.ParseAddr(addr.String())
-	if err != nil {
-		return 0, err
-	}
-	if 3+len(target)+len(b) > 65507 {
-		return 0, fmt.Errorf("SOCKS5 UDP datagram exceeds 65507 bytes")
-	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 	buf.Write([]byte{0, 0, 0})
-	buf.Write(target)
+	if err := WriteNetAddr(addr, buf); err != nil {
+		return 0, err
+	}
+	if len(b) > 65507-buf.Len() {
+		return 0, fmt.Errorf("SOCKS5 UDP datagram exceeds 65507 bytes")
+	}
 	buf.Write(b)
 	n, err := pc.PacketConn.WriteTo(buf.Bytes(), pc.server)
 	if n != buf.Len() {

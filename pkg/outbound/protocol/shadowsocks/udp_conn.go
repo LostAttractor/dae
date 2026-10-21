@@ -38,7 +38,7 @@ func (c *UdpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	defer pool.PutBytesBuffer(payload)
 
 	// Combine address and data
-	err := socks5.WriteAddr(addr.String(), payload)
+	err := socks5.WriteNetAddr(addr, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -52,7 +52,8 @@ func (c *UdpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	buf.Write(cipher.Seal(nil, ciphers.ZeroNonce[:c.cipherConf.NonceLen], payload.Bytes(), nil))
+	buf.Grow(payload.Len() + cipher.Overhead())
+	buf.Write(cipher.Seal(buf.AvailableBuffer(), ciphers.ZeroNonce[:c.cipherConf.NonceLen], payload.Bytes(), nil))
 
 	written, err := c.Conn.Write(buf.Bytes())
 	if written == buf.Len() {

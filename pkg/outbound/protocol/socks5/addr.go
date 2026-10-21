@@ -36,11 +36,11 @@ type AddressInfo struct {
 }
 
 func WriteAddr(addr string, buf *bytes.Buffer) error {
-	addressInfo, err := AddressFromString(addr)
+	addressInfo, err := parseAddress(addr)
 	if err != nil {
 		return err
 	}
-	return WriteAddrInfo(addressInfo, buf)
+	return WriteAddrInfo(&addressInfo, buf)
 }
 
 // WriteAddr writes address information to buffer
@@ -52,7 +52,6 @@ func WriteAddrInfo(addr *AddressInfo, buf *bytes.Buffer) error {
 			return ErrInvalidAddress
 		}
 		buf.Write(addr.IP.AsSlice())
-		binary.Write(buf, binary.BigEndian, addr.Port)
 	case AddressTypeDomain:
 		lenDN := len(addr.Hostname)
 		if lenDN == 0 || lenDN > 255 {
@@ -60,10 +59,12 @@ func WriteAddrInfo(addr *AddressInfo, buf *bytes.Buffer) error {
 		}
 		buf.WriteByte(uint8(lenDN))
 		buf.WriteString(addr.Hostname)
-		binary.Write(buf, binary.BigEndian, addr.Port)
 	default:
 		return fmt.Errorf("unsupported address type: %v", addr.Type)
 	}
+	var port [2]byte
+	binary.BigEndian.PutUint16(port[:], addr.Port)
+	buf.Write(port[:])
 	return nil
 }
 
@@ -106,21 +107,29 @@ func ReadAddrInfo(data io.Reader) (*AddressInfo, error) {
 }
 
 func AddressFromString(addr string) (*AddressInfo, error) {
-	hostname, port_, err := net.SplitHostPort(addr)
+	info, err := parseAddress(addr)
 	if err != nil {
 		return nil, err
 	}
+	return &info, nil
+}
+
+func parseAddress(addr string) (AddressInfo, error) {
+	hostname, port_, err := net.SplitHostPort(addr)
+	if err != nil {
+		return AddressInfo{}, err
+	}
 	port, err := strconv.ParseUint(port_, 10, 16)
 	if err != nil {
-		return nil, fmt.Errorf("invalid port: %v", port_)
+		return AddressInfo{}, fmt.Errorf("invalid port: %v", port_)
 	}
 
-	info := &AddressInfo{Port: uint16(port)}
+	info := AddressInfo{Port: uint16(port)}
 
 	ip, err := netip.ParseAddr(hostname)
 	if err != nil {
 		if len(hostname) == 0 || len(hostname) > 255 {
-			return nil, ErrInvalidAddress
+			return AddressInfo{}, ErrInvalidAddress
 		}
 		info.Type = AddressTypeDomain
 		info.Hostname = hostname

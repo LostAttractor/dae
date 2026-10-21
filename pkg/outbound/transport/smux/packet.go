@@ -40,7 +40,7 @@ func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 	if len(b) > 0 {
-		err = socks5.WriteAddr(addr.String(), buf)
+		err = socks5.WriteNetAddr(addr, buf)
 		if err != nil {
 			return 0, err
 		}

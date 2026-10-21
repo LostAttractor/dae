@@ -105,7 +105,7 @@ func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	message.WriteByte(HeaderTypeClientStream)
 	message.Write(binary.BigEndian.AppendUint64(nil, uint64(time.Now().Unix())))
 	message.Write([]byte{0, 0}) // no UDP padding
-	if err := socks5.WriteAddr(addr.String(), message); err != nil {
+	if err := socks5.WriteNetAddr(addr, message); err != nil {
 		return 0, err
 	}
 	message.Write(payload)

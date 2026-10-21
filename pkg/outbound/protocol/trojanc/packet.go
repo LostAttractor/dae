@@ -132,7 +132,7 @@ func (c *PacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	if err := socks5.WriteAddr(addr.String(), buf); err != nil {
+	if err := socks5.WriteNetAddr(addr, buf); err != nil {
 		return 0, err
 	}
 	buf.WriteByte(byte(len(b) >> 8))

@@ -8,6 +8,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 	xtacismux "github.com/xtaci/smux"
 )
@@ -100,17 +101,38 @@ func BenchmarkUDPSmuxRoundTrip(b *testing.B) {
 		_ = peer.Close()
 		<-done
 	})
-	conn := &UDPConn{Conn: Conn{Conn: stream, onceRead: true}}
+	conn := &UDPConn{Conn: Conn{Conn: stream, onceRead: true, onceWrite: true}}
+	address := netproxy.NewAddr("udp", "192.0.2.1:53")
 	payload := make([]byte, size)
 	b.SetBytes(size)
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := stream.Write(frame); err != nil {
+		if _, err := conn.WriteTo(payload, address); err != nil {
 			b.Fatal(err)
 		}
 		n, addr, err := conn.ReadFrom(payload)
 		if err != nil || n != size || addr == nil {
 			b.Fatalf("ReadFrom = %d, %v, %v", n, addr, err)
+		}
+	}
+}
+
+func BenchmarkUDPWriteTo(b *testing.B) {
+	for _, address := range []string{"192.0.2.1:53", "[2001:db8::1]:53", "example.org:53"} {
+		for _, size := range []int{64, 1200} {
+			b.Run(fmt.Sprintf("%s/bytes=%d", address, size), func(b *testing.B) {
+				raw := streamWriteFunc{write: func(p []byte) (int, error) { return len(p), nil }}
+				conn := &UDPConn{Conn: Conn{Conn: raw, onceWrite: true}}
+				addr := netproxy.NewAddr("udp", address)
+				payload := bytes.Repeat([]byte("x"), size)
+				b.ReportAllocs()
+				b.SetBytes(int64(size))
+				for b.Loop() {
+					if n, err := conn.WriteTo(payload, addr); err != nil || n != size {
+						b.Fatalf("WriteTo = %d, %v", n, err)
+					}
+				}
+			})
 		}
 	}
 }
