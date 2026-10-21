@@ -164,6 +164,13 @@ endif
 ## End Git Submodules
 
 ## Begin Ebpf
+.PHONY: FORCE
+FORCE:
+
+BPF_INPUTS := Makefile go.mod go.sum control/control.go trace/trace.go \
+	$(shell find control/kern trace/kern kern -type f \( -name '*.c' -o -name '*.h' \) ! -path 'control/kern/tests/*') \
+	$(filter-out %_test.go,$(wildcard cmd/dae-bpf-pack/*.go cmd/dae-routing-abi/*.go))
+
 .PHONY: clean-ebpf-production clean-ebpf-test
 clean-ebpf: clean-ebpf-production clean-ebpf-test
 
@@ -188,7 +195,22 @@ ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET = $(GOARCH)
 # bpf2go uses -mod=mod, so generate BPF from dae's pinned module outside any
 # plugin workspace. The final Go build still uses the caller's workspace.
-ebpf: check-go-version check-bpf-capacities submodule clean-ebpf-production
+ebpf: $(BUILD_TAGS_FILE)
+
+# Keep Make's timestamp dependencies, including changes to the input list and
+# compiler options. A missing output invalidates the complete generated set.
+build/ebpf.inputs: FORCE | submodule
+	@mkdir -p build
+	@{ printf '%s\n' '$(GO_VERSION)' "$$BPF_CFLAGS" "$$BPF_TARGET" "$$BPF_TRACE_TARGET" "$$BPF_STRIP_FLAG"; \
+		command -v go; command -v "$$BPF_CLANG"; "$$BPF_CLANG" --version; \
+		$(if $(STRIP_PATH),"$(STRIP_PATH)" --version;) \
+		printf '%s\n' $(BPF_INPUTS); } > $@.tmp
+	@if ! cmp -s $@.tmp $@ || ! test -s build/ebpf.outputs || \
+		! (while IFS= read -r output; do test -f "$$output" || exit 1; done < build/ebpf.outputs); then \
+		mv $@.tmp $@; else rm $@.tmp; fi
+
+$(BUILD_TAGS_FILE): $(BPF_INPUTS) build/ebpf.inputs | check-go-version check-bpf-capacities
+	$(MAKE) clean-ebpf-production
 	@unset GOOS && \
 	unset GOARCH && \
     unset GOARM && \
@@ -200,7 +222,12 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf-production
 			GOWORK=off CGO_ENABLED=0 go generate ./trace/trace.go && tags=trace ;; \
 		*) echo "trace disabled on $(GOARCH): BPF probe argument ABI is unsupported" ;; \
 	esac && \
-	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
+	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE) && \
+	for output in $(BUILD_TAGS_FILE) internal/routingabi/abi_generated.go \
+		control/bpf*_bpf*.go control/bpf*_bpf*.o control/bpf*_bpf*.o.gz \
+		trace/bpf_*bpf*.go trace/bpf_*bpf*.o trace/bpf_*bpf*.o.gz; do \
+		test ! -f "$$output" || printf '%s\n' "$$output"; \
+	done > build/ebpf.outputs
 
 test: plugins ebpf web-assets
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
@@ -264,9 +291,10 @@ web:
 
 # Only frontend build output crosses into the daemon's Go package.
 web-assets: web
-	rm -rf internal/webui/assets
-	mkdir -p internal/webui/assets
-	cp -R "$(WEB_OUTPUT)/." internal/webui/assets/
+	@if ! diff -qr "$(WEB_OUTPUT)" internal/webui/assets >/dev/null 2>&1; then \
+		rm -rf internal/webui/assets && mkdir -p internal/webui/assets && \
+		cp -R "$(WEB_OUTPUT)/." internal/webui/assets/; \
+	fi
 
 client-test: check-go-version
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/...) && \

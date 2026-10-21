@@ -26,6 +26,7 @@ on:
       - "scripts/setup-llvm.sh"
       - "scripts/update-http2.py"
       - "scripts/generate-config-parser.py"
+      - "scripts/tests/test_incremental_build.py"
       - "scripts/http2/**"
       - "internal/http2/**"
   push:
@@ -55,6 +56,7 @@ on:
       - "scripts/setup-llvm.sh"
       - "scripts/update-http2.py"
       - "scripts/generate-config-parser.py"
+      - "scripts/tests/test_incremental_build.py"
       - "scripts/http2/**"
       - "internal/http2/**"
 
@@ -156,6 +158,10 @@ jobs:
 
       - name: Build standalone Web assets
         run: make web
+
+      - name: Test incremental build invalidation
+        if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'
+        run: python3 -B -m unittest discover -s scripts/tests -p test_incremental_build.py
 
       - name: Set up Go
         uses: actions/setup-go@v6
