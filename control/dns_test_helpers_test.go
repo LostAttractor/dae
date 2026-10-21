@@ -10,20 +10,6 @@ import (
 	"net"
 )
 
-func testDNSQuery(name string, qtype uint16, id uint16) *dnsmessage.Msg {
-	return &dnsmessage.Msg{
-		MsgHdr: dnsmessage.MsgHdr{
-			Id:               id,
-			RecursionDesired: true,
-		},
-		Question: []dnsmessage.Question{{
-			Name:   name,
-			Qtype:  qtype,
-			Qclass: dnsmessage.ClassINET,
-		}},
-	}
-}
-
 func testARecord(name, ip string) *dnsmessage.A {
 	return &dnsmessage.A{
 		Hdr: dnsmessage.RR_Header{
@@ -33,18 +19,6 @@ func testARecord(name, ip string) *dnsmessage.A {
 			Ttl:    60,
 		},
 		A: net.ParseIP(ip).To4(),
-	}
-}
-
-func testAAAARecord(name, ip string) *dnsmessage.AAAA {
-	return &dnsmessage.AAAA{
-		Hdr: dnsmessage.RR_Header{
-			Name:   name,
-			Rrtype: dnsmessage.TypeAAAA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		AAAA: net.ParseIP(ip),
 	}
 }
 
