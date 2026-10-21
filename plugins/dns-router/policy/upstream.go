@@ -8,17 +8,19 @@ package dns
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
 )
 
 var (
@@ -91,21 +93,27 @@ type Upstream struct {
 	RawPath  string // Preserve escaped separators in HTTP endpoint paths.
 	RawQuery string // Configured HTTP parameters, before adding the DNS query.
 	*netutils.Ip46
+	mu       sync.Mutex
+	resolved []netip.Addr
 }
 
-// TODO: Sync with outbound
 func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	ip46, err := netutils.ParseOrResolveIp46Context(ctx, hostname)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve dns_upstream %v: %w", upstream.String(), err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if !ip46.IsValid() {
-		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
+	var ip46 *netutils.Ip46
+	if ip, err := netip.ParseAddr(hostname); err == nil {
+		ip46 = new(netutils.Ip46)
+		if ip = ip.Unmap(); ip.Is4() {
+			ip46.Ip4 = ip
+		} else {
+			ip46.Ip6 = ip
+		}
 	}
 
 	return &Upstream{
@@ -119,13 +127,47 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 	}, nil
 }
 
-func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
-	if u.Ip4.IsValid() {
-		ipversions = append(ipversions, consts.IpVersionStr_4)
+// Addresses refreshes hostnames through the daemon's TTL-aware resolver.
+// Only literal addresses are fixed; diagnostic snapshots never drive dialing.
+func (u *Upstream) Addresses(ctx context.Context) iter.Seq2[netip.Addr, error] {
+	return func(yield func(netip.Addr, error) bool) {
+		if u.Ip46 != nil {
+			for _, ip := range []netip.Addr{u.Ip6, u.Ip4} {
+				if ip.IsValid() && !yield(ip, ctx.Err()) {
+					return
+				}
+			}
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+		defer cancel()
+		var resolved []netip.Addr
+		defer func() {
+			u.mu.Lock()
+			u.resolved = resolved
+			u.mu.Unlock()
+		}()
+		for ip, err := range happyeyeballs.Resolve(ctx, net.DefaultResolver, "ip", u.Hostname) {
+			if err == nil {
+				resolved = append(resolved, ip)
+			}
+			if !yield(ip, err) {
+				return
+			}
+		}
 	}
-	if u.Ip6.IsValid() {
-		ipversions = append(ipversions, consts.IpVersionStr_6)
+}
+
+func (u *Upstream) resolvedAddresses() []netip.Addr {
+	if u.Ip46 != nil {
+		return []netip.Addr{u.Ip6, u.Ip4}
 	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.resolved)
+}
+
+func (u *Upstream) Protocols() (l4protos []consts.L4ProtoStr) {
 	switch u.Scheme {
 	case UpstreamScheme_TCP, UpstreamScheme_HTTPS, UpstreamScheme_TLS:
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_TCP}
@@ -135,7 +177,7 @@ func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4prot
 		// UDP first.
 		l4protos = []consts.L4ProtoStr{consts.L4ProtoStr_UDP, consts.L4ProtoStr_TCP}
 	}
-	return ipversions, l4protos
+	return l4protos
 }
 
 func (u *Upstream) TransportName(protocol consts.L4ProtoStr) string {
@@ -156,53 +198,23 @@ func (u *Upstream) String() string {
 }
 
 type UpstreamResolver struct {
-	Raw *url.URL
-	// FinishInitCallback may be invoked again if err is not nil
-	FinishInitCallback func(upstream *Upstream)
-	mu                 sync.Mutex
-	upstream           *Upstream
-	resolving          chan struct{}
+	Raw      *url.URL
+	mu       sync.Mutex
+	upstream *Upstream
 }
 
-func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
-	for {
-		u.mu.Lock()
-		if u.upstream != nil {
-			upstream := u.upstream
-			u.mu.Unlock()
-			return upstream, nil
-		}
-		if u.resolving != nil {
-			done := u.resolving
-			u.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-done:
-				continue
-			}
-		}
-		done := make(chan struct{})
-		u.resolving = done
-		u.mu.Unlock()
-
-		resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		upstream, resolveErr := NewUpstream(resolveCtx, u.Raw)
-		cancel()
-		if resolveErr == nil && u.FinishInitCallback != nil {
-			u.FinishInitCallback(upstream)
-		}
-
-		u.mu.Lock()
-		if resolveErr == nil {
-			u.upstream = upstream
-		}
-		u.resolving = nil
-		close(done)
-		u.mu.Unlock()
-		if resolveErr != nil {
-			return nil, fmt.Errorf("failed to init dns upstream: %w", resolveErr)
-		}
-		return upstream, nil
+func (u *UpstreamResolver) GetUpstream(ctx context.Context) (*Upstream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.upstream == nil {
+		var err error
+		u.upstream, err = NewUpstream(ctx, u.Raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return u.upstream, nil
 }

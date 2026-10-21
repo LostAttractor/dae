@@ -23,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
 	"github.com/daeuniverse/dae/pkg/proxylink"
 	policy "github.com/daeuniverse/dae/plugins/dns-router/policy"
 	"github.com/daeuniverse/dae/plugins/dns-router/transport"
@@ -361,14 +362,10 @@ func (d requestDialer) ListenPacket(ctx context.Context, target string) (net.Pac
 }
 
 func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream, metrics *routerMetrics, name, purpose string) (*plugin.DNSResponse, error) {
-	query := request.MessageCopy()
-	versions, protocols := upstream.SupportedNetworks()
-	var last error
-	for v, version := range versions {
-		ip := upstream.Ip4
-		if version == consts.IpVersionStr_6 {
-			ip = upstream.Ip6
-		}
+	response, err := happyeyeballs.Race(ctx, upstream.Addresses, func(ctx context.Context, ip netip.Addr) (*plugin.DNSResponse, error) {
+		query := request.MessageCopy()
+		protocols := upstream.Protocols()
+		var last error
 		target := netip.AddrPortFrom(ip, upstream.Port)
 		// A cached fallback can skip transport failures only within the same
 		// routing policy. A different route may return a different DNS view.
@@ -395,7 +392,7 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 		for i, protocol := range protocols {
 			operation := ctx
 			cancel := func() {}
-			if i+1 < len(protocols) || v+1 < len(versions) {
+			if i+1 < len(protocols) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
 			endpoint := upstream.Target(ip, protocol)
@@ -431,6 +428,10 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 		if truncated != nil {
 			return truncated, nil
 		}
+		return nil, last
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("DNS exchange with %s: %w", upstream, err)
 	}
-	return nil, fmt.Errorf("DNS exchange with %s: %w", upstream, last)
+	return response, nil
 }

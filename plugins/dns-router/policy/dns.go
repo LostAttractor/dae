@@ -26,7 +26,6 @@ type Dns struct {
 }
 
 type NewOption struct {
-	UpstreamReadyCallback func(dnsUpstream *Upstream)
 	// InterfaceManager resolves interface names in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
 	// case interface rules never match.
@@ -60,10 +59,7 @@ func New(dns *Config, requestRules, responseRules []*config_parser.RoutingRule, 
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrBadUpstreamFormat, err)
 		}
-		r := &UpstreamResolver{
-			Raw:                u,
-			FinishInitCallback: opt.UpstreamReadyCallback,
-		}
+		r := &UpstreamResolver{Raw: u}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
 	}

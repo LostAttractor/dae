@@ -71,14 +71,14 @@ func TestTCPFallbackReservesCallerBudget(t *testing.T) {
 	}
 }
 
-func TestAddressFallbackReservesCallerBudget(t *testing.T) {
+func TestAddressRaceFallsBackFromStalledIPv6(t *testing.T) {
 	for _, scheme := range []policy.UpstreamScheme{"udp", "tcp", "tcp+udp"} {
 		t.Run(string(scheme), func(t *testing.T) {
 			q := safetyRequest(dns.TypeA)
-			var attempts []string
+			var attempts atomic.Int32
 			q.DialContext = func(ctx context.Context, network, target, _ string) (net.Conn, error) {
-				attempts = append(attempts, network+" "+target)
-				if netip.MustParseAddrPort(target).Addr().Is4() {
+				attempts.Add(1)
+				if netip.MustParseAddrPort(target).Addr().Is6() {
 					<-ctx.Done()
 					return nil, ctx.Err()
 				}
@@ -109,7 +109,7 @@ func TestAddressFallbackReservesCallerBudget(t *testing.T) {
 			defer cancel()
 			response, err := exchangeForTest(ctx, q, upstream)
 			if err != nil || response == nil {
-				t.Fatalf("reachable IPv6 fallback was starved: attempts=%v err=%v", attempts, err)
+				t.Fatalf("reachable IPv4 fallback was starved: attempts=%v err=%v", attempts.Load(), err)
 			}
 		})
 	}

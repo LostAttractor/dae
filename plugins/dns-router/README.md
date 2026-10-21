@@ -39,7 +39,9 @@ Defaults are request `asis`, response
 `accept`; `reject` produces an empty response. Response rerouting is depth-bounded.
 
 The router supplies `DNSResolver` for Surge encrypted/multiple-server assignments.
-Endpoint hostname bootstrap uses the system resolver. Upstream sockets go through
+Endpoint hostnames use the daemon's internal resolver and its DNS TTL cache;
+resolved addresses are refreshed on each exchange instead of pinned to the plugin.
+Upstream sockets go through
 dae's request-bound dial services, retaining client identity and applying target
 routing, marks, accounting and route/policy lifetimes. `transport.Exchange` owns
 one query and its sockets; connections are scoped to that exchange. Plain TCP
@@ -51,8 +53,10 @@ Dial services receive both the selected IP:port and the configured endpoint
 hostname. `domain()` rules match that hostname, not the client's DNS question;
 connections still dial the selected IP. Auxiliary family probes have an independent
 budget and TCP connection so probe cancellation cannot close the client's stream.
-Short deadlines reserve time for subsequent transports and IP addresses, so an
-unreachable IPv4 endpoint cannot consume the IPv6 fallback's entire budget.
+Address discovery and staggered attempts share dae's Happy Eyeballs scheduler:
+IPv6 is preferred, slow DNS answers do not hold up the other family, and the first
+successful DNS response wins. Remaining attempts are canceled and joined.
+Short deadlines separately reserve time for UDP-to-TCP fallback on each address.
 
 HTTPS/H3 subtract HTTP `Age` from effective DNS TTLs. Negative answers first
 limit the SOA TTL to SOA MINIMUM, leaving the SOA record data unchanged; high-bit
