@@ -35,15 +35,19 @@ type MuxOption struct {
 // Conn is an mux-compatible client for v2ray-plugin, not a complete implementation
 type Conn struct {
 	net.Conn
-	buf    bytes.Buffer
-	id     [2]byte
-	length [2]byte
-	status [2]byte
-	otb    []byte
-	remain int
+	buf     bytes.Buffer
+	id      [2]byte
+	length  [2]byte
+	status  [2]byte
+	otb     []byte
+	remain  int
+	readErr error
 }
 
 func (m *Conn) Read(b []byte) (int, error) {
+	if m.readErr != nil {
+		return 0, m.readErr
+	}
 	if m.remain != 0 {
 		length := m.remain
 		if len(b) < m.remain {
@@ -64,7 +68,7 @@ func (m *Conn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 		length := binary.BigEndian.Uint16(m.length[:])
-		if length > 512 {
+		if length < 4 || length > 512 {
 			return 0, errors.New("invalid metalen")
 		}
 
@@ -78,7 +82,17 @@ func (m *Conn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 
+		if _, err := io.CopyN(io.Discard, m.Conn, int64(length)-4); err != nil {
+			return 0, err
+		}
 		opcode := m.status[0]
+		if opcode == SessionStatusEnd {
+			m.readErr = io.EOF
+			if m.status[1]&OptionError != 0 {
+				m.readErr = errors.New("mux: remote session failed")
+			}
+			return 0, m.readErr
+		}
 		if opcode == SessionStatusKeepAlive {
 			continue
 		}

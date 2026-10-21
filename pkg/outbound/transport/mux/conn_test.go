@@ -3,6 +3,7 @@ package mux
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -42,6 +43,30 @@ func TestReadFragmentedHeader(t *testing.T) {
 	payload := make([]byte, 5)
 	if _, err := io.ReadFull(conn, payload); err != nil || string(payload) != "hello" {
 		t.Fatalf("Read = %q, %v", payload, err)
+	}
+}
+
+func TestRemoteEndDoesNotWaitForCarrierClose(t *testing.T) {
+	for _, option := range []byte{OptionNone, OptionError, OptionData} {
+		t.Run(fmt.Sprint(option), func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			go func() {
+				_, _ = server.Write([]byte{0, 4, 0, 0, SessionStatusEnd, option})
+			}()
+			_ = client.SetReadDeadline(time.Now().Add(time.Second))
+			conn := NewConn(client, MuxOption{})
+			for range 2 {
+				n, err := conn.Read(make([]byte, 1))
+				if n != 0 || err == nil || option != OptionError && !errors.Is(err, io.EOF) {
+					t.Fatalf("Read after End = %d, %v", n, err)
+				}
+				if timeout, ok := errors.AsType[net.Error](err); ok && timeout.Timeout() {
+					t.Fatal("End waited for the carrier")
+				}
+			}
+		})
 	}
 }
 
