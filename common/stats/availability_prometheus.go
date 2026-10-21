@@ -29,9 +29,7 @@ func newAvailabilityMetrics() availabilityMetrics {
 	}
 }
 
-func (s *availabilityStore) nodeMetricLabels(key string) []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *availabilityStore) nodeMetricLabelsLocked(key string) []string {
 	if node := s.nodes[key]; node != nil {
 		return []string{NodeID(key), node.Subtag, node.Name}
 	}
@@ -46,7 +44,9 @@ func boundedFailureLabel(value string, allowed ...string) string {
 }
 
 func (s *availabilityStore) RecordRelayFailure(key, scope, layer, reason string) {
-	labels := s.nodeMetricLabels(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	labels := s.nodeMetricLabelsLocked(key)
 	if labels == nil {
 		return
 	}
@@ -57,13 +57,17 @@ func (s *availabilityStore) RecordRelayFailure(key, scope, layer, reason string)
 }
 
 func (s *availabilityStore) RecordResourceFailure(key string) {
-	if labels := s.nodeMetricLabels(key); labels != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if labels := s.nodeMetricLabelsLocked(key); labels != nil {
 		s.metrics.resourceFailures.WithLabelValues(labels...).Inc()
 	}
 }
 
 func (s *availabilityStore) RecordReconnectAttempt(key, executor string) {
-	if labels := s.nodeMetricLabels(key); labels != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if labels := s.nodeMetricLabelsLocked(key); labels != nil {
 		executor = boundedFailureLabel(executor, "daemon", "library_managed")
 		s.metrics.reconnects.WithLabelValues(append(labels, executor)...).Inc()
 	}

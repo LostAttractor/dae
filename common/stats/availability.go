@@ -39,6 +39,15 @@ func newAvailabilityStore() *availabilityStore {
 func (s *availabilityStore) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[string]struct{}, sources ...SelectionMetricsSource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for key, state := range s.nodes {
+		if identity, ok := activeNodes[key]; !ok || identity != state.NodeIdentity {
+			labels := map[string]string{"id": NodeID(key), "subtag": state.Subtag, "dialer": state.Name}
+			s.metrics.relayFailures.DeletePartialMatch(labels)
+			s.metrics.resourceFailures.DeletePartialMatch(labels)
+			s.metrics.reconnects.DeletePartialMatch(labels)
+			s.metrics.nodeUnavailable.DeletePartialMatch(labels)
+		}
+	}
 	nodes := make(map[string]*nodeStats, len(activeNodes))
 	for key, identity := range activeNodes {
 		state := s.nodes[key]
