@@ -79,19 +79,20 @@ func WriteStreamRequest(buf *bytes.Buffer, streamRequest *StreamRequest) error {
 }
 
 func (c *Conn) Write(b []byte) (n int, err error) {
+	if c.onceWrite {
+		return c.Conn.Write(b)
+	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	if !c.onceWrite {
-		err = WriteStreamRequest(buf, &StreamRequest{
-			Destination: c.addr,
-			UDP:         c.udp,
-			PacketAddr:  c.packetAddr,
-		})
-		if err != nil {
-			return
-		}
-		c.onceWrite = true
+	err = WriteStreamRequest(buf, &StreamRequest{
+		Destination: c.addr,
+		UDP:         c.udp,
+		PacketAddr:  c.packetAddr,
+	})
+	if err != nil {
+		return
 	}
+	c.onceWrite = true
 	buf.Write(b)
 	_, err = c.Conn.Write(buf.Bytes())
 	return len(b), err
