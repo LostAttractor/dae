@@ -4,8 +4,6 @@ package control
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -14,6 +12,8 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/internal/pluginctx"
+	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
+	"iter"
 )
 
 func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()) {
@@ -111,22 +111,12 @@ func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
 		if err != nil {
 			return nil, err
 		}
-		var failures []error
-		for option, err := range c.httpRouteCandidates(ctx, network, target, netip.AddrPort{}, process) {
-			if err != nil {
-				failures = append(failures, err)
-				continue
-			}
+		return happyeyeballs.Race(ctx, func(ctx context.Context) iter.Seq2[*DialOption, error] {
+			return c.httpRouteCandidates(ctx, network, target, netip.AddrPort{}, process)
+		}, func(ctx context.Context, option *DialOption) (net.Conn, error) {
 			conn, err := dialHTTPUpstream(ctx, option)
 			logHTTPDial(netip.AddrPort{}, target.host, option, err)
-			if err == nil {
-				return conn, nil
-			}
-			failures = append(failures, err)
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("mitm client %s: %w", address, errors.Join(failures...))
+			return conn, err
+		}, func(conn net.Conn) { _ = conn.Close() })
 	}
 }

@@ -115,6 +115,9 @@ func TestMITMDownloadRoutesResolvedDestination(t *testing.T) {
 			c.dialTargetOverride = override
 			attachDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
 				question := message.Question[0]
+				if question.Qtype == dnsmessage.TypeAAAA {
+					return
+				}
 				if question.Name != "raw.example." || question.Qtype != dnsmessage.TypeA {
 					t.Errorf("unexpected DNS query: %+v", question)
 				}
@@ -390,7 +393,15 @@ func TestMITMDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
 	})
-	addresses, err := c.resolveHTTPAddresses(context.Background(), "raw.example", dnsmessage.TypeA, netip.AddrPort{}, routingResult{})
+	var addresses []netip.Addr
+	var err error
+	for option, candidateErr := range c.httpRouteCandidates(t.Context(), "tcp4", httpTarget{"raw.example", 443}, netip.AddrPort{}, routingResult{}) {
+		if candidateErr != nil {
+			err = candidateErr
+			break
+		}
+		addresses = append(addresses, netip.MustParseAddrPort(option.DialTarget).Addr())
+	}
 	if err != nil || !reflect.DeepEqual(addresses, []netip.Addr{netip.MustParseAddr("198.51.100.4")}) || queries != 1 {
 		t.Fatalf("bootstrap DNS addresses = %v, queries = %d, error = %v", addresses, queries, err)
 	}

@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"net"
@@ -14,7 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/internal/pluginctx"
-	dnsmessage "github.com/miekg/dns"
+	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
 )
 
 type httpTarget struct {
@@ -63,50 +64,43 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 			yield(nil, fmt.Errorf("unsupported HTTP network %q", network))
 			return
 		}
-		literal, _ := netip.ParseAddr(target.host)
-		domain := target.host
-		queryTypes := []uint16{dnsmessage.TypeA, dnsmessage.TypeAAAA}
-		switch {
-		case literal.IsValid():
-			domain, queryTypes = "", []uint16{0}
-		case network == "tcp4":
-			queryTypes = []uint16{dnsmessage.TypeA}
-		case network == "tcp6":
-			queryTypes = []uint16{dnsmessage.TypeAAAA}
+		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+		defer cancel()
+		if c.ctx != nil {
+			stop := context.AfterFunc(c.ctx, cancel)
+			defer stop()
 		}
-		for _, qtype := range queryTypes {
-			if err := ctx.Err(); err != nil {
+		family := "ip"
+		if network == "tcp4" || network == "tcp6" {
+			family += network[3:]
+		}
+		domain := target.host
+		if _, err := netip.ParseAddr(domain); err == nil {
+			domain = ""
+		}
+		var failures []error
+		yielded := false
+		for ip, err := range happyeyeballs.Resolve(ctx, net.DefaultResolver, family, target.host) {
+			if err != nil {
 				yield(nil, err)
 				return
 			}
-			addresses := []netip.Addr{literal}
-			if qtype != 0 {
-				var err error
-				addresses, err = c.resolveHTTPAddresses(ctx, domain, qtype, source, identity)
-				if err != nil {
-					if !yield(nil, err) {
-						return
-					}
-					continue
-				}
+			option, err := c.selectHTTPAddress(ctx, network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
+			if err != nil {
+				failures = append(failures, err)
+				continue
 			}
-			for _, ip := range addresses {
-				if err := ctx.Err(); err != nil {
-					yield(nil, err)
-					return
-				}
-				ip = ip.Unmap()
-				if (network == "tcp4" && !ip.Is4()) || (network == "tcp6" && !ip.Is6()) {
-					if !yield(nil, fmt.Errorf("address %s does not match %s", ip, network)) {
-						return
-					}
-					continue
-				}
-				option, err := c.selectHTTPAddress(ctx, network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
-				if !yield(option, err) || (err == nil && option.Outbound.IsBlock()) {
-					return
-				}
+			if option.Outbound.IsBlock() {
+				yield(nil, fmt.Errorf("HTTP upstream blocked by routing"))
+				return
 			}
+			yielded = true
+			if !yield(option, nil) {
+				return
+			}
+		}
+		if !yielded {
+			yield(nil, errors.Join(failures...))
 		}
 	}
 }
@@ -128,20 +122,4 @@ func (c *ControlPlane) selectHTTPAddress(ctx context.Context, network string, so
 		}
 	}
 	return nil, fmt.Errorf("HTTP policy %q is not an active outbound", policy)
-}
-
-// Daemon-originated lookups use the internal resolver installed at startup.
-// They do not depend on the availability or configuration of DNS plugins.
-func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process routingResult) ([]netip.Addr, error) {
-	ctx, cancel := context.WithTimeout(parent, consts.DefaultDNSTimeout)
-	defer cancel()
-	if c.ctx != nil {
-		stop := context.AfterFunc(c.ctx, cancel)
-		defer stop()
-	}
-	network := "ip4"
-	if qtype == dnsmessage.TypeAAAA {
-		network = "ip6"
-	}
-	return net.DefaultResolver.LookupNetIP(ctx, network, host)
 }

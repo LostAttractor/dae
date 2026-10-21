@@ -4,16 +4,19 @@ package mitm
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/internal/pluginctx"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/quic-go"
 )
 
 // UpstreamPlanner runs before connection-pool lookup. The URL identifies the
@@ -31,10 +34,10 @@ type UpstreamPlan struct {
 	// Check validates a connection-bound plan's lifetime without selecting a
 	// new route. The owner may terminate the downstream on revocation.
 	Check func() error
-	// Next advances to another independently keyed route after a dial failure,
-	// before any request body was consumed. Close releases the candidate stream
-	// when this request finishes selecting a connection (also on a pool hit).
-	Next  func() (UpstreamPlan, error)
+	// Next supplies independently keyed routes for connection racing. io.EOF
+	// ends the stream; any other error rejects it. Close releases discovery
+	// after selection, including pool hits. Next must honor its context.
+	Next  func(context.Context) (UpstreamPlan, error)
 	Close func()
 }
 
@@ -68,8 +71,11 @@ type plannedTransport struct {
 }
 
 type routePool struct {
-	transport http.RoundTripper
-	used      uint64
+	transport   http.RoundTripper
+	plan        UpstreamPlan
+	prepared    []*connectedRoute // Guarded by plannedTransport.mu.
+	connectQUIC func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error)
+	used        uint64
 	// The cache and each in-flight exchange hold one reference.
 	refs int
 }
@@ -101,25 +107,55 @@ func (p *plannedTransport) RoundTripPolicy(request *http.Request, policy string)
 }
 
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	var exclude map[*routePool]bool
+	for {
+		response, missed, err := p.roundTrip(request, exclude)
+		if missed == nil {
+			return response, err
+		}
+		// A cached route can be busy or expire between selection and use.
+		// Rediscover all candidates, without selecting that empty pool again.
+		if exclude == nil {
+			exclude = make(map[*routePool]bool)
+		}
+		exclude[missed] = true
+	}
+}
+
+func (p *plannedTransport) roundTrip(request *http.Request, exclude map[*routePool]bool) (*http.Response, *routePool, error) {
 	plan, err := p.plan(request)
 	if err != nil {
 		if request.Body != nil {
 			_ = request.Body.Close()
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if plan.Close != nil {
 		defer plan.Close()
 	}
-	var failures []error
-	for {
-		pool, err := p.acquire(plan)
-		if err != nil {
-			if request.Body != nil {
-				_ = request.Body.Close()
-			}
-			return nil, errors.Join(append(failures, err)...)
+	var pool *routePool
+	// Join selection before releasing this lease: an evicted pool's Close
+	// waits for its Dial callback, which is still waiting for the race workers.
+	defer func() {
+		if pool != nil {
+			p.release(pool)
 		}
+	}()
+	var selection *routeDial
+	if plan.Next != nil {
+		selection = newRouteDial(request.Context(), plan, exclude)
+		defer selection.close(p)
+		request = request.WithContext(context.WithValue(request.Context(), routeDialKey{}, selection))
+	}
+	pool, err = p.acquire(plan)
+	if err != nil {
+		if request.Body != nil {
+			_ = request.Body.Close()
+		}
+		return nil, nil, err
+	}
+	cachedOnly := false
+	for {
 		attempt := new(*request)
 		var body *routeAttemptBody
 		if request.Body != nil && request.Body != http.NoBody {
@@ -133,46 +169,56 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 		if p.packet {
 			err = preserveHTTP3Rejection(request, err)
 		}
-		_, dialFailed := errors.AsType[*upstreamDialError](err)
-		retry := err != nil && response == nil && dialFailed && plan.Next != nil &&
-			request.Context().Err() == nil && (body == nil || !body.read.Load())
-		if !retry && body != nil {
+		changed, redirected := errors.AsType[*routeChanged](err)
+		safe := response == nil && request.Context().Err() == nil && (body == nil || !body.read.Load())
+		retry := redirected && safe
+		miss := cachedOnly && errors.Is(err, errNoCachedConnection) && safe
+		if !retry && !miss && body != nil {
 			body.commit()
 		}
 		if err == nil {
-			wrapped := &plannedResponseBody{ReadCloser: response.Body, release: sync.OnceFunc(func() { p.release(pool) })}
+			responsePool := pool
+			pool = nil // Transfer the lease to the response body.
+			wrapped := &plannedResponseBody{ReadCloser: response.Body, release: sync.OnceFunc(func() { p.release(responsePool) })}
 			if writer, ok := response.Body.(io.Writer); ok {
 				response.Body = &plannedReadWriteBody{plannedResponseBody: wrapped, Writer: writer}
 			} else {
 				response.Body = wrapped
 			}
-			return response, nil
+			return response, nil, nil
+		}
+		if miss {
+			return nil, pool, nil
+		}
+		if !retry {
+			if p.packet {
+				err = markHTTP3ConnectionFailure(err, err)
+			}
+			return response, nil, err
+		}
+		next := changed.pool
+		if next.plan.Check != nil {
+			if err := next.plan.Check(); err != nil {
+				if body != nil {
+					body.commit()
+					_ = body.Close()
+				}
+				return nil, nil, err
+			}
+		}
+		if !p.retain(next) {
+			return nil, next, nil
 		}
 		p.release(pool)
-		failures = append(failures, err)
-		if !retry {
-			failure := errors.Join(failures...)
-			if p.packet {
-				failure = markHTTP3ConnectionFailure(err, failure)
-			}
-			return response, failure
-		}
-		plan, err = plan.Next()
-		if err == nil && (plan.Key == "" || p.packet && plan.DialPacket == nil || !p.packet && plan.Dial == nil) {
-			err = fmt.Errorf("mitm: incomplete fallback upstream plan")
-		}
-		if err != nil {
-			if body != nil {
-				body.commit()
-				_ = body.Close()
-			}
-			failure := errors.Join(append(failures, err)...)
-			if p.packet {
-				// No route remains after attempts that all failed to connect.
-				failure = &http3ConnectionFailure{failure}
-			}
-			return nil, failure
-		}
+		pool = next
+		cachedOnly = true
+		probe := new(atomic.Bool)
+		probe.Store(true)
+		ctx := context.WithValue(request.Context(), routeDialKey{}, (*routeDial)(nil))
+		ctx = context.WithValue(ctx, cachedRouteKey{}, probe)
+		// Once a connection was acquired, native transport retries may dial.
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { probe.Store(false) }})
+		request = request.WithContext(ctx)
 	}
 }
 
@@ -252,7 +298,8 @@ func (p *plannedTransport) acquire(plan UpstreamPlan) (*routePool, error) {
 			delete(p.pools, oldestKey)
 			closeEvicted = p.releaseLocked(entry)
 		}
-		pool = &routePool{refs: 1} // Cache reference.
+		plan.Next, plan.Close = nil, nil
+		pool = &routePool{refs: 1, plan: plan} // Cache reference.
 		var closePool func()
 		if p.packet {
 			dial := plan.DialPacket
@@ -263,11 +310,18 @@ func (p *plannedTransport) acquire(plan UpstreamPlan) (*routePool, error) {
 				}
 				return conn, peer, err
 			})
+			pool.connectQUIC = transport.Dial
+			transport.Dial = func(ctx context.Context, address string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+				conn, err := p.dialQUIC(ctx, pool, address, tlsConfig, config)
+				if err != nil {
+					err = &upstreamQUICDialError{err}
+				}
+				return conn, err
+			}
 			pool.transport, closePool = transport, func() { _ = transport.Close() }
 		} else {
-			dial := plan.Dial
 			transport := p.host.httpTransport(func(ctx context.Context, network, address string) (net.Conn, error) {
-				conn, err := dial(ctx, network, address)
+				conn, err := p.dialStream(ctx, pool, network, address)
 				if err != nil {
 					err = &upstreamDialError{err}
 				}
@@ -284,6 +338,19 @@ func (p *plannedTransport) acquire(plan UpstreamPlan) (*routePool, error) {
 		closeEvicted()
 	}
 	return pool, nil
+}
+
+// Retain the actual selected pool, including one evicted from the cache.
+func (p *plannedTransport) retain(pool *routePool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.owned[pool] == nil {
+		return false
+	}
+	pool.refs++
+	p.serial++
+	pool.used = p.serial
+	return true
 }
 
 // Taking the callback under mu transfers exclusive cleanup ownership. A
@@ -314,8 +381,16 @@ func (p *plannedTransport) close() {
 		pool.refs-- // Drop the cache reference; active exchanges finish later.
 	}
 	pools := p.owned
+	var prepared []*connectedRoute
+	for pool := range pools {
+		prepared = append(prepared, pool.prepared...)
+		pool.prepared = nil
+	}
 	p.pools, p.owned = nil, nil
 	p.mu.Unlock()
+	for _, route := range prepared {
+		route.close()
+	}
 	for _, closePool := range pools {
 		closePool()
 	}

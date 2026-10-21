@@ -4,8 +4,8 @@ package control
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net"
 	"net/http"
@@ -58,27 +58,23 @@ func (p *httpRoutePlanner) plan(request *http.Request) (mitm.UpstreamPlan, error
 	ctx, cancel := context.WithCancel(ctx)
 	next, stop := iter.Pull2(p.plane.httpRouteCandidates(ctx, p.network, target, p.source, p.identity))
 	closeCandidates := sync.OnceFunc(func() { cancel(); stop() })
-	var failures []error
-	var advance func() (mitm.UpstreamPlan, error)
-	advance = func() (mitm.UpstreamPlan, error) {
-		for {
-			option, err, ok := next()
-			if !ok {
-				return mitm.UpstreamPlan{}, errors.Join(fmt.Errorf("HTTP target %s has no further route", target), errors.Join(failures...))
-			}
-			if err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			plan, err := p.upstreamPlan(request.URL.Scheme, target, option)
-			if err != nil {
-				return mitm.UpstreamPlan{}, err
-			}
-			plan.Next, plan.Close = advance, closeCandidates
-			return plan, nil
+	var advance func(context.Context) (mitm.UpstreamPlan, error)
+	advance = func(caller context.Context) (mitm.UpstreamPlan, error) {
+		// A race can finish while the other DNS family is still pending.
+		stopCancel := context.AfterFunc(caller, cancel)
+		defer stopCancel()
+		option, err, ok := next()
+		if !ok {
+			return mitm.UpstreamPlan{}, io.EOF
 		}
+		if err != nil {
+			return mitm.UpstreamPlan{}, err
+		}
+		plan, err := p.upstreamPlan(request.URL.Scheme, target, option)
+		plan.Next, plan.Close = advance, closeCandidates
+		return plan, err
 	}
-	plan, err := advance()
+	plan, err := advance(ctx)
 	if err != nil {
 		closeCandidates()
 	}

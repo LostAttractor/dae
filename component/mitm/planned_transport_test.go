@@ -202,3 +202,62 @@ func TestUpgradeReadEOFRetainsPool(t *testing.T) {
 		t.Fatalf("closed upgrade releases=%d", releases)
 	}
 }
+
+func TestHTTP3RouteRaceWaitsForHandshakeAndSendsOnce(t *testing.T) {
+	authority, roots := http3TestAuthority(t)
+	var requests atomic.Int32
+	upstream := http3TestUpstream(t, authority.TLSConfig("example.com"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil || string(body) != "once" {
+			t.Errorf("body=%q err=%v", body, err)
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	blackhole := http3TestPacketConn(t)
+	var dials atomic.Int32
+	plan := func(key string, peer net.Addr) UpstreamPlan {
+		return UpstreamPlan{Key: key, DialPacket: func(ctx context.Context, _ string) (net.PacketConn, net.Addr, error) {
+			dials.Add(1)
+			conn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp4", "127.0.0.1:0")
+			return conn, peer, err
+		}}
+	}
+	host := testHost(t, Options{UpstreamTLSConfig: &tls.Config{RootCAs: roots}})
+	transport := host.plannedTransport(func(*http.Request) (UpstreamPlan, error) {
+		first := plan("IPv6", blackhole.LocalAddr())
+		first.Next = func(context.Context) (UpstreamPlan, error) { return plan("IPv4", upstream), nil }
+		return first, nil
+	}, true)
+	defer transport.close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	body := &replayCountedBody{Reader: strings.NewReader("once")}
+	request, _ := http.NewRequestWithContext(ctx, "POST", "https://example.com/", body)
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if requests.Load() != 1 || dials.Load() != 2 || body.closes != 1 {
+		t.Fatalf("requests=%d packet dials=%d body closes=%d", requests.Load(), dials.Load(), body.closes)
+	}
+	var clients sync.WaitGroup
+	for range 4 {
+		clients.Go(func() {
+			request, _ := http.NewRequestWithContext(ctx, "POST", "https://example.com/", strings.NewReader("once"))
+			response, err := transport.RoundTrip(request)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		})
+	}
+	clients.Wait()
+	if requests.Load() != 5 {
+		t.Fatalf("concurrent POST requests=%d, want 5", requests.Load())
+	}
+}
