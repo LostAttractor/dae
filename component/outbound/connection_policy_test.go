@@ -64,7 +64,7 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 			other := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
 			other.SetConnectionPolicy(true, true)
 			otherGroup := other.connectionLease(common.NetworkUDP4.NetworkType(), true)
-			if err := g.publishNetworkAvailable(common.NetworkUDP4.NetworkType(), true); err != nil {
+			if err := g.publishNetwork(common.NetworkUDP4, true, false); err != nil {
 				t.Fatal(err)
 			}
 			g.closeRecoveredConnections()
@@ -89,7 +89,7 @@ func TestReloadKeepsFallbackPolicyOwnership(t *testing.T) {
 	_ = old.Close()
 	next := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
 	next.SetConnectionPolicy(false, true)
-	if err := next.publishNetworkAvailable(common.NetworkUDP4.NetworkType(), true); err != nil {
+	if err := next.publishNetwork(common.NetworkUDP4, true, false); err != nil {
 		t.Fatal(err)
 	}
 	next.InheritConnections(old)
@@ -119,7 +119,7 @@ func TestReloadOwnsLateSetupPolicyLeases(t *testing.T) {
 	if late.AbortCause() == nil || old.connectionLease(network, false).AbortCause() == nil {
 		t.Fatal("reselection missed a predecessor's late setup")
 	}
-	if err := last.publishNetworkAvailable(network, true); err != nil {
+	if err := last.publishNetwork(network.Index(), true, false); err != nil {
 		t.Fatal(err)
 	}
 	last.closeRecoveredConnections()
@@ -350,7 +350,7 @@ func TestFallbackPublicationSharesInterruptibleGeneration(t *testing.T) {
 				t.Fatal("relays and published fallback use different generations")
 			}
 			unrelated := published[udp4.Index()]
-			if err := g.publishNetworkAvailable(tcp4, true); err != nil {
+			if err := g.publishNetwork(tcp4.Index(), true, false); err != nil {
 				t.Fatal(err)
 			}
 			g.closeRecoveredConnections()
@@ -420,7 +420,7 @@ func TestKeptInterruptibleFallbackEndsWithRemovedGroup(t *testing.T) {
 	kept := group(false)
 	kept.InheritConnections(old)
 	_ = old.Close()
-	if err := kept.publishNetworkAvailable(network, true); err != nil {
+	if err := kept.publishNetwork(network.Index(), true, false); err != nil {
 		t.Fatal(err)
 	}
 	kept.closeRecoveredConnections()

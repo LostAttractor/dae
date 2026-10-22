@@ -28,10 +28,10 @@ type diagnosticDomain struct {
 type diagnosticState struct {
 	matcher           *RoutingMatcher
 	names             map[uint8]string
-	outbounds         map[uint8]api.ExplainOutbound
-	usable            map[uint8]bool
+	network           common.NetworkIndex // The flow's network.
 	networks          map[common.NetworkIndex]map[uint8]api.ExplainOutbound
 	connectivity      map[common.NetworkIndex]map[uint8]bool
+	electing          map[uint8]bool // Groups electing a path on the flow's network.
 	domains           map[netip.Addr]diagnosticDomain
 	evidence          []api.DomainEvidence
 	registered        map[string]bool
@@ -62,7 +62,7 @@ func diagnosticNetwork(request api.ExplainRequest, destination netip.Addr) (comm
 }
 
 func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routingInput, matcher *RoutingMatcher) (*diagnosticState, error) {
-	s := &diagnosticState{matcher: matcher, names: make(map[uint8]string), outbounds: make(map[uint8]api.ExplainOutbound), usable: make(map[uint8]bool),
+	s := &diagnosticState{matcher: matcher, names: make(map[uint8]string),
 		domains: make(map[netip.Addr]diagnosticDomain), evidence: []api.DomainEvidence{}, registered: make(map[string]bool), paired: make(map[string]map[netip.Addr]DomainVerification), clientSets: make(map[string]bool)}
 	s.registeredCount, s.registryIPv4 = make(map[string]int), input.dst.Addr().Is4()
 	network, err := diagnosticNetwork(request, input.dst.Addr())
@@ -82,10 +82,13 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 			s.connectivity[index][id] = group.Available(*network)
 		}
 	}
-	s.outbounds, s.usable = s.networks[network.Index()], s.connectivity[network.Index()]
+	s.network = network.Index()
+	s.electing = make(map[uint8]bool)
+	for i, group := range c.outbounds {
+		s.electing[uint8(i)] = group.Electing(network)
+	}
 	// Tests and no-load configurations may not instantiate builtin groups.
 	s.names[uint8(consts.OutboundDirect)], s.names[uint8(consts.OutboundBlock)] = "direct", "block"
-	s.usable[uint8(consts.OutboundDirect)], s.usable[uint8(consts.OutboundBlock)] = true, true
 	matcher.outboundUsable = func(id uint8, proto consts.L4ProtoType, family consts.IpVersionType) bool {
 		return s.connectivity[diagnosticNetworkIndex(proto, family)][id]
 	}
@@ -164,13 +167,13 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]byte) (*diagnosticState, error) {
 	next := *s
 	next.matcher = s.matcher.diagnosticSnapshot()
-	next.clientSets, next.usable, next.domains = maps.Clone(s.clientSets), maps.Clone(s.usable), maps.Clone(s.domains)
+	next.clientSets, next.domains = maps.Clone(s.clientSets), maps.Clone(s.domains)
 	next.connectivity = make(map[common.NetworkIndex]map[uint8]bool)
+	next.electing = maps.Clone(s.electing)
 	next.networks = make(map[common.NetworkIndex]map[uint8]api.ExplainOutbound)
 	for index, values := range s.networks {
 		next.networks[index] = maps.Clone(values)
 	}
-	next.outbounds = maps.Clone(s.outbounds)
 	for index, values := range s.connectivity {
 		next.connectivity[index] = maps.Clone(values)
 	}
@@ -206,18 +209,17 @@ func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]
 		found := false
 		for id, candidate := range s.names {
 			if candidate == name {
-				next.usable[id], found = available, true
+				found = true
 				for _, values := range next.connectivity {
 					values[id] = available
 				}
+				// An assumed state is settled, not awaiting an election.
+				next.electing[id] = false
 				for _, values := range next.networks {
 					value := values[id]
 					value.Available = available
 					values[id] = value
 				}
-				value := next.outbounds[id]
-				value.Available = available
-				next.outbounds[id] = value
 			}
 		}
 		if !found {
@@ -358,7 +360,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		return result, nil
 	}
 	if request.Kind == "outbound" {
-		for _, outbound := range s.outbounds {
+		for _, outbound := range s.networks[s.network] {
 			if request.Outbound == "" || outbound.Name == request.Outbound {
 				result.Outbounds = append(result.Outbounds, outbound)
 			}
@@ -457,7 +459,7 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 	spans := s.matcher.profiles[input.profileID]
 	// The classifier rejects unavailable ordinary proxies immediately when
 	// configured to block. Capture and DNS run their own userspace decisions.
-	switch c.diagnosticHandoffState(input, evaluation, s.usable[uint8(evaluation.outbound)]) {
+	switch c.diagnosticHandoffState(input, evaluation, s) {
 	case outboundConnectivityNoAliveBlock:
 		decision.Verdict = "drop"
 		result.Notes = append(result.Notes, "No available outbound; kernel no-connectivity policy blocks this flow.")

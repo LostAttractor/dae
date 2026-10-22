@@ -59,8 +59,9 @@ func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivit
 	return value
 }
 
-// With reroute_mode while_possible, flows to an unavailable group enter
-// userspace instead of degrading in the kernel, to try a sniffed name.
+// Flows to an unavailable group enter userspace instead of degrading in the
+// kernel while they wait for an election that has not failed yet, and with
+// reroute_mode while_possible, to try a sniffed name.
 func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, whilePossible bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
 	return func(update outbound.Connectivity) error {
 		c.outboundCallbackMu.Lock()
@@ -85,7 +86,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}
-		value := c.outboundConnectivityValue(update, whilePossible, noConnectivityOutbound)
+		value := c.outboundConnectivityValue(update, update.Electing || whilePossible, noConnectivityOutbound)
 		wasAvailable := c.anyOutboundAvailable(networkType.Index())
 		if err := c.writeOutboundConnectivity(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity{key: value}); err != nil {
 			return fmt.Errorf("publish %s connectivity for %s: %w", networkType, outboundName, err)

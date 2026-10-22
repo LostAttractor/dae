@@ -197,7 +197,8 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	}
 }
 
-// With reroute_mode while_possible every flow of an unavailable group tries a name.
+// Flows wait in userspace for an election that has not failed yet. With
+// reroute_mode while_possible every flow of an unavailable group tries a name.
 func TestUnavailableGroupAdmission(t *testing.T) {
 	for _, whilePossible := range []bool{false, true} {
 		core := &controlPlaneCore{
@@ -207,15 +208,17 @@ func TestUnavailableGroupAdmission(t *testing.T) {
 		id := uint8(consts.OutboundUserDefinedMin)
 		callback := core.outboundAliveChangeCallback(id, "proxy", whilePossible, consts.OutboundDirect)
 		key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_UDP, Ipversion: 4}
-		if err := callback(outbound.Connectivity{Network: common.NetworkUDP4.NetworkType()}); err != nil {
-			t.Fatal(err)
-		}
-		want := outboundConnectivityNoAliveDirect
-		if whilePossible {
-			want = outboundConnectivityNoAliveUserspace
-		}
-		if got := core.outboundConnectivityValues[key].State; got != want {
-			t.Fatalf("while_possible=%v: state %d, want %d", whilePossible, got, want)
+		for _, electing := range []bool{true, false} {
+			if err := callback(outbound.Connectivity{Network: common.NetworkUDP4.NetworkType(), Electing: electing}); err != nil {
+				t.Fatal(err)
+			}
+			want := outboundConnectivityNoAliveDirect
+			if electing || whilePossible {
+				want = outboundConnectivityNoAliveUserspace
+			}
+			if got := core.outboundConnectivityValues[key].State; got != want {
+				t.Fatalf("while_possible=%v electing=%v: state %d, want %d", whilePossible, electing, got, want)
+			}
 		}
 	}
 }

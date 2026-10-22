@@ -441,6 +441,47 @@ func TestFailoverVerifiesStalePeerAfterTakeover(t *testing.T) {
 	})
 }
 
+// Until its first election succeeds or fails, an automatic group publishes the
+// network as electing, so requests wait for the result instead of degrading. A
+// network no candidate supports does not elect.
+func TestStartupElectionPublishesElecting(t *testing.T) {
+	for _, offline := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			transport := new(failoverTransport)
+			// Families are discovered one after another; both fit in the
+			// probe timeout.
+			transport.delay.Store(int64(40 * time.Millisecond))
+			transport.offline.Store(offline)
+			g := newFailoverTestGroup(t, testFailoverPolicy(), nil, true, transport)
+			var mu sync.Mutex
+			var published []Connectivity
+			detach, err := g.ObserveConnectivity(func(update Connectivity) error {
+				if update.Network.Index() == common.NetworkTCP4 {
+					mu.Lock()
+					published = append(published, update)
+					mu.Unlock()
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer detach()
+			time.Sleep(500 * time.Millisecond)
+			synctest.Wait()
+			mu.Lock()
+			defer mu.Unlock()
+			if len(published) != 2 || published[0].Available || !published[0].Electing ||
+				published[1].Available == offline || published[1].Electing {
+				t.Fatalf("offline=%v: published %+v, want electing then the result", offline, published)
+			}
+			if udp4 := *common.NetworkUDP4.NetworkType(); g.Available(udp4) || g.Electing(udp4) {
+				t.Fatalf("offline=%v: unsupported udp4 still elects", offline)
+			}
+		})
+	}
+}
+
 func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, b, low := new(failoverTransport), new(failoverTransport), new(failoverTransport)

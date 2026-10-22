@@ -55,7 +55,10 @@ func (s *automaticSelection) connectivity() (groupConnectivity, bool) {
 		aggregate.networks[network] = available
 		aggregate.stable = aggregate.stable || available
 		state := &s.networks[network]
-		pending := !state.disabled && (state.job != nil || state.retryAt.IsZero() && !available)
+		// No election has failed since the network was last served.
+		electing := !state.disabled && state.retryAt.IsZero() && !available
+		pending := electing || state.job != nil
+		aggregate.electing[network] = electing
 		aggregate.pending = aggregate.pending || pending
 		aggregate.initialDone = aggregate.initialDone && !pending
 		aggregate.retain[network] = state.job != nil

@@ -189,7 +189,7 @@ func (g *DialerGroup) closeReselectedConnections(network *common.NetworkType) {
 // publishFallback exposes a replaced fallback generation of an unavailable
 // network to observers.
 func (g *DialerGroup) publishFallback(network *common.NetworkType) {
-	if err := g.publishConnectivity(network.Index(), false); err != nil {
+	if err := g.publishConnectivity(network.Index(), false, g.networkElecting[network.Index()]); err != nil {
 		log.WithFields(log.Fields{"group": g.Name, "network": network.String()}).WithError(err).Error("Failed to publish the fallback connection generation")
 	}
 }

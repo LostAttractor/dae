@@ -50,6 +50,7 @@ type DialerGroup struct {
 	// mu serializes selection, connection generations and availability publication.
 	mu                sync.Mutex
 	networkAvailable  [common.NetworkTypeCount]bool
+	networkElecting   [common.NetworkTypeCount]bool
 	availabilityKnown bool
 	statsDeferred     bool
 	startupReady      chan struct{}
@@ -60,13 +61,16 @@ type DialerGroup struct {
 	closeOnce         sync.Once
 }
 
-// Connectivity is one network's routing projection. Fallback is the
-// generation of the group's no-connectivity fallback connections while the
-// network is unavailable, if a connection policy can end it, and nil
-// otherwise.
+// Connectivity is one network's routing projection. While the network is
+// unavailable, Electing reports that an automatic group elects a path and no
+// election has failed since the group last served the network, as at startup:
+// a request waits for that election instead of degrading. Fallback is the
+// generation of the group's no-connectivity fallback connections if a
+// connection policy can end it, and nil otherwise.
 type Connectivity struct {
 	Network   *common.NetworkType
 	Available bool
+	Electing  bool
 	Fallback  *netproxy.Lease
 }
 
@@ -80,7 +84,7 @@ func (g *DialerGroup) ObserveConnectivity(publish func(Connectivity) error) (fun
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for i, available := range g.networkAvailable {
-		if err := publish(g.connectivity(common.NetworkIndex(i), available)); err != nil {
+		if err := publish(g.connectivity(common.NetworkIndex(i), available, g.networkElecting[i])); err != nil {
 			return nil, err
 		}
 	}
@@ -93,19 +97,20 @@ func (g *DialerGroup) ObserveConnectivity(publish func(Connectivity) error) (fun
 }
 
 // Caller holds mu.
-func (g *DialerGroup) connectivity(network common.NetworkIndex, available bool) Connectivity {
+func (g *DialerGroup) connectivity(network common.NetworkIndex, available, electing bool) Connectivity {
 	update := Connectivity{Network: network.NetworkType(), Available: available}
 	if !available {
+		update.Electing = electing
 		update.Fallback = g.interruptibleFallback(update.Network)
 	}
 	return update
 }
 
-func (g *DialerGroup) publishConnectivity(network common.NetworkIndex, available bool) (err error) {
+func (g *DialerGroup) publishConnectivity(network common.NetworkIndex, available, electing bool) (err error) {
 	if len(g.observers) == 0 {
 		return nil
 	}
-	update := g.connectivity(network, available)
+	update := g.connectivity(network, available, electing)
 	for observer := range g.observers {
 		err = errors.Join(err, observer.publish(update))
 	}
@@ -254,14 +259,19 @@ func (g *DialerGroup) initializeConnectivity() error {
 	if len(g.policyDialers()) != 0 && g.startupReady == nil {
 		g.startupReady = make(chan struct{})
 	}
+	// An automatic group elects its first path; requests wait for it.
+	electing := g.automatic != nil
 	var err error
 	for i := range g.networkAvailable {
-		err = errors.Join(err, g.publishConnectivity(common.NetworkIndex(i), false))
+		err = errors.Join(err, g.publishConnectivity(common.NetworkIndex(i), false, electing))
 	}
 	if err != nil {
 		return err
 	}
 	g.networkAvailable = [common.NetworkTypeCount]bool{}
+	for i := range g.networkElecting {
+		g.networkElecting[i] = electing
+	}
 	if len(g.policyDialers()) == 0 {
 		g.recordAvailability(false, false)
 	}
@@ -381,21 +391,29 @@ func (g *DialerGroup) Available(network common.NetworkType) bool {
 	return g.networkAvailable[network.Index()]
 }
 
-func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, available bool) error {
-	index := networkType.Index()
-	if g.networkAvailable[index] == available {
+// Electing reports whether the group published the network as unavailable
+// while it elects a path.
+func (g *DialerGroup) Electing(network common.NetworkType) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.networkElecting[network.Index()]
+}
+
+func (g *DialerGroup) publishNetwork(network common.NetworkIndex, available, electing bool) error {
+	if g.networkAvailable[network] == available && g.networkElecting[network] == electing {
 		return nil
 	}
-	if err := g.publishConnectivity(index, available); err != nil {
+	if err := g.publishConnectivity(network, available, electing); err != nil {
 		return err
 	}
-	g.networkAvailable[index] = available
+	g.networkAvailable[network], g.networkElecting[network] = available, electing
 	return nil
 }
 
 type groupConnectivity struct {
 	retain      [common.NetworkTypeCount]bool
 	networks    [common.NetworkTypeCount]bool
+	electing    [common.NetworkTypeCount]bool
 	stable      bool
 	pending     bool
 	initialDone bool
@@ -464,13 +482,12 @@ func (g *DialerGroup) updateConnectivity() error {
 	previouslyAvailable := g.anyNetworkAvailable()
 	var err error
 	for i := range g.networkAvailable {
-		networkType := common.NetworkIndex(i).NetworkType()
 		// Keep already admitted proxy routes while their bounded replacement
 		// election runs. Only a completed unsuccessful election publishes down.
 		if connectivity.retain[i] && !connectivity.networks[i] {
 			continue
 		}
-		err = errors.Join(err, g.publishNetworkAvailable(networkType, connectivity.networks[i]))
+		err = errors.Join(err, g.publishNetwork(common.NetworkIndex(i), connectivity.networks[i], connectivity.electing[i]))
 	}
 	if err != nil {
 		return err
