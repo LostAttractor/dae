@@ -6,12 +6,15 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"golang.org/x/sys/unix"
 )
 
@@ -104,5 +107,34 @@ func TestRuntimeTCPHandoffAdmission(t *testing.T) {
 				t.Fatalf("handoff was not consumed: %v", err)
 			}
 		})
+	}
+}
+
+// Userspace re-evaluation of a kernel decision sees the local process name.
+func TestRoutingHandoffProcessNameReachesUserspaceRules(t *testing.T) {
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: uint32(unsafe.Sizeof(bpfTuplesKey{})), ValueSize: uint32(unsafe.Sizeof(bpfRoutingHandoff{})), MaxEntries: 1})
+	if errors.Is(err, unix.EPERM) {
+		t.Skip("BPF maps require privileges")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	src, dst := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("198.51.100.1:443")
+	key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_TCP}
+	key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
+	handoff := testRoutingHandoff(t, bpfRoutingResult{Outbound: 2})
+	copy(handoff.Pname[:], "curl")
+	if err := m.Update(key, handoff, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	result, err := retrieveRoutingResult(m, src, dst, unix.IPPROTO_TCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "pname(curl) -> proxy"))
+	outbound, _, _, err := matcher.match(result.routingInput(src, dst, "verified.example", consts.L4ProtoType_TCP))
+	if err != nil || outbound != consts.OutboundUserDefinedMin {
+		t.Fatalf("re-evaluated outbound = %d, %v; want the pname() route", outbound, err)
 	}
 }

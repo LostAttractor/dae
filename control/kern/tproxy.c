@@ -230,15 +230,17 @@ struct tcp_flow_state {
 #define TCP_FLOW_PROXY FALLBACK_TOKEN_RESERVED
 
 /* Bounded setup mailbox. TCP consumes its entry at accept; UDP snapshots it.
- * Unconsumed entries expire logically and are reclaimed by the LRU. */
+ * Unconsumed entries expire logically and are reclaimed by the LRU. pname is
+ * the sending local process, so userspace re-evaluates pname() rules alike. */
 struct routing_handoff {
 	struct routing_result result;
 	__u32 expires;
 	__be32 syn_seq;
+	__u8 pname[TASK_COMM_LEN];
 };
 
 _Static_assert(sizeof(struct tcp_flow_state) == 16, "TCP flow ABI size");
-_Static_assert(sizeof(struct routing_handoff) == 48, "routing handoff ABI size");
+_Static_assert(sizeof(struct routing_handoff) == 64, "routing handoff ABI size");
 
 /* fallback is the decision's fallback token, as in tcp_flow_state, until
  * UDP_ROUTE_CLOSING marks its lifetime as ending. */
@@ -1151,7 +1153,8 @@ static __always_inline int save_tcp_flow(struct tuples_key *key,
 }
 
 static __always_inline int publish_handoff(struct tuples_key *key,
-					   const struct routing_result *result, __be32 syn_seq)
+					   const struct routing_result *result,
+					   const struct pid_pname *pid_pname, __be32 syn_seq)
 {
 	struct routing_handoff handoff = {
 		.result = *result,
@@ -1159,6 +1162,8 @@ static __always_inline int publish_handoff(struct tuples_key *key,
 		.syn_seq = syn_seq,
 	};
 
+	if (pid_pname)
+		__builtin_memcpy(handoff.pname, pid_pname->pname, sizeof(handoff.pname));
 	return bpf_map_update_elem(&routing_tuples_map, key, &handoff, BPF_ANY);
 }
 
@@ -1526,7 +1531,7 @@ selected:
 			bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
 		goto direct;
 	}
-	if (publish_handoff(&routing_tuples_key, routing_result,
+	if (publish_handoff(&routing_tuples_key, routing_result, pid_pname,
 			    l4proto == IPPROTO_TCP ? l4h->tcph.seq : 0))
 		return TCX_DROP;
 	if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result, 0))

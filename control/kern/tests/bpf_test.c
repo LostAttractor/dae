@@ -100,6 +100,18 @@ int test_entry_mark_other(struct __sk_buff *skb)
 	return test_entry_mark_owner(skb, false);
 }
 
+/* A local client process named "curl" sends through the WAN egress. */
+SEC("tc/test_entry_pname")
+int test_entry_pname(struct __sk_buff *skb)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname value = { .pid = PARAM.control_plane_pid + 1, .pname = "curl" };
+
+	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_SHOT;
+}
+
 /* An element marked closing by a closer that then deleted another key, e.g.
  * after the element was reused for this source, is removed at its expiry. */
 SEC("tc/test_expire_closing_udp_route")

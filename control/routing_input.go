@@ -13,9 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// routingResult adds userspace process identity to the compact kernel decision.
-// Ingress does not publish PID/comm; internal daemon requests supply them here.
-// Only bpfRoutingResult is serialized to or from BPF maps.
+// routingResult adds process identity to the compact kernel decision. The
+// kernel handoff carries the sending local process name; internal daemon
+// requests also supply their PID. Only bpfRoutingResult is stored in BPF caches.
 type routingResult struct {
 	bpfRoutingResult
 	Pid   uint32
@@ -48,7 +48,7 @@ func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) 
 	if int32(handoff.Expires-uint32(now.Sec)) <= 0 {
 		return nil, fmt.Errorf("routing handoff expired")
 	}
-	return &routingResult{bpfRoutingResult: handoff.Result}, nil
+	return &routingResult{bpfRoutingResult: handoff.Result, Pname: handoff.Pname}, nil
 }
 
 // routingInput carries the flow properties shared by routing and destination
