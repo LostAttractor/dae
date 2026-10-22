@@ -302,11 +302,30 @@ The Makefile supplies these settings. When invoking Go yourself, set them explic
 
 ```sh
 export CGO_ENABLED=1
-go test -tags=netgo,osusergo,grpcnotrace ./plugins/surge
+go test -count=1 -tags=netgo,osusergo,grpcnotrace ./plugins/surge
 
 # Node backend, without QuickJS or cgo:
-CGO_ENABLED=0 go test -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./plugins/surge/...
+CGO_ENABLED=0 go test -count=1 -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./plugins/surge/...
 ```
+
+Node backend tests and jq resource tests need a writable delegated cgroup v2
+memory controller. On systemd 254+, run them in a temporary user service:
+
+```sh
+systemd-run --user --wait --pipe --collect \
+  --property=Delegate=memory --property=DelegateSubgroup=daemon \
+  --working-directory="$PWD" \
+  env "PATH=$PATH" GOWORK=off \
+  go test -count=1 -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./plugins/surge/...
+```
+
+Use the same prefix for `make test SURGE_RUNTIME=nodejs TEST_ARGS=-count=1` or
+`make test TEST_ARGS=-count=1` for QuickJS; preserve the compiler environment
+required by your toolchain. Resource tests must disable result caching with
+`-count=1`, because a cached success does not validate the current delegation.
+The temporary service and its cgroups are removed on exit. Tests use handwritten
+fixtures to exercise actual OOM, recovery and worker cleanup; ordinary
+non-delegated environments cannot validate these resource limits.
 
 ## Debug builds
 

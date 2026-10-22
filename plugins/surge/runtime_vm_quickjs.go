@@ -20,7 +20,7 @@ type runtimeBackend struct{ memoryLimit uint64 }
 func newRuntimeBackend(_ context.Context, opts RuntimeOptions) (*runtimeBackend, error) {
 	return &runtimeBackend{memoryLimit: uint64(opts.MemoryLimit)}, nil
 }
-func (*runtimeBackend) Close()                         {}
+func (*runtimeBackend) Close() error                   { return nil }
 func (*runtimeBackend) Warm(ctx context.Context) error { return ctx.Err() }
 
 func (*runtimeBackend) status() surgeapi.SurgeRuntimeStatus {

@@ -13,22 +13,20 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"sync"
-	"syscall"
 	"time"
+
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 )
 
 //go:embed worker.js
 var workerSource string
 
 type worker struct {
-	cmd       *exec.Cmd
-	input     io.WriteCloser
-	output    io.ReadCloser
+	*processgroup.Process
 	maxFrame  uint32
-	close     func()
 	stderr    workerLog
 	idleSince time.Time
+	retiring  bool // Protected by the pool lock; still occupies worker capacity.
 	memory    memorySample
 }
 
@@ -40,37 +38,32 @@ func (l *workerLog) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func startWorker(path string, memoryLimit int64) (*worker, error) {
-	limit := min(memoryLimit*6+65536, 256<<20)
-	cmd := exec.Command(path, "--permission", "--no-addons", "--max-old-space-size="+strconv.FormatInt(memoryLimit>>20, 10), "-e", workerSource, strconv.FormatInt(limit, 10))
+// Called with the pool lock held; the group is created with the first worker.
+func (p *Pool) startWorker() (*worker, error) {
+	if p.group == nil {
+		group, err := processgroup.NewPool("nodejs", p.poolMemory)
+		p.group = group
+		if err != nil {
+			if group != nil {
+				// A partially created group is retained only for final cleanup.
+				p.groupErr = err
+			}
+			return nil, err
+		}
+	}
+	limit := min(p.memoryLimit*6+65536, 256<<20)
+	cmd := exec.Command(p.path, "--permission", "--no-addons", "--max-old-space-size="+strconv.FormatInt(p.memoryLimit>>20, 10), "-e", workerSource, strconv.FormatInt(limit, 10))
 	cmd.Env = []string{"LANG=C.UTF-8"}
 	if zone, ok := os.LookupEnv("TZ"); ok {
 		cmd.Env = append(cmd.Env, "TZ="+zone)
 	}
-	// The plugin is Linux-only. Avoid orphan workers if the daemon exits abruptly.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	input, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = input.Close()
-		return nil, err
-	}
-	w := &worker{cmd: cmd, input: input, output: output, maxFrame: uint32(limit)}
+	w := &worker{maxFrame: uint32(limit)}
 	cmd.Stderr = &w.stderr
-	if err := cmd.Start(); err != nil {
-		_ = input.Close()
-		_ = output.Close()
+	process, err := p.group.Start(cmd, p.workerMemory)
+	if err != nil {
 		return nil, err
 	}
-	w.close = sync.OnceFunc(func() {
-		_ = w.cmd.Process.Kill()
-		_ = w.input.Close()
-		_ = w.output.Close()
-		_ = w.cmd.Wait()
-	})
+	w.Process = process
 	return w, nil
 }
 
@@ -98,16 +91,16 @@ func (w *worker) write(value command) error {
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(data)))
-	if _, err := w.input.Write(header[:]); err != nil {
+	if _, err := w.Input.Write(header[:]); err != nil {
 		return err
 	}
-	_, err = w.input.Write(data)
+	_, err = w.Input.Write(data)
 	return err
 }
 
 func (w *worker) read() (response, error) {
 	var header [4]byte
-	if _, err := io.ReadFull(w.output, header[:]); err != nil {
+	if _, err := io.ReadFull(w.Output, header[:]); err != nil {
 		return response{}, err
 	}
 	size := binary.BigEndian.Uint32(header[:])
@@ -115,7 +108,7 @@ func (w *worker) read() (response, error) {
 		return response{}, errors.New("nodejs: invalid message length")
 	}
 	data := make([]byte, size)
-	if _, err := io.ReadFull(w.output, data); err != nil {
+	if _, err := io.ReadFull(w.Output, data); err != nil {
 		return response{}, err
 	}
 	var result response

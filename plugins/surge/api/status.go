@@ -31,19 +31,24 @@ type SurgeRuntimeStatus struct {
 // Memory sums cover MemorySampledWorkers; MemorySampledAt is the oldest included
 // sample. A missing sample is not evidence of zero memory usage.
 type NodeJSRuntimeStatus struct {
-	Active               int       `json:"active"`
-	Idle                 int       `json:"idle"`
-	Limit                int       `json:"limit"`
-	Started              uint64    `json:"started"`
-	Reused               uint64    `json:"reused"`
-	StartFailures        uint64    `json:"start_failures"`
-	IdleReaped           uint64    `json:"idle_reaped"`
-	Discarded            uint64    `json:"discarded"`
-	RSSBytes             uint64    `json:"rss_bytes"`
-	PSSBytes             uint64    `json:"pss_bytes"`
-	MemorySampledWorkers int       `json:"memory_sampled_workers"`
-	MemorySampledAt      time.Time `json:"memory_sampled_at,omitzero"`
-	IdleTimeoutSeconds   float64   `json:"idle_timeout_seconds"`
+	Active                 int       `json:"active"`
+	Idle                   int       `json:"idle"`
+	Limit                  int       `json:"limit"`
+	Started                uint64    `json:"started"`
+	Reused                 uint64    `json:"reused"`
+	StartFailures          uint64    `json:"start_failures"`
+	IdleReaped             uint64    `json:"idle_reaped"`
+	Discarded              uint64    `json:"discarded"`
+	RSSBytes               uint64    `json:"rss_bytes"`
+	PSSBytes               uint64    `json:"pss_bytes"`
+	MemorySampledWorkers   int       `json:"memory_sampled_workers"`
+	MemorySampledAt        time.Time `json:"memory_sampled_at,omitzero"`
+	IdleTimeoutSeconds     float64   `json:"idle_timeout_seconds"`
+	CgroupMemoryBytes      uint64    `json:"cgroup_memory_bytes"`
+	CgroupMemoryPeakBytes  uint64    `json:"cgroup_memory_peak_bytes"`
+	CgroupMemoryLimitBytes uint64    `json:"cgroup_memory_limit_bytes"`
+	CgroupOOMKills         uint64    `json:"cgroup_oom_kills"`
+	CgroupSampledAt        time.Time `json:"cgroup_sampled_at,omitzero"`
 }
 
 // SurgeNotification is explicit script output, independent of runtime success.

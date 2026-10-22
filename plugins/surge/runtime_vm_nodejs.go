@@ -25,7 +25,7 @@ func newRuntimeBackend(ctx context.Context, opts RuntimeOptions) (*runtimeBacken
 
 func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) { return b.pool.Acquire(ctx) }
 func (b *runtimeBackend) Warm(ctx context.Context) error              { return b.pool.Warm(ctx) }
-func (b *runtimeBackend) Close()                                      { b.pool.Close() }
+func (b *runtimeBackend) Close() error                                { return b.pool.Close() }
 
 func (b *runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
 	s := b.pool.Stats()
@@ -35,6 +35,11 @@ func (b *runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
 		IdleReaped: s.IdleReaped, Discarded: s.Discarded,
 		RSSBytes: s.RSSBytes, PSSBytes: s.PSSBytes,
 		MemorySampledWorkers: s.MemorySampledWorkers, MemorySampledAt: s.MemorySampledAt,
-		IdleTimeoutSeconds: s.IdleTimeout.Seconds(),
+		IdleTimeoutSeconds:     s.IdleTimeout.Seconds(),
+		CgroupMemoryBytes:      s.CgroupMemoryBytes,
+		CgroupMemoryPeakBytes:  s.CgroupMemoryPeakBytes,
+		CgroupMemoryLimitBytes: s.CgroupMemoryLimitBytes,
+		CgroupOOMKills:         s.CgroupOOMKills,
+		CgroupSampledAt:        s.CgroupSampledAt,
 	}}
 }

@@ -48,7 +48,7 @@ func testProxyEngine(t *testing.T, module, source string) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rt.backend.Close)
+	cleanupBackend(t, rt.backend)
 	return newTestEngine(t, EngineOptions{Modules: []*Module{m}, Runtime: rt})
 }
 

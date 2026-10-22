@@ -9,19 +9,18 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 )
 
 // The pool is shared by Surge instances and overlapping configuration generations.
 // Capacity includes starting processes and workers being killed/reaped.
 type Pool struct {
-	group      *memoryGroup
+	group      *processgroup.Group
 	executable string
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -42,46 +41,59 @@ var shared struct {
 func Acquire() (*Pool, func() error, error) {
 	shared.Lock()
 	defer shared.Unlock()
+	// A retained pool with no references exists only to finish cleanup.
+	if shared.pool != nil && shared.references == 0 {
+		if !shared.pool.group.Deleted() {
+			return nil, nil, errors.Join(ErrUnavailable, shared.pool.group.Check(), shared.pool.group.CleanupError())
+		}
+		shared.pool = nil
+	}
 	if shared.pool == nil {
-		group, err := newPoolGroup()
+		executable, err := os.Executable()
 		if err != nil {
 			return nil, nil, err
 		}
-		executable, err := os.Executable()
+		group, err := processgroup.NewPool("jq", PoolMemory)
 		if err != nil {
-			_ = group.close()
+			if group != nil {
+				// Failed initialization may still own resources being retried by Group.
+				shared.pool = &Pool{group: group}
+			}
 			return nil, nil, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16)}
 	}
-	shared.references++
 	pool := shared.pool
+	if err := pool.group.Check(); err != nil {
+		return nil, nil, err
+	}
+	shared.references++
 	release := sync.OnceValue(func() error {
 		shared.Lock()
-		defer shared.Unlock()
 		shared.references--
 		if shared.references != 0 {
+			shared.Unlock()
 			return nil
 		}
-		err := pool.close()
-		shared.pool = nil
-		return err
+		pool.mu.Lock()
+		pool.cancel()
+		pool.mu.Unlock()
+		shared.Unlock()
+		return pool.close()
 	})
 	return pool, release, nil
 }
 
 func (p *Pool) close() error {
-	p.mu.Lock()
-	p.cancel()
-	p.mu.Unlock()
 	p.jobs.Wait()
 	// Each job either returns its worker to idle or closes it before finishing.
+	var err error
 	for _, w := range p.idle {
-		w.close()
+		err = errors.Join(err, w.Close())
 	}
 	p.idle = nil
-	return p.group.close()
+	return errors.Join(err, p.group.Delete())
 }
 
 func (p *Pool) Validate(ctx context.Context, expression string) error {
@@ -105,6 +117,12 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 	}
 	ctx, cancel := context.WithTimeout(parent, time.Minute)
 	defer cancel()
+	defer func() {
+		if ctx.Err() != nil {
+			result.Close()
+			result, err = nil, ctx.Err()
+		}
+	}()
 	stopPool := context.AfterFunc(p.ctx, cancel)
 	defer stopPool()
 	if err := ctx.Err(); err != nil {
@@ -133,6 +151,9 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := p.group.Check(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	var w *worker
 	if len(p.idle) != 0 {
@@ -146,38 +167,35 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 			return nil, err
 		}
 	}
-	stop := context.AfterFunc(ctx, w.close)
+	stop := context.AfterFunc(ctx, func() { _ = w.Close() })
 	healthy := false
 	defer func() {
-		stop()
-		if ctx.Err() != nil {
-			result.Close()
-			result, err = nil, ctx.Err()
-			healthy = false
-		}
-		if healthy {
+		if stop() && healthy && ctx.Err() == nil {
 			p.mu.Lock()
 			p.idle = append(p.idle, w)
 			p.mu.Unlock()
-		} else {
-			// OnceFunc also joins cancellation's close before releasing the slot.
-			w.close()
+			return
+		}
+		// Close joins cancellation and returns its cached error before releasing the slot.
+		err = errors.Join(err, w.Close())
+		if w.OOMKilled {
+			err = fmt.Errorf("jq worker: %w", errors.Join(processgroup.ErrOOMKilled, err))
 		}
 	}()
 	request := frame{Magic: frameMagic, Generation: w.generation, Job: p.sequence.Add(1), Expression: uint32(len(expression)), Body: uint32(len(body)), Limit: uint32(limit)}
 	if validate {
 		request.Validate = 1
 	}
-	if err := writeFrame(w.input, request); err != nil {
+	if err := writeFrame(w.Input, request); err != nil {
 		return nil, err
 	}
-	if _, err := io.WriteString(w.input, expression); err != nil {
+	if _, err := io.WriteString(w.Input, expression); err != nil {
 		return nil, err
 	}
-	if _, err := w.input.Write(body); err != nil {
+	if _, err := w.Input.Write(body); err != nil {
 		return nil, err
 	}
-	response, err := readFrame(w.output)
+	response, err := readFrame(w.Output)
 	if err != nil {
 		return nil, fmt.Errorf("jq worker exited or returned an invalid frame: %w", err)
 	}
@@ -195,7 +213,7 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 		if validate || response.Body == 0 || int64(response.Body) > limit {
 			return nil, membuffer.ErrTooLarge
 		}
-		result, err = membuffer.Read(io.LimitReader(w.output, int64(response.Body)), int64(response.Body), budget)
+		result, err = membuffer.Read(io.LimitReader(w.Output, int64(response.Body)), int64(response.Body), budget)
 		if err == nil && len(result.Bytes()) != int(response.Body) {
 			err = io.ErrUnexpectedEOF
 		}
@@ -210,7 +228,7 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 			return nil, errors.New("invalid jq error length")
 		}
 		data := make([]byte, response.Body)
-		if _, err := io.ReadFull(w.output, data); err != nil {
+		if _, err := io.ReadFull(w.Output, data); err != nil {
 			return nil, err
 		}
 		healthy = true
@@ -224,45 +242,17 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 }
 
 type worker struct {
+	*processgroup.Process
 	generation uint64
-	input      io.WriteCloser
-	output     io.ReadCloser
-	close      func()
 }
 
 func (p *Pool) start() (*worker, error) {
 	id := p.sequence.Add(1)
-	group, err := createMemoryGroup(p.group.path, strconv.FormatUint(id, 10), WorkerMemory, false)
-	if err != nil {
-		return nil, err
-	}
 	command := exec.Command(p.executable, "plugins", "surge", "__jq-worker")
 	command.Env = []string{"GOMAXPROCS=1", "GOMEMLIMIT=96MiB", "LANG=C.UTF-8"}
-	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, UseCgroupFD: true, CgroupFD: int(group.file.Fd())}
-	input, err := command.StdinPipe()
+	process, err := p.group.Start(command, WorkerMemory)
 	if err != nil {
-		_ = group.close()
-		return nil, err
-	}
-	output, err := command.StdoutPipe()
-	if err != nil {
-		_ = input.Close()
-		_ = group.close()
-		return nil, err
-	}
-	if err := command.Start(); err != nil {
-		_ = input.Close()
-		_ = output.Close()
-		_ = group.close()
 		return nil, fmt.Errorf("start memory constrained jq worker: %w", err)
 	}
-	w := &worker{generation: id, input: input, output: output}
-	w.close = sync.OnceFunc(func() {
-		_ = command.Process.Kill()
-		_ = input.Close()
-		_ = output.Close()
-		_ = command.Wait()
-		_ = group.close()
-	})
-	return w, nil
+	return &worker{Process: process, generation: id}, nil
 }

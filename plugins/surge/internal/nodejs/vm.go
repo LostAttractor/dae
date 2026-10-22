@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 )
 
 // VM is a single invocation's lease. Script operations use one goroutine;
@@ -33,9 +35,22 @@ func (vm *VM) command(c command) (err error) {
 		if vm.ctx.Err() != nil {
 			err = vm.ctx.Err()
 		}
-		if err != nil {
-			vm.failed = true
+		if err == nil {
+			return
 		}
+		vm.failed = true
+		cleanupErr := vm.pool.closeWorker(vm.worker)
+		if ctxErr := vm.ctx.Err(); ctxErr != nil {
+			err = ctxErr
+			return
+		}
+		if diagnostic := strings.TrimSpace(string(vm.worker.stderr.data)); diagnostic != "" {
+			err = fmt.Errorf("%w (%s)", err, diagnostic)
+		}
+		if vm.worker.OOMKilled {
+			err = fmt.Errorf("%w: %w", processgroup.ErrOOMKilled, err)
+		}
+		err = errors.Join(err, cleanupErr)
 	}()
 	if err := vm.ctx.Err(); err != nil {
 		return err
@@ -46,8 +61,7 @@ func (vm *VM) command(c command) (err error) {
 	for {
 		response, err := vm.worker.read()
 		if err != nil {
-			vm.worker.close()
-			return fmt.Errorf("nodejs: receive worker response: %w (%s)", err, strings.TrimSpace(string(vm.worker.stderr.data)))
+			return fmt.Errorf("nodejs: receive worker response: %w", err)
 		}
 		switch response.Kind {
 		case "ok":
@@ -119,15 +133,20 @@ func (vm *VM) Close() {
 	p, w := vm.pool, vm.worker
 	p.mu.Lock()
 	if vm.failed || vm.ctx.Err() != nil || p.closed {
-		w.close()
+		w.retiring = true
+		p.mu.Unlock()
+		p.closeWorker(w)
+		p.mu.Lock()
 		delete(p.workers, w)
 		if !p.closed {
 			p.stats.Discarded++
+			p.sampleCgroupLocked()
 		}
 	} else {
 		w.idleSince = time.Now()
 		p.idle = append(p.idle, w)
 	}
+	p.notifyLocked()
 	p.mu.Unlock()
 	vm.worker, vm.host = nil, nil
 	<-p.slots

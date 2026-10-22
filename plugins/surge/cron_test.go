@@ -36,7 +36,7 @@ func cronTestEngine(t *testing.T, module *Module, sources map[string]string, slo
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(rt.backend.Close)
+	cleanupBackend(t, rt.backend)
 	budget := membuffer.NewBudget(128 << 20)
 	e, err := NewEngine(EngineOptions{Modules: []*Module{module}, Runtime: rt, BodyMemory: budget,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: slots, ScriptTimeout: 5 * time.Second})

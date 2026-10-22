@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -42,7 +43,11 @@ func (e *Engine) traceRequest(r *http.Request, event string, fields ...any) {
 }
 
 func (e *Engine) logRequest(r *http.Request, message string, err error) {
-	if e.options.Logger == nil || r.Context().Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, errScriptAbort) {
+	if e.options.Logger == nil {
+		return
+	}
+	resourceFailure := errors.Is(err, processgroup.ErrOOMKilled) || errors.Is(err, processgroup.ErrCleanup)
+	if !resourceFailure && (r.Context().Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, errScriptAbort)) {
 		return
 	}
 	connectionID, requestID := plugin.IDs(r.Context())

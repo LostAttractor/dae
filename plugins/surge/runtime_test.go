@@ -33,6 +33,15 @@ func (r *runtimeHarness) Run(ctx context.Context, source string, in Invocation) 
 	r.t.Cleanup(result.Close)
 	return result, err
 }
+func cleanupBackend(t *testing.T, backend *runtimeBackend) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 func testRuntime(t *testing.T, opts RuntimeOptions) *runtimeHarness {
 	t.Helper()
 	r, err := NewRuntime(t.Context(), opts)
@@ -40,7 +49,7 @@ func testRuntime(t *testing.T, opts RuntimeOptions) *runtimeHarness {
 		t.Fatal(err)
 	}
 	// Keep only the backend alive, so store collection tests can release Runtime.
-	t.Cleanup(r.backend.Close)
+	cleanupBackend(t, r.backend)
 	budget := membuffer.NewBudget(256 << 20)
 	t.Cleanup(func() {
 		if used := budget.Status().Used; used != 0 {

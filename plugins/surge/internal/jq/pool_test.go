@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 )
 
 func init() {
@@ -31,7 +33,7 @@ func testPool(tb testing.TB) *Pool {
 	tb.Helper()
 	pool, release, err := Acquire()
 	if err != nil {
-		tb.Skipf("jq cgroup unavailable: %v", err)
+		tb.Fatalf("jq cgroup unavailable: %v", err)
 	}
 	if executable := os.Getenv("DAE_TEST_JQ_EXECUTABLE"); executable != "" {
 		pool.executable = executable
@@ -46,7 +48,7 @@ func testPool(tb testing.TB) *Pool {
 
 func workerGroups(t *testing.T, pool *Pool) int {
 	t.Helper()
-	entries, err := os.ReadDir(pool.group.path)
+	entries, err := os.ReadDir(pool.group.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +103,7 @@ func TestPoolIsolationAndRecovery(t *testing.T) {
 	if budget.Status().Used != 0 {
 		t.Fatal(budget.Status())
 	}
-	events, err := os.ReadFile(filepath.Join(pool.group.path, "memory.events"))
+	events, err := os.ReadFile(filepath.Join(pool.group.Path, "memory.events"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +127,13 @@ func TestPoolIsolationAndRecovery(t *testing.T) {
 func TestPoolConcurrentCapacityAndClose(t *testing.T) {
 	pool, release, err := Acquire()
 	if err != nil {
-		t.Skip(err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = release() })
+	t.Cleanup(func() {
+		if err := release(); err != nil {
+			t.Error(err)
+		}
+	})
 	var jobs sync.WaitGroup
 	for range 32 {
 		jobs.Go(func() {
@@ -152,7 +158,7 @@ func TestPoolConcurrentCapacityAndClose(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	path := pool.group.path
+	path := pool.group.Path
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +168,224 @@ func TestPoolConcurrentCapacityAndClose(t *testing.T) {
 	}
 }
 
+func blockPoolRemoval(t *testing.T, path string) func() {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("permission fault requires an unprivileged delegated service")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, info.Mode().Perm()&^0222); err != nil {
+		t.Fatal(err)
+	}
+	restore := sync.OnceFunc(func() {
+		if err := os.Chmod(path, info.Mode().Perm()); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+func waitForPoolCleanup(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatal("background cgroup cleanup did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPoolCleanupFailureRecovery(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
+			pool, release, err := Acquire()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := release(); err != nil && !errors.Is(err, processgroup.ErrCleanup) {
+					t.Error(err)
+				}
+				waitForPoolCleanup(t, pool.group.Deleted)
+			})
+			if err := pool.Validate(t.Context(), "."); err != nil {
+				t.Fatal(err)
+			}
+			healthy := pool.idle[0]
+			failed, err := pool.start()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.idle = append(pool.idle, failed)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			if canceled {
+				closeWorker := failed.Close
+				failed.Close = sync.OnceValue(func() error {
+					err := closeWorker()
+					cancel()
+					return err
+				})
+			}
+			restore := blockPoolRemoval(t, pool.group.Path)
+			result, err := pool.Apply(ctx, `"x" * 1073741824`, []byte(`{}`), 1024, membuffer.NewBudget(4096))
+			result.Close()
+			if canceled {
+				if !errors.Is(err, context.Canceled) || errors.Is(err, processgroup.ErrOOMKilled) || errors.Is(err, processgroup.ErrCleanup) {
+					t.Fatalf("cancellation did not take precedence: %v", err)
+				}
+			} else if !errors.Is(err, processgroup.ErrOOMKilled) || !errors.Is(err, io.EOF) || !errors.Is(err, processgroup.ErrCleanup) {
+				t.Fatalf("lost OOM, I/O or cleanup error identity: %v", err)
+			}
+			if !failed.OOMKilled || !errors.Is(pool.group.CleanupError(), processgroup.ErrCleanup) {
+				t.Fatal("OOM or cleanup failure was not retained by its owner")
+			}
+			sequence := pool.sequence.Load()
+			if _, unexpectedRelease, err := Acquire(); !errors.Is(err, processgroup.ErrCleanup) {
+				if unexpectedRelease != nil {
+					if err := unexpectedRelease(); err != nil {
+						t.Error(err)
+					}
+				}
+				t.Fatalf("Acquire admitted a pending cleanup: %v", err)
+			}
+			if err := pool.Validate(t.Context(), "."); !errors.Is(err, processgroup.ErrCleanup) {
+				t.Fatalf("run admitted a pending cleanup: %v", err)
+			}
+			if pool.ctx.Err() != nil || shared.references != 1 || shared.pool != pool {
+				t.Fatal("runtime cleanup failure canceled or released the shared pool")
+			}
+			if pool.sequence.Load() != sequence || workerGroups(t, pool) != 2 || len(pool.idle) != 1 || pool.idle[0] != healthy {
+				t.Fatal("pending cleanup started a worker or consumed the healthy idle worker")
+			}
+			restore()
+			waitForPoolCleanup(t, func() bool { return pool.group.Check() == nil })
+			recovered, releaseRecovered, err := Acquire()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := releaseRecovered(); err != nil {
+					t.Error(err)
+				}
+			})
+			if recovered != pool || shared.references != 2 {
+				t.Fatal("recovery replaced the pool while an old generation still held a reference")
+			}
+			if err := recovered.Validate(t.Context(), "."); err != nil {
+				t.Fatal(err)
+			}
+			if workerGroups(t, pool) != 1 || len(pool.idle) != 1 || pool.idle[0] != healthy {
+				t.Fatal("recovery did not reuse the healthy worker")
+			}
+			if err := releaseRecovered(); err != nil {
+				t.Fatal(err)
+			}
+			closeErr := release()
+			if !errors.Is(closeErr, processgroup.ErrCleanup) || !pool.group.Deleted() {
+				t.Fatalf("final release lost history or did not delete the root: %v", closeErr)
+			}
+			if release() != closeErr || shared.references != 0 {
+				t.Fatal("repeated release changed its cached error or reference count")
+			}
+		})
+	}
+}
+
+func TestPoolFinalCleanupFailureReplacement(t *testing.T) {
+	pool, release, err := Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := release(); err != nil && !errors.Is(err, processgroup.ErrCleanup) {
+			t.Error(err)
+		}
+		waitForPoolCleanup(t, pool.group.Deleted)
+	})
+	if err := pool.Validate(t.Context(), "."); err != nil {
+		t.Fatal(err)
+	}
+	restore := blockPoolRemoval(t, pool.group.Path)
+	// Permission faults must not affect pools created by parallel test packages.
+	sibling, err := processgroup.NewPool("jq-isolation-test", PoolMemory)
+	if err != nil {
+		t.Fatalf("permission fault escaped the test pool: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sibling.Delete(); err != nil {
+			t.Error(err)
+		}
+	})
+	closing, resume := make(chan struct{}), make(chan struct{})
+	resumeClose := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(resumeClose)
+	closeWorker := pool.idle[0].Close
+	pool.idle[0].Close = sync.OnceValue(func() error {
+		close(closing)
+		<-resume
+		return closeWorker()
+	})
+	released := make(chan error, 1)
+	go func() { released <- release() }()
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("final release did not begin closing the idle worker")
+	}
+	acquired := make(chan error, 1)
+	go func() {
+		_, unexpectedRelease, err := Acquire()
+		if unexpectedRelease != nil {
+			err = errors.Join(err, unexpectedRelease())
+		}
+		acquired <- err
+	}()
+	select {
+	case err := <-acquired:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("Acquire admitted a closing pool: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("final release held the shared lock while closing a worker")
+	}
+	resumeClose()
+	closeErr := <-released
+	if !errors.Is(closeErr, processgroup.ErrCleanup) || pool.group.Deleted() {
+		t.Fatalf("final deletion did not retain the failed root: %v", closeErr)
+	}
+	if _, unexpectedRelease, err := Acquire(); !errors.Is(err, ErrUnavailable) || !errors.Is(err, processgroup.ErrCleanup) {
+		if unexpectedRelease != nil {
+			if err := unexpectedRelease(); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Fatalf("Acquire replaced the root before deletion: %v", err)
+	}
+	if shared.pool != pool || shared.references != 0 {
+		t.Fatal("failed final cleanup lost the shared pool or changed its references")
+	}
+	restore()
+	waitForPoolCleanup(t, pool.group.Deleted)
+	replacement := testPool(t)
+	if replacement == pool || replacement.group.Path == pool.group.Path {
+		t.Fatal("Acquire reused the closed pool after background deletion")
+	}
+	if release() != closeErr || shared.references != 1 {
+		t.Fatal("old release changed its cached error or released the new pool")
+	}
+	if err := replacement.Validate(t.Context(), "."); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func reportMemory(b *testing.B, pool *Pool) {
-	data, err := os.ReadFile(filepath.Join(pool.group.path, "memory.peak"))
+	data, err := os.ReadFile(filepath.Join(pool.group.Path, "memory.peak"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -234,7 +456,9 @@ func BenchmarkPoolCold(b *testing.B) {
 		}
 		output.Close()
 		for _, w := range pool.idle {
-			w.close()
+			if err := w.Close(); err != nil {
+				b.Fatal(err)
+			}
 		}
 		pool.idle = nil
 	}

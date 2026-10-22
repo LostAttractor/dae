@@ -74,7 +74,7 @@ func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
 	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: newDNSScriptCache()}
 	defer func() {
 		if err != nil && e.releaseJQ != nil {
-			_ = e.releaseJQ()
+			err = errors.Join(err, e.releaseJQ())
 		}
 	}()
 	for _, module := range o.Modules {

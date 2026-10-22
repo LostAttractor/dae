@@ -54,7 +54,7 @@ plugins {
 | `http_policies` | 空 | 预加载脚本主动请求使用的出站组，逗号分隔，如 `proxy,api`；不增加捕获或路由规则 |
 | `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
-每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。JavaScript 堆限制不等于进程内存限制；Node.js 的限制还不覆盖 ArrayBuffer 等外部内存和 V8 新生代。jq 使用下面所述的独立进程内存限制。
+每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。JavaScript 堆限制不等于进程内存限制；Node.js 的 `memory_limit` 只约束 V8 老生代，工作进程另受下述 cgroup 限制；jq 使用其独立进程内存限制。
 
 ### Node.js 后端
 
@@ -79,7 +79,11 @@ HTTP 规则匹配前取得并发名额，排队服从请求取消，不消耗脚
 
 包含脚本的实例在准备阶段预热 1 个工作进程，完成协议初始化和共享 bootstrap 编译，不执行用户脚本；预热失败会拒绝本次启动或重载，当前运行的配置不受影响。只有重写、Hosts 或路由规则的实例不创建 JavaScript 运行时。并发增加时按需启动额外进程，最多 `max_concurrent_scripts` 个。多余进程空闲 60 秒后，在每 5 秒一次的维护中回收，保留最近使用的 1 个空闲进程；正在执行或等待脚本 HTTP、定时器的进程不会被空闲回收。每次脚本执行使用独立的新上下文。实例关闭会终止并回收进程。脚本超时、取消、执行异常或进程崩溃时丢弃该进程，后续调用重新创建。扩容和故障替换时的冷启动、正文跨进程复制及同步宿主调用有额外开销；计算密集的脚本可受益于 V8，短脚本不保证更快。Node.js 工作进程通常比 QuickJS 占用更多内存。
 
-`dae plugins surge status` 和 `dae plugins status --verbose` 显示进程池忙碌/空闲数量、容量、启动/复用/回收/失败计数及 RSS/PSS。内存每 5 秒后台采样，查询只读取缓存；输出同时显示采样覆盖的进程数和最旧样本年龄，未采样不代表零占用。PSS 按比例分摊共享页，比直接相加 RSS 更适合观察进程池内存。Prometheus 提供同口径的 `dae_plugin_surge_nodejs_*` 指标，详见[指标说明](../../en/configuration/metrics.md#surge)。启动探测使用独立的临时进程池，不计入业务进程计数；准备阶段保留的预热进程计入业务启动计数，实例关闭不计入失败或空闲回收。
+Node.js 预热需要可写且已委派 memory 控制器的 cgroup v2。每个 worker 的 `memory.max` 为 `2 × memory_limit + 64 MiB`，`memory.swap.max` 为 0；父组上限为该值乘以 `max_concurrent_scripts + 1`，多出的一份额度用于退出进程尚未释放的内核计账。这些额度覆盖被内核计入 cgroup 的堆、ArrayBuffer、原生分配及相关内核内存，不等同于 RSS/PSS，也不覆盖 dae 宿主的桥接缓冲。进程创建时直接进入对应组；回收时终止组内进程、等待退出并删除组；父组的回收余量避免将统计更新延迟变成每次脚本的等待。固定的运行时余量需要按目标 Node 版本和工作负载校准。各实例及重载期间的新旧运行时分别拥有自己的父组额度。
+
+仓库提供的 systemd unit 使用 `Delegate=memory` 和 `DelegateSubgroup=daemon`，需要 systemd 254 或更新版本；自行定义服务时也需设置这两项。Node 和 jq 的资源组始终位于所属服务内部，不会向上越过 service、scope 或 slice 边界寻找权限。因此服务的 `MemoryMax` 仍覆盖 dae、本服务内的全部 worker，以及重载期间同时存在的新旧实例。其他进程管理器需事先把 dae 放入叶子组，并提供已启用 memory 控制器的可写父组；dae 不主动迁移宿主进程。委派不足时加载失败，不降级为无限额运行。内核 OOM kill 会作为明确的脚本执行错误返回；它可能由 worker、祖先组的限额或宿主整体内存不足触发，不能仅凭该事件认定 worker 达到自身上限。故障进程及其后代被回收后可创建替代进程。清理失败会保留资源所有权并在后台重试，期间暂停该池的新任务；清理完成后恢复接单，已经进入最终关闭的池则不会恢复。
+
+`dae plugins surge status` 和 `dae plugins status --verbose` 显示进程池忙碌/空闲数量、容量、启动/复用/回收/失败计数及 RSS/PSS。另行显示 cgroup 当前用量、峰值、上限、内核 OOM-kill 次数及其采样年龄；这些值与 Prometheus 共用缓存。内存每 5 秒后台采样，查询只读取缓存；输出同时显示采样覆盖的进程数和最旧样本年龄，未采样不代表零占用。PSS 按比例分摊共享页，比直接相加 RSS 更适合观察进程池内存。Prometheus 提供同口径的 `dae_plugin_surge_nodejs_*` 指标，详见[指标说明](../../en/configuration/metrics.md#surge)。启动探测使用独立的临时进程池，不计入业务进程计数；准备阶段保留的预热进程计入业务启动计数，实例关闭不计入失败或空闲回收。
 
 两个后端使用同一套 Surge API、存储、定时器与 Go HTTP 客户端；脚本主动请求仍受 dae 出站策略和正文预算约束。脚本可通过 `$environment['dae-runtime']` 读取 `quickjs` 或 `nodejs`。Node.js 后端不暴露 `process`、`require`、原生模块、文件或直接网络 API，也不继承 `NODE_OPTIONS`、`NODE_PATH` 等进程环境配置。它使用独立上下文与 Node 权限模式，但 [node:vm 不构成安全沙箱](https://nodejs.org/api/vm.html)，应只加载可信脚本。
 

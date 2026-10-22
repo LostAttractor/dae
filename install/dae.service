@@ -7,6 +7,8 @@ Wants=network-online.target
 [Service]
 Type=notify
 User=root
+Delegate=memory
+DelegateSubgroup=daemon
 LimitNPROC=512
 LimitNOFILE=1048576
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae

@@ -66,4 +66,38 @@ func TestRuntimeMetricsAndStatus(t *testing.T) {
 	if got := surgeMetric(t, registry, "surge_nodejs_worker_retirements_total", map[string]string{"reason": "failed"}).GetCounter().GetValue(); got != 1 || e.Status().Runtimes[0].NodeJS.Discarded != 1 {
 		t.Fatalf("failed retirement = %v, status=%+v", got, e.Status().Runtimes)
 	}
+	// Keep a live worker so the mapping also covers nonzero current memory.
+	if err := r.Warm(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); ; {
+		n = e.Status().Runtimes[0].NodeJS
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !n.CgroupSampledAt.Equal(e.Status().Runtimes[0].NodeJS.CgroupSampledAt) {
+			if time.Until(deadline) <= 0 {
+				t.Fatal("could not capture status and metrics from the same cgroup sample")
+			}
+			continue
+		}
+		if n.CgroupSampledAt.IsZero() || n.CgroupMemoryBytes == 0 || n.CgroupMemoryPeakBytes == 0 {
+			t.Fatalf("missing cgroup sample: %+v", n)
+		}
+		for name, want := range map[string]float64{
+			"surge_nodejs_cgroup_memory_bytes":             float64(n.CgroupMemoryBytes),
+			"surge_nodejs_cgroup_memory_peak_bytes":        float64(n.CgroupMemoryPeakBytes),
+			"surge_nodejs_cgroup_memory_limit_bytes":       float64(n.CgroupMemoryLimitBytes),
+			"surge_nodejs_cgroup_sample_timestamp_seconds": float64(n.CgroupSampledAt.UnixNano()) / 1e9,
+		} {
+			if got := surgeSampleMetric(t, families, name, nil).GetGauge().GetValue(); got != want {
+				t.Errorf("%s=%v status=%v", name, got, want)
+			}
+		}
+		if got := surgeSampleMetric(t, families, "surge_nodejs_cgroup_oom_kills_total", nil).GetCounter().GetValue(); got != float64(n.CgroupOOMKills) {
+			t.Errorf("OOM count=%v status=%v", got, n.CgroupOOMKills)
+		}
+		break
+	}
 }

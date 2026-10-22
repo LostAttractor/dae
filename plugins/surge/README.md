@@ -58,10 +58,32 @@ keeping the most recently returned idle worker warm. Active leases are retained
 even while waiting for host I/O. Maintenance starts with the first worker,
 including the prewarmed one, and joins on close. Preflight uses a disposable pool.
 The Node worker receives a minimal environment and runs in permission mode;
-`node:vm` is not a security boundary for hostile scripts. Node's memory limit
-applies to each worker's V8 old generation, not ArrayBuffer storage or RSS.
+`node:vm` is not a security boundary for hostile scripts. The configured memory limit applies to each worker's V8 old generation.
+Node and jq share `internal/processgroup`, backed by containerd/cgroups. Each Node
+worker also has a cgroup memory limit of twice the V8 budget plus 64 MiB, with
+swap disabled. The parent pool limit is that amount times its worker capacity plus one worker
+budget for delayed kernel charges from retired processes.
+A writable delegated cgroup v2 memory controller is required during prewarming.
+The supplied systemd unit uses `Delegate=memory` and `DelegateSubgroup=daemon`
+(systemd 254+). Pools remain below that unit; discovery never crosses a service,
+scope or slice boundary. Other supervisors must provide an empty, writable
+ancestor with memory enabled for its children. The daemon is never moved.
+Workers enter their cgroup at process creation. Retirement kills the group,
+reaps the process, waits for all descendants to leave and deletes the group.
+Cleanup failures remain owned by the pool and are retried in the background;
+new work is paused until cleanup succeeds. A closing pool never resumes.
+The parent retirement allowance avoids waiting for delayed anonymous-memory
+statistics before reusing a slot. Kernel OOM kills are identified before the
+worker group is removed; they do not prove that the worker's own limit was hit,
+since an ancestor limit or host-wide OOM can also kill its processes.
+The fixed headroom needs calibration on target Node versions and workloads;
+it covers a different budget from the V8 heap. Pool limits are per runtime,
+so overlapping reload generations each have their own budget, while an enclosing
+service `MemoryMax` also covers all generations and the daemon.
 Within the Node adapter, `pool.go` owns admission and reuse, `vm.go` owns an
-invocation's lease and host calls, and `worker.go` owns process launch and framing.
+invocation's lease and host calls, and `worker.go` configures Node and owns framing.
+`internal/processgroup` owns process launch, pipes, cgroup placement and retirement
+for both Node and jq.
 `pool_stats.go` owns idle maintenance and cached process memory samples.
 
 [`metrics.go`](metrics.go) owns instance-level Prometheus collectors shared by
@@ -69,7 +91,8 @@ all connection-scoped engine copies. It exposes loaded rules, HTTP/DNS/cron/gene
 results and runtime durations, execution-slot waits/occupancy, rule matches and
 processing skips. Collection is independent of trace logging. See the
 [metric definitions and examples](../../docs/en/configuration/metrics.md#surge).
-Node.js pool counters and background RSS/PSS samples also appear in ordinary
+Node.js pool counters, background RSS/PSS samples, and separately cached cgroup
+usage, peak, limit and OOM-kill counts also appear in ordinary
 status, `--recent`, and plugin reports. Collectors and status queries read cached
 values without process I/O. Sample coverage and age identify partial/stale data.
 

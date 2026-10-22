@@ -23,7 +23,7 @@ func testJQPool(t *testing.T) *jq.Pool {
 	t.Helper()
 	pool, release, err := jq.Acquire()
 	if err != nil {
-		t.Skipf("jq cgroup unavailable: %v", err)
+		t.Fatalf("jq cgroup unavailable: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := release(); err != nil {

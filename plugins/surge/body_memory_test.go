@@ -99,7 +99,7 @@ func TestScriptHTTPMemoryReleasedAfterDispatchAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(r.backend.Close)
+	cleanupBackend(t, r.backend)
 	for _, wait := range []bool{true, false} {
 		budget := membuffer.NewBudget(1 << 20)
 		source := fmt.Sprintf(`$httpClient.get(%q, (error, response, data) => { if(error) throw Error(error); $done({body:data}); });`, server.URL)
@@ -125,7 +125,7 @@ func TestScriptResultMemoryReleasedOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(r.backend.Close)
+	cleanupBackend(t, r.backend)
 	for _, source := range []string{
 		`$done({body:"allocated"}); throw Error("after done");`,
 		`$done({body:"allocated", response:{body:"nested", status:999}});`,

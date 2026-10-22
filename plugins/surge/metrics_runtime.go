@@ -5,9 +5,10 @@ package surge
 import "github.com/prometheus/client_golang/prometheus"
 
 type runtimeMetrics struct {
-	runtime                                                       *Runtime
-	info, workers, limit, started, reused, startFailures, retired *prometheus.Desc
-	rss, pss, sampledWorkers, sampledAt, idleTimeout              *prometheus.Desc
+	runtime                                                                *Runtime
+	cgroupMemory, cgroupPeak, cgroupLimit, cgroupOOMKills, cgroupSampledAt *prometheus.Desc
+	info, workers, limit, started, reused, startFailures, retired          *prometheus.Desc
+	rss, pss, sampledWorkers, sampledAt, idleTimeout                       *prometheus.Desc
 }
 
 func newRuntimeMetrics(r *Runtime) *runtimeMetrics {
@@ -15,26 +16,31 @@ func newRuntimeMetrics(r *Runtime) *runtimeMetrics {
 		return prometheus.NewDesc("surge_"+name, help, labels, nil)
 	}
 	return &runtimeMetrics{
-		runtime:        r,
-		info:           desc("runtime_info", "Compiled Surge JavaScript backend.", "backend"),
-		workers:        desc("nodejs_workers", "Node.js workers by lease state; active includes startup and waiting for host I/O.", "state"),
-		limit:          desc("nodejs_worker_limit", "Maximum Node.js workers in this instance."),
-		started:        desc("nodejs_worker_starts_total", "Successfully spawned application workers, excluding startup probes."),
-		reused:         desc("nodejs_worker_reuses_total", "Application leases acquired from idle workers."),
-		startFailures:  desc("nodejs_worker_start_failures_total", "Application worker spawn failures."),
-		retired:        desc("nodejs_worker_retirements_total", "Workers retired after idle timeout or failed/canceled execution; excludes probes and shutdown.", "reason"),
-		rss:            desc("nodejs_rss_bytes", "Sum of cached worker RSS samples; shared pages may be counted more than once."),
-		pss:            desc("nodejs_pss_bytes", "Sum of cached worker PSS samples, proportionally accounting for shared pages."),
-		sampledWorkers: desc("nodejs_memory_sampled_workers", "Current workers included in cached RSS/PSS sums."),
-		sampledAt:      desc("nodejs_memory_sample_timestamp_seconds", "Oldest memory sample included in the sums, or zero if none."),
-		idleTimeout:    desc("nodejs_idle_timeout_seconds", "Idle timeout for excess workers; one idle worker is kept warm."),
+		runtime:         r,
+		cgroupMemory:    desc("nodejs_cgroup_memory_bytes", "Cached pool memory.current, including kernel charges; not RSS/PSS."),
+		cgroupPeak:      desc("nodejs_cgroup_memory_peak_bytes", "Kernel pool memory.peak."),
+		cgroupLimit:     desc("nodejs_cgroup_memory_limit_bytes", "Pool memory.max."),
+		cgroupOOMKills:  desc("nodejs_cgroup_oom_kills_total", "Kernel memory.events oom_kill count for this pool and its workers."),
+		cgroupSampledAt: desc("nodejs_cgroup_sample_timestamp_seconds", "Last successful pool cgroup sample, or zero if unavailable."),
+		info:            desc("runtime_info", "Compiled Surge JavaScript backend.", "backend"),
+		workers:         desc("nodejs_workers", "Node.js workers by lease state; active includes startup and waiting for host I/O.", "state"),
+		limit:           desc("nodejs_worker_limit", "Maximum Node.js workers in this instance."),
+		started:         desc("nodejs_worker_starts_total", "Successfully spawned application workers, excluding startup probes."),
+		reused:          desc("nodejs_worker_reuses_total", "Application leases acquired from idle workers."),
+		startFailures:   desc("nodejs_worker_start_failures_total", "Application worker spawn failures."),
+		retired:         desc("nodejs_worker_retirements_total", "Workers retired after idle timeout or failed/canceled execution; excludes probes and shutdown.", "reason"),
+		rss:             desc("nodejs_rss_bytes", "Sum of cached worker RSS samples; shared pages may be counted more than once."),
+		pss:             desc("nodejs_pss_bytes", "Sum of cached worker PSS samples, proportionally accounting for shared pages."),
+		sampledWorkers:  desc("nodejs_memory_sampled_workers", "Current workers included in cached RSS/PSS sums."),
+		sampledAt:       desc("nodejs_memory_sample_timestamp_seconds", "Oldest memory sample included in the sums, or zero if none."),
+		idleTimeout:     desc("nodejs_idle_timeout_seconds", "Idle timeout for excess workers; one idle worker is kept warm."),
 	}
 }
 
 func (m *runtimeMetrics) Describe(ch chan<- *prometheus.Desc) {
 	ch <- m.info
 	if compiledJSRuntime == "nodejs" {
-		for _, desc := range []*prometheus.Desc{m.workers, m.limit, m.started, m.reused, m.startFailures, m.retired, m.rss, m.pss, m.sampledWorkers, m.sampledAt, m.idleTimeout} {
+		for _, desc := range []*prometheus.Desc{m.workers, m.limit, m.started, m.reused, m.startFailures, m.retired, m.rss, m.pss, m.sampledWorkers, m.sampledAt, m.idleTimeout, m.cgroupMemory, m.cgroupPeak, m.cgroupLimit, m.cgroupOOMKills, m.cgroupSampledAt} {
 			ch <- desc
 		}
 	}
@@ -64,4 +70,13 @@ func (m *runtimeMetrics) Collect(ch chan<- prometheus.Metric) {
 	}
 	ch <- prometheus.MustNewConstMetric(m.sampledAt, prometheus.GaugeValue, sampledAt)
 	ch <- prometheus.MustNewConstMetric(m.idleTimeout, prometheus.GaugeValue, n.IdleTimeoutSeconds)
+	ch <- prometheus.MustNewConstMetric(m.cgroupMemory, prometheus.GaugeValue, float64(n.CgroupMemoryBytes))
+	ch <- prometheus.MustNewConstMetric(m.cgroupPeak, prometheus.GaugeValue, float64(n.CgroupMemoryPeakBytes))
+	ch <- prometheus.MustNewConstMetric(m.cgroupLimit, prometheus.GaugeValue, float64(n.CgroupMemoryLimitBytes))
+	ch <- prometheus.MustNewConstMetric(m.cgroupOOMKills, prometheus.CounterValue, float64(n.CgroupOOMKills))
+	var cgroupSampledAt float64
+	if !n.CgroupSampledAt.IsZero() {
+		cgroupSampledAt = float64(n.CgroupSampledAt.UnixNano()) / 1e9
+	}
+	ch <- prometheus.MustNewConstMetric(m.cgroupSampledAt, prometheus.GaugeValue, cgroupSampledAt)
 }

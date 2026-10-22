@@ -77,7 +77,7 @@ func (r *Runtime) Warm(ctx context.Context) error { return r.backend.Warm(ctx) }
 
 func (r *Runtime) Close() error {
 	if r != nil && r.backend != nil {
-		r.backend.Close()
+		return r.backend.Close()
 	}
 	return nil
 }

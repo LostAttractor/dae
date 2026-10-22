@@ -24,7 +24,7 @@ func TestScriptRuntimeFailureRejectsPreparation(t *testing.T) {
 		{name: "missing from PATH", want: "find executable"},
 		{name: "missing configured path", want: "find executable"},
 		{name: "not executable", contents: "unused", mode: 0600, want: "find executable"},
-		{name: "unsupported runtime", contents: "#!/bin/sh\nprintf 'unsupported Node option' >&2\nexit 1\n", mode: 0700, want: "Node.js 22.13+"},
+		{name: "unsupported runtime", contents: "#!/bin/sh\nprintf 'unsupported Node option' >&2\nexit 1\n", mode: 0700, want: "unsupported Node option"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir, bin := t.TempDir(), t.TempDir()

@@ -48,7 +48,7 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(runtime.backend.Close)
+	cleanupBackend(t, runtime.backend)
 	moduleText := "[MITM]\nhostname=example.com\n[Script]\n"
 	for _, kind := range []string{"http-request", "http-response"} {
 		if _, ok := scripts[kind]; ok {

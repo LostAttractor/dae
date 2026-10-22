@@ -26,6 +26,11 @@ func surgeMetric(t *testing.T, registry *prometheus.Registry, name string, label
 	if err != nil {
 		t.Fatal(err)
 	}
+	return surgeSampleMetric(t, families, name, labels)
+}
+
+func surgeSampleMetric(t *testing.T, families []*dto.MetricFamily, name string, labels map[string]string) *dto.Metric {
+	t.Helper()
 	for _, family := range families {
 		if family.GetName() != name {
 			continue

@@ -181,7 +181,14 @@ jobs:
         uses: ./.github/actions/setup-llvm
 
       - name: Run tests
-        run: CC="$CLANG" make test
+        run: |
+          sudo systemd-run --wait --pipe --collect --uid="$(id -u)" \
+            --property=Delegate=memory --property=DelegateSubgroup=daemon \
+            --working-directory="$PWD" \
+            env "PATH=$PATH" "HOME=$HOME" "CC=$CLANG" \
+            "CLANG=$CLANG" "STRIP=$STRIP" "LLVM_OBJDUMP=$LLVM_OBJDUMP" \
+            "SURGE_RUNTIME=$SURGE_RUNTIME" "PLUGINS_CONFIG=$PLUGINS_CONFIG" \
+            GOWORK=off make test TEST_ARGS=-count=1
 
       - name: Test pinned QuickJS binding
         if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'

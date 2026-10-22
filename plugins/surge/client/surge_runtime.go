@@ -25,6 +25,11 @@ func renderSurgeRuntimes(runtimes []surgeapi.SurgeRuntimeStatus) string {
 			memory = "RSS/PSS unavailable"
 		}
 		lines = append(lines, "  Memory: "+memory)
+		if n.CgroupSampledAt.IsZero() {
+			lines = append(lines, fmt.Sprintf("  Cgroup: sample unavailable; limit=%.1f MiB", float64(n.CgroupMemoryLimitBytes)/(1<<20)))
+		} else {
+			lines = append(lines, fmt.Sprintf("  Cgroup: used=%.1f MiB peak=%.1f MiB limit=%.1f MiB; OOM kills=%d; sample=%s ago", float64(n.CgroupMemoryBytes)/(1<<20), float64(n.CgroupMemoryPeakBytes)/(1<<20), float64(n.CgroupMemoryLimitBytes)/(1<<20), n.CgroupOOMKills, max(0, time.Since(n.CgroupSampledAt)).Round(time.Second)))
+		}
 		sampleAge := "-"
 		if !n.MemorySampledAt.IsZero() {
 			sampleAge = max(0, time.Since(n.MemorySampledAt)).Round(time.Second).String() + " ago"

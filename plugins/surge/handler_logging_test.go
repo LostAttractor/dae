@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/plugins/surge/internal/processgroup"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -31,6 +32,27 @@ func testSurgeLogger(h surgeLogHook) *log.Entry {
 	logger.SetLevel(log.TraceLevel)
 	logger.AddHook(h)
 	return log.NewEntry(logger)
+}
+
+func TestWorkerResourceFailuresAreLogged(t *testing.T) {
+	for _, cause := range []error{io.EOF, net.ErrClosed, context.Canceled} {
+		for _, failure := range []error{nil, processgroup.ErrOOMKilled, processgroup.ErrCleanup} {
+			t.Run(fmt.Sprintf("%v/%v", cause, failure), func(t *testing.T) {
+				var logged error
+				e := &Engine{options: EngineOptions{Logger: testSurgeLogger(func(entry *log.Entry) {
+					logged, _ = entry.Data[log.ErrorKey].(error)
+				})}}
+				e.logRequest(httptest.NewRequest(http.MethodGet, "http://example.test", nil), "worker failed", errors.Join(cause, failure))
+				if failure == nil {
+					if logged != nil {
+						t.Fatalf("ordinary disconnect logged: %v", logged)
+					}
+				} else if !errors.Is(logged, failure) || !errors.Is(logged, cause) {
+					t.Fatalf("resource failure lost: %v", logged)
+				}
+			})
+		}
+	}
 }
 
 type proxyTraceCapture struct {

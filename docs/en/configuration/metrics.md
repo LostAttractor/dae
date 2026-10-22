@@ -93,6 +93,11 @@ pressure count as `capacity`. Replacing the same key is not an eviction.
 | `surge_nodejs_worker_start_failures_total` | Counter | Failed application worker spawns |
 | `surge_nodejs_worker_reuses_total` | Counter | Leases acquired from idle workers |
 | `surge_nodejs_worker_retirements_total` | Counter | `reason`: `idle`, `failed` (including cancellation) |
+| `surge_nodejs_cgroup_memory_bytes` | Gauge | Cached pool memory.current; includes kernel charges and differs from RSS/PSS |
+| `surge_nodejs_cgroup_memory_peak_bytes` | Gauge | Kernel pool memory.peak |
+| `surge_nodejs_cgroup_memory_limit_bytes` | Gauge | Pool memory.max |
+| `surge_nodejs_cgroup_oom_kills_total` | Counter | Kernel memory.events oom_kill for the pool and its workers; includes ancestor/host OOM victims, not proof of a worker-limit violation or the worker retirement count |
+| `surge_nodejs_cgroup_sample_timestamp_seconds` | Gauge | Last successful cgroup sample, or 0 when unavailable |
 | `surge_nodejs_idle_timeout_seconds` | Gauge | Excess idle worker timeout |
 | `surge_nodejs_rss_bytes` | Gauge | Sum of sampled worker RSS; shared pages can be counted more than once |
 | `surge_nodejs_pss_bytes` | Gauge | Sum of sampled worker PSS, proportionally accounting for shared pages |

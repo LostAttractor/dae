@@ -141,7 +141,7 @@
       },
       "NodeJSRuntimeStatus": {
         "type": "object",
-        "description": "Live pool counts and pool-lifetime counters excluding startup probes and shutdown. RSS/PSS are cached sums for memory_sampled_workers; failed or pending samples are excluded. Status collection performs no process I/O.",
+        "description": "Live pool counts and pool-lifetime counters excluding startup probes and shutdown. RSS/PSS are cached sums for memory_sampled_workers; failed or pending samples are excluded. Status collection performs no process I/O. Cgroup usage, peak and OOM kills are cached kernel statistics for the pool, with a separate sample timestamp; cgroup usage is not RSS/PSS.",
         "properties": {
           "active": {
             "type": "integer",
@@ -187,6 +187,22 @@
           },
           "idle_timeout_seconds": {
             "type": "number"
+          },
+          "cgroup_memory_bytes": {
+            "type": "integer"
+          },
+          "cgroup_memory_peak_bytes": {
+            "type": "integer"
+          },
+          "cgroup_memory_limit_bytes": {
+            "type": "integer"
+          },
+          "cgroup_oom_kills": {
+            "type": "integer"
+          },
+          "cgroup_sampled_at": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -201,7 +217,11 @@
           "rss_bytes",
           "pss_bytes",
           "memory_sampled_workers",
-          "idle_timeout_seconds"
+          "idle_timeout_seconds",
+          "cgroup_memory_bytes",
+          "cgroup_memory_peak_bytes",
+          "cgroup_memory_limit_bytes",
+          "cgroup_oom_kills"
         ]
       },
       "SurgeNotification": {

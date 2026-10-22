@@ -17,6 +17,7 @@ func TestRuntimeMetricsInStatusViews(t *testing.T) {
 		Instance: "untrusted", Backend: "nodejs", NodeJS: &surgeapi.NodeJSRuntimeStatus{
 			Active: 1, Idle: 1, Limit: 4, Started: 8, Reused: 27, StartFailures: 2,
 			IdleReaped: 5, Discarded: 1, RSSBytes: 144 << 20, PSSBytes: 96 << 20,
+			CgroupMemoryBytes: 100 << 20, CgroupMemoryPeakBytes: 120 << 20, CgroupMemoryLimitBytes: 768 << 20, CgroupOOMKills: 2, CgroupSampledAt: time.Now(),
 			MemorySampledWorkers: 2, MemorySampledAt: time.Now(), IdleTimeoutSeconds: 60,
 		},
 	}}})
@@ -29,7 +30,7 @@ func TestRuntimeMetricsInStatusViews(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := RenderSurge(report, false)
-	for _, want := range []string{"Surge runtime personal: nodejs", "active=1 idle=1 limit=4", "idle timeout=60s", "RSS=144.0 MiB PSS=96.0 MiB", "2/2 workers", "started=8 reused=27 start errors=2", "idle=5 failed/canceled=1"} {
+	for _, want := range []string{"Surge runtime personal: nodejs", "active=1 idle=1 limit=4", "idle timeout=60s", "RSS=144.0 MiB PSS=96.0 MiB", "2/2 workers", "Cgroup: used=100.0 MiB peak=120.0 MiB limit=768.0 MiB; OOM kills=2", "started=8 reused=27 start errors=2", "idle=5 failed/canceled=1"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q in plugin status:\n%s", want, output)
 		}

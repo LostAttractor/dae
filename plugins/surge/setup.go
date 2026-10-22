@@ -98,7 +98,7 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 	var releaseJQ func() error
 	defer func() {
 		if releaseJQ != nil {
-			_ = releaseJQ()
+			err = errors.Join(err, releaseJQ())
 		}
 	}()
 	for i, module := range modules {
@@ -186,8 +186,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		// Warm before publication: failure rejects this candidate, not the
 		// running generation.
 		if err := runtime.Warm(ctx); err != nil {
-			_ = runtime.Close()
-			return nil, err
+			return nil, errors.Join(err, runtime.Close())
 		}
 	}
 	engine, err := newEngine(ctx, EngineOptions{
@@ -198,7 +197,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		ScriptTimeout: conf.ScriptTimeout, Logger: services.Logger,
 	})
 	if err != nil {
-		_ = runtime.Close()
+		err = errors.Join(err, runtime.Close())
 	}
 	return engine, err
 }
@@ -215,8 +214,7 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 		}
 		if services.Metrics != nil {
 			if err := services.Metrics.Register(engine.metrics); err != nil {
-				_ = engine.Close()
-				return nil, fmt.Errorf("surge metrics: %w", err)
+				return nil, errors.Join(fmt.Errorf("surge metrics: %w", err), engine.Close())
 			}
 		}
 		logModuleStatus(engine.Status(), services.Logger, spec.ID)
