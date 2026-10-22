@@ -172,6 +172,12 @@ func (g *DialerGroup) fixedDialer() *dialer.Dialer {
 	return g.Dialers[index]
 }
 
+// SelectsPerConnection reports whether each connection picks its own node, so
+// no single node stands for the group's traffic.
+func (g *DialerGroup) SelectsPerConnection() bool {
+	return g.Kind == GroupKindSelector && g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Random
+}
+
 // SelectedDialer returns the dialer currently selected for the given network
 // type. It returns nil for policies without a stable selection (e.g. random)
 // or when no dialer is alive.

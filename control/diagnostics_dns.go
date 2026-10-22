@@ -82,15 +82,16 @@ func (c *ControlPlane) diagnosticDNSEgress(state *diagnosticState, proto consts.
 	index := diagnosticNetworkIndex(proto, consts.IpVersionFromAddr(ip))
 	switch outbound := servingOutbound(decision.outbound, *index.NetworkType(), false, c.noConnectivityOutbound, state.matcher.outboundUsable); outbound {
 	case consts.OutboundDirect:
-		return c.dnsEgress(nil, true, decision.mark), true
+		return c.dnsEgress(nil, nil, true, decision.mark), true
 	case consts.OutboundBlock:
 		return "", true
 	default:
 		if int(outbound) >= len(c.outbounds) {
 			return "", false
 		}
-		if selected := state.selected[index][uint8(outbound)]; selected != nil {
-			return c.dnsEgress(selected, false, decision.mark), true
+		group := c.outbounds[outbound]
+		if selected := state.selected[index][uint8(outbound)]; selected != nil || group.SelectsPerConnection() {
+			return c.dnsEgress(group, selected, false, decision.mark), true
 		}
 		return "", false
 	}

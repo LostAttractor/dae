@@ -110,8 +110,9 @@ concrete network, address and trusted hostname, plus the resolver identity in
 `Endpoint`: `dns://host:port` for plain DNS over UDP or TCP alike, otherwise the
 full URL including HTTP path/query. Before any cache lookup the core checks access,
 routes the candidate and selects its node, sets `Egress` to the selected node's
-physical path (or direct traffic with its effective mark), and installs dial
-callbacks bound to that selection. Groups only choose an egress and never enter
+physical path (the member paths of a group that picks a node per connection, or
+direct traffic with its effective mark), and installs dial callbacks bound to
+that selection. Groups only choose an egress and never enter
 it. Dial accounting happens only on misses. Use the prepared exchange inside
 `transport`. `DNSRequest.Upstream` and `Egress` are set at this boundary.
 
@@ -135,8 +136,8 @@ Diagnostics evaluate request middleware before upstream caches. Once the
 endpoint and every candidate's route are known, the control layer derives each
 candidate's egress from the shared route evaluator and its sampled node selection,
 and asks the host to explain the cache without I/O, LRU changes or counters.
-Candidates with different egresses, random node selection, scripts, unresolved
-endpoints and unknown response policies remain explicitly uncertain.
+Candidates with different egresses, scripts, unresolved endpoints and unknown
+response policies remain explicitly uncertain.
 
 Use exchange-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
 preserve client identity and route the selected target, with marks, accounting

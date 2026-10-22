@@ -39,8 +39,8 @@ plugins {
 Its position in the plugin list does not affect upstream caching. `size` limits entry
 count; `memory_limit` is a conservative accounted byte budget, not an RSS limit.
 LRU eviction and periodic expiration bound retained state. Cache keys include
-the egress (the selected node's physical path, or direct traffic with its
-effective mark), the resolver identity and the query
+the egress (the selected node's physical path, a `random` group's member paths,
+or direct traffic with its effective mark), the resolver identity and the query
 flags. Answers with an
 unknown egress are not cached.
 The resolver identity excludes resolved addresses: plain DNS is
@@ -76,7 +76,8 @@ failed delivery keeps them.
 Unchanged instances retain their cache and counters across reload. An answer
 applies only while its resolver and egress serve the query: after a reload,
 failover or latency switch selects another node, answers obtained through the
-previous node apply only if that node serves again. Raw answers do not depend on the plugin chain. Old entries remain subject to the same expiration
+previous node apply only if that node serves again, and a `random` group stops
+using its answers once its members change. Raw answers do not depend on the plugin chain. Old entries remain subject to the same expiration
 and capacity limits. Domain evidence persists independently.
 `dae plugins dns-cache status` reports entry count, byte usage, hits and misses.
 Static diagnostics evaluate middleware and route policy before peeking at the

@@ -8,7 +8,6 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
@@ -21,7 +20,7 @@ func (g *DialerGroup) ExplainSelection(network *common.NetworkType) (api.Explain
 	result := api.ExplainOutbound{Name: g.Name, Policy: g.DisplayPolicy(), Network: network.String(), ObservedAt: time.Now(), Nodes: make([]api.ExplainNode, 0, len(g.Dialers))}
 	var selected *dialer.Dialer
 	var randomCandidates []*dialer.Dialer
-	result.Random = g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Random
+	result.Random = g.SelectsPerConnection()
 	switch {
 	case g.closed.Load():
 	case result.Random:

@@ -2,7 +2,12 @@
 
 package dialer
 
-import "github.com/daeuniverse/dae/common/stats"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+
+	"github.com/daeuniverse/dae/common/stats"
+)
 
 // SharesRuntime identifies aliases that cannot provide independent failover.
 func (d *Dialer) SharesRuntime(other *Dialer) bool {
@@ -31,6 +36,7 @@ func (d *pathRuntime) newMember(property *Property, statsScope string) *Dialer {
 		pathRuntime:  d,
 		Property:     property,
 		stats:        dialerStats{key: key, id: stats.NodeID(key)},
+		linkDigest:   linkDigest(property.Link),
 		checkEnabled: true,
 	}
 	d.members[member] = struct{}{}
@@ -47,4 +53,13 @@ func (d *pathRuntime) membersSnapshot() []*Dialer {
 		}
 	}
 	return members
+}
+
+// LinkDigest identifies the configured path. Links may carry credentials, so
+// identities derived from them retain only this digest.
+func (d *Dialer) LinkDigest() string { return d.linkDigest }
+
+func linkDigest(link string) string {
+	digest := sha256.Sum256([]byte(link))
+	return hex.EncodeToString(digest[:])
 }

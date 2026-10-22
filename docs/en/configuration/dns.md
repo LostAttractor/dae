@@ -114,7 +114,9 @@ query; client addresses and source ports are excluded. The egress is the selecte
 node's physical path, or direct traffic with its effective mark. Outbound groups
 only choose an egress and are not part of the key: groups selecting the same node
 share answers, and a failover or reload that changes the node stops using the
-previous node's answers. The resolver identity excludes resolved addresses: plain
+previous node's answers. A `random` group picks a node per connection, so its
+traffic may leave through any member: its egress is the set of member paths, the
+group shares its answers, and a membership change stops using them. The resolver identity excludes resolved addresses: plain
 DNS is `dns://host:port` for UDP and TCP alike, other protocols keep their full
 URL. Different client-selected servers stay separate unless policy redirects them
 to the same upstream and egress. Without a selectable node the egress is unknown

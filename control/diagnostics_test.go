@@ -366,6 +366,35 @@ func (c diagnosticCache) Explain(ctx context.Context, _ api.ExplainRequest) plug
 	return plugin.Explanation{Complete: request.Egress != "", CacheHit: request.UpstreamKey() == c.cached}
 }
 
+// A random group's answers stand for the group, so its cache entry is known
+// without a sampled node.
+func TestDiagnosticsDNSCacheOfRandomGroup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		plane, group := checkedPlane(t, consts.DialerSelectionPolicy_Random, new(checkedTransport), new(checkedTransport))
+		time.Sleep(time.Second)
+		synctest.Wait()
+		c := diagnosticPlane(t, "dip(203.0.113.53) -> proxy", "")
+		// The fixture's nodes serve TCP only; its UDP transport is blocked.
+		c.outbounds, c.noConnectivityOutbound = plane.outbounds, consts.OutboundBlock
+		cached := plugin.DNSUpstreamKey{Egress: c.dnsEgress(group, group.Dialers[0], false, 0), Endpoint: "dns://resolver.example:53"}
+		host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "cache", Type: "fixture", Plugin: diagnosticCache{cached}}, mitm.Instance{ID: "resolver", Type: "fixture", Plugin: diagnosticTransports{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer host.Close()
+		c.mitmHost = host
+		request := diagnosticRequest()
+		request.Kind = "dns"
+		request.Flow.Protocol = "udp"
+		request.Flow.Destination.Port = 53
+		request.DNS = &api.DiagnosticDNS{Name: "target.example", Type: "A"}
+		response, err := c.Explain(t.Context(), request, false)
+		if err != nil || !response.Current.Decision.Complete || len(response.Current.Decision.Targets) != 0 {
+			t.Fatalf("random group cache hit was not determined: %+v, %v", response.Current.Decision, err)
+		}
+	})
+}
+
 func TestDiagnosticsDNSCacheCoversTransportsSharingAnEgress(t *testing.T) {
 	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	proxy := downloadTestGroup(t, "proxy", unused)
@@ -377,7 +406,7 @@ func TestDiagnosticsDNSCacheCoversTransportsSharingAnEgress(t *testing.T) {
 		{"dip(203.0.113.53) -> direct(mark:91)", "direct/91", true},
 		{"dip(203.0.113.53) && l4proto(tcp) -> direct(mark:92)\ndip(203.0.113.53) -> direct(mark:91)", "direct/91", false},
 		// The sampled node, not the group, identifies a proxied resolver.
-		{"dip(203.0.113.53) -> proxy", new(ControlPlane).dnsEgress(proxy.Dialers[0], false, 0), true},
+		{"dip(203.0.113.53) -> proxy", new(ControlPlane).dnsEgress(proxy, proxy.Dialers[0], false, 0), true},
 	} {
 		c := diagnosticPlane(t, test.rules, "")
 		c.outbounds = []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), proxy}

@@ -28,8 +28,9 @@ type DNSRequest struct {
 	// derived by plugins isolate it; raw upstream answers do not depend on it.
 	Chain uint64
 	// Egress identifies the network position an upstream answer stands for:
-	// the selected node's physical path, or direct traffic with its mark.
-	// Outbound groups only choose an egress and never enter it. Empty is unknown. It
+	// the selected node's physical path, the member paths of a group that picks
+	// a node per connection, or direct traffic with its mark. Outbound groups
+	// otherwise only choose an egress and never enter it. Empty is unknown. It
 	// is set only at the upstream exchange boundary.
 	Egress string
 	// Upstream identifies the resolver that answers; see DNSUpstream.Endpoint.

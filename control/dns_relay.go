@@ -4,8 +4,6 @@ package control
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -106,7 +105,7 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 		if err != nil {
 			return nil, err
 		}
-		query.Egress = c.dnsEgress(option.Dialer, option.Direct, option.Mark)
+		query.Egress = c.dnsEgress(option.Outbound, option.Dialer, option.Direct, option.Mark)
 		query.DialContext, query.ListenPacket = c.dnsDialers(identity, func(_ context.Context, network, address, hostname string) (*DialOption, error) {
 			if network != upstream.Network || address != upstream.Address.String() || hostname != upstream.Hostname {
 				return nil, errors.New("DNS transport changed its prepared upstream")
@@ -123,17 +122,20 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 
 // dnsEgress identifies the network position an answer stands for: the
 // selected proxy path, or direct traffic with its effective mark. A failover
-// or reload that changes the node changes the egress.
-func (c *ControlPlane) dnsEgress(path *dialer.Dialer, direct bool, mark uint32) string {
+// or reload that changes the node changes the egress. A group that picks a
+// node per connection stands for all its members: its traffic takes any of
+// them regardless of the node that carried the query.
+func (c *ControlPlane) dnsEgress(group *outbound.DialerGroup, path *dialer.Dialer, direct bool, mark uint32) string {
 	if direct {
 		if mark == 0 {
 			mark = c.soMarkFromDae
 		}
 		return "direct/" + strconv.FormatUint(uint64(mark), 10)
 	}
-	// Links may carry credentials; only their digest is retained.
-	digest := sha256.Sum256([]byte(path.Link))
-	return "path/" + hex.EncodeToString(digest[:])
+	if group.SelectsPerConnection() {
+		return "proxy/" + group.PathsDigest()
+	}
+	return "proxy/" + path.LinkDigest()
 }
 
 // dnsUpstreamOption routes one DNS dial and selects its node.
@@ -407,7 +409,8 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		refreshRead()
 		return nil
 	}
-	// A retained stream belongs to one egress and resolver address.
+	// A retained stream belongs to one egress and resolver address. A group
+	// picking nodes per connection keeps the node its stream opened with.
 	type streamKey struct {
 		egress      string
 		destination netip.AddrPort
@@ -426,23 +429,28 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			stream.close()
 		}
 	}()
+	exchangeOnce := func(operation context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
+		if err != nil {
+			return nil, err
+		}
+		stream := newDNSStream(upstream, func([]byte) error { return nil }, func() {})
+		defer stream.close()
+		return stream.exchange(operation, request)
+	}
 	terminal := func(operation context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		if request.Independent() {
-			upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
-			if err != nil {
-				return nil, err
-			}
-			stream := newDNSStream(upstream, func([]byte) error { return nil }, func() {})
-			defer stream.close()
-			return stream.exchange(operation, request)
+			return exchangeOnce(operation, request)
 		}
 		streamsMu.Lock()
 		key := streamKey{request.Egress, request.Destination}
 		stream := streams[key]
 		if stream == nil {
+			// Retained streams are bounded; further egresses, e.g. after
+			// repeated node switches, exchange on their own connection.
 			if len(streams) >= 16 {
 				streamsMu.Unlock()
-				return nil, fmt.Errorf("too many DNS destinations on one connection")
+				return exchangeOnce(operation, request)
 			}
 			upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
 			if err != nil {

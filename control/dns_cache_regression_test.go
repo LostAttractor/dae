@@ -4,11 +4,14 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -31,6 +34,94 @@ func (cachePolicyDNSRedirect) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler 
 		r.Destination = netip.MustParseAddrPort("192.0.2.54:53")
 		return next(ctx, r)
 	}
+}
+
+// A random group's answers stand for the group, so one TCP client connection
+// keeps one upstream stream per resolver whichever node each query picks.
+func TestRandomGroupTCPDNSKeepsOneUpstreamStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := new(checkedTransport)
+		plane, _ := checkedPlane(t, consts.DialerSelectionPolicy_Random, slices.Repeat([]*checkedTransport{transport}, 17)...)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		host, err := mitm.New(mitm.Options{DisableHTTP: true}, mitm.Instance{ID: "cache", Plugin: integrationDNSPlugin(t, cache.Plugin, "")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plane.mitmHost, plane.deviceRoutes, plane.dnsRelay = host, new(deviceRoutes), newDNSRelay()
+		plane.routingMatcher, _ = routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
+		client, server := net.Pipe()
+		served := make(chan error, 1)
+		go func() {
+			served <- plane.serveDNSTCP(server, netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("192.0.2.53:53"),
+				routingResult{CaptureFlags: captureDNS, Outbound: 2})
+		}()
+		for i := range 20 {
+			if err := netutils.WriteDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("n%d.example.", i), uint16(i+1)))); err != nil {
+				t.Fatal(err)
+			}
+			wire, err := netutils.ReadDNSFrame(client)
+			if err != nil {
+				t.Fatalf("query %d: %v", i, err)
+			}
+			if m := unpackDNSMessage(wire); len(m.Answer) != 1 {
+				t.Fatalf("query %d: %s", i, m)
+			}
+		}
+		_ = client.Close()
+		<-served
+		_ = host.Close()
+		plane.dnsRelay.Close()
+		if count, _ := transport.dials.Load("192.0.2.53:53"); count == nil || count.(*atomic.Int32).Load() != 1 {
+			t.Fatalf("resolver dials = %v, want one stream", count)
+		}
+	})
+}
+
+// Retained upstream streams are bounded per client connection. Queries for
+// further egresses, e.g. after repeated node switches, exchange on their own
+// upstream connection instead of failing the client connection.
+func TestTCPDNSBeyondRetainedStreamsExchangesOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport := new(checkedTransport)
+		plane, group := checkedPlane(t, consts.DialerSelectionPolicy_Selector, slices.Repeat([]*checkedTransport{transport}, 18)...)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		host, err := mitm.New(mitm.Options{DisableHTTP: true}, mitm.Instance{ID: "cache", Plugin: integrationDNSPlugin(t, cache.Plugin, "")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer host.Close()
+		plane.mitmHost, plane.deviceRoutes, plane.dnsRelay = host, new(deviceRoutes), newDNSRelay()
+		plane.routingMatcher, _ = routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
+		client, server := net.Pipe()
+		served := make(chan error, 1)
+		go func() {
+			served <- plane.serveDNSTCP(server, netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("192.0.2.53:53"),
+				routingResult{CaptureFlags: captureDNS, Outbound: 2})
+		}()
+		for i, node := range group.Dialers {
+			if err := group.SetSelection(node.StatsID()); err != nil {
+				t.Fatal(err)
+			}
+			// A manual choice serves once its check completes.
+			time.Sleep(time.Second)
+			synctest.Wait()
+			if err := netutils.WriteDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("n%d.example.", i), uint16(i+1)))); err != nil {
+				t.Fatal(err)
+			}
+			wire, err := netutils.ReadDNSFrame(client)
+			if err != nil {
+				t.Fatalf("query through node %d: %v", i, err)
+			}
+			if m := unpackDNSMessage(wire); len(m.Answer) != 1 {
+				t.Fatalf("query through node %d: %s", i, m)
+			}
+		}
+		_ = client.Close()
+		<-served
+		plane.dnsRelay.Close()
+	})
 }
 
 func TestDNSRetainedTCPStreamDoesNotPoisonNewRoute(t *testing.T) {

@@ -18,7 +18,8 @@ import (
 type Dialer struct {
 	*pathRuntime
 	*Property
-	stats dialerStats
+	stats      dialerStats
+	linkDigest string
 	// Member state is protected by the shared runtime's mu.
 	group        *groupBinding
 	checkEnabled bool

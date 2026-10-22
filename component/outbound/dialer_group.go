@@ -6,9 +6,13 @@
 package outbound
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -45,6 +49,7 @@ type DialerGroup struct {
 	automatic       *automaticSelection
 	selectionIndex  int
 	connections     connectionPolicy
+	pathsDigest     string
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
 	// mu serializes selection, connection generations and availability publication.
@@ -154,6 +159,7 @@ func NewDialerGroup(
 		Dialers:            dialers,
 		selectionPolicy:    selectionPolicy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
+		pathsDigest:        pathsDigest(dialers),
 	}
 	g.selectionIndex = selectionPolicy.FixedIndex
 
@@ -189,6 +195,23 @@ func NewDialerGroup(
 	}
 
 	return g
+}
+
+// PathsDigest identifies the set of member paths regardless of order; with one
+// distinct path, it is that path's LinkDigest.
+func (g *DialerGroup) PathsDigest() string { return g.pathsDigest }
+
+func pathsDigest(dialers []*dialer.Dialer) string {
+	digests := make([]string, 0, len(dialers))
+	for _, d := range dialers {
+		digests = append(digests, d.LinkDigest())
+	}
+	slices.Sort(digests)
+	if digests = slices.Compact(digests); len(digests) == 1 {
+		return digests[0]
+	}
+	digest := sha256.Sum256([]byte(strings.Join(digests, "\n")))
+	return hex.EncodeToString(digest[:])
 }
 
 func (g *DialerGroup) SetTargetMetadata(kind TargetKind) *DialerGroup {
