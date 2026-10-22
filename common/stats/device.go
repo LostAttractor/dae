@@ -16,6 +16,14 @@ func (s *Store) OpenDeviceConnection(path Path, fallback bool, mac [6]byte) *Con
 	if mac == [6]byte{} || mac[0]&1 != 0 {
 		return connection
 	}
+	s.devicesMu.RLock()
+	if device := s.devices[mac]; device != nil {
+		// Device removal excludes this read lock.
+		connection.device = device.OpenConnection(path, fallback)
+		s.devicesMu.RUnlock()
+		return connection
+	}
+	s.devicesMu.RUnlock()
 	// Use the process sampler's boundaries, including empty earlier samples,
 	// so device and global histories describe the same five-second windows.
 	s.samplingMu.RLock()

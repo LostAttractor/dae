@@ -109,20 +109,20 @@ func pathLabelValues(path Path) []string {
 	return []string{path.NodeID, path.Outbound, path.Subtag, path.Dialer, path.Network.String()}
 }
 
+// Dial and error labels are created during admission, so retirement cannot
+// delete a path's labels while they are being recreated.
 func (s *Store) RecordDial(path Path, elapsed time.Duration) {
-	s.pathsMu.Lock()
-	defer s.pathsMu.Unlock()
-	counters := s.pathCountersLocked(path)
-	s.track(counters)
-	s.metrics.dialDuration.WithLabelValues(pathLabelValues(path)...).Observe(elapsed.Seconds())
+	s.admitPath(path, func(counters *pathCounters) {
+		s.track(counters)
+		s.metrics.dialDuration.WithLabelValues(pathLabelValues(path)...).Observe(elapsed.Seconds())
+	})
 }
 
 func (s *Store) RecordError(path Path) {
-	s.pathsMu.Lock()
-	defer s.pathsMu.Unlock()
-	counters := s.pathCountersLocked(path)
-	s.track(counters)
-	s.metrics.errors.WithLabelValues(pathLabelValues(path)...).Inc()
+	s.admitPath(path, func(counters *pathCounters) {
+		s.track(counters)
+		s.metrics.errors.WithLabelValues(pathLabelValues(path)...).Inc()
+	})
 }
 
 func boolValue(value bool) float64 {

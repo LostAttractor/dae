@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math"
 	"math/bits"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,23 +65,35 @@ type Connection struct {
 	externalInvalid      bool
 }
 
-// pathsMu protects admission against retirement; live payload updates stay atomic.
-func (s *Store) pathCountersLocked(path Path) *pathCounters {
+// admitPath runs admit while retirement is excluded, so a path cannot retire
+// between lookup and admission. Existing paths need only the read lock; live
+// payload updates stay atomic.
+func (s *Store) admitPath(path Path, admit func(*pathCounters)) {
+	s.pathsMu.RLock()
+	if counters := s.paths[path]; counters != nil {
+		admit(counters)
+		s.pathsMu.RUnlock()
+		return
+	}
+	s.pathsMu.RUnlock()
+	s.pathsMu.Lock()
+	defer s.pathsMu.Unlock()
 	counters := s.paths[path]
 	if counters == nil {
 		counters = &pathCounters{path: path}
 		s.paths[path] = counters
 		s.pathPeak = max(s.pathPeak, len(s.paths))
 	}
-	return counters
+	admit(counters)
 }
 
 func (s *Store) OpenConnection(path Path, directFallback bool) *Connection {
-	s.pathsMu.Lock()
-	defer s.pathsMu.Unlock()
-	counters := s.pathCountersLocked(path)
-	counters.total.Add(1)
-	counters.active.Add(1)
+	var counters *pathCounters
+	s.admitPath(path, func(admitted *pathCounters) {
+		admitted.total.Add(1)
+		admitted.active.Add(1)
+		counters = admitted
+	})
 	var totals *pathCounters
 	if path.Network.Valid() {
 		totals = &s.networks[path.Network]
@@ -258,11 +271,21 @@ func (s *Store) sampleAt(now time.Time) {
 	}
 	s.completedSamples++
 	s.retirePaths()
+	// Sample devices without excluding admission to known devices; only the
+	// removal of idle devices excludes it.
+	s.devicesMu.RLock()
+	devices := slices.Collect(maps.Values(s.devices))
+	s.devicesMu.RUnlock()
+	for _, device := range devices {
+		device.sampleAt(now)
+	}
 	s.devicesMu.Lock()
 	defer s.devicesMu.Unlock()
 	for mac, device := range s.devices {
-		device.sampleAt(now)
-		if len(device.paths) == 0 {
+		device.pathsMu.RLock()
+		idle := len(device.paths) == 0
+		device.pathsMu.RUnlock()
+		if idle {
 			delete(s.devices, mac)
 		}
 	}
