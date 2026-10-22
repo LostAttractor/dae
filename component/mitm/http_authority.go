@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/quic-go/http3"
 )
 
 type httpAuthority struct {
@@ -83,9 +84,13 @@ func admitRequestAuthority(r *http.Request, scheme string, flow plugin.Flow) (pl
 	return flow, ""
 }
 
-// HTTP/2 and HTTP/3 preserve :scheme in URL, as does HTTP/1 absolute-form.
+// HTTP/3 preserves :scheme in the request context; HTTP/2 uses URL.Scheme,
+// as does HTTP/1 absolute-form.
 // HTTP/1 origin-form inherits the intercepted connection's scheme.
 func requestScheme(r *http.Request, connectionScheme string) string {
+	if scheme, ok := r.Context().Value(http3.RequestSchemeContextKey).(string); ok && scheme != "" {
+		return scheme
+	}
 	if r.URL.Scheme != "" {
 		return r.URL.Scheme
 	}
