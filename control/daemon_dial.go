@@ -42,7 +42,7 @@ func (c *ControlPlane) DNSResolverDialer() netutils.ResolverDialContext {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		option, err := c.selectRoutedAddress(network, netip.AddrPort{}, identity, "", server)
+		option, err := c.selectRoutedAddress(ctx, network, netip.AddrPort{}, identity, "", server)
 		if err != nil {
 			return nil, err
 		}

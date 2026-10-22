@@ -5,6 +5,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -246,7 +247,7 @@ func TestContinuousSinglePrimaryKeepsLowerTierWarm(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		high, low := new(failoverTransport), new(failoverTransport)
 		high.delay.Store(int64(time.Millisecond))
-		low.delay.Store(int64(10 * time.Millisecond))
+		low.delay.Store(int64(50 * time.Millisecond))
 		annotations := emptyAnnotations(2)
 		annotations[0].Priority = 1
 		policy := testFailoverPolicy()
@@ -267,14 +268,28 @@ func TestContinuousSinglePrimaryKeepsLowerTierWarm(t *testing.T) {
 		if low.attempts.Load() <= before {
 			t.Fatal("backup did not receive ongoing health checks")
 		}
+		// Fail the primary just after a periodic backup check, so the next
+		// periodic check cannot overlap the takeover.
+		before = low.attempts.Load()
+		for low.attempts.Load() == before {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(60 * time.Millisecond)
+		synctest.Wait()
+		before = low.attempts.Load()
 		high.offline.Store(true)
 		g.Dialers[0].ReportDataPlaneError(errors.New("primary failed"))
 		time.Sleep(5 * time.Millisecond)
 		synctest.Wait()
 		began := time.Now()
-		selected, err := g.Select(testNetworkType)
-		if err != nil || selected != g.Dialers[1] || time.Since(began) > 30*time.Millisecond {
+		selected, err := g.Select(t.Context(), testNetworkType)
+		if err != nil || selected != g.Dialers[1] || time.Since(began) != 0 {
 			t.Fatalf("warm failover = %v, %v after %v", selected, err, time.Since(began))
+		}
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		if got := low.attempts.Load() - before; got != 1 || g.SelectedDialer(testNetworkType) != g.Dialers[1] {
+			t.Fatalf("takeover verified the backup with %d probes, want one", got)
 		}
 	})
 }
@@ -363,7 +378,7 @@ func TestFailoverReleasesOnlyIdleUnselectedTransports(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		if g.SelectedDialer(common.NetworkTCP4.NetworkType()) != nodes[0] {
-			t.Fatal("physical generation proof was lost before selection")
+			t.Fatal("selected physical generation was lost before selection")
 		}
 		if a.created.Load()-a.closed.Load() != 1 || b.created.Load() != b.closed.Load() {
 			t.Fatalf("physical sessions: selected=%d/%d standby=%d/%d", a.created.Load(), a.closed.Load(), b.created.Load(), b.closed.Load())
@@ -393,7 +408,7 @@ func TestFailoverReleasesOnlyIdleUnselectedTransports(t *testing.T) {
 	})
 }
 
-func TestFailoverVerifiesCachedPeerAndFallsBackToDegraded(t *testing.T) {
+func TestFailoverVerifiesStalePeerAfterTakeover(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, b := new(failoverTransport), new(failoverTransport)
 		a.delay.Store(int64(time.Millisecond))
@@ -405,11 +420,17 @@ func TestFailoverVerifiesCachedPeerAndFallsBackToDegraded(t *testing.T) {
 		synctest.Wait()
 		b.offline.Store(true)
 		a.offline.Store(true)
+		before := b.attempts.Load()
 		g.Dialers[0].ReportDataPlaneError(errors.New("upstream lost"))
+		time.Sleep(5 * time.Millisecond)
+		synctest.Wait()
+		if g.SelectedDialer(common.NetworkTCP4.NetworkType()) != g.Dialers[1] {
+			t.Fatal("alive peer did not take over before its verification")
+		}
 		time.Sleep(300 * time.Millisecond)
 		synctest.Wait()
-		if g.SelectedDialer(common.NetworkTCP4.NetworkType()) != nil {
-			t.Fatal("stale healthy peer was selected without verification")
+		if g.SelectedDialer(common.NetworkTCP4.NetworkType()) != nil || b.attempts.Load() == before {
+			t.Fatal("failed verification did not remove the stale peer")
 		}
 		b.offline.Store(false)
 		time.Sleep(2 * time.Second)
@@ -422,12 +443,18 @@ func TestFailoverVerifiesCachedPeerAndFallsBackToDegraded(t *testing.T) {
 
 func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a, b := new(failoverTransport), new(failoverTransport)
+		a, b, low := new(failoverTransport), new(failoverTransport), new(failoverTransport)
 		a.delay.Store(int64(time.Millisecond))
 		b.delay.Store(int64(20 * time.Millisecond))
-		g := failoverGroup(t, testFailoverPolicy(), nil, a, b)
+		annotations := emptyAnnotations(3)
+		annotations[0].Priority, annotations[1].Priority = 1, 1
+		g := newFailoverTestGroup(t, testFailoverPolicy(), annotations, true, a, b, low)
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
+		if g.Dialers[1].Alive(testNetworkType) || g.Dialers[2].Alive(testNetworkType) {
+			t.Fatal("fixture left an unmonitored failover peer awake")
+		}
+		lowBefore := low.attempts.Load()
 		var down atomic.Int32
 		detach, err := g.ObserveConnectivity(func(update Connectivity) error {
 			if !update.Available && update.Network.Index() == common.NetworkTCP4 {
@@ -447,7 +474,10 @@ func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 			t.Fatal("replacement transiently published direct fallback")
 		}
 		result := make(chan ConnectionSelection, 1)
-		go func() { selected, _ := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true); result <- selected }()
+		go func() {
+			selected, _ := g.SelectConnection(t.Context(), *common.NetworkTCP4.NetworkType(), true)
+			result <- selected
+		}()
 		synctest.Wait()
 		select {
 		case <-result:
@@ -459,10 +489,49 @@ func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 		if selected := <-result; selected.Dialer != g.Dialers[1] || down.Load() != 0 {
 			t.Fatal("bounded selection lost original outbound admission")
 		}
+		if low.attempts.Load() != lowBefore {
+			t.Fatal("election tested a lower tier before the serving tier")
+		}
 	})
 }
 
-func TestRecoveryEndpointProofPromotesWithoutAnotherProbe(t *testing.T) {
+// A takeover by a lower tier serves at once and tests an untested better
+// tier without waiting for the upgrade interval.
+func TestLowerTierTakeoverTestsUntestedTierAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b, low := new(failoverTransport), new(failoverTransport), new(failoverTransport)
+		a.delay.Store(int64(time.Millisecond))
+		b.delay.Store(int64(20 * time.Millisecond))
+		annotations := emptyAnnotations(3)
+		annotations[0].Priority, annotations[1].Priority = 2, 1
+		g := newFailoverTestGroup(t, testFailoverPolicy(), annotations, true, a, b, low)
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		if b.attempts.Load() != 0 {
+			t.Fatal("fixture tested the middle tier")
+		}
+		// Another owner keeps the lowest tier alive.
+		release, err := g.Dialers[2].Check(t.Context(), common.NetworkTCP4, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		a.offline.Store(true)
+		g.Dialers[0].ReportDataPlaneError(errors.New("upstream lost"))
+		time.Sleep(5 * time.Millisecond)
+		synctest.Wait()
+		if g.SelectedDialer(testNetworkType) != g.Dialers[2] {
+			t.Fatal("the alive lower tier did not take over")
+		}
+		time.Sleep(100 * time.Millisecond)
+		synctest.Wait()
+		if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
+			t.Fatal("the untested middle tier was not tested at once")
+		}
+	})
+}
+
+func TestRecoveryEndpointCheckPromotesWithoutAnotherProbe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		high, low := new(failoverTransport), new(failoverTransport)
 		high.offline.Store(true)
@@ -496,7 +565,7 @@ func TestRecoveryEndpointProofPromotesWithoutAnotherProbe(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 		synctest.Wait()
 		began := time.Now()
-		selected, err := g.Select(testNetworkType)
+		selected, err := g.Select(t.Context(), testNetworkType)
 		if err != nil || selected != g.Dialers[1] || time.Since(began) != 0 {
 			t.Fatal("business waited for recovery or switched before endpoint verification")
 		}
@@ -552,7 +621,7 @@ func TestElectionReturnsOnFirstVerifiedPeer(t *testing.T) {
 		slow.delay.Store(int64(90 * time.Millisecond))
 		g := failoverGroup(t, testFailoverPolicy(), nil, fast, slow)
 		began := time.Now()
-		selected, err := g.Select(testNetworkType)
+		selected, err := g.Select(t.Context(), testNetworkType)
 		if err != nil || selected != g.Dialers[0] || time.Since(began) > 5*time.Millisecond {
 			t.Fatalf("selection waited for slow peer: %v, %v after %v", selected, err, time.Since(began))
 		}
@@ -568,7 +637,7 @@ func TestElectionDoesNotWaitForDominatedOffset(t *testing.T) {
 		annotations[1].AddLatency = time.Second
 		g := failoverGroup(t, testFailoverPolicy(), annotations, fast, slow)
 		began := time.Now()
-		selected, err := g.Select(testNetworkType)
+		selected, err := g.Select(t.Context(), testNetworkType)
 		if err != nil || selected != g.Dialers[0] || time.Since(began) > 5*time.Millisecond {
 			t.Fatalf("dominated candidate delayed selection: %v, %v after %v", selected, err, time.Since(began))
 		}
@@ -618,70 +687,95 @@ func TestRecoveryFailureRestartsTheWholeWindow(t *testing.T) {
 	})
 }
 
-func TestElectionRetainsRunnerUpWhenBestProofExpires(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		best, backup, pending := new(failoverTransport), new(failoverTransport), new(failoverTransport)
-		best.delay.Store(int64(time.Millisecond))
-		backup.delay.Store(int64(10 * time.Millisecond))
-		pending.delay.Store(int64(80 * time.Millisecond))
-		pending.offline.Store(true)
-		annotations := emptyAnnotations(3)
-		annotations[2].AddLatency = -time.Second
-		g := failoverGroup(t, testFailoverPolicy(), annotations, best, backup, pending)
-		time.Sleep(30 * time.Millisecond)
-		synctest.Wait()
-		if g.SelectedDialer(testNetworkType) != nil || !g.Dialers[1].Usable(testNetworkType) {
-			t.Fatal("election did not wait with a verified runner-up")
-		}
-		best.offline.Store(true)
-		g.Dialers[0].ReportDataPlaneError(errors.New("best failed while weighted peer was pending"))
-		time.Sleep(100 * time.Millisecond)
-		synctest.Wait()
-		if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
-			t.Fatal("expired best proof hid an already verified runner-up")
-		}
-	})
-}
-
-func TestSelectionWaitBudgetSurvivesElectionReplacement(t *testing.T) {
-	for name, selectPath := range map[string]func(*DialerGroup){
-		"Select":        func(g *DialerGroup) { _, _ = g.Select(testNetworkType) },
-		"strict IP":     func(g *DialerGroup) { _, _ = g.SelectConnection(*testNetworkType, true) },
-		"both families": func(g *DialerGroup) { _, _ = g.SelectConnection(*testNetworkType, false) },
-	} {
-		t.Run(name, func(t *testing.T) {
+// The first alive candidate serves at once. The election continues and
+// commits a later result only when it is strictly better.
+func TestElectionServesFirstAliveThenCommitsOnlyBetter(t *testing.T) {
+	for _, weightedOnline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "runner-up", true: "better"}[weightedOnline], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				policy := testFailoverPolicy()
-				g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector, nil, nil, policy)
-				defer g.Close()
-				// Hold publication while simulating canceled/replaced background
-				// jobs. A waiting request must keep its original deadline.
-				g.automatic.started = true
-				done := make(chan time.Duration, 1)
-				go func() {
-					began := time.Now()
-					selectPath(g)
-					done <- time.Since(began)
-				}()
-				for range 3 {
-					time.Sleep(policy.SelectionTimeout / 2)
-					g.automatic.mu.Lock()
-					for network := range common.NetworkIndex(common.NetworkTypeCount) {
-						g.automatic.changedLocked(network)
-					}
-					g.automatic.mu.Unlock()
-				}
+				best, backup, weighted := new(failoverTransport), new(failoverTransport), new(failoverTransport)
+				best.delay.Store(int64(time.Millisecond))
+				backup.delay.Store(int64(10 * time.Millisecond))
+				// Untested families are discovered one after another; both
+				// fit in the probe timeout.
+				weighted.delay.Store(int64(40 * time.Millisecond))
+				weighted.offline.Store(!weightedOnline)
+				annotations := emptyAnnotations(3)
+				annotations[2].AddLatency = -time.Second
+				g := failoverGroup(t, testFailoverPolicy(), annotations, best, backup, weighted)
+				time.Sleep(30 * time.Millisecond)
 				synctest.Wait()
-				select {
-				case elapsed := <-done:
-					if elapsed != policy.SelectionTimeout {
-						t.Fatalf("waited %v, want one shared budget of %v", elapsed, policy.SelectionTimeout)
+				if g.SelectedDialer(testNetworkType) != g.Dialers[0] {
+					t.Fatal("an alive candidate did not serve while the election continued")
+				}
+				if weightedOnline {
+					time.Sleep(100 * time.Millisecond)
+					synctest.Wait()
+					if g.SelectedDialer(testNetworkType) != g.Dialers[2] {
+						t.Fatal("the election did not commit a better candidate after the takeover")
 					}
-				default:
-					t.Fatal("request outlived selection_timeout across election changes")
+					return
+				}
+				best.offline.Store(true)
+				g.Dialers[0].ReportDataPlaneError(errors.New("best failed while weighted peer was pending"))
+				time.Sleep(100 * time.Millisecond)
+				synctest.Wait()
+				if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
+					t.Fatal("a failed best candidate hid an already tested runner-up")
 				}
 			})
 		})
+	}
+}
+
+func TestSelectionWaitBudgetSurvivesElectionReplacement(t *testing.T) {
+	for name, selectPath := range map[string]func(context.Context, *DialerGroup){
+		"Select":        func(ctx context.Context, g *DialerGroup) { _, _ = g.Select(ctx, testNetworkType) },
+		"strict IP":     func(ctx context.Context, g *DialerGroup) { _, _ = g.SelectConnection(ctx, *testNetworkType, true) },
+		"both families": func(ctx context.Context, g *DialerGroup) { _, _ = g.SelectConnection(ctx, *testNetworkType, false) },
+	} {
+		for _, deadline := range []time.Duration{0, 10 * time.Millisecond} {
+			t.Run(fmt.Sprint(name, " deadline=", deadline), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					policy := testFailoverPolicy()
+					g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector, nil, nil, policy)
+					defer g.Close()
+					// Hold publication while simulating canceled/replaced background
+					// jobs. A waiting request must keep its original deadline.
+					g.automatic.started = true
+					want, ctx := policy.SelectionTimeout, t.Context()
+					if deadline != 0 {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, deadline)
+						defer cancel()
+						want = deadline
+					}
+					done := make(chan time.Duration, 1)
+					go func() {
+						began := time.Now()
+						selectPath(ctx, g)
+						done <- time.Since(began)
+					}()
+					for range 3 {
+						time.Sleep(policy.SelectionTimeout / 2)
+						g.automatic.mu.Lock()
+						for network := range common.NetworkIndex(common.NetworkTypeCount) {
+							g.automatic.changedLocked(network)
+						}
+						g.automatic.mu.Unlock()
+					}
+					synctest.Wait()
+					select {
+					case elapsed := <-done:
+						if elapsed != want {
+							t.Fatalf("waited %v, want one shared budget of %v", elapsed, want)
+						}
+					default:
+						t.Fatal("request outlived its budget across election changes")
+					}
+				})
+			})
+		}
 	}
 }
 
@@ -713,6 +807,74 @@ func TestContinuousMonitoringOwnsKnownCapabilityChecks(t *testing.T) {
 		synctest.Wait()
 		if g.SelectedDialer(testNetworkType) != g.Dialers[0] {
 			t.Fatal("continuous samples did not promote the newly eligible priority")
+		}
+	})
+}
+
+// A network served without an election, e.g. by a peer that is alive for
+// another group or by monitored paths recovering after an outage, elects at
+// once when its path fails instead of waiting out earlier elections' backoff.
+func TestServedNetworkElectsWithoutEarlierBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		primary, backup := new(failoverTransport), new(failoverTransport)
+		annotations := emptyAnnotations(2)
+		annotations[0].Priority = 10
+		policy := testFailoverPolicy()
+		policy.UpgradeIntervalMax = time.Hour
+		// Recreatable paths sleep: the backup is not alive and needs an election.
+		g := newFailoverTestGroup(t, policy, annotations, true, primary, backup)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		g.automatic.mu.Lock()
+		state := &g.automatic.networks[common.NetworkTCP4]
+		state.retryAt, state.retryDelay = time.Now().Add(time.Hour), time.Hour
+		g.automatic.mu.Unlock()
+		g.DialerChanged(g.Dialers[0], dialer.SelectionForceNone)
+		primary.offline.Store(true)
+		g.Dialers[0].ReportDataPlaneError(errors.New("upstream failed"))
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
+			t.Fatal("a served network waited out the backoff of earlier elections")
+		}
+	})
+}
+
+// A forced decision ignores the tolerance once; later samples apply it again.
+func TestForcedSelectionAppliesToOneDecision(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b := new(failoverTransport), new(failoverTransport)
+		a.delay.Store(int64(10 * time.Millisecond))
+		b.delay.Store(int64(30 * time.Millisecond))
+		option := &dialer.GlobalOption{CheckInterval: time.Second, CheckIntervalMax: time.Hour, CheckTolerance: 50 * time.Millisecond,
+			CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1", "::1"}}}
+		var nodes []*dialer.Dialer
+		for i, transport := range []*failoverTransport{a, b} {
+			runtime := netproxy.NewRuntime(netproxy.Layer{Data: transport})
+			nodes = append(nodes, dialer.NewDialer(runtime, option, &dialer.Property{Name: string(rune('a' + i)), Link: t.Name() + string(rune('a'+i))}, true, ""))
+		}
+		policy := testFailoverPolicy()
+		policy.Policy = consts.DialerSelectionPolicy_MinLastLatency
+		g := NewDialerGroup(option, t.Name(), GroupKindSelector, nodes, emptyAnnotations(2), policy)
+		defer g.Close()
+		start := make(chan struct{})
+		if _, err := g.StartConnectivityChecks(start); err != nil {
+			t.Fatal(err)
+		}
+		close(start)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		g.EnableSelectionTolerance()
+		if g.SelectedDialer(testNetworkType) != g.Dialers[0] {
+			t.Fatal("the faster path was not selected")
+		}
+		// b confirms a capability; the decision it forces keeps the faster a.
+		g.DialerChanged(g.Dialers[1], dialer.SelectionForceFor(common.NetworkTCP4))
+		b.delay.Store(int64(5 * time.Millisecond))
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if g.SelectedDialer(testNetworkType) != g.Dialers[0] {
+			t.Fatal("a sample within the tolerance switched paths after a forced decision")
 		}
 	})
 }

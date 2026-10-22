@@ -38,13 +38,13 @@ func TestManualSelectorPublishesConnectivityAndRetainsUnavailableChoice(t *testi
 	if g.Selection() != paths[1].StatsID() || g.SelectedDialer(testNetworkType) != nil {
 		t.Fatal("requested selection must remain visible while the path is unavailable")
 	}
-	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+	if _, err := g.Select(t.Context(), testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
 		t.Fatalf("unavailable selector used another path: %v", err)
 	}
 	if err := g.SetSelection(""); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := g.Select(testNetworkType)
+	selected, err := g.Select(t.Context(), testNetworkType)
 	if err != nil || selected != paths[0] {
 		t.Fatalf("reset = %v, %v", selected, err)
 	}
@@ -170,7 +170,7 @@ func TestManualSelectorConcurrentSelectionAndConnectivity(t *testing.T) {
 			if g.Selection() == "" || g.SelectedDialer(testNetworkType) == nil {
 				t.Error("concurrent switch lost selection")
 			}
-			if _, err := g.Select(testNetworkType); err != nil {
+			if _, err := g.Select(t.Context(), testNetworkType); err != nil {
 				t.Error(err)
 			}
 		}

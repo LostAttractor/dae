@@ -232,7 +232,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane.outbounds[0].SetConnectionPolicy(true, true)
-	groupSelection, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+	groupSelection, _ := plane.outbounds[0].SelectConnection(t.Context(), *common.NetworkUDP4.NetworkType(), true)
 	handler := plane.apiHandler("test", testClientIngress, nil, nil)
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)

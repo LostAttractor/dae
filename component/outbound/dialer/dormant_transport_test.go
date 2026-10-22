@@ -114,7 +114,7 @@ func TestDormantTransportPreservesReadinessAcrossGenerations(t *testing.T) {
 	})
 }
 
-func TestSelectionProofHoldsTransportUntilCommit(t *testing.T) {
+func TestCheckHoldsTransportUntilRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d, err := NewRecreatableDialer(func() (*netproxy.Runtime, error) {
 			return netproxy.NewRuntime(netproxy.Layer{Data: new(sleepingTestTransport)}), nil
@@ -129,31 +129,20 @@ func TestSelectionProofHoldsTransportUntilCommit(t *testing.T) {
 		var worker sync.WaitGroup
 		worker.Go(func() { checker.run(start) })
 		defer func() { _ = d.Close(); worker.Wait() }()
-		proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+		release, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer proof.Release()
 		// Let the worker finish and dispatch all idle notifications before the
-		// group consumes its result. No connection or periodic check holds it.
+		// group acts on the result. No connection or periodic check holds it.
 		synctest.Wait()
-		if !d.ProofValid(proof) {
-			t.Fatal("idle transport retired before selection consumed its proof")
+		if !d.Alive(common.NetworkTCP4.NetworkType()) {
+			t.Fatal("idle transport retired before the group acted on its check")
 		}
-		retained, ok := d.RetainProof(proof)
-		if !ok {
-			t.Fatal("could not retain background result")
-		}
-		defer retained.Release()
-		proof.Release()
+		release()
 		synctest.Wait()
-		if !d.ProofValid(retained) {
-			t.Fatal("retained background result lost its Session")
-		}
-		retained.Release()
-		synctest.Wait()
-		if d.session.Snapshot().Accepting {
-			t.Fatal("released proof retained an unused session")
+		if d.session.Snapshot().Accepting || d.Alive(common.NetworkTCP4.NetworkType()) {
+			t.Fatal("released check retained an unused session")
 		}
 	})
 }

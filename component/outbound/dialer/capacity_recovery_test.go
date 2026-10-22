@@ -312,7 +312,7 @@ func TestUnhealthyPartialPoolReplenishesBeforeReverification(t *testing.T) {
 	}
 	c.finish(<-c.results)
 	if d.RuntimeStatus().Healthy {
-		t.Fatal("capacity repair fabricated a successful health proof")
+		t.Fatal("capacity repair fabricated a successful health check")
 	}
 	c.dispatch()
 	if c.cancel == nil || c.runningKind != checkHealth {

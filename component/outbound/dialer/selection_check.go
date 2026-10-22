@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -20,16 +21,15 @@ type selectionCheck struct {
 	network     common.NetworkIndex
 	done        chan struct{}
 	waiters     int
-	proof       HealthProof
 	err         error
 }
 
-var ErrCheckSuperseded = errors.New("connectivity proof superseded")
+var ErrCheckSuperseded = errors.New("connectivity check superseded")
 
 var errSharedCheckTimeout = errors.New("shared connectivity check exhausted another caller's budget")
 
-// A pinned check resolver with no address for this family cannot produce a
-// proof. Do not wake proxy sessions just to rediscover this local fact.
+// A pinned check resolver with no address for this family cannot check the
+// path. Do not wake proxy sessions just to rediscover this local fact.
 func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
 	d.mu.RLock()
 	state := d.health.networks[network]
@@ -55,56 +55,69 @@ func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
 	return false
 }
 
-// Check joins a bounded, one-shot check of this physical path. Known capabilities
-// share the representative probe; unknown capabilities require discovery first.
+// Check makes the path alive for the network, probing only if it is not
+// already: an alive path is its own proof. Known capabilities share the
+// representative probe; unknown capabilities require discovery first.
 // Queueing, connection establishment and verification share the same deadline.
 // A caller can stop waiting without canceling checks needed by other groups.
-func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout time.Duration) (HealthProof, error) {
+// On success, release keeps the transport awake until the caller has acted
+// on the result.
+func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout time.Duration) (release func(), err error) {
 	if !network.Valid() {
-		return HealthProof{}, errors.New("invalid check network")
+		return nil, errors.New("invalid check network")
 	}
 	ctx, cancelWait := context.WithTimeout(ctx, timeout)
 	defer cancelWait()
 	if err := ctx.Err(); err != nil {
-		return HealthProof{}, err
+		return nil, err
 	}
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
-		return HealthProof{}, context.Canceled
+		return nil, context.Canceled
 	}
-	release := d.holdProofLocked()
-	d.updateTransportDemandLocked()
+	release = d.holdLocked()
 	d.mu.Unlock()
-	transferred := false
-	defer func() {
-		if !transferred {
-			release()
-		}
-	}()
 	for {
-		proof, err := d.checkOnce(ctx, network)
+		err = d.checkOnce(ctx, network)
 		// A shared operation may have been created by a shorter-budget caller.
 		// Retry within this caller's original deadline, never restarting its budget.
 		if !errors.Is(err, errSharedCheckTimeout) {
-			if err == nil {
-				proof.release = release
-				transferred = true
-			}
-			return proof, err
+			break
 		}
 	}
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }
 
-func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (HealthProof, error) {
+// holdLocked keeps the transport awake while a caller acts on a check.
+func (d *pathRuntime) holdLocked() func() {
+	d.checkHolds++
+	d.updateTransportDemandLocked()
+	return sync.OnceFunc(func() {
+		d.mu.Lock()
+		d.checkHolds--
+		d.updateTransportDemandLocked()
+		d.mu.Unlock()
+	})
+}
+
+func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) error {
 	if err := ctx.Err(); err != nil {
-		return HealthProof{}, err
+		return err
 	}
 	deadline, _ := ctx.Deadline()
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
-		return HealthProof{}, context.Canceled
+		return context.Canceled
+	}
+	if d.aliveLocked(network) {
+		d.mu.Unlock()
+		return nil
 	}
 	flight := d.queueSelectionCheckLocked(network, deadline)
 	flight.waiters++
@@ -134,23 +147,18 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (He
 	}()
 	select {
 	case <-ctx.Done():
-		return HealthProof{}, ctx.Err()
+		return ctx.Err()
 	case <-d.ctx.Done():
-		return HealthProof{}, d.ctx.Err()
+		return d.ctx.Err()
 	case <-flight.ctx.Done():
 		select {
 		case <-flight.done:
 		default:
-			return HealthProof{}, checkError(flight.ctx.Err())
+			return checkError(flight.ctx.Err())
 		}
 	case <-flight.done:
 	}
-	if flight.err != nil {
-		return HealthProof{}, checkError(flight.err)
-	}
-	proof := flight.proof
-	proof.Network = network
-	return proof, nil
+	return checkError(flight.err)
 }
 
 func (d *pathRuntime) selectionProbeNetworkLocked(network common.NetworkIndex) common.NetworkIndex {
@@ -185,11 +193,8 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 			c.d.checks.selection[i] = nil
 			continue
 		}
-		proof := c.d.healthProofLocked(queued.network)
-		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failures.generation &&
-			proof.readiness == c.d.health.readiness && c.d.health.networks[queued.network] == networkSupported &&
-			c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
-			queued.proof = proof
+		// A representative success after the request satisfies it.
+		if c.d.aliveLocked(queued.network) && !c.d.health.measuredAt.Before(queued.requestedAt) {
 			close(queued.done)
 			c.d.checks.selection[i] = nil
 			continue
@@ -255,14 +260,13 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 	result.probes = []probeResult{probe(network)}
 	states[network] = networkSupported
 	canonical := firstSupportedNetwork(states)
-	// Discovering another capability cannot replace a fresh representative check.
+	// Discovering another capability cannot replace a representative check of
+	// a path that is not alive for this session.
 	if result.probes[0].err == nil && canonical.Valid() && canonical != network {
 		c.d.mu.RLock()
-		proof := c.d.healthProofLocked(canonical)
-		fresh := !proof.CheckedAt.Before(flight.requestedAt) && proof.failure == generation &&
-			proof.readiness == result.readiness && c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot())
+		alive := c.d.failures.generation == generation && c.d.health.readiness == result.readiness && c.d.aliveLocked(canonical)
 		c.d.mu.RUnlock()
-		if !fresh {
+		if !alive {
 			result.probes = append(result.probes, probe(canonical))
 		}
 	}
@@ -315,9 +319,6 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
 		err = ErrCheckSuperseded
 	}
-	if err == nil {
-		flight.proof = c.d.healthProofLocked(flight.network)
-	}
 	flight.err = err
 	if c.d.checks.selection[flight.network] == flight {
 		c.d.checks.selection[flight.network] = nil
@@ -343,8 +344,8 @@ func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck
 	if probe.err == nil {
 		canonical := resultProbe(result, firstSupportedNetwork(d.health.networks))
 		if canonical == nil {
-			// This request discovered a capability and reused a shared proof.
-			// Keep that observation's timestamp and latency unchanged.
+			// This request discovered a capability of an alive path. Keep the
+			// representative observation's timestamp and latency unchanged.
 			force := d.takePendingForceLocked()
 			success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())
 			d.statusRevision++

@@ -445,7 +445,9 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 		return
 	}
 	if g.automatic != nil {
-		g.automatic.observe(dialer, forceSelection)
+		if changed, ready := g.automatic.observe(dialer, forceSelection); ready {
+			g.publishAutomaticLocked(changed)
+		}
 		return
 	}
 	if err := g.updateConnectivity(); err != nil {
@@ -483,18 +485,26 @@ func (g *DialerGroup) updateConnectivity() error {
 	return nil
 }
 
-// Selection releases its lock before notifying the group. Take a fresh snapshot
-// under the group lock so delayed notifications cannot publish an older choice.
-func (g *DialerGroup) automaticChanged(network common.NetworkIndex, selected *dialer.Dialer) {
+// automaticChanged publishes changes the selection made outside the group lock.
+func (g *DialerGroup) automaticChanged(changed commits) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed.Load() {
 		return
 	}
-	// Only a committed election changes connection generations. A scheduler
-	// wake must not replace the path chosen by a random-policy request.
-	if selected != nil {
-		g.updateConnectionSelection(network.NetworkType(), selected)
+	g.publishAutomaticLocked(changed)
+}
+
+// publishAutomaticLocked reads each committed choice again under mu, so a
+// delayed publication cannot restore an older one. Only a commit changes
+// connection generations: a scheduler wake must not replace the path chosen by
+// a random-policy request.
+func (g *DialerGroup) publishAutomaticLocked(changed commits) {
+	for network, committed := range changed {
+		if !committed {
+			continue
+		}
+		g.updateConnectionSelection(common.NetworkIndex(network).NetworkType(), g.automatic.selectedDialer(common.NetworkIndex(network)))
 	}
 	if err := g.updateConnectivity(); err != nil {
 		log.WithField("group", g.Name).WithError(err).Error("Failed to update group routing availability")

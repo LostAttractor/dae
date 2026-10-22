@@ -25,7 +25,6 @@ func TestFailureInvalidatesEveryCapabilityBeforeRediscovery(t *testing.T) {
 				{network: common.NetworkUDP6, err: netproxy.UnsupportedTunnelTypeError},
 				{network: common.NetworkUDP4, err: context.DeadlineExceeded},
 			}})
-			old := d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Proof
 			group := d.group.observer.(*testGroup)
 			before := group.changes.Load()
 			applied, accepted := d.applyCheck(checkResult{kind: kind, generation: d.failures.generation,
@@ -57,11 +56,11 @@ func TestFailureInvalidatesEveryCapabilityBeforeRediscovery(t *testing.T) {
 					t.Errorf("%v discovery: calls=%d usable=%v", network, calls[network].Load(), d.Usable(network.NetworkType()))
 				}
 			}
-			if !d.RuntimeStatus().Degraded || d.ProofValid(old) {
-				t.Fatal("rediscovery cleared degradation or revived the old proof")
+			if !d.RuntimeStatus().Degraded {
+				t.Fatal("rediscovery cleared degradation")
 			}
-			if proof := d.SelectionSnapshot(common.NetworkUDP4.NetworkType()).Proof; !d.ProofValid(proof) {
-				t.Fatal("newly confirmed modes did not share the new proof")
+			if !d.Alive(common.NetworkUDP4.NetworkType()) {
+				t.Fatal("newly confirmed modes did not share the new representative check")
 			}
 			result = performCheck(checker, t.Context(), checkHealth)
 			if len(result.probes) != 1 || result.probes[0].network != common.NetworkTCP4 || calls[common.NetworkTCP4].Load() != 2 {

@@ -41,7 +41,7 @@ type pathRuntime struct {
 	checkWG       sync.WaitGroup
 	retireOnce    sync.Once
 	retains       int
-	proofHolds    int
+	checkHolds    int
 	checksStopped bool
 }
 

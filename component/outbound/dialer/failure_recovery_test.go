@@ -56,7 +56,7 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		}
 		for network := range common.NetworkIndex(common.NetworkTypeCount) {
 			snapshot := d.SelectionSnapshot(network.NetworkType())
-			if snapshot.Degraded || !snapshot.Usable || !d.ProofValid(snapshot.Proof) {
+			if snapshot.Degraded || !snapshot.Alive {
 				t.Errorf("%v did not share the completed recovery: %+v", network, snapshot)
 			}
 		}

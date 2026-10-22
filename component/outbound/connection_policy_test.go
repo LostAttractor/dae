@@ -22,17 +22,17 @@ func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 			g.SetConnectionPolicy(closeOld, false)
 			g.automatic.selected[common.NetworkTCP4] = a
 			g.automatic.selected[common.NetworkTCP6] = a
-			old, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			old, err := g.SelectConnection(t.Context(), *common.NetworkTCP4.NetworkType(), true)
 			if err != nil || old.Dialer != a {
 				t.Fatalf("first selection = %v, %v", old.Dialer, err)
 			}
-			otherNetwork, err := g.SelectConnection(*common.NetworkTCP6.NetworkType(), true)
+			otherNetwork, err := g.SelectConnection(t.Context(), *common.NetworkTCP6.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_ = a.Close()
 			g.automatic.selected[common.NetworkTCP4] = b
-			current, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			current, err := g.SelectConnection(t.Context(), *common.NetworkTCP4.NetworkType(), true)
 			if err != nil || current.Dialer != b {
 				t.Fatalf("new selection = %v, %v", current.Dialer, err)
 			}
@@ -55,7 +55,7 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 			a := newCheckedDialer(t, "a")
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
 			g.SetConnectionPolicy(true, closeFallback)
-			if _, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true); !errors.Is(err, ErrNoAliveDialer) {
+			if _, err := g.SelectConnection(t.Context(), *common.NetworkUDP4.NetworkType(), true); !errors.Is(err, ErrNoAliveDialer) {
 				t.Fatalf("selection = %v", err)
 			}
 			fallback := g.FallbackLease(*common.NetworkUDP4.NetworkType())
@@ -135,7 +135,7 @@ func TestReloadRetainsUnavailableManualChoice(t *testing.T) {
 			old := newSelectorTestGroup(t, []*dialer.Dialer{newUncheckedDialer(t, "a")}, emptyAnnotations(1), policy, nil)
 			old.SetConnectionPolicy(closeOld, false)
 			network := common.NetworkTCP4.NetworkType()
-			previous, err := old.SelectConnection(*network, true)
+			previous, err := old.SelectConnection(t.Context(), *network, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +152,7 @@ func TestReloadRetainsUnavailableManualChoice(t *testing.T) {
 			if (previous.Lease.AbortCause() != nil) != closeOld || (old.connectionLease(network, false).AbortCause() != nil) != closeOld {
 				t.Fatal("manual reload policy missed established or late predecessor connections")
 			}
-			if _, err := next.SelectConnection(*network, true); !errors.Is(err, ErrNoAliveDialer) || !next.FallbackLease(*network).Valid() {
+			if _, err := next.SelectConnection(t.Context(), *network, true); !errors.Is(err, ErrNoAliveDialer) || !next.FallbackLease(*network).Valid() {
 				t.Fatalf("current unavailable selection lost its fallback lease: %v", err)
 			}
 		})
@@ -165,7 +165,7 @@ func TestManualSelectionClosesPreviousGeneration(t *testing.T) {
 			a, b := newUncheckedDialer(t, "a"), newUncheckedDialer(t, "b")
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, emptyAnnotations(2), dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
 			g.SetConnectionPolicy(closeOld, false)
-			old, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			old, err := g.SelectConnection(t.Context(), *common.NetworkUDP4.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func TestManualSelectionClosesPreviousGeneration(t *testing.T) {
 			if (old.Lease.AbortCause() != nil) != closeOld {
 				t.Fatalf("manual switch termination: %v", old.Lease.AbortCause())
 			}
-			current, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			current, err := g.SelectConnection(t.Context(), *common.NetworkUDP4.NetworkType(), true)
 			if err != nil || current.Dialer != b || current.Lease.AbortCause() != nil {
 				t.Fatalf("new manual selection: %v, %v", current.Dialer, err)
 			}
@@ -198,7 +198,7 @@ func TestSelectionWaitsForManualChangeCommit(t *testing.T) {
 				Policy: consts.DialerSelectionPolicy_Selector,
 			}, nil)
 			g.SetConnectionPolicy(true, false)
-			old, err := g.SelectConnection(*testNetworkType, true)
+			old, err := g.SelectConnection(t.Context(), *testNetworkType, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -216,7 +216,7 @@ func TestSelectionWaitsForManualChangeCommit(t *testing.T) {
 			selected := make(chan ConnectionSelection, 1)
 			go func() {
 				close(started)
-				selection, err := g.SelectConnection(*testNetworkType, true)
+				selection, err := g.SelectConnection(t.Context(), *testNetworkType, true)
 				if err != nil {
 					t.Error(err)
 				}
@@ -284,7 +284,7 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 				return g
 			}
 			old := makeGroup(false)
-			previous, err := old.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			previous, err := old.SelectConnection(t.Context(), *common.NetworkTCP4.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -306,7 +306,7 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 			if (previous.Lease.AbortCause() != nil) != (tc.closeOld && tc.change) {
 				t.Fatalf("reload abort = %v", previous.Lease.AbortCause())
 			}
-			current, err := next.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			current, err := next.SelectConnection(t.Context(), *common.NetworkTCP4.NetworkType(), true)
 			if err != nil || current.Dialer != next.Dialers[next.selectionPolicy.FixedIndex] || !current.Lease.Valid() {
 				t.Fatalf("new selection = %v, %v", current.Dialer, err)
 			}

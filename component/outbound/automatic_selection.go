@@ -16,9 +16,10 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 )
 
-// automaticSelection owns discovery, proofs and the selected paths under mu.
-// Group publications happen after releasing mu. Group readers may acquire mu
-// while holding the group lock; selection never acquires those locks in reverse.
+// automaticSelection owns discovery and the selected paths under mu. An alive
+// node is its own proof: it takes over without a new probe. Group publications
+// happen after releasing mu, except decisions made by observe, which runs under
+// the group lock. Lock order is group, then selection, then path.
 type automaticSelection struct {
 	mu              sync.Mutex
 	selected        [common.NetworkTypeCount]*dialer.Dialer
@@ -30,14 +31,15 @@ type automaticSelection struct {
 	wake            chan struct{}
 	wg              sync.WaitGroup
 	started         bool
+	ready           bool      // The start gate opened; decisions may be made.
+	armed           time.Time // The worker's next deadline; zero when none.
 	networks        [common.NetworkTypeCount]selectionNetwork
 }
 
 type selectionNetwork struct {
-	fresh        map[*dialer.Dialer]dialer.HealthProof
-	observed     map[*dialer.Dialer]dialer.HealthProof
 	visited      map[*dialer.Dialer]bool
 	standby      map[*dialer.Dialer]bool
+	measuredAt   time.Time // Last observed measurement of the selected path.
 	reconsider   bool
 	disabled     bool
 	job          *selectionJob
@@ -46,31 +48,28 @@ type selectionNetwork struct {
 	retryDelay   time.Duration
 	upgradeDelay time.Duration
 	changed      chan struct{}
-	force        bool
+	force        bool // A new capability: the next decision ignores the tolerance.
 }
 
+// selectionJob probes candidates when no alive node can serve, or tests a
+// sleeping better candidate. An alive node may take over while a replacement
+// job runs; the job then commits only a strictly better candidate.
 type selectionJob struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
-	serving   bool
+	replacing bool // Started without a usable path.
+	force     bool // A forced decision or a replacement: the tolerance does not apply.
 	committed bool
-	proofs    map[*dialer.Dialer]dialer.HealthProof
 }
 
-func (s *automaticSelection) check(job *selectionJob, network common.NetworkIndex, d *dialer.Dialer) (dialer.HealthProof, error) {
-	if proof := job.proofs[d]; proof.Network == network && d.ProofValid(proof) {
-		return proof, nil
-	}
-	return d.Check(job.ctx, network, s.g.selectionPolicy.ProbeTimeout)
-}
+// commits marks networks whose selection changed and must be published.
+type commits [common.NetworkTypeCount]bool
 
 func newAutomaticSelection(g *DialerGroup, tolerance time.Duration) *automaticSelection {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &automaticSelection{g: g, tolerance: tolerance, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}
 	for i := range s.networks {
 		s.networks[i].changed = make(chan struct{})
-		s.networks[i].fresh = make(map[*dialer.Dialer]dialer.HealthProof)
-		s.networks[i].observed = make(map[*dialer.Dialer]dialer.HealthProof)
 		s.networks[i].visited = make(map[*dialer.Dialer]bool)
 		s.networks[i].standby = make(map[*dialer.Dialer]bool)
 	}
@@ -97,6 +96,9 @@ func (s *automaticSelection) start(start <-chan struct{}) {
 		case <-s.ctx.Done():
 			return
 		}
+		s.mu.Lock()
+		s.ready = true
+		s.mu.Unlock()
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		for {
@@ -108,9 +110,10 @@ func (s *automaticSelection) start(start <-chan struct{}) {
 			}
 			timer.Stop()
 			s.mu.Lock()
-			next := s.scheduleLocked()
+			changed, next := s.scheduleLocked(nil)
+			s.armed = next
 			s.mu.Unlock()
-			s.g.automaticChanged(common.NetworkInvalid, nil)
+			s.g.automaticChanged(changed)
 			if !next.IsZero() {
 				timer.Reset(max(time.Until(next), 0))
 			}
@@ -122,12 +125,10 @@ func (s *automaticSelection) failover() bool {
 	return s.g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Failover
 }
 
+// current is the selected path while it can still serve, including while a
+// reported failure is being confirmed.
 func (s *automaticSelection) current(network common.NetworkIndex) (selectorCandidate, bool) {
-	d := s.selected[network]
-	if d == nil || !d.VerifiedUsable(network.NetworkType()) {
-		return selectorCandidate{}, false
-	}
-	return s.g.candidate(d, network.NetworkType())
+	return s.g.candidate(s.selected[network], network.NetworkType())
 }
 
 func betterTier(a, b selectorCandidate) bool {
@@ -155,6 +156,8 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 		if d == current.dialer {
 			continue
 		}
+		// A monitored candidate with a confirmed capability needs no test: it
+		// becomes alive by itself.
 		snapshot := d.SelectionSnapshot(network.NetworkType())
 		if snapshot.Support == api.NetworkSupportUnsupported || snapshot.Monitoring && snapshot.Support == api.NetworkSupportConfirmed {
 			continue
@@ -169,80 +172,128 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 	return false
 }
 
-// A peer needs a current shared path proof and the requested capability before
-// it can serve as a backup and let lower tiers sleep.
-func (s *automaticSelection) unverifiedPeer(network common.NetworkIndex, current selectorCandidate) *dialer.Dialer {
-	var target *dialer.Dialer
+// hasBetterTier reports an unmonitored candidate that could outrank the path
+// in a strictly better tier. Monitored candidates report by themselves.
+func (s *automaticSelection) hasBetterTier(network common.NetworkIndex, current selectorCandidate) bool {
 	for _, d := range s.g.Dialers {
-		if d.SharesRuntime(current.dialer) {
+		if d == current.dialer || !d.CanProbe(network) {
 			continue
 		}
-		candidate, ok := s.g.candidate(d, network.NetworkType())
-		if !ok || candidate.degraded != current.degraded || candidate.priority != current.priority {
-			continue
-		}
-		if d.VerifiedUsable(network.NetworkType()) {
-			return nil
-		}
-		if target == nil {
-			target = d
+		snapshot := d.SelectionSnapshot(network.NetworkType())
+		if !snapshot.Monitoring && snapshot.Support != api.NetworkSupportUnsupported &&
+			betterTier(selectorCandidate{priority: s.g.dialerToAnnotation[d].MaxPriority(), degraded: snapshot.Degraded}, current) {
+			return true
 		}
 	}
-	return target
+	return false
 }
 
-func (s *automaticSelection) scheduleLocked() time.Time {
+// lowersTier reports whether replacing the failed path with next serves the
+// network in a worse tier. A confirmed failure marks the failed path degraded,
+// so its tier is scored without that mark.
+func (s *automaticSelection) lowersTier(failed *dialer.Dialer, network common.NetworkIndex, next selectorCandidate) bool {
+	if failed == nil {
+		return true
+	}
+	snapshot := failed.SelectionSnapshot(network.NetworkType())
+	return betterTier(s.g.scoreCandidate(failed, snapshot.Latency, false), next)
+}
+
+// bestAlive returns the best alive candidate other than the excluded path.
+func (s *automaticSelection) bestAlive(network common.NetworkIndex, exclude *dialer.Dialer) (best selectorCandidate, monitored, ok bool) {
+	for _, d := range s.g.Dialers {
+		if d == exclude {
+			continue
+		}
+		snapshot := d.SelectionSnapshot(network.NetworkType())
+		if !snapshot.Alive {
+			continue
+		}
+		candidate := s.g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded)
+		if !ok || compareCandidates(candidate, best) < 0 {
+			best, monitored, ok = candidate, snapshot.Monitoring, true
+		}
+	}
+	return best, monitored, ok
+}
+
+// scheduleLocked switches to the best alive candidate when the current path
+// cannot serve or is outranked, and starts a job only when testing is needed.
+// cause is the node whose report triggered the pass; it has just been checked.
+func (s *automaticSelection) scheduleLocked(cause *dialer.Dialer) (changed commits, next time.Time) {
 	if s.ctx.Err() != nil {
-		return time.Time{}
+		return changed, next
+	}
+	defer s.refreshDemandLocked()
+	if !s.ready {
+		return changed, next
 	}
 	now := time.Now()
-	var next time.Time
 	for index := range common.NetworkIndex(common.NetworkTypeCount) {
 		state := &s.networks[index]
-		if state.disabled {
-			continue
-		}
 		current, usable := s.current(index)
-		if state.job != nil {
-			if state.job.serving && !usable {
-				state.job.cancel()
+		if job := state.job; job != nil {
+			if usable {
+				continue
 			}
+			// The serving path failed. A canceled job cannot commit; its slot
+			// stays occupied until it exits. A replacement job that has not
+			// committed keeps running, but an alive node takes over now in
+			// either case.
+			if !job.replacing || job.committed {
+				job.cancel()
+			}
+		}
+		if best, monitored, ok := s.bestAlive(index, current.dialer); ok && (!usable || s.prefer(best, current, state.force)) {
+			failed := s.selected[index]
+			s.commitLocked(index, best.dialer)
+			changed[index] = true
+			// Verify a node switched to on an earlier observation: a takeover
+			// from a failed path, or a switch to an unmonitored node. The path
+			// coalesces requests from every network it took over.
+			if best.dialer != cause && (usable && !monitored || !usable && failed != nil) {
+				best.dialer.RequestVerification()
+			}
+			// A takeover by a worse tier tests better unmonitored candidates
+			// at once instead of after the upgrade interval.
+			if !usable && s.lowersTier(failed, index, best) && s.hasBetterTier(index, best) {
+				state.upgradeAt = now
+			}
+			current, usable = best, true
+		}
+		if state.job != nil {
 			continue
 		}
-		if !usable && !s.canDiscover(index) {
-			state.disabled = true
-			s.changedLocked(index)
-			continue
-		}
+		// Only a job started by this decision carries a forced refresh further.
+		force := state.force
+		state.force = false
 		var target *dialer.Dialer
 		upgrade := false
 		when := state.retryAt
 		if usable {
+			// A served network elects at once when its path fails again.
+			state.disabled, state.retryAt, state.retryDelay = false, time.Time{}, 0
 			when = time.Time{}
 			var best selectorCandidate
 			for _, d := range s.g.Dialers {
 				snapshot := d.SelectionSnapshot(index.NetworkType())
 				candidate := s.g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded)
-				if d == current.dialer || !s.prefer(candidate, current, state.force) {
+				if d == current.dialer || !s.prefer(candidate, current, force) {
 					delete(state.standby, d)
 					continue
 				}
 				// A new current-path measurement can justify one bounded wake-up
 				// of a promising sleeping peer. Timer/status wakes cannot do so.
-				if state.reconsider && snapshot.Dormant && snapshot.ObservedHealthy && snapshot.HasLatency &&
+				if state.reconsider && !snapshot.Alive && snapshot.ObservedHealthy && snapshot.HasLatency &&
 					snapshot.Support == api.NetworkSupportConfirmed {
 					state.standby[d] = true
 				}
-				if (snapshot.Usable || state.standby[d]) && (target == nil || compareCandidates(candidate, best) < 0) {
+				if state.standby[d] && (target == nil || compareCandidates(candidate, best) < 0) {
 					target, best = d, candidate
 				}
 			}
 			state.reconsider = false
-			if target == nil && !s.failover() {
-				target = s.unverifiedPeer(index, current)
-			}
 			if target == nil {
-				releaseProofs(state.fresh)
 				if !s.hasUpgrade(index, current) {
 					continue
 				}
@@ -254,6 +305,13 @@ func (s *automaticSelection) scheduleLocked() time.Time {
 		} else {
 			clear(state.standby)
 			state.reconsider = false
+			if disabled := !s.canDiscover(index); disabled != state.disabled {
+				state.disabled = disabled
+				s.changedLocked(index)
+			}
+			if state.disabled {
+				continue
+			}
 		}
 		if when.After(now) {
 			if next.IsZero() || when.Before(next) {
@@ -263,18 +321,11 @@ func (s *automaticSelection) scheduleLocked() time.Time {
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, s.g.selectionPolicy.SelectionTimeout)
 		delete(state.standby, target)
-		for d, proof := range state.fresh {
-			if d.ProofValid(proof) {
-				delete(state.visited, d)
-			}
-		}
-		job := &selectionJob{ctx: ctx, cancel: cancel, serving: usable, proofs: state.fresh}
-		state.fresh = make(map[*dialer.Dialer]dialer.HealthProof)
+		job := &selectionJob{ctx: ctx, cancel: cancel, replacing: !usable, force: force || !usable}
 		state.job = job
 		s.wg.Go(func() { s.selectNetwork(index, job, target, upgrade) })
 	}
-	s.refreshDemandLocked()
-	return next
+	return changed, next
 }
 
 func (s *automaticSelection) canDiscover(network common.NetworkIndex) bool {
@@ -289,45 +340,35 @@ func (s *automaticSelection) canDiscover(network common.NetworkIndex) bool {
 func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *selectionJob, target *dialer.Dialer, upgrade bool) {
 	ctx := job.ctx
 	defer job.cancel()
-	defer releaseProofs(job.proofs)
 	if target != nil {
-		proof, err := s.check(job, network, target)
-		defer proof.Release()
-		if err == nil {
-			s.commit(network, job, target, proof)
+		if release, err := target.Check(ctx, network, s.g.selectionPolicy.ProbeTimeout); err == nil {
+			s.commit(network, job, target)
+			release()
 		}
 	} else {
 		s.elect(network, job, upgrade)
 	}
 	s.mu.Lock()
-	notify := false
-	defer func() {
-		s.mu.Unlock()
-		if notify {
-			s.g.automaticChanged(common.NetworkInvalid, nil)
-		}
-	}()
+	defer s.mu.Unlock()
 	state := &s.networks[network]
 	// The slot stays occupied until this goroutine completes, including after
 	// cancellation. A replacement cannot overlap this job's commit or cleanup.
 	state.job = nil
+	// The worker decides next and publishes, so no gap between this job and
+	// its successor is published as unavailable.
+	defer s.signal()
 	if errors.Is(ctx.Err(), context.Canceled) {
 		// A serving path failed during discovery. Restart selection immediately;
 		// canceling that job is not evidence that all replacements failed.
 		clear(state.visited)
 		state.retryAt = time.Time{}
 		s.changedLocked(network)
-		s.signal()
 		return
 	}
-	state.force = false
 	now := time.Now()
 	if _, usable := s.current(network); !usable {
 		state.retryDelay = min(max(time.Second, saturatingDurationAdd(state.retryDelay, state.retryDelay)), s.g.selectionPolicy.UpgradeIntervalMax)
 		state.retryAt = now.Add(checktime.Jitter(state.retryDelay, s.g.selectionPolicy.UpgradeIntervalMax))
-	} else {
-		state.retryDelay = 0
-		state.retryAt = time.Time{}
 	}
 	if job.committed {
 		clear(state.visited)
@@ -336,17 +377,7 @@ func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *sel
 		state.upgradeDelay = min(max(s.g.selectionPolicy.UpgradeInterval, saturatingDurationAdd(state.upgradeDelay, state.upgradeDelay)), s.g.selectionPolicy.UpgradeIntervalMax)
 	}
 	state.upgradeAt = now.Add(checktime.Jitter(state.upgradeDelay, s.g.selectionPolicy.UpgradeIntervalMax))
-	notify = true
 	s.changedLocked(network)
-	s.refreshDemandLocked()
-	s.signal()
-}
-
-func releaseProofs(proofs map[*dialer.Dialer]dialer.HealthProof) {
-	for _, proof := range proofs {
-		proof.Release()
-	}
-	clear(proofs)
 }
 
 func (s *automaticSelection) changedLocked(network common.NetworkIndex) {
@@ -355,35 +386,37 @@ func (s *automaticSelection) changedLocked(network common.NetworkIndex) {
 	state.changed = make(chan struct{})
 }
 
-func (s *automaticSelection) commit(network common.NetworkIndex, job *selectionJob, d *dialer.Dialer, proof dialer.HealthProof) bool {
-	s.mu.Lock()
-	committed := false
-	defer func() {
-		s.mu.Unlock()
-		if committed {
-			s.g.automaticChanged(network, d)
-		}
-	}()
-	state := &s.networks[network]
-	if s.ctx.Err() != nil || errors.Is(job.ctx.Err(), context.Canceled) || proof.Network != network || !d.ProofValid(proof) {
-		return false
-	}
-	candidate, ok := s.g.candidate(d, network.NetworkType())
-	if !ok {
-		return false
-	}
+// commitLocked selects an alive path. The caller refreshes demand, which keeps
+// the selected transport awake, and publishes the change.
+func (s *automaticSelection) commitLocked(network common.NetworkIndex, d *dialer.Dialer) {
 	previous := s.selected[network]
-	if current, ok := s.current(network); ok && previous != d && !s.prefer(candidate, current, state.force) {
-		return false
-	}
+	s.selected[network] = d
+	s.networks[network].measuredAt = d.SelectionSnapshot(network.NetworkType()).MeasuredAt
 	if previous != d {
-		s.selected[network] = d
 		s.logSelection(previous, d, network.NetworkType())
 	}
-	job.committed, job.serving = true, true
 	s.changedLocked(network)
+}
+
+// commit concludes a job with a node it has just checked.
+func (s *automaticSelection) commit(network common.NetworkIndex, job *selectionJob, d *dialer.Dialer) bool {
+	s.mu.Lock()
+	candidate, alive := s.g.aliveCandidate(d, network.NetworkType())
+	if s.ctx.Err() != nil || errors.Is(job.ctx.Err(), context.Canceled) || !alive {
+		s.mu.Unlock()
+		return false
+	}
+	if current, ok := s.current(network); ok && current.dialer != d && !s.prefer(candidate, current, job.force) {
+		s.mu.Unlock()
+		return false
+	}
+	s.commitLocked(network, d)
+	job.committed = true
 	s.refreshDemandLocked()
-	committed = true
+	s.mu.Unlock()
+	var changed commits
+	changed[network] = true
+	s.g.automaticChanged(changed)
 	return true
 }
 
@@ -395,9 +428,9 @@ type discoveryCandidate struct {
 }
 
 type discoveryResult struct {
-	d     *dialer.Dialer
-	proof dialer.HealthProof
-	err   error
+	d       *dialer.Dialer
+	release func()
+	err     error
 }
 
 func (s *automaticSelection) discoveryCandidates(network common.NetworkIndex, upgrade bool) []discoveryCandidate {
@@ -453,17 +486,24 @@ func (s *automaticSelection) elect(network common.NetworkIndex, job *selectionJo
 	// still-valid runner-up, and equal candidates retain first-response order.
 	bestResult := func() (best discoveryResult, bestCandidate selectorCandidate) {
 		for _, result := range verified {
-			if !result.d.ProofValid(result.proof) {
-				continue
-			}
-			candidate, ok := s.g.candidate(result.d, network.NetworkType())
-			if ok && (best.d == nil || compareCandidates(candidate, bestCandidate) < 0) {
+			candidate, alive := s.g.aliveCandidate(result.d, network.NetworkType())
+			if alive && (best.d == nil || compareCandidates(candidate, bestCandidate) < 0) {
 				best, bestCandidate = result, candidate
 			}
 		}
 		return
 	}
 	for len(pending) > 0 && ctx.Err() == nil {
+		if job.replacing {
+			// A node that took over meanwhile ends the replacement once no
+			// remaining tier can outrank it.
+			s.mu.Lock()
+			current, usable := s.current(network)
+			s.mu.Unlock()
+			if usable && !betterTier(selectorCandidate{priority: pending[0].upper, degraded: pending[0].degraded}, current) {
+				break
+			}
+		}
 		end := 1
 		for end < len(pending) && pending[end].upper == pending[0].upper && pending[end].degraded == pending[0].degraded {
 			end++
@@ -480,15 +520,16 @@ func (s *automaticSelection) elect(network common.NetworkIndex, job *selectionJo
 		for _, candidate := range batch {
 			outstanding[candidate.d] = candidate
 			go func() {
-				proof, err := s.check(job, network, candidate.d)
-				results <- discoveryResult{candidate.d, proof, err}
+				release, err := candidate.d.Check(ctx, network, s.g.selectionPolicy.ProbeTimeout)
+				results <- discoveryResult{candidate.d, release, err}
 			}()
 		}
 		for range batch {
 			result := <-results
-			defer result.proof.Release()
 			delete(outstanding, result.d)
 			if result.err == nil {
+				// Keep the transport awake until this election ends.
+				defer result.release()
 				verified = append(verified, result)
 			}
 			if job.committed || ctx.Err() != nil {
@@ -523,7 +564,7 @@ func (s *automaticSelection) elect(network common.NetworkIndex, job *selectionJo
 				blocked = blocked || canBeat(candidate, false)
 			}
 			if !blocked {
-				s.commit(network, job, best.d, best.proof)
+				s.commit(network, job, best.d)
 			}
 		}
 		if job.committed {
@@ -532,13 +573,13 @@ func (s *automaticSelection) elect(network common.NetworkIndex, job *selectionJo
 		best, bestCandidate := bestResult()
 		if best.d != nil && (len(pending) == 0 || betterTier(bestCandidate,
 			selectorCandidate{priority: pending[0].upper, degraded: pending[0].degraded})) {
-			if s.commit(network, job, best.d, best.proof) {
+			if s.commit(network, job, best.d) {
 				return
 			}
 		}
 	}
 	if best, _ := bestResult(); best.d != nil && !errors.Is(ctx.Err(), context.Canceled) {
-		s.commit(network, job, best.d, best.proof)
+		s.commit(network, job, best.d)
 	}
 }
 
@@ -567,9 +608,8 @@ func (s *automaticSelection) refreshDemandLocked() {
 			if peer.SharesRuntime(d) {
 				continue
 			}
-			candidate, ok := s.g.candidate(peer, common.NetworkIndex(network).NetworkType())
-			if ok && peer.VerifiedUsable(common.NetworkIndex(network).NetworkType()) &&
-				candidate.degraded == current[network].degraded && candidate.priority == current[network].priority {
+			candidate, alive := s.g.aliveCandidate(peer, common.NetworkIndex(network).NetworkType())
+			if alive && candidate.degraded == current[network].degraded && candidate.priority == current[network].priority {
 				hasPeer[network] = true
 				break
 			}
@@ -581,10 +621,11 @@ func (s *automaticSelection) refreshDemandLocked() {
 		for network, selected := range current {
 			candidate, ok := s.g.candidate(d, common.NetworkIndex(network).NetworkType())
 			// A continuous policy may sleep lower tiers only with a usable peer
-			// in the serving tier. Finish its initial parallel tests before waking
-			// untested backups; already warm backups stay monitored meanwhile.
+			// in the serving tier. An election that already serves finishes its
+			// parallel tests before waking untested backups; already warm
+			// backups stay monitored meanwhile.
 			job := s.networks[network].job
-			if !s.failover() && usable[network] && !hasPeer[network] && (ok || job == nil || !job.committed) &&
+			if !s.failover() && usable[network] && !hasPeer[network] && (ok || job == nil || !job.committed && !job.replacing) &&
 				d.CanProbe(common.NetworkIndex(network)) && d.SelectionSnapshot(common.NetworkIndex(network).NetworkType()).Support != api.NetworkSupportUnsupported {
 				enabled = true
 				break
@@ -605,41 +646,41 @@ func (s *automaticSelection) refreshDemandLocked() {
 	}
 }
 
-// A request's budget spans job replacements and both IP families. Allocate a
-// timer only when it actually waits; backoff is never a request queue.
-func (s *automaticSelection) wait(network common.NetworkIndex, deadline time.Time) bool {
-	var timer *time.Timer
-	defer func() {
-		if timer != nil {
-			timer.Stop()
-		}
-	}()
+// available reports whether the network's selected path can serve; only
+// otherwise does a request need a selection budget to wait.
+func (s *automaticSelection) available(network common.NetworkIndex) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.availableLocked(network)
+}
+
+func (s *automaticSelection) availableLocked(network common.NetworkIndex) bool {
+	selected := s.selected[network]
+	return selected != nil && selected.Usable(network.NetworkType())
+}
+
+// wait blocks while an election may still select a node for the network. One
+// request context spans job replacements and both IP families. Backoff after a
+// failed election is never a request queue.
+func (s *automaticSelection) wait(ctx context.Context, network common.NetworkIndex) bool {
 	for {
 		s.mu.Lock()
-		selected := s.selected[network]
-		available := selected != nil && selected.VerifiedUsable(network.NetworkType())
+		available := s.availableLocked(network)
 		if !s.started || s.ctx.Err() != nil || available {
 			s.mu.Unlock()
 			return available
 		}
 		state := &s.networks[network]
-		if state.disabled {
-			s.mu.Unlock()
-			return false
-		}
-		if state.job == nil && state.retryAt.After(time.Now()) {
+		if state.disabled || state.job == nil && state.retryAt.After(time.Now()) {
 			s.mu.Unlock()
 			return false
 		}
 		changed := state.changed
 		s.signal()
 		s.mu.Unlock()
-		if timer == nil {
-			timer = time.NewTimer(max(time.Until(deadline), 0))
-		}
 		select {
 		case <-changed:
-		case <-timer.C:
+		case <-ctx.Done():
 			return false
 		case <-s.ctx.Done():
 			return false

@@ -50,6 +50,15 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 	return g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded), true
 }
 
+// aliveCandidate scores the path only while it is alive for the network.
+func (g *DialerGroup) aliveCandidate(d *dialer.Dialer, networkType *common.NetworkType) (selectorCandidate, bool) {
+	snapshot := d.SelectionSnapshot(networkType)
+	if !snapshot.Alive {
+		return selectorCandidate{}, false
+	}
+	return g.scoreCandidate(d, snapshot.Latency, snapshot.Degraded), true
+}
+
 func (g *DialerGroup) scoreCandidate(d *dialer.Dialer, measurements api.LatencyStats, degraded bool) selectorCandidate {
 	latency := candidateLatency(g.selectionPolicy.Policy, measurements)
 	sortingLatency := saturatingDurationAdd(latency, g.dialerToAnnotation[d].AddLatency)

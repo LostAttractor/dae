@@ -235,6 +235,14 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 		if c.d.checks.paused {
 			c.d.resetRecoveryObservationLocked()
 		}
+		// No applied representative result answered the switch: probe again.
+		if c.d.checks.verify {
+			if c.d.health.phase.usable() {
+				c.d.checks.pending |= checkRequestVerification
+			} else {
+				c.d.checks.verify = false
+			}
+		}
 		c.d.updateTransportDemandLocked()
 		if result.kind != checkCapacity {
 			c.d.checks.checkedAt = time.Now()
@@ -289,7 +297,7 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 }
 
 // Capacity work shares the checker's operation gate and global slots, but its
-// failure never invalidates the health proof of still-serving sibling slots.
+// failure never invalidates the health of still-serving sibling slots.
 func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 	snapshot := c.d.session.Snapshot()
 	if !applied || !snapshot.Accepting {
@@ -310,7 +318,7 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 		c.capacityAt = time.Time{}
 		// Pooled transports may repair one slot per Connect. Continue only when
 		// capacity actually survives; a nil error alone need not mean progress.
-		// A new slot still needs an end-to-end proof before restoring health.
+		// A new slot still needs an end-to-end check before restoring health.
 		if !c.d.healthyAt(snapshot.ReadinessVersion) {
 			c.resetHealthRetry()
 			c.healthAt = time.Now()

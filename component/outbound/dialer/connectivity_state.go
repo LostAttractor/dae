@@ -46,8 +46,6 @@ type pathHealth struct {
 	observedSessionSeq uint64
 	networks           [common.NetworkTypeCount]networkState
 	pendingForce       SelectionForceMask
-	proofSequence      uint64
-	proof              HealthProof
 	lastLatency        time.Duration
 	measuredAt         time.Time
 }
@@ -63,10 +61,25 @@ func (d *pathRuntime) healthyLocked(session netproxy.StateEvent) bool {
 	return d.ctx.Err() == nil && d.health.phase.usable() && (d.session == nil || session.Accepting && d.health.readiness == session.ReadinessVersion)
 }
 
+// Usable keeps serving an admitted path, including while a reported failure
+// is being confirmed.
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return !d.closed && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[networkType.Index()] == networkSupported
+}
+
+// Alive is a node's own proof of validity: its last representative check
+// succeeded for the current session and no failure is pending. Sleep and
+// reconnection change readiness, so a dormant path is never alive.
+func (d *Dialer) Alive(networkType *common.NetworkType) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return !d.closed && d.aliveLocked(networkType.Index())
+}
+
+func (d *pathRuntime) aliveLocked(network common.NetworkIndex) bool {
+	return d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[network] == networkSupported
 }
 
 func (d *pathRuntime) initialCheckCompleted() bool {
@@ -262,7 +275,8 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 		d.health.phase = healthUnhealthy
 		d.health.readiness = result.readiness
 		d.failures.reportedAt = time.Time{}
-		d.checks.pending &^= checkRequestDataPlane
+		d.checks.pending &^= checkRequestDataPlane | checkRequestVerification
+		d.checks.verify = false
 		d.statusRevision++
 		if d.failures.last == nil {
 			d.failures.last = failureSnapshot(primaryNodeFailure(result.failure()), d.failures.generation)
@@ -283,6 +297,8 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 
 func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) time.Time {
 	failureReportedAt := d.failures.reportedAt
+	// A representative result answers a pending verification either way.
+	d.checks.verify = false
 	d.health.readiness = result.readiness
 	d.statusRevision++
 	if !success {
@@ -292,7 +308,7 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 		}
 		d.health.phase = healthUnhealthy
 		d.failures.reportedAt = time.Time{}
-		d.checks.pending &^= checkRequestDataPlane
+		d.checks.pending &^= checkRequestDataPlane | checkRequestVerification
 		return failureReportedAt
 	}
 	if d.health.phase != healthConfirming || result.generation >= d.failures.generation {
@@ -325,7 +341,7 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 		canonicalResult = nil
 	}
 	// Selection checks may already have established health before the remaining
-	// capabilities are discovered. Missing modes cannot invalidate that proof.
+	// capabilities are discovered. Missing modes cannot invalidate that check.
 	healthApplied := canonicalResult != nil || initial && !canonicalIndex.Valid()
 	failureReportedAt := d.failures.reportedAt
 	if healthApplied {
@@ -334,10 +350,6 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 			d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 		}
 	}
-	if healthApplied {
-		d.recordHealthProofLocked(result, canonicalResult)
-	}
-
 	d.health.pendingForce |= discovered
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.phase.usable()
@@ -371,7 +383,6 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	if canonicalResult != nil {
 		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 	}
-	d.recordHealthProofLocked(result, canonicalResult)
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.phase.usable()
 	d.mu.Unlock()
@@ -470,7 +481,7 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 		if failure.Origin == netproxy.OriginLocalCleanup && failure.Code == "idle" {
 			clear(d.failures.resources)
 			// Sleep invalidates readiness, not the last health observation or
-			// availability history. The next generation requires a fresh proof.
+			// availability history. The next generation requires a fresh check.
 			d.mu.Unlock()
 			d.notifyGroups(SelectionForceNone)
 			return false
@@ -531,7 +542,8 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 	d.health.phase = healthUnhealthy
 	d.health.readiness = event.ReadinessVersion
 	d.failures.reportedAt = time.Time{}
-	d.checks.pending &^= checkRequestDataPlane
+	d.checks.pending &^= checkRequestDataPlane | checkRequestVerification
+	d.checks.verify = false
 	diagnostic := d.failures.last
 	d.mu.Unlock()
 	if resourceFailure {

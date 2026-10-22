@@ -116,7 +116,6 @@ func TestCapabilityAuthenticationFailureInvalidatesSharedHealth(t *testing.T) {
 		t.Run(checkKindName[kind], func(t *testing.T) {
 			d := newTestDialer(t, testTransport{})
 			d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP6}}})
-			before := d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof
 			result := checkResult{kind: kind, probes: []probeResult{{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{
 				Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth,
 			})}}}
@@ -127,7 +126,7 @@ func TestCapabilityAuthenticationFailureInvalidatesSharedHealth(t *testing.T) {
 			defer checker.stopRetries()
 			checker.cancel = func() {}
 			finishCheck(checker, result)
-			if checker.blockedBy != "auth" || d.RuntimeStatus().Healthy || d.ProofValid(before) {
+			if checker.blockedBy != "auth" || d.RuntimeStatus().Healthy || d.Alive(common.NetworkTCP6.NetworkType()) {
 				t.Fatalf("capability authentication failure did not block the shared path: blocked=%q status=%+v", checker.blockedBy, d.RuntimeStatus())
 			}
 		})

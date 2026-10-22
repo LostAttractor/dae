@@ -104,21 +104,21 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 			return nil, err
 		}
 		query.PolicyKey.Outbound, query.PolicyKey.Mark = uint8(decision.outbound), decision.mark
-		selectOption := func(network, address, hostname string) (*DialOption, error) {
+		selectOption := func(ctx context.Context, network, address, hostname string) (*DialOption, error) {
 			if network != upstream.Network || address != upstream.Address.String() || hostname != upstream.Hostname {
 				return nil, errors.New("DNS transport changed its prepared upstream")
 			}
-			return c.selectDialOption(param, decision.outbound, decision.mark, false)
+			return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false)
 		}
 		query.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
-			option, err := selectOption(network, address, hostname)
+			option, err := selectOption(ctx, network, address, hostname)
 			if err != nil {
 				return nil, err
 			}
 			return c.dialDNSUpstream(ctx, network, option, identity)
 		}
 		query.ListenPacket = func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
-			option, err := selectOption("udp", address, hostname)
+			option, err := selectOption(ctx, "udp", address, hostname)
 			if err != nil {
 				return nil, err
 			}
@@ -148,7 +148,7 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 	if err != nil {
 		return nil, err
 	}
-	return c.selectDialOption(param, decision.outbound, decision.mark, false)
+	return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false)
 }
 
 func (matcher *RoutingMatcher) dnsRoute(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*RouteParam, routeDecision, error) {

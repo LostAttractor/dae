@@ -114,12 +114,12 @@ selector: Select a path through the global API. Without an index, the initial ch
 min: Select a path by the latency of its last check.
 min_avg10: Select a path by the average of its last 10 check latencies.
 min_moving_avg: Select a path by its moving average of check latencies, which gives recent checks more weight.
-failover: Disable periodic latency checks on the healthy current path and same-tier peers. Real test results still trigger reselection by degradation, priority and last successful latency plus add_latency, respecting check_tolerance. Replacement candidates require a successful connectivity proof; candidates are tested concurrently within each tier with bounded timeouts. Higher-priority candidates are checked separately for promotion.
+failover: Disable periodic latency checks on the healthy current path and same-tier peers. Real test results still trigger reselection by degradation, priority and last successful latency plus add_latency, respecting check_tolerance. On failure, the best alive path takes over at once and is verified once; without an alive path, candidates are tested concurrently within each tier with bounded timeouts. Higher-priority candidates are checked separately for promotion.
 Automatic policies prefer non-degraded paths before priority and latency score. Only successful probes enter latency statistics. min_moving_avg accepts alpha: value (default 0.18).
 `,
 	"failure_recovery":     "Continuously monitored recovery window after the first successful probe (default 30s). Checks run at min(check_interval, 5s), with a final successful probe at the window boundary. Failure or paused observation restarts an incomplete window; verified degraded paths remain eligible for fallback.",
-	"probe_timeout":        "Deadline for one selection test, including queueing, session connection and verification (default 3s).",
-	"selection_timeout":    "Deadline for each selection round and each request's total selection wait (default 15s).",
+	"probe_timeout":        "Deadline for one test of a candidate during an election or upgrade check, including queueing, session connection and verification (default 3s).",
+	"selection_timeout":    "Deadline for each election or upgrade round, and for each request's wait while no path is alive; a request's own deadline also applies (default 15s).",
 	"upgrade_interval":     "Initial interval for discovering higher-priority or recovered candidates (default 3m).",
 	"upgrade_interval_max": "Maximum backoff for unsuccessful promotion and group recovery checks (default 1h).",
 	"udp_check_dns":        "Override global config.",

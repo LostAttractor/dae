@@ -51,7 +51,7 @@ func (c *connectivityChecker) resetForRequest(reasons checkRequestReason) {
 		c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
 		c.supportAt = time.Time{}
 	}
-	if reasons&(checkRequestEnvironment|checkRequestManual|checkRequestDataPlane) != 0 {
+	if reasons&(checkRequestEnvironment|checkRequestManual|checkRequestDataPlane|checkRequestVerification) != 0 {
 		c.resetHealthRetry()
 	}
 }

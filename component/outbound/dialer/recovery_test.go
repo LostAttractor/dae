@@ -316,7 +316,7 @@ func TestPermanentConnectFailureBlocksUntilEnvironmentRequest(t *testing.T) {
 	}
 }
 
-func TestReadinessDiagnosticDoesNotInvalidateHealthProof(t *testing.T) {
+func TestReadinessDiagnosticDoesNotDiscardHealthCheck(t *testing.T) {
 	for _, established := range []bool{false, true} {
 		t.Run(fmt.Sprintf("established=%t", established), func(t *testing.T) {
 			transport := newTestSessionTransport(netproxy.SessionConnected)
@@ -336,7 +336,7 @@ func TestReadinessDiagnosticDoesNotInvalidateHealthProof(t *testing.T) {
 			d.applySessionState(after)
 			_, applied := d.applyCheck(checkResult{kind: checkHealth, seq: before.Seq, readiness: before.ReadinessVersion, probes: []probeResult{{network: common.NetworkTCP4}}})
 			if !applied || !d.RuntimeStatus().Healthy {
-				t.Fatal("diagnostic-only event discarded valid health proof")
+				t.Fatal("diagnostic-only event discarded a valid health check")
 			}
 		})
 	}

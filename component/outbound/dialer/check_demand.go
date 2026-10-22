@@ -17,6 +17,7 @@ const (
 	checkRequestDataPlane checkRequestReason = 1 << iota
 	checkRequestEnvironment
 	checkRequestManual
+	checkRequestVerification
 )
 
 type checkOperation uint8
@@ -36,6 +37,7 @@ type pathChecks struct {
 	operation    checkOperation
 	checkedAt    time.Time
 	pending      checkRequestReason
+	verify       bool // A group switched here and awaits a representative result.
 	activeProbes int
 	selection    [common.NetworkTypeCount]*selectionCheck
 }
@@ -99,6 +101,27 @@ func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 		d.checks.pending = d.checks.pending&^checkRequestEnvironment | pending
 	}
 	d.statusRevision++
+	d.mu.Unlock()
+	d.signalConnectivityCheck()
+}
+
+// RequestVerification asks for a representative result newer than the
+// observation a group switched on, even while automatic checks are paused.
+// The worker is serial, so a probe already running started after that
+// observation: it answers every verification requested meanwhile, and only a
+// result that is not applied leaves the request for another probe.
+func (d *pathRuntime) RequestVerification() {
+	d.mu.Lock()
+	if d.ctx.Err() != nil || !d.checksConnectivity || d.checks.verify {
+		d.mu.Unlock()
+		return
+	}
+	d.checks.verify = true
+	if d.checks.operation == checkIdle {
+		d.checks.pending |= checkRequestVerification
+	}
+	d.statusRevision++
+	d.updateTransportDemandLocked()
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
 }

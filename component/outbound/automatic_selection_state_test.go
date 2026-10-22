@@ -23,14 +23,14 @@ func TestAutomaticPublicationReleasesSelectionLock(t *testing.T) {
 			}
 			return nil
 		})
-	proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+	hold, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer proof.Release()
+	defer hold()
 	g.automatic.started = true
 	committed := make(chan bool, 1)
-	go func() { committed <- g.automatic.commit(common.NetworkTCP4, &selectionJob{ctx: t.Context()}, d, proof) }()
+	go func() { committed <- g.automatic.commit(common.NetworkTCP4, &selectionJob{ctx: t.Context()}, d) }()
 	defer close(release)
 	select {
 	case <-entered:

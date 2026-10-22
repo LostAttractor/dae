@@ -3,6 +3,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -34,11 +35,11 @@ type DialOption struct {
 // selectRoutedAddress is shared by HTTP targets and internal DNS transports.
 // Match destination transformations once, then flow/routing with the caller's
 // original identity. Daemon requests supply an unspecified source address.
-func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
-	return c.selectAddress(network, source, identity, domain, address, nil)
+func (c *ControlPlane) selectRoutedAddress(ctx context.Context, network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+	return c.selectAddress(ctx, network, source, identity, domain, address, nil)
 }
 
-func (c *ControlPlane) selectAddress(network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort, outboundOverride *consts.OutboundIndex) (*DialOption, error) {
+func (c *ControlPlane) selectAddress(ctx context.Context, network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort, outboundOverride *consts.OutboundIndex) (*DialOption, error) {
 	if !source.IsValid() {
 		ip := netip.IPv6Unspecified()
 		if address.Addr().Is4() {
@@ -57,7 +58,7 @@ func (c *ControlPlane) selectAddress(network string, source netip.AddrPort, iden
 	if err != nil {
 		return nil, err
 	}
-	return c.routeDestination(param, domain)
+	return c.routeDestination(ctx, param, domain)
 }
 
 func (o *DialOption) dialerForConnection() netproxy.Dialer {
@@ -107,9 +108,10 @@ func (c *ControlPlane) dialsName(override bool, outbound consts.OutboundIndex, l
 }
 
 // selectDialOption selects a node of the routed group for the dial target's
-// family. A group with no usable node degrades by no_connectivity_behavior; an
-// explicit HTTP policy never degrades.
-func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
+// family, waiting within ctx while the group elects one. A group with no
+// usable node degrades by no_connectivity_behavior; an explicit HTTP policy
+// never degrades. A request whose context ended fails instead.
+func (c *ControlPlane) selectDialOption(ctx context.Context, p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
 			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
@@ -131,9 +133,12 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	}
 	dialTarget, networkType, ip := target(override)
 	group := c.outbounds[outboundIndex]
-	selection, err := group.SelectConnection(networkType, ip)
+	selection, err := group.SelectConnection(ctx, networkType, ip)
 	var original *outbound.DialerGroup
 	if errors.Is(err, outbound.ErrNoAliveDialer) && p.outboundOverride == nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// Fallback connections belong to the original group's policies.
 		original, outboundIndex = group, c.noConnectivityOutbound
 		if outboundIndex == consts.OutboundBlock {
@@ -142,7 +147,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		dialTarget, networkType, _ = target(false)
 		group = c.outbounds[outboundIndex]
 		selection.Network, selection.Lease = networkType, original.FallbackLease(networkType)
-		selection.Dialer, err = group.Select(&selection.Network)
+		selection.Dialer, err = group.Select(ctx, &selection.Network)
 	}
 	if err != nil {
 		if p.outboundOverride != nil {

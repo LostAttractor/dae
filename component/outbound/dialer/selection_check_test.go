@@ -5,6 +5,7 @@ package dialer
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,9 +22,8 @@ func TestSelectionCheckExpiredBudgetDoesNotStartWork(t *testing.T) {
 				d := newTestDialer(t, testTransport{})
 				d.SetCheckEnabled(false)
 				began := time.Now()
-				proof, err := d.Check(t.Context(), common.NetworkTCP4, timeout)
-				defer proof.Release()
-				if !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 0 {
+				release, err := d.Check(t.Context(), common.NetworkTCP4, timeout)
+				if release != nil || !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 0 {
 					t.Fatalf("expired budget was extended: err=%v elapsed=%v", err, time.Since(began))
 				}
 				if status := d.RuntimeStatus(); status.Checking || !status.CheckedAt.IsZero() || d.connectivityCheckRequested() {
@@ -56,11 +56,12 @@ func TestSelectionChecksCoalesceAndBoundQueueing(t *testing.T) {
 		var clients sync.WaitGroup
 		for range 8 {
 			clients.Go(func() {
-				proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
-				defer proof.Release()
-				if err != nil || !d.ProofValid(proof) {
-					t.Errorf("proof=%+v err=%v", proof, err)
+				release, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+				if err != nil || !d.Alive(common.NetworkTCP4.NetworkType()) {
+					t.Errorf("check did not make the path alive: %v", err)
+					return
 				}
+				release()
 			})
 		}
 		clients.Wait()
@@ -74,6 +75,7 @@ func TestSelectionCheckQueueTimeout(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.SetCheckEnabled(false)
 	d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}}})
+	startConfirmation(d)
 	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		t.Error("queued check reached the network")
 		return nil
@@ -123,8 +125,10 @@ func TestSharedCheckHonorsEachCallersDeadline(t *testing.T) {
 		defer func() { _ = d.Close(); worker.Wait() }()
 		long := make(chan error, 1)
 		go func() {
-			proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
-			proof.Release()
+			release, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+			if err == nil {
+				release()
+			}
 			long <- err
 		}()
 		synctest.Wait()
@@ -177,31 +181,97 @@ func TestRecoveryRequiresElapsedWindowAndCompletedProbe(t *testing.T) {
 	})
 }
 
-func TestHealthProofDoesNotReviveAfterRecovery(t *testing.T) {
-	for _, confirmed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "confirmed report", true: "confirmed outage"}[confirmed], func(t *testing.T) {
-			d := newTestDialer(t, testTransport{})
-			network := common.NetworkTCP4
-			d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: network, latency: time.Millisecond}}})
-			before := d.SelectionSnapshot(network.NetworkType()).Proof
-			if confirmed {
-				d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: network, err: errors.New("offline")}}})
-			} else {
-				d.ReportDataPlaneError(errors.New("upstream timeout"))
+// startConfirmation models a reported failure whose confirmation has not run:
+// the path keeps serving but is not alive for new selections.
+func startConfirmation(d *Dialer) {
+	d.ReportDataPlaneError(errors.New("upstream timeout"))
+	d.mu.Lock()
+	d.checks.pending &^= checkRequestDataPlane
+	d.mu.Unlock()
+}
+
+func TestAliveCheckDoesNotProbe(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		d.SetCheckEnabled(false)
+		d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}}})
+		time.Sleep(time.Hour)
+		began := time.Now()
+		release, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+		if err != nil || time.Since(began) != 0 || d.connectivityCheckRequested() {
+			t.Fatalf("an alive path was probed again: err=%v elapsed=%v", err, time.Since(began))
+		}
+		release()
+	})
+}
+
+// A verification needs a representative result newer than the observation a
+// group switched on. The serial worker makes an in-flight probe one, repeated
+// requests coalesce even while checks are paused, and a capability probe that
+// leaves health unchanged does not answer it.
+func TestVerificationNeedsOneRepresentativeResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		d.SetCheckEnabled(false)
+		prepareRecoveryDialer(d)
+		d.mu.Lock()
+		d.health.networks[common.NetworkTCP6] = networkSupported // The representative network.
+		d.mu.Unlock()
+		var mu sync.Mutex
+		var probed []common.NetworkIndex
+		gate := make(chan struct{}, 2)
+		checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
+			mu.Lock()
+			probed = append(probed, network.Index())
+			mu.Unlock()
+			<-gate
+			return nil
+		})
+		start := make(chan struct{})
+		close(start)
+		var worker sync.WaitGroup
+		worker.Go(func() { checker.run(start) })
+		defer func() { _ = d.Close(); worker.Wait() }()
+		want := func(networks ...common.NetworkIndex) {
+			t.Helper()
+			synctest.Wait()
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(probed, networks) {
+				t.Fatalf("probed %v, want %v", probed, networks)
 			}
-			if d.ProofValid(before) {
-				t.Fatal("failure did not invalidate the previous proof")
-			}
-			d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, probes: []probeResult{{network: network, latency: time.Millisecond}}})
-			if !d.Usable(network.NetworkType()) {
-				t.Fatal("successful confirmation did not recover the path")
-			}
-			if d.ProofValid(before) {
-				t.Fatal("an old proof revived after recovery in the same Session")
-			}
-			if !d.ProofValid(d.SelectionSnapshot(network.NetworkType()).Proof) {
-				t.Fatal("recovery did not produce a valid proof")
+		}
+		synctest.Wait()
+		if d.RuntimeStatus().CheckEnabled {
+			t.Fatal("test requires paused automatic checks")
+		}
+		want()
+
+		d.RequestManualCheck()
+		synctest.Wait()
+		d.RequestVerification()
+		gate <- struct{}{}
+		want(common.NetworkTCP6)
+
+		d.RequestVerification()
+		d.RequestVerification()
+		gate <- struct{}{}
+		want(common.NetworkTCP6, common.NetworkTCP6)
+
+		d.mu.Lock()
+		d.health.networks[common.NetworkTCP4] = networkUntested
+		d.mu.Unlock()
+		var discovery sync.WaitGroup
+		discovery.Go(func() {
+			if release, err := d.Check(t.Context(), common.NetworkTCP4, time.Second); err == nil {
+				release()
 			}
 		})
-	}
+		synctest.Wait()
+		d.RequestVerification()
+		gate <- struct{}{}
+		gate <- struct{}{}
+		discovery.Wait()
+		want(common.NetworkTCP6, common.NetworkTCP6, common.NetworkTCP4, common.NetworkTCP6)
+	})
 }

@@ -142,7 +142,7 @@ func TestPluginDestinationHTTPPlansKeepRewrittenTarget(t *testing.T) {
 				}}
 				original := netip.MustParseAddrPort("192.0.2.20:443")
 				identity := routingResult{Mark: 37, Must: 1}
-				option, err := plane.selectRoutedAddress(network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "original.example", original)
+				option, err := plane.selectRoutedAddress(t.Context(), network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "original.example", original)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -196,7 +196,7 @@ func TestRewrittenTargetDoesNotReenterAPIBypass(t *testing.T) {
 				t.Fatalf("DNAT target reused API ingress bypass: %+v, %v", param.routingResult, err)
 			}
 			identity := routingResult{}
-			_, err = plane.selectAddress(network, source, identity, "", netip.MustParseAddrPort("10.0.0.1:8081"), nil)
+			_, err = plane.selectAddress(t.Context(), network, source, identity, "", netip.MustParseAddrPort("10.0.0.1:8081"), nil)
 			if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
 				t.Fatalf("HTTP target reused API ingress bypass: %v", err)
 			}
@@ -220,7 +220,7 @@ l4proto(udp) && dip(192.0.2.20) -> dnat(198.51.100.2)`, "dip(192.0.2.20) -> bloc
 		{"udp", consts.L4ProtoType_TCP, "198.51.100.2:443"},
 	} {
 		identity := routingResult{Protocol: uint8(test.ingress)}
-		option, err := plane.selectRoutedAddress(test.network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "example.com", netip.MustParseAddrPort("192.0.2.20:443"))
+		option, err := plane.selectRoutedAddress(t.Context(), test.network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "example.com", netip.MustParseAddrPort("192.0.2.20:443"))
 		if err != nil || option.DialTarget != test.target || identity.Protocol != uint8(test.ingress) {
 			t.Fatalf("%s destination predicate used ingress protocol: %+v, %v", test.network, option, err)
 		}

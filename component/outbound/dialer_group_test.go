@@ -61,7 +61,7 @@ func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	}, true, "")
 }
 
-// Connection-policy fixtures need a real shared health proof even when election
+// Connection-policy fixtures need a real shared health check even when election
 // itself is controlled by the test.
 func newVerifiedTestDialer(t *testing.T, name, link string) *dialer.Dialer {
 	t.Helper()
@@ -74,11 +74,11 @@ func newVerifiedTestDialer(t *testing.T, name, link string) *dialer.Dialer {
 	close(start)
 	d.ActivateCheck(start)
 	for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
-		proof, err := d.Check(t.Context(), network, time.Second)
-		proof.Release()
+		release, err := d.Check(t.Context(), network, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
+		release()
 	}
 	return d
 }
@@ -138,7 +138,7 @@ func TestFixedSelectorUsesConfiguredDialer(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 1,
 	}, nil)
-	selected, err := g.Select(testNetworkType)
+	selected, err := g.Select(t.Context(), testNetworkType)
 	if err != nil || selected != dialers[1] {
 		t.Fatalf("Select = %v, %v; want second", selected, err)
 	}
@@ -153,12 +153,12 @@ func TestDefaultPolicyMeansFixedZero(t *testing.T) {
 		newUncheckedDialer(t, "backup"),
 	}
 	g := newSelectorTestGroup(t, dialers, emptyAnnotations(2), dialer.DialerSelectionPolicy{}, nil)
-	selected, err := g.Select(testNetworkType)
+	selected, err := g.Select(t.Context(), testNetworkType)
 	if err != nil || selected != dialers[0] {
 		t.Fatalf("default Select = %v, %v; want first", selected, err)
 	}
 	_ = dialers[0].Close()
-	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+	if _, err := g.Select(t.Context(), testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
 		t.Fatalf("default fixed selector used backup: %v", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestRandomSelectorUsesHighestPriorityTier(t *testing.T) {
 	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Random}, nil)
 	seen := map[*dialer.Dialer]bool{}
 	for i := 0; i < 100; i++ {
-		selected, err := g.Select(testNetworkType)
+		selected, err := g.Select(t.Context(), testNetworkType)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,11 +200,11 @@ func TestLatencySelectorFallsBackWhenSelectedDialerCloses(t *testing.T) {
 		policy := testFailoverPolicy()
 		policy.Policy = consts.DialerSelectionPolicy_MinLastLatency
 		g := failoverGroup(t, policy, nil, a, b)
-		if selected, err := g.Select(testNetworkType); err != nil || selected != g.Dialers[0] {
+		if selected, err := g.Select(t.Context(), testNetworkType); err != nil || selected != g.Dialers[0] {
 			t.Fatalf("initial selection = %v, %v", selected, err)
 		}
 		_ = g.Dialers[0].Close()
-		if selected, err := g.Select(testNetworkType); err != nil || selected != g.Dialers[1] {
+		if selected, err := g.Select(t.Context(), testNetworkType); err != nil || selected != g.Dialers[1] {
 			t.Fatalf("replacement = %v, %v", selected, err)
 		}
 	})
@@ -724,7 +724,7 @@ func TestSingleAlwaysAliveGroupStartsAvailable(t *testing.T) {
 	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSingleAlwaysAlive,
 		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{})
 	t.Cleanup(func() { _ = g.Close() })
-	if selected, err := g.Select(testNetworkType); err != nil || selected != d {
+	if selected, err := g.Select(t.Context(), testNetworkType); err != nil || selected != d {
 		t.Fatalf("Select = %v, %v", selected, err)
 	}
 }
@@ -753,7 +753,7 @@ func TestDialerGroupCloseRejectsSelection(t *testing.T) {
 	if err := g.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Select(testNetworkType); !errors.Is(err, net.ErrClosed) {
+	if _, err := g.Select(t.Context(), testNetworkType); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Select after Close = %v, want net.ErrClosed", err)
 	}
 }

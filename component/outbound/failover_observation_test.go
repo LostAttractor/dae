@@ -31,11 +31,11 @@ func TestFailoverUsesFreshSameTierSamples(t *testing.T) {
 				var owner *DialerGroup
 				switch source {
 				case "explicit":
-					proof, err := g.Dialers[1].Check(t.Context(), common.NetworkTCP4, time.Second)
+					release, err := g.Dialers[1].Check(t.Context(), common.NetworkTCP4, time.Second)
 					if err != nil {
 						t.Fatal(err)
 					}
-					proof.Release()
+					release()
 				case "manual":
 					g.Dialers[1].RequestManualCheck()
 				case "shared monitoring":
@@ -74,10 +74,12 @@ func TestFailoverUsesFreshSameTierSamples(t *testing.T) {
 	}
 }
 
-func TestFailoverRechecksCachedPeerBeforeLatencySwitch(t *testing.T) {
+func TestFailoverSwitchesToAlivePeerThenVerifies(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[offline], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				// Without recreation the unmonitored peer stays awake: alive on
+				// an earlier observation, as a shared or retained path can be.
 				primary, peer := new(failoverTransport), new(failoverTransport)
 				primary.delay.Store(int64(5 * time.Millisecond))
 				peer.delay.Store(int64(20 * time.Millisecond))
@@ -92,9 +94,9 @@ func TestFailoverRechecksCachedPeerBeforeLatencySwitch(t *testing.T) {
 				time.Sleep(45 * time.Millisecond)
 				synctest.Wait()
 				began := time.Now()
-				selected, err := g.Select(testNetworkType)
-				if err != nil || selected != g.Dialers[0] || time.Since(began) != 0 {
-					t.Fatal("candidate verification interrupted the still-usable primary")
+				selected, err := g.Select(t.Context(), testNetworkType)
+				if err != nil || selected != g.Dialers[1] || time.Since(began) != 0 {
+					t.Fatal("a worse sample did not switch to the alive peer before its verification")
 				}
 				time.Sleep(100 * time.Millisecond)
 				synctest.Wait()
@@ -102,10 +104,10 @@ func TestFailoverRechecksCachedPeerBeforeLatencySwitch(t *testing.T) {
 				checks := int32(1)
 				if offline {
 					want = g.Dialers[0]
-					checks += 2 // Failed verification starts a TCP4/TCP6 discovery sweep.
+					checks += 3 // The failed verification retries once, then starts a TCP4/TCP6 discovery sweep.
 				}
 				if g.SelectedDialer(testNetworkType) != want || peer.attempts.Load()-before != checks {
-					t.Fatalf("cached peer verification: selected=%v checks=%d, want checks=%d", g.SelectedDialer(testNetworkType), peer.attempts.Load()-before, checks)
+					t.Fatalf("peer verification: selected=%v checks=%d, want checks=%d", g.SelectedDialer(testNetworkType), peer.attempts.Load()-before, checks)
 				}
 			})
 		})

@@ -1,11 +1,11 @@
 package outbound
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"slices"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -21,21 +21,15 @@ type ConnectionSelection struct {
 }
 
 // SelectConnection returns the selected path with its connection generation.
-// A name target (strictIP false) may use the other address family.
-func (g *DialerGroup) SelectConnection(network common.NetworkType, strictIP bool) (ConnectionSelection, error) {
-	if g.automatic != nil {
-		deadline := time.Now().Add(g.selectionPolicy.SelectionTimeout)
-		if !g.automatic.wait(network.Index(), deadline) && !strictIP {
-			other := network
-			other.IpVersion = (consts.IpVersion_X - network.IpVersion.ToIpVersionType()).ToIpVersionStr()
-			g.automatic.wait(other.Index(), deadline)
-		}
-	}
+// A name target (strictIP false) may use the other address family. While an
+// election runs, it waits within both the selection timeout and ctx.
+func (g *DialerGroup) SelectConnection(ctx context.Context, network common.NetworkType, strictIP bool) (ConnectionSelection, error) {
+	g.awaitElection(ctx, network, strictIP)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	d, err := g.selectLocked(&network)
 	if !strictIP && errors.Is(err, ErrNoAliveDialer) {
-		network.IpVersion = (consts.IpVersion_X - network.IpVersion.ToIpVersionType()).ToIpVersionStr()
+		network = otherFamily(network)
 		d, err = g.selectLocked(&network)
 	}
 	if err != nil {
@@ -200,29 +194,37 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 			selected = g.automatic.selectedDialer(networkType.Index())
 		}
 	}
-	if !g.selectionUsable(selected, networkType) {
+	if selected == nil || !selected.Usable(networkType) {
 		return nil
 	}
 	return selected
 }
 
-func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, error) {
-	if g.automatic != nil {
-		g.automatic.wait(networkType.Index(), time.Now().Add(g.selectionPolicy.SelectionTimeout))
-	}
+func (g *DialerGroup) Select(ctx context.Context, networkType *common.NetworkType) (*dialer.Dialer, error) {
+	g.awaitElection(ctx, *networkType, true)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.selectLocked(networkType)
 }
 
-func (g *DialerGroup) selectionUsable(d *dialer.Dialer, network *common.NetworkType) bool {
-	if d == nil {
-		return false
+// awaitElection waits within both the selection timeout and ctx while an
+// election may still select a path for the network, or for a name target
+// (strictIP false) for its other address family.
+func (g *DialerGroup) awaitElection(ctx context.Context, network common.NetworkType, strictIP bool) {
+	if g.automatic == nil || g.automatic.available(network.Index()) {
+		return
 	}
-	if g.automatic != nil {
-		return d.VerifiedUsable(network)
+	ctx, cancel := context.WithTimeout(ctx, g.selectionPolicy.SelectionTimeout)
+	defer cancel()
+	if !g.automatic.wait(ctx, network.Index()) && !strictIP {
+		other := otherFamily(network)
+		g.automatic.wait(ctx, other.Index())
 	}
-	return d.Usable(network)
+}
+
+func otherFamily(network common.NetworkType) common.NetworkType {
+	network.IpVersion = (consts.IpVersion_X - network.IpVersion.ToIpVersionType()).ToIpVersionStr()
+	return network
 }
 
 // Caller holds mu, which also protects the matching connection generation.
@@ -249,7 +251,7 @@ func (g *DialerGroup) selectLocked(networkType *common.NetworkType) (*dialer.Dia
 	default:
 		selected = g.automatic.selectedDialer(networkType.Index())
 	}
-	if !g.selectionUsable(selected, networkType) {
+	if selected == nil || !selected.Usable(networkType) {
 		return nil, ErrNoAliveDialer
 	}
 	g.updateConnectionSelection(networkType, selected)

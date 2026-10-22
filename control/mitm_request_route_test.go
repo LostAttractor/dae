@@ -247,7 +247,7 @@ func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 			}
 			// An explicit IP URL has a known logical target with no hostname;
 			// the same physical IP must not borrow original.example's policy.
-			option, err = plane.selectRoutedAddress("tcp", param.Src, *param.routingResult, "", param.Dest)
+			option, err = plane.selectRoutedAddress(t.Context(), "tcp", param.Src, *param.routingResult, "", param.Dest)
 			if err != nil || option.Outbound.Name != "direct" {
 				t.Fatalf("IP URL borrowed DNS identity: %+v, %v", option, err)
 			}

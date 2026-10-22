@@ -4,44 +4,39 @@ package outbound
 
 import (
 	"slices"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
-func (s *automaticSelection) observe(dialer *dialer.Dialer, forceSelection dialer.SelectionForceMask) {
+// observe decides synchronously on a node's report, before its checker can let
+// the just-checked transport sleep. The caller holds the group lock and
+// publishes the returned changes once the start gate has opened.
+func (s *automaticSelection) observe(d *dialer.Dialer, forceSelection dialer.SelectionForceMask) (changed commits, ready bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ctx.Err() != nil {
-		return
+		return changed, false
 	}
-	newObservation := false
 	for network := range common.NetworkIndex(common.NetworkTypeCount) {
-		snapshot := dialer.SelectionSnapshot(network.NetworkType())
 		state := &s.networks[network]
-		if !snapshot.Proof.SameObservation(state.observed[dialer]) {
-			state.observed[dialer] = snapshot.Proof
-			if proof, ok := dialer.RetainProof(snapshot.Proof); ok {
-				state.fresh[dialer].Release()
-				state.fresh[dialer] = proof
-				state.retryAt = time.Time{}
-				newObservation = true
-			}
-		}
 		if forceSelection.Contains(network) {
-			s.networks[network].force = true
+			state.force = true
 		}
-	}
-	if newObservation {
-		for network, selected := range s.selected {
-			if selected == dialer {
-				s.networks[network].reconsider = true
+		// A new measurement of the selected path can justify testing a
+		// promising sleeping peer.
+		if s.selected[network] == d {
+			if measured := d.SelectionSnapshot(network.NetworkType()).MeasuredAt; measured.After(state.measuredAt) {
+				state.measuredAt, state.reconsider = measured, true
 			}
 		}
 	}
-	s.refreshDemandLocked()
-	s.signal()
+	changed, next := s.scheduleLocked(d)
+	// Wake the worker only to arm an earlier deadline.
+	if !next.IsZero() && (s.armed.IsZero() || next.Before(s.armed)) {
+		s.signal()
+	}
+	return changed, s.ready
 }
 
 func (s *automaticSelection) close() {
@@ -49,11 +44,6 @@ func (s *automaticSelection) close() {
 	s.cancel()
 	s.mu.Unlock()
 	s.wg.Wait()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, state := range s.networks {
-		releaseProofs(state.fresh)
-	}
 }
 
 func (s *automaticSelection) connectivity() (groupConnectivity, bool) {
@@ -61,8 +51,7 @@ func (s *automaticSelection) connectivity() (groupConnectivity, bool) {
 	defer s.mu.Unlock()
 	aggregate := groupConnectivity{initialDone: true}
 	for network := range common.NetworkIndex(common.NetworkTypeCount) {
-		selected := s.selected[network]
-		available := selected != nil && selected.VerifiedUsable(network.NetworkType())
+		available := s.availableLocked(network)
 		aggregate.networks[network] = available
 		aggregate.stable = aggregate.stable || available
 		state := &s.networks[network]

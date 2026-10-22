@@ -70,7 +70,7 @@ domain(full: original.example) -> block`)
 			})
 			matcher.defaultProfileID = 99
 			host := controlTestHost(t, rewriteTestPlugin(t, map[string]string{"/old": test.url}), nil)
-			selected, err := groups[0].Select(common.NetworkTCP4.NetworkType())
+			selected, err := groups[0].Select(t.Context(), common.NetworkTCP4.NetworkType())
 			if err != nil {
 				t.Fatal(err)
 			}

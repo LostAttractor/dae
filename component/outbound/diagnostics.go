@@ -36,7 +36,7 @@ func (g *DialerGroup) ExplainSelection(network *common.NetworkType) api.ExplainO
 	}
 	for _, d := range g.Dialers {
 		runtime := d.RuntimeStatus()
-		node := api.ExplainNode{ID: d.StatsID(), Name: d.Name, Usable: !g.closed.Load() && g.selectionUsable(d, network), Selected: selected == d, Reason: "not_selected_by_policy"}
+		node := api.ExplainNode{ID: d.StatsID(), Name: d.Name, Usable: !g.closed.Load() && d.Usable(network), Selected: selected == d, Reason: "not_selected_by_policy"}
 		if g.selectionPolicy.Automatic() {
 			latency := candidateLatency(g.selectionPolicy.Policy, runtime.Latency)
 			annotation := g.dialerToAnnotation[d]

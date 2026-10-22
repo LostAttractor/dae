@@ -188,7 +188,7 @@ func TestMITMDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 			c := downloadTestPlane(t, test.rules, direct, block, unavailable)
 			c.noConnectivityOutbound = test.fallback
 			c.routingMatcher.outboundUsable = func(index uint8, _ consts.L4ProtoType, version consts.IpVersionType) bool {
-				_, err := c.outbounds[index].Select(&common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: version.ToIpVersionStr()})
+				_, err := c.outbounds[index].Select(t.Context(), &common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: version.ToIpVersionStr()})
 				return err == nil
 			}
 			conn, err := mitmClientDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")

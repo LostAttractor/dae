@@ -231,7 +231,7 @@ func (d *pathRuntime) updateTransportDemandLocked() {
 	if d.dormant == nil {
 		return
 	}
-	needed := !d.checks.paused || d.checks.operation != checkIdle || d.checks.pending != 0 || d.retains > 0 || d.proofHolds > 0
+	needed := !d.checks.paused || d.checks.operation != checkIdle || d.checks.pending != 0 || d.retains > 0 || d.checkHolds > 0
 	for _, flight := range d.checks.selection {
 		needed = needed || flight != nil
 	}

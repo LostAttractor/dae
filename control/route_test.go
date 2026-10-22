@@ -7,15 +7,23 @@ package control
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	dnsmessage "github.com/miekg/dns"
 )
 
 // Only a proxy receives the sniffed name. A direct connection, including the
@@ -41,7 +49,7 @@ func TestDialTargetOverrideAppliesOnlyToProxies(t *testing.T) {
 		{3, common.NetworkTCP4.NetworkType(), destination.String()},
 	} {
 		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: destination, Domain: "example.com", networkType: *test.network, routingResult: &routingResult{}}
-		option, err := plane.selectDialOption(p, test.outbound, 0, true)
+		option, err := plane.selectDialOption(t.Context(), p, test.outbound, 0, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,4 +97,130 @@ func TestRoutingLogFieldsOmitUnavailableMetadata(t *testing.T) {
 	if _, ok := fields["ifindex"]; ok {
 		t.Fatal("routing metadata exposed a numeric ifindex")
 	}
+}
+
+// checkedTransport answers DNS over TCP, including connectivity checks.
+// ipv6Only rejects IPv4 targets, so only the tcp6 capability is confirmed.
+type checkedTransport struct {
+	delay    time.Duration
+	offline  bool
+	ipv6Only bool
+	dials    sync.Map // Address to *atomic.Int32.
+}
+
+func (d *checkedTransport) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if network != "tcp" || d.ipv6Only && !strings.HasPrefix(address, "[") {
+		return nil, netproxy.UnsupportedTunnelTypeError
+	}
+	count, _ := d.dials.LoadOrStore(address, new(atomic.Int32))
+	count.(*atomic.Int32).Add(1)
+	select {
+	case <-time.After(d.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if d.offline {
+		return nil, errors.New("proxy unavailable")
+	}
+	client, peer := net.Pipe()
+	go func() {
+		defer peer.Close()
+		conn := &dnsmessage.Conn{Conn: peer}
+		for {
+			query, err := conn.ReadMsg()
+			if err != nil {
+				return
+			}
+			response := new(dnsmessage.Msg).SetReply(query)
+			response.Answer = []dnsmessage.RR{&dnsmessage.A{
+				Hdr: dnsmessage.RR_Header{Name: query.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET},
+				A:   net.IPv4(192, 0, 2, 1),
+			}}
+			if conn.WriteMsg(response) != nil {
+				return
+			}
+		}
+	}()
+	return client, nil
+}
+
+func (*checkedTransport) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, netproxy.UnsupportedTunnelTypeError
+}
+
+// checkedPlane routes outbound index 2 to an automatic group of one node per
+// transport.
+func checkedPlane(t *testing.T, policy consts.DialerSelectionPolicy, transports ...*checkedTransport) (*ControlPlane, *outbound.DialerGroup) {
+	t.Helper()
+	option := &dialer.GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour,
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1", "::1"}}}
+	var nodes []*dialer.Dialer
+	var annotations []*dialer.Annotation
+	for i, transport := range transports {
+		name := fmt.Sprint("node", i)
+		nodes = append(nodes, dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: transport}), option, &dialer.Property{Name: name, Link: "test://" + t.Name() + "/" + name}, true, ""))
+		annotations = append(annotations, &dialer.Annotation{})
+	}
+	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, nodes, annotations,
+		dialer.DialerSelectionPolicy{Policy: policy, SelectionTimeout: time.Second})
+	t.Cleanup(func() { group.Close() })
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	plane := &ControlPlane{noConnectivityOutbound: consts.OutboundDirect, outbounds: []*outbound.DialerGroup{
+		downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), group,
+	}}
+	start := make(chan struct{})
+	if _, err := group.StartConnectivityChecks(start); err != nil {
+		t.Fatal(err)
+	}
+	close(start)
+	return plane, group
+}
+
+func TestFailedElectionDegradesWithoutQueueing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		plane, group := checkedPlane(t, consts.DialerSelectionPolicy_Failover, &checkedTransport{delay: 20 * time.Millisecond, offline: true})
+		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"),
+			networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{}}
+		began := time.Now()
+		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false)
+		if err != nil || option.OriginalOutbound != group || !option.Direct || time.Since(began) == 0 || time.Since(began) >= time.Second {
+			t.Fatalf("startup election did not degrade after its result: %+v, %v after %v", option, err, time.Since(began))
+		}
+		began = time.Now()
+		option, err = plane.selectDialOption(t.Context(), p, 2, 0, false)
+		if err != nil || option.OriginalOutbound != group || time.Since(began) != 0 {
+			t.Fatalf("election backoff queued a request: %v after %v", err, time.Since(began))
+		}
+	})
+}
+
+func TestRewrittenDestinationSelectsByItsFamily(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		plane, group := checkedPlane(t, consts.DialerSelectionPolicy_MinLastLatency, &checkedTransport{ipv6Only: true})
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if group.Available(*common.NetworkTCP4.NetworkType()) || !group.Available(*common.NetworkTCP6.NetworkType()) {
+			t.Fatal("fixture did not publish an IPv6-only group")
+		}
+		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"),
+			destination: netip.MustParseAddrPort("[2001:db8::2]:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{}}
+		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false)
+		if err != nil || option.OriginalOutbound != nil || option.Outbound != group || option.NetworkType.IpVersion != consts.IpVersionStr_6 {
+			t.Fatalf("IPv4 ingress rewritten to IPv6 degraded: %+v, %v", option, err)
+		}
+	})
+}
+
+func TestEndedRequestDoesNotDegrade(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		plane, _ := checkedPlane(t, consts.DialerSelectionPolicy_Failover, &checkedTransport{delay: time.Hour})
+		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"),
+			networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{}}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+		defer cancel()
+		began := time.Now()
+		if _, err := plane.selectDialOption(ctx, p, 2, 0, false); !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 10*time.Millisecond {
+			t.Fatalf("ended request: %v after %v", err, time.Since(began))
+		}
+	})
 }

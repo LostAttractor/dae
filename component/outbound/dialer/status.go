@@ -16,14 +16,14 @@ import (
 
 type SelectionSnapshot struct {
 	Usable          bool
-	Dormant         bool
+	Alive           bool
 	ObservedHealthy bool
 	Support         api.NetworkSupportState
 	HasLatency      bool
 	Latency         api.LatencyStats
+	MeasuredAt      time.Time // Last successful representative check.
 	Degraded        bool
 	Monitoring      bool // Shared worker demand, including other groups.
-	Proof           HealthProof
 }
 
 // ConnectivitySnapshot is the state needed to aggregate a dialer into its
@@ -74,22 +74,17 @@ type RuntimeSnapshot struct {
 
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
 	d.mu.RLock()
-	session := d.sessionSnapshot()
-	dormant := false
-	if d.dormant != nil {
-		session, dormant = d.dormant.status()
-	}
 	state := d.health.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:          !d.closed && d.healthyLocked(session) && state == networkSupported,
-		Dormant:         dormant,
+		Usable:          !d.closed && d.healthyLocked(d.sessionSnapshot()) && state == networkSupported,
+		Alive:           !d.closed && d.aliveLocked(networkType.Index()),
 		ObservedHealthy: !d.closed && d.health.phase == healthHealthy,
 		Support:         supportState(state),
+		MeasuredAt:      d.health.measuredAt,
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
 	snapshot.Degraded, _, _ = d.degradationLocked()
 	snapshot.Monitoring = !d.checks.paused
-	snapshot.Proof = d.healthProofLocked(networkType.Index())
 	d.mu.RUnlock()
 	return snapshot
 }

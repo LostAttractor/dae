@@ -116,7 +116,7 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane.outbounds[0].SetConnectionPolicy(true, true)
-	groupSelection, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+	groupSelection, _ := plane.outbounds[0].SelectConnection(t.Context(), *common.NetworkUDP4.NetworkType(), true)
 	other := newAPITestPlane(t, store).outbounds[0]
 	other.Name = "other"
 	plane.outbounds = append(plane.outbounds, other)

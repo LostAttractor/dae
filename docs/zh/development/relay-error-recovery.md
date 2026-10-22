@@ -12,7 +12,7 @@
 
 仅过滤有来源证据的本地主动清理错误。目标失败、单流 reset 和操作超时不自动判定共享连接死亡；QUIC 连接终止等事实由协议 owner 处理。
 
-健康节点的异常上游错误（包括超时、单流错误）可请求确认探测，已有 `confirming` 状态合并并发报告；明确的调用方取消、目标拒绝和容量限制不请求确认。HY2 FastOpen 在首次 `Read` 中限制应答等待，默认最多 8 秒；应答终结失败 Abort 当前 stream，使 relay 对客户端发送 RST。共享 QUIC 会话仍由资源 owner 回收和恢复。路径健康、能力发现和选择凭据的模型见[出站连通性与故障转移](../design/outbound-connectivity.md)。
+健康节点的异常上游错误（包括超时、单流错误）可请求确认探测，已有 `confirming` 状态合并并发报告；明确的调用方取消、目标拒绝和容量限制不请求确认。HY2 FastOpen 在首次 `Read` 中限制应答等待，默认最多 8 秒；应答终结失败 Abort 当前 stream，使 relay 对客户端发送 RST。共享 QUIC 会话仍由资源 owner 回收和恢复。路径健康、能力发现和存活状态的模型见[出站连通性与故障转移](../design/outbound-connectivity.md)。
 
 ## HY2 FastOpen
 

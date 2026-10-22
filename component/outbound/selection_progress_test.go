@@ -20,45 +20,35 @@ func TestSelectedNetworksShareRepresentativeRecovery(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		// Freeze elections to observe admission of the existing selections while
-		// real checks update the shared worker's health proof.
+		// real checks update the shared worker's health.
 		g.automatic.cancel()
 		g.automatic.wg.Wait()
-		transport.ipv6Offline.Store(true)
 		d := g.Dialers[0]
-		failed, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
-		failed.Release()
-		if err == nil {
-			t.Fatal("IPv6 failure was not observed")
-		}
-		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
-			if selected, err := g.Select(network.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
-				t.Fatalf("%v remained selected after representative failure", network)
-			}
-		}
-		// Discovery can recover TCP4 while TCP6 remains unavailable.
+		before4 := transport.tcp4Attempts.Load()
+		transport.ipv6Offline.Store(true)
+		d.RequestManualCheck()
 		time.Sleep(10 * time.Millisecond)
 		synctest.Wait()
-		before4, before6 := transport.tcp4Attempts.Load(), transport.tcp6Attempts.Load()
-		proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
-		defer proof.Release()
-		if err != nil {
-			t.Fatal(err)
+		// The failed TCP6 representative invalidated every capability. One
+		// discovery sweep recovered TCP4 alone, as the new representative.
+		if transport.tcp4Attempts.Load()-before4 != 1 || !d.Alive(common.NetworkTCP4.NetworkType()) {
+			t.Fatalf("IPv4 did not recover through rediscovery: tcp4 probes=%d", transport.tcp4Attempts.Load()-before4)
 		}
-		if transport.tcp4Attempts.Load()-before4 != 1 || transport.tcp6Attempts.Load() != before6 {
-			t.Fatal("IPv4 selection did not use the new representative TCP4 probe")
+		if selected, err := g.Select(t.Context(), common.NetworkTCP4.NetworkType()); err != nil || selected != d {
+			t.Fatalf("recovered IPv4 was not admitted: %v", err)
 		}
-		if selected, err := g.Select(common.NetworkTCP6.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
+		if selected, err := g.Select(t.Context(), common.NetworkTCP6.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
 			t.Fatal("the new representative revived an unconfirmed IPv6 capability")
 		}
 		transport.ipv6Offline.Store(false)
-		ipv6Proof, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
-		defer ipv6Proof.Release()
+		release, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
+		release()
 		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
-			if selected, err := g.Select(network.NetworkType()); err != nil || selected != d {
-				t.Fatalf("%v did not resume from the shared recovery proof: %v", network, err)
+			if selected, err := g.Select(t.Context(), network.NetworkType()); err != nil || selected != d {
+				t.Fatalf("%v did not resume from the shared recovery: %v", network, err)
 			}
 		}
 	})

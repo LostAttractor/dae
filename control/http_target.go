@@ -120,7 +120,7 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 func (c *ControlPlane) selectHTTPAddress(ctx context.Context, network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
 	policy := pluginctx.HTTPPolicy(ctx)
 	if policy == "" {
-		return c.selectRoutedAddress(network, source, identity, domain, address)
+		return c.selectRoutedAddress(ctx, network, source, identity, domain, address)
 	}
 	switch strings.ToUpper(policy) {
 	case "DIRECT":
@@ -130,7 +130,7 @@ func (c *ControlPlane) selectHTTPAddress(ctx context.Context, network string, so
 	}
 	for index, group := range c.outbounds {
 		if group.Name == policy {
-			return c.selectAddress(network, source, identity, domain, address, new(consts.OutboundIndex(index)))
+			return c.selectAddress(ctx, network, source, identity, domain, address, new(consts.OutboundIndex(index)))
 		}
 	}
 	return nil, fmt.Errorf("HTTP policy %q is not an active outbound", policy)

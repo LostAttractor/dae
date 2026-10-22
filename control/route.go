@@ -46,7 +46,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	}
 	if planRoute(facts).preserve {
 		decision.apply(p.routingResult)
-		return c.selectDialOption(p, decision.outbound, decision.mark, false)
+		return c.selectDialOption(ctx, p, decision.outbound, decision.mark, false)
 	}
 	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
 	if err != nil {
@@ -60,7 +60,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	plan := planRoute(facts)
 	switch plan.action {
 	case routeTarget:
-		return c.routeDestination(p, domain)
+		return c.routeDestination(ctx, p, domain)
 	case routeUntrusted:
 		return nil, fmt.Errorf("cannot preserve ambiguous DNS routing for %s without a trusted hostname", p.Dest.Addr())
 	case routeMatch:
@@ -71,12 +71,12 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	}
 
 	decision.apply(p.routingResult)
-	return c.selectDialOption(p, decision.outbound, decision.mark, plan.override)
+	return c.selectDialOption(ctx, p, decision.outbound, decision.mark, plan.override)
 }
 
 // Route the selected target once, retaining immutable ingress identity.
 // Outbound selection does not change the destination decision.
-func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOption, error) {
+func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, domain string) (*DialOption, error) {
 	input := p.routingInput(domain, p.effectiveDestination())
 	// A captured connection with no trusted hostname keeps its DNS-IP evidence.
 	// Explicit IP URLs have a known logical target and do not borrow that identity.
@@ -96,7 +96,7 @@ func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOpti
 		outbound = *p.outboundOverride
 	}
 	routeDecision{outbound: outbound, mark: mark, must: must}.apply(p.routingResult)
-	return c.selectDialOption(p, outbound, mark, c.dialTargetOverride && domain != "")
+	return c.selectDialOption(ctx, p, outbound, mark, c.dialTargetOverride && domain != "")
 }
 
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *routingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {

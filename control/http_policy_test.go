@@ -43,7 +43,7 @@ func TestHTTPPolicyOverridesRetainedOutbound(t *testing.T) {
 	})
 	// Avoid real marked sockets in the test while retaining mark in the plan.
 	plane.soMarkFromDae = 91
-	retained, err := plane.selectRoutedAddress("tcp", param.Src, *param.routingResult, param.Domain, param.Dest)
+	retained, err := plane.selectRoutedAddress(t.Context(), "tcp", param.Src, *param.routingResult, param.Domain, param.Dest)
 	if err != nil {
 		t.Fatal(err)
 	}
