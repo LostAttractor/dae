@@ -22,6 +22,9 @@ global {
 
 `dae_process_connections_total{network}` 和 `dae_process_traffic_bytes_total{network,direction}`
 保留进程生命周期累计值，与全局 status 的总量共用数据源。明细回收不会减少这些总量。
+`dae_group_connections_total{outbound,network}` 和 `dae_group_traffic_bytes_total{outbound,network,direction}`
+按出站组名称在进程生命周期内累计，包含已回收路径的总量，与 status 的组总量共用数据源；节点替换不会减少组总量。
+组从配置中移除后序列消失，再次加入时从原累计值继续，包括移除期间排空的连接。
 
 路径级连接、流量、拨号耗时和错误序列保留当前配置中的节点；移除路径在连接结束且最近一分钟历史过期后回收。
 路径重新出现时明细从零开始，查询历史趋势使用 `rate` 或 `increase`。设备统计不作为 Prometheus 标签导出。

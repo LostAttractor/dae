@@ -8,6 +8,7 @@ package stats
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -488,5 +489,21 @@ func BenchmarkTrafficExternalCounters(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+func TestPathStatsHistoryAggregation(t *testing.T) {
+	var total api.PathStats
+	AddPathStats(&total, api.PathStats{History: api.TrafficHistory{
+		UploadBytesPerSecond:   []uint64{1, 2},
+		DownloadBytesPerSecond: []uint64{3, 4},
+	}})
+	AddPathStats(&total, api.PathStats{History: api.TrafficHistory{
+		UploadBytesPerSecond: []uint64{10, math.MaxUint64}, DownloadBytesPerSecond: []uint64{30, math.MaxUint64},
+	}})
+	want := api.TrafficHistory{
+		UploadBytesPerSecond: []uint64{11, math.MaxUint64}, DownloadBytesPerSecond: []uint64{33, math.MaxUint64},
+	}
+	if !reflect.DeepEqual(total.History, want) {
+		t.Fatalf("aggregated history = %+v, want %+v", total.History, want)
 	}
 }

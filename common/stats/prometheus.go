@@ -48,6 +48,8 @@ func (m *storeMetrics) collect(ch chan<- prometheus.Metric) {
 var (
 	processConnectionsDesc = prometheus.NewDesc("dae_process_connections_total", "Process-lifetime established connections, including retired paths.", []string{"network"}, nil)
 	processTrafficDesc     = prometheus.NewDesc("dae_process_traffic_bytes_total", "Process-lifetime payload bytes, including retired paths.", []string{"network", "direction"}, nil)
+	groupConnectionsDesc   = prometheus.NewDesc("dae_group_connections_total", "Established connections of a configured outbound group, including its retired paths.", []string{"outbound", "network"}, nil)
+	groupTrafficDesc       = prometheus.NewDesc("dae_group_traffic_bytes_total", "Payload bytes of a configured outbound group, including its retired paths.", []string{"outbound", "network", "direction"}, nil)
 	pathLabels             = []string{"id", "outbound", "subtag", "dialer", "network"}
 	trafficLabels          = []string{"id", "outbound", "subtag", "dialer", "network", "direction"}
 
@@ -93,6 +95,7 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 	for _, descriptor := range []*prometheus.Desc{
 		activeConnectionsDesc,
 		processConnectionsDesc, processTrafficDesc,
+		groupConnectionsDesc, groupTrafficDesc,
 		totalConnectionsDesc,
 		fallbackConnectionsDesc,
 		trafficBytesDesc,
@@ -148,6 +151,17 @@ func (s *Store) collectConnections(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(processConnectionsDesc, prometheus.CounterValue, float64(values.TotalConnections), name)
 		ch <- prometheus.MustNewConstMetric(processTrafficDesc, prometheus.CounterValue, float64(values.UploadBytes), name, trafficDirectionUpload)
 		ch <- prometheus.MustNewConstMetric(processTrafficDesc, prometheus.CounterValue, float64(values.DownloadBytes), name, trafficDirectionDownload)
+	}
+	for outbound, networks := range snapshot.GroupTotals() {
+		for network, values := range networks {
+			if values.TotalConnections == 0 {
+				continue
+			}
+			name := common.NetworkIndex(network).String()
+			ch <- prometheus.MustNewConstMetric(groupConnectionsDesc, prometheus.CounterValue, float64(values.TotalConnections), outbound, name)
+			ch <- prometheus.MustNewConstMetric(groupTrafficDesc, prometheus.CounterValue, float64(values.UploadBytes), outbound, name, trafficDirectionUpload)
+			ch <- prometheus.MustNewConstMetric(groupTrafficDesc, prometheus.CounterValue, float64(values.DownloadBytes), outbound, name, trafficDirectionDownload)
+		}
 	}
 	for path, stats := range snapshot.Paths {
 		labels := pathLabelValues(path)

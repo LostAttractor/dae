@@ -178,14 +178,49 @@ func TestRetiredNodeKeepsCurrentGroupTotals(t *testing.T) {
 		store.sampleAt(now)
 	}
 	snapshot := store.TrafficSnapshot()
-	if len(snapshot.Paths) != 0 || snapshot.RetiredGroups[path.Outbound][path.Network].UploadBytes != 123 {
+	if len(snapshot.Paths) != 0 || snapshot.GroupTotals()[path.Outbound][path.Network].UploadBytes != 123 {
 		t.Fatalf("retiring a node lost current group totals: %+v", snapshot)
 	}
-	store.Reconcile(nil, nil)
-	if len(store.TrafficSnapshot().RetiredGroups) != 0 {
-		t.Fatal("removed group retained detail")
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(store)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if store.TrafficSnapshot().Networks[path.Network].UploadBytes != 123 {
+	var upload float64
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			labels := make(map[string]string)
+			for _, label := range metric.Label {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if family.GetName() == "dae_group_traffic_bytes_total" && labels["outbound"] == path.Outbound && labels["network"] == path.Network.String() && labels["direction"] == "upload" {
+				upload += metric.GetCounter().GetValue()
+			}
+		}
+	}
+	if upload != 123 {
+		t.Fatalf("Prometheus group total = %v, status = 123", upload)
+	}
+	// A removed group is hidden while its connections drain. Re-adding it
+	// continues its totals, including paths that retired meanwhile, so
+	// Prometheus sees no counter reset to double-count.
+	draining := store.OpenConnection(path, false)
+	draining.RecordUpload(7)
+	store.Reconcile(nil, nil)
+	if _, kept := store.TrafficSnapshot().GroupTotals()[path.Outbound]; kept {
+		t.Fatal("removed group reported its draining connection")
+	}
+	draining.Close()
+	for range api.TrafficHistorySampleCount + 1 {
+		now = now.Add(api.TrafficHistoryInterval)
+		store.sampleAt(now)
+	}
+	if store.TrafficSnapshot().Networks[path.Network].UploadBytes != 130 {
 		t.Fatal("removing group lost process total")
+	}
+	store.Reconcile(nil, map[string]bool{path.Outbound: false})
+	if snapshot := store.TrafficSnapshot(); len(snapshot.Paths) != 0 || snapshot.GroupTotals()[path.Outbound][path.Network].UploadBytes != 130 {
+		t.Fatalf("re-added group totals = %+v, want 130 uploaded bytes", snapshot.GroupTotals()[path.Outbound])
 	}
 }

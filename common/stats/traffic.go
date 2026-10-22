@@ -334,6 +334,7 @@ type TrafficSnapshot struct {
 	Paths                     map[Path]api.PathStats
 	Networks                  [common.NetworkTypeCount]api.PathStats
 	RetiredGroups             map[string][common.NetworkTypeCount]api.PathStats
+	Groups                    map[string]struct{} // Configured groups; device stores leave it nil to count all.
 	StartedAt                 time.Time
 	DirectFallbackConnections int64
 }
@@ -356,6 +357,8 @@ func (s *Store) snapshot(includeHistory bool) TrafficSnapshot {
 	}
 	s.pathsMu.RLock()
 	snapshot.RetiredGroups = maps.Clone(s.retiredGroups)
+	// Reconcile replaces the set instead of mutating it.
+	snapshot.Groups = s.currentGroups
 	for path, counters := range s.paths {
 		pathStats := counters.snapshot()
 		if includeHistory {
@@ -366,6 +369,58 @@ func (s *Store) snapshot(includeHistory bool) TrafficSnapshot {
 	s.pathsMu.RUnlock()
 	s.samplingMu.RUnlock()
 	return snapshot
+}
+
+// GroupTotals sums retained and retired paths by outbound and network. Totals
+// cover the process lifetime of a group name, so neither node churn nor
+// removing and re-adding the group decreases them; a removed group is hidden
+// until configured again. Status and Prometheus share it.
+func (s TrafficSnapshot) GroupTotals() map[string][common.NetworkTypeCount]api.PathStats {
+	groups := make(map[string][common.NetworkTypeCount]api.PathStats, len(s.RetiredGroups))
+	for name, networks := range s.RetiredGroups {
+		if s.configured(name) {
+			groups[name] = networks
+		}
+	}
+	for path, values := range s.Paths {
+		if !path.InGroup() || !s.configured(path.Outbound) {
+			continue
+		}
+		networks := groups[path.Outbound]
+		AddPathStats(&networks[path.Network], values)
+		groups[path.Outbound] = networks
+	}
+	return groups
+}
+
+func (s TrafficSnapshot) configured(group string) bool {
+	_, configured := s.Groups[group]
+	return configured || s.Groups == nil
+}
+
+// InGroup reports whether the path carries a group's traffic through a node.
+func (p Path) InGroup() bool {
+	return p.Network.Valid() && p.Outbound != "" && p.NodeID != ""
+}
+
+// AddPathStats accumulates counters and aligned history samples, saturating rates.
+func AddPathStats(dst *api.PathStats, other api.PathStats) {
+	dst.ActiveConnections += other.ActiveConnections
+	dst.TotalConnections += other.TotalConnections
+	dst.UploadBytes += other.UploadBytes
+	dst.DownloadBytes += other.DownloadBytes
+	dst.History.UploadBytesPerSecond = addHistorySamples(dst.History.UploadBytesPerSecond, other.History.UploadBytesPerSecond)
+	dst.History.DownloadBytesPerSecond = addHistorySamples(dst.History.DownloadBytesPerSecond, other.History.DownloadBytesPerSecond)
+}
+
+func addHistorySamples(current, other []uint64) []uint64 {
+	if len(current) == 0 {
+		return append([]uint64(nil), other...)
+	}
+	for i, value := range other {
+		current[i] = addRate(current[i], value)
+	}
+	return current
 }
 
 // Snapshot returns retained path detail without sampling connections.
@@ -407,10 +462,6 @@ func (s *Store) Reconcile(nodes map[string]NodeIdentity, groups map[string]bool,
 	}
 	s.pathsMu.Lock()
 	s.currentNodes, s.currentGroups = current, configured
-	maps.DeleteFunc(s.retiredGroups, func(name string, _ [common.NetworkTypeCount]api.PathStats) bool {
-		_, exists := groups[name]
-		return !exists
-	})
 	s.pathsMu.Unlock()
 }
 
@@ -427,7 +478,8 @@ func (s *Store) retirePaths() {
 			continue
 		}
 		delete(s.paths, path)
-		if group && path.Network.Valid() {
+		// Kept per group name, including removed groups, which may return.
+		if path.InGroup() {
 			if s.retiredGroups == nil {
 				s.retiredGroups = make(map[string][common.NetworkTypeCount]api.PathStats)
 			}

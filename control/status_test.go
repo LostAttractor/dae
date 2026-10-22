@@ -37,7 +37,7 @@ func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, e
 	return nil, fmt.Errorf("not implemented")
 }
 
-func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
+func TestPathStatsAggregateByGroupAndNode(t *testing.T) {
 	snapshot := map[stats.Path]api.PathStats{
 		{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: common.NetworkTCP4}: {
 			ActiveConnections: 2, TotalConnections: 3,
@@ -64,17 +64,8 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 			ActiveConnections: 11, TotalConnections: 11,
 		},
 	}
-	index := indexPathStats(snapshot)
+	index := indexTrafficStats(stats.TrafficSnapshot{Paths: snapshot})
 
-	if got := index.total; !reflect.DeepEqual(got, api.PathStats{
-		ActiveConnections: 8, TotalConnections: 12,
-		TrafficCounters: api.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
-		History: api.TrafficHistory{
-			UploadBytesPerSecond: []uint64{90, 900}, DownloadBytesPerSecond: []uint64{120, 1200},
-		},
-	}) {
-		t.Fatalf("global path stats = %+v", got)
-	}
 	if got := index.groups["group"].total; !reflect.DeepEqual(got, api.PathStats{
 		ActiveConnections: 7, TotalConnections: 10,
 		TrafficCounters: api.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},

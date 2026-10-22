@@ -6,8 +6,6 @@
 package control
 
 import (
-	"math"
-	"math/bits"
 	"net/netip"
 	"slices"
 	"strings"
@@ -36,71 +34,33 @@ type pathStatsIndex struct {
 	nodes    map[groupNodeKey]api.PathStats
 }
 
-func indexPathStats(snapshot map[stats.Path]api.PathStats) pathStatsIndex {
-	index := pathStatsIndex{
-		groups: make(map[string]groupPathStats),
-		nodes:  make(map[groupNodeKey]api.PathStats),
-	}
-	for path, values := range snapshot {
-		if !path.Network.Valid() || path.Outbound == "" || path.NodeID == "" {
-			continue
-		}
-		addPathStats(&index.total, values)
-		addPathStats(&index.networks[path.Network], values)
-
-		group := index.groups[path.Outbound]
-		addPathStats(&group.total, values)
-		addPathStats(&group.networks[path.Network], values)
-		index.groups[path.Outbound] = group
-
-		nodeKey := groupNodeKey{group: path.Outbound, nodeID: path.NodeID}
-		node := index.nodes[nodeKey]
-		addPathStats(&node, values)
-		index.nodes[nodeKey] = node
-	}
-	return index
-}
-
+// Values come from one store snapshot, with aligned traffic history samples.
 func indexTrafficStats(snapshot stats.TrafficSnapshot) pathStatsIndex {
-	index := indexPathStats(snapshot.Paths)
-	for name, networks := range snapshot.RetiredGroups {
-		group := index.groups[name]
-		for network, values := range networks {
-			addPathStats(&group.total, values)
-			addPathStats(&group.networks[network], values)
+	index := pathStatsIndex{
+		networks: snapshot.Networks,
+		groups:   make(map[string]groupPathStats),
+		nodes:    make(map[groupNodeKey]api.PathStats),
+	}
+	for _, values := range snapshot.Networks {
+		stats.AddPathStats(&index.total, values)
+	}
+	for name, networks := range snapshot.GroupTotals() {
+		group := groupPathStats{networks: networks}
+		for _, values := range networks {
+			stats.AddPathStats(&group.total, values)
 		}
 		index.groups[name] = group
 	}
-	index.total = api.PathStats{}
-	index.networks = snapshot.Networks
-	for _, values := range snapshot.Networks {
-		addPathStats(&index.total, values)
+	for path, values := range snapshot.Paths {
+		if !path.InGroup() {
+			continue
+		}
+		nodeKey := groupNodeKey{group: path.Outbound, nodeID: path.NodeID}
+		node := index.nodes[nodeKey]
+		stats.AddPathStats(&node, values)
+		index.nodes[nodeKey] = node
 	}
 	return index
-}
-
-// Values come from one store snapshot, with aligned traffic history samples.
-func addPathStats(dst *api.PathStats, other api.PathStats) {
-	dst.ActiveConnections += other.ActiveConnections
-	dst.TotalConnections += other.TotalConnections
-	dst.UploadBytes += other.UploadBytes
-	dst.DownloadBytes += other.DownloadBytes
-	dst.History.UploadBytesPerSecond = addHistorySamples(dst.History.UploadBytesPerSecond, other.History.UploadBytesPerSecond)
-	dst.History.DownloadBytesPerSecond = addHistorySamples(dst.History.DownloadBytesPerSecond, other.History.DownloadBytesPerSecond)
-}
-
-func addHistorySamples(current, other []uint64) []uint64 {
-	if len(current) == 0 {
-		return append([]uint64(nil), other...)
-	}
-	for i, value := range other {
-		sum, carry := bits.Add64(current[i], value, 0)
-		if carry != 0 {
-			sum = math.MaxUint64
-		}
-		current[i] = sum
-	}
-	return current
 }
 
 func (c *ControlPlane) tableStatuses() []api.TableUsage {
