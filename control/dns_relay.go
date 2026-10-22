@@ -4,17 +4,21 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	dns "github.com/miekg/dns"
@@ -96,59 +100,72 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 		bypass = bypass || must
 	}
 	request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: network,
-		Source: src, OriginalDestination: dst, Destination: target, Interface: identity.Ifindex,
-		PolicyKey: plugin.DNSPolicyKey{Generation: c.routingGeneration}}
+		Source: src, OriginalDestination: dst, Destination: target, Interface: identity.Ifindex}
 	request.RouteUpstream = func(ctx context.Context, query *plugin.DNSExchange, upstream plugin.DNSUpstream) (*plugin.DNSExchange, error) {
-		param, decision, err := c.routingMatcher.dnsRoute(ctx, upstream.Network, upstream.Address.String(), upstream.Hostname, query, identity)
+		option, err := c.dnsUpstreamOption(ctx, upstream.Network, upstream.Address.String(), upstream.Hostname, query, identity)
 		if err != nil {
 			return nil, err
 		}
-		query.PolicyKey.Outbound, query.PolicyKey.Mark = uint8(decision.outbound), decision.mark
-		selectOption := func(ctx context.Context, network, address, hostname string) (*DialOption, error) {
+		query.Egress = c.dnsEgress(option.Dialer, option.Direct, option.Mark)
+		query.DialContext, query.ListenPacket = c.dnsDialers(identity, func(_ context.Context, network, address, hostname string) (*DialOption, error) {
 			if network != upstream.Network || address != upstream.Address.String() || hostname != upstream.Hostname {
 				return nil, errors.New("DNS transport changed its prepared upstream")
 			}
-			return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false)
-		}
-		query.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
-			option, err := selectOption(ctx, network, address, hostname)
-			if err != nil {
-				return nil, err
-			}
-			return c.dialDNSUpstream(ctx, network, option, identity)
-		}
-		query.ListenPacket = func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
-			option, err := selectOption(ctx, "udp", address, hostname)
-			if err != nil {
-				return nil, err
-			}
-			return c.listenDNSUpstream(ctx, option, identity)
-		}
+			return option, nil
+		})
 		return query, nil
 	}
-	request.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
-		option, err := c.dnsDialOption(ctx, network, address, hostname, request, identity)
-		if err != nil {
-			return nil, err
-		}
-		return c.dialDNSUpstream(ctx, network, option, identity)
-	}
-	request.ListenPacket = func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
-		option, err := c.dnsDialOption(ctx, "udp", address, hostname, request, identity)
-		if err != nil {
-			return nil, err
-		}
-		return c.listenDNSUpstream(ctx, option, identity)
-	}
+	request.DialContext, request.ListenPacket = c.dnsDialers(identity, func(ctx context.Context, network, address, hostname string) (*DialOption, error) {
+		return c.dnsUpstreamOption(ctx, network, address, hostname, request, identity)
+	})
 	return request, bypass, nil
 }
 
-func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*DialOption, error) {
+// dnsEgress identifies the network position an answer stands for: the
+// selected proxy path, or direct traffic with its effective mark. A failover
+// or reload that changes the node changes the egress.
+func (c *ControlPlane) dnsEgress(path *dialer.Dialer, direct bool, mark uint32) string {
+	if direct {
+		if mark == 0 {
+			mark = c.soMarkFromDae
+		}
+		return "direct/" + strconv.FormatUint(uint64(mark), 10)
+	}
+	// Links may carry credentials; only their digest is retained.
+	digest := sha256.Sum256([]byte(path.Link))
+	return "path/" + hex.EncodeToString(digest[:])
+}
+
+// dnsUpstreamOption routes one DNS dial and selects its node.
+func (c *ControlPlane) dnsUpstreamOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*DialOption, error) {
 	param, decision, err := c.routingMatcher.dnsRoute(ctx, network, address, hostname, request, identity)
 	if err != nil {
 		return nil, err
 	}
 	return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false)
+}
+
+// dnsDialers dial the node selected for each dial. Unbound exchanges select
+// for every dial; prepared exchanges reuse their upstream selection.
+func (c *ControlPlane) dnsDialers(identity routingResult, selectOption func(ctx context.Context, network, address, hostname string) (*DialOption, error)) (
+	func(ctx context.Context, network, address, hostname string) (net.Conn, error),
+	func(ctx context.Context, address, hostname string) (net.PacketConn, error),
+) {
+	dial := func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
+		option, err := selectOption(ctx, network, address, hostname)
+		if err != nil {
+			return nil, err
+		}
+		return c.dialDNSUpstream(ctx, network, option, identity)
+	}
+	listen := func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
+		option, err := selectOption(ctx, "udp", address, hostname)
+		if err != nil {
+			return nil, err
+		}
+		return c.listenDNSUpstream(ctx, option, identity)
+	}
+	return dial, listen
 }
 
 func (matcher *RoutingMatcher) dnsRoute(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*RouteParam, routeDecision, error) {
@@ -390,7 +407,12 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		refreshRead()
 		return nil
 	}
-	streams := make(map[plugin.DNSUpstreamKey]*dnsStream)
+	// A retained stream belongs to one egress and resolver address.
+	type streamKey struct {
+		egress      string
+		destination netip.AddrPort
+	}
+	streams := make(map[streamKey]*dnsStream)
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -415,7 +437,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			return stream.exchange(operation, request)
 		}
 		streamsMu.Lock()
-		key := request.UpstreamKey()
+		key := streamKey{request.Egress, request.Destination}
 		stream := streams[key]
 		if stream == nil {
 			if len(streams) >= 16 {

@@ -97,7 +97,11 @@ func TestDNSPluginComposition(t *testing.T) {
 	for _, name := range []string{"local.example.", "alias.example.", "assigned.example.", "router.example."} {
 		t.Run(name, func(t *testing.T) {
 			m := new(dns.Msg).SetQuestion(name, dns.TypeA)
-			request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), PolicyKey: plugin.DNSPolicyKey{Generation: 1}, DialContext: dial}
+			request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), DialContext: dial,
+				RouteUpstream: func(_ context.Context, request *plugin.DNSExchange, _ plugin.DNSUpstream) (*plugin.DNSExchange, error) {
+					request.Egress = "direct/0"
+					return request, nil
+				}}
 			var first time.Time
 			for attempt := range 2 {
 				m.Id++

@@ -243,24 +243,24 @@ func TestRoutingModulePriorityInEveryProfile(t *testing.T) {
 	}
 }
 
-func TestDNSCacheUsesSelectedPolicyInsteadOfProfileIdentity(t *testing.T) {
+func TestDNSCacheUsesSelectedEgressInsteadOfProfileIdentity(t *testing.T) {
 	source := netip.MustParseAddrPort("192.0.2.1:1234")
-	c := &ControlPlane{}
+	c := &ControlPlane{outbounds: dnsTestOutbounds(t)}
 	upstream := plugin.DNSUpstream{Network: "udp", Address: netip.MustParseAddrPort("192.0.2.53:53")}
-	contexts := make([]plugin.DNSPolicyKey, 3)
+	contexts := make([]string, 3)
 	for i, mark := range []uint32{10, 10, 20} {
 		request, _, err := c.dnsRequest(nil, "udp", source, upstream.Address, routingResult{Ifindex: 7, ProfileId: uint32(i + 1), Mark: mark})
 		if err != nil {
 			t.Fatal(err)
 		}
-		prepared, err := request.PrepareUpstream(t.Context(), upstream)
+		routed, err := request.RouteUpstream(t.Context(), request.Copy(), upstream)
 		if err != nil {
 			t.Fatal(err)
 		}
-		contexts[i] = prepared.PolicyKey()
+		contexts[i] = routed.Egress
 	}
 	if contexts[0] != contexts[1] || contexts[0] == contexts[2] {
-		t.Fatalf("cache contexts must follow selected policy: %v", contexts)
+		t.Fatalf("cache contexts must follow the selected egress: %v", contexts)
 	}
 }
 

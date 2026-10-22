@@ -33,7 +33,16 @@ func testCache(t *testing.T, body string) *Cache {
 func testRequest() *plugin.DNSExchange {
 	m := new(dns.Msg).SetQuestion("test.example.", dns.TypeA)
 	m.SetEdns0(1232, true)
-	return &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Upstream: "udp://192.0.2.53:53", PolicyKey: plugin.DNSPolicyKey{Chain: 1, Routed: true}, Destination: netip.MustParseAddrPort("192.0.2.53:53")}
+	return &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Upstream: "dns://192.0.2.53:53", Egress: "direct/0", Destination: netip.MustParseAddrPort("192.0.2.53:53")}
+}
+
+// throughCache runs one upstream query through c as the host's boundary does.
+func throughCache(c *Cache, transport plugin.DNSHandler) plugin.DNSHandler {
+	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		r := request.Copy()
+		r.SelectCaches = func(plugin.DNSPacket) []plugin.DNSUpstreamCache { return []plugin.DNSUpstreamCache{c} }
+		return r.ExchangeUpstream(ctx, plugin.DNSUpstream{Network: r.Network, Address: r.Destination, Endpoint: r.Upstream}, transport)
+	}
 }
 func testResponse(r *plugin.DNSExchange) *plugin.DNSResponse {
 	m := new(dns.Msg).SetReply(r.MessageCopy())
@@ -45,12 +54,12 @@ func TestUpstreamResponseReplayAndIsolation(t *testing.T) {
 	c := testCache(t, "")
 	request := testRequest()
 	response := testResponse(request)
-	c.storeResponse(request, response)
+	c.StoreDNSUpstream(request, response)
 	query := request.MessageCopy()
 	query.Id++
 	query.Question[0].Name = "TeSt.Example."
 	request.DNSPacket = plugin.DNSMessage(query)
-	hit, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+	hit, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		t.Fatal("cache miss")
 		return nil, nil
 	})(t.Context(), request)
@@ -66,9 +75,9 @@ func TestUpstreamResponseReplayAndIsolation(t *testing.T) {
 	}
 	for _, change := range []func(*plugin.DNSExchange, *dns.Msg){
 		func(r *plugin.DNSExchange, _ *dns.Msg) { r.Upstream = "https://dns.example/dns-query?view=other" },
-		func(r *plugin.DNSExchange, _ *dns.Msg) {
-			r.PolicyKey = plugin.DNSPolicyKey{Chain: 1, Outbound: 2, Routed: true}
-		}, func(r *plugin.DNSExchange, _ *dns.Msg) { r.Network = "tcp" }, func(r *plugin.DNSExchange, _ *dns.Msg) { r.Destination = netip.MustParseAddrPort("192.0.2.54:53") },
+		func(r *plugin.DNSExchange, _ *dns.Msg) { r.Egress = "path/proxy" },
+		func(r *plugin.DNSExchange, _ *dns.Msg) { r.Egress = "direct/1" },
+		func(r *plugin.DNSExchange, _ *dns.Msg) { r.Egress = "" },
 		func(_ *plugin.DNSExchange, m *dns.Msg) { m.CheckingDisabled = true }, func(_ *plugin.DNSExchange, m *dns.Msg) { m.RecursionDesired = false }, func(_ *plugin.DNSExchange, m *dns.Msg) { m.IsEdns0().SetDo(false) },
 	} {
 		r := request.Copy()
@@ -76,13 +85,22 @@ func TestUpstreamResponseReplayAndIsolation(t *testing.T) {
 		change(r, message)
 		r.DNSPacket = plugin.DNSMessage(message)
 		called := false
-		_, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		_, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			called = true
 			return nil, nil
 		})(t.Context(), r)
 		if err != nil || !called {
-			t.Fatal("cache crossed query/policy boundary")
+			t.Fatal("cache crossed query/egress boundary")
 		}
+	}
+	// The resolver identity covers every address and plain-DNS transport.
+	shared := request.Copy()
+	shared.Network, shared.Destination = "tcp", netip.MustParseAddrPort("[2001:db8::53]:53")
+	if hit, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		t.Fatal("transport or address split the resolver's answers")
+		return nil, nil
+	})(t.Context(), shared); err != nil || !hit.Cached {
+		t.Fatalf("shared replay: %+v, %v", hit, err)
 	}
 }
 
@@ -95,7 +113,7 @@ func TestNegativeExpirySignaturesAndCapacity(t *testing.T) {
 	message.Rcode = dns.RcodeNameError
 	message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 5}}
 	response.DNSPacket = plugin.DNSMessage(message)
-	c.storeResponse(request, response)
+	c.StoreDNSUpstream(request, response)
 	if c.store.Snapshot().Entries != 1 {
 		t.Fatal("negative answer not cached")
 	}
@@ -108,7 +126,7 @@ func TestNegativeExpirySignaturesAndCapacity(t *testing.T) {
 	query.Question[0].Name = "next.example."
 	next.DNSPacket = plugin.DNSMessage(query)
 	positive := testResponse(next)
-	c.storeResponse(next, positive)
+	c.StoreDNSUpstream(next, positive)
 	if c.store.Snapshot().Entries != 1 || c.store.Snapshot().Bytes > c.store.Snapshot().MemoryLimit {
 		t.Fatal("capacity not bounded")
 	}
@@ -120,12 +138,12 @@ func TestNegativeExpirySignaturesAndCapacity(t *testing.T) {
 	message.Answer = append(message.Answer, &dns.RRSIG{Hdr: dns.RR_Header{Name: "next.example.", Rrtype: dns.TypeRRSIG, Ttl: 60}})
 	positive.DNSPacket = plugin.DNSMessage(message)
 	c2 := testCache(t, "")
-	c2.storeResponse(next, positive)
+	c2.StoreDNSUpstream(next, positive)
 	if c2.store.Snapshot().Entries != 0 {
 		t.Fatal("signed response cached")
 	}
 	response.ReceivedAt = time.Now().Add(-time.Minute)
-	c2.storeResponse(request, response)
+	c2.StoreDNSUpstream(request, response)
 	if c2.store.Snapshot().Entries != 0 {
 		t.Fatal("expired negative answer renewed")
 	}
@@ -135,18 +153,18 @@ func TestFixedTTLAndMalformedPassthrough(t *testing.T) {
 	c := testCache(t, "fixed_domain_ttl { test.example: 0 }")
 	request := testRequest()
 	response := testResponse(request)
-	got, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return response, nil })(t.Context(), request)
+	got, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return response, nil })(t.Context(), request)
 	if err != nil || got.MessageCopy().Answer[0].Header().Ttl != 0 {
 		t.Fatalf("TTL override: %+v %v", got, err)
 	}
-	c.storeResponse(request, got)
+	c.StoreDNSUpstream(request, got)
 	if c.store.Snapshot().Entries != 0 {
 		t.Fatal("TTL zero was cached")
 	}
 	query := request.MessageCopy()
 	query.Question = nil
 	request.DNSPacket = plugin.DNSMessage(query)
-	if _, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return response, nil })(t.Context(), request); err != nil {
+	if _, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return response, nil })(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -159,7 +177,7 @@ func TestCNAMEOnlyNODATAUsesSOAMinimum(t *testing.T) {
 	message.Answer = []dns.RR{&dns.CNAME{Hdr: dns.RR_Header{Name: "test.example.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 60}, Target: "missing.example."}}
 	message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 5}}
 	response.DNSPacket = plugin.DNSMessage(message)
-	c.storeResponse(request, response)
+	c.StoreDNSUpstream(request, response)
 	k, _ := cacheKey(request)
 	if entry, ok := c.store.Peek(k); !ok || !entry.Expires.Equal(response.ReceivedAt.Add(5*time.Second)) {
 		t.Fatal("CNAME-only NODATA ignored SOA minimum")
@@ -167,7 +185,7 @@ func TestCNAMEOnlyNODATAUsesSOAMinimum(t *testing.T) {
 	c2 := testCache(t, "")
 	message.Ns = nil
 	response.DNSPacket = plugin.DNSMessage(message)
-	c2.storeResponse(request, response)
+	c2.StoreDNSUpstream(request, response)
 	if c2.store.Snapshot().Entries != 0 {
 		t.Fatal("cached negative alias without authority SOA")
 	}
@@ -182,7 +200,7 @@ func TestFixedZeroDisablesNegativeCaching(t *testing.T) {
 	message.Rcode = dns.RcodeNameError
 	message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 30}}
 	response.DNSPacket = plugin.DNSMessage(message)
-	c.storeResponse(request, response)
+	c.StoreDNSUpstream(request, response)
 	if c.store.Snapshot().Entries != 0 {
 		t.Fatal("fixed TTL zero cached a negative response")
 	}
@@ -197,7 +215,7 @@ func TestTransactionEDNSResponseIsNotCached(t *testing.T) {
 		message.SetEdns0(1232, false)
 		message.IsEdns0().Option = []dns.EDNS0{option}
 		response.DNSPacket = plugin.DNSMessage(message)
-		c.storeResponse(request, response)
+		c.StoreDNSUpstream(request, response)
 		if c.store.Snapshot().Entries != 0 {
 			t.Fatalf("cached transaction-specific EDNS %T", option)
 		}

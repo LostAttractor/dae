@@ -24,7 +24,7 @@ func (c *ControlPlane) diagnosticDNSContext(ctx context.Context, request api.Exp
 		}
 	}
 	query, _ := plugin.DiagnosticDNSRequest(ctx)
-	dnsRequest := plugin.DNSRequest{DNSPacket: query.DNSPacket, Network: request.Flow.Protocol, Source: input.src, OriginalDestination: input.dst, Destination: input.dst, Interface: input.ifindex, PolicyKey: plugin.DNSPolicyKey{Generation: c.routingGeneration}}
+	dnsRequest := plugin.DNSRequest{DNSPacket: query.DNSPacket, Network: request.Flow.Protocol, Source: input.src, OriginalDestination: input.dst, Destination: input.dst, Interface: input.ifindex}
 	identity := routingResult{Pname: input.processName, Ifindex: input.ifindex, ProfileId: input.profileID,
 		Physinif: input.physinif, Dscp: input.dscp, Mac: input.mac, CaptureFlags: evaluation.captureFlags}
 	(routeDecision{outbound: evaluation.outbound, mark: evaluation.mark, must: evaluation.must}).apply(&identity)
@@ -32,25 +32,68 @@ func (c *ControlPlane) diagnosticDNSContext(ctx context.Context, request api.Exp
 	return plugin.WithDiagnosticDNSRequest(ctx, dnsRequest)
 }
 
-// Use the same route-only evaluator as execution, against the sampled matcher.
-// A rejected route bypasses caches; incomplete inputs leave the cache unknown.
-func diagnosticDNSUpstream(ctx context.Context, state *diagnosticState, query plugin.DNSRequest, dial plugin.DiagnosticDial) (plugin.DNSRequest, bool) {
+// Route every transport candidate and select its node with the same evaluator
+// as execution, against the sampled state. Blocked candidates never consult
+// caches. The cache is known only when every other candidate binds the same
+// upstream identity.
+func (c *ControlPlane) diagnosticDNSUpstream(ctx context.Context, state *diagnosticState, query plugin.DNSRequest, dials []plugin.DiagnosticDial) (plugin.DNSRequest, bool) {
 	identity, known := ctx.Value(diagnosticDNSRouteKey{}).(routingResult)
-	ip, err := netip.ParseAddr(dial.Target.IP)
-	if !known || err != nil || dial.Target.Port == 0 {
+	if !known {
 		return query, true
 	}
-	target := netip.AddrPortFrom(ip, uint16(dial.Target.Port))
-	_, decision, err := state.matcher.dnsRoute(ctx, dial.Protocol, target.String(), dial.Target.Domain, &plugin.DNSExchange{DNSRequest: query}, identity)
-	if err != nil {
-		return query, decision.outbound != consts.OutboundBlock
+	var bound *plugin.DNSRequest
+	for _, dial := range dials {
+		ip, err := netip.ParseAddr(dial.Target.IP)
+		if err != nil || dial.Target.Port == 0 {
+			return query, true
+		}
+		target := netip.AddrPortFrom(ip, uint16(dial.Target.Port))
+		_, decision, err := state.matcher.dnsRoute(ctx, dial.Protocol, target.String(), dial.Target.Domain, &plugin.DNSExchange{DNSRequest: query}, identity)
+		if err != nil {
+			if decision.outbound == consts.OutboundBlock {
+				continue
+			}
+			return query, true
+		}
+		egress, known := c.diagnosticDNSEgress(state, consts.L4ProtoStr(dial.Protocol).ToL4ProtoType(), ip, decision)
+		if !known {
+			return query, true
+		}
+		if egress == "" {
+			continue // The no-connectivity fallback blocks this candidate.
+		}
+		candidate := query.WithUpstream(plugin.DNSUpstream{Network: dial.Protocol, Address: target, Hostname: dial.Target.Domain, Endpoint: dial.Endpoint})
+		candidate.Egress = egress
+		if bound != nil && bound.UpstreamKey() != candidate.UpstreamKey() {
+			return query, true
+		}
+		bound = &candidate
 	}
-	query.PolicyKey.Outbound, query.PolicyKey.Mark, query.PolicyKey.Routed = uint8(decision.outbound), decision.mark, true
-	query.Network, query.Destination, query.Upstream = dial.Protocol, target, dial.Endpoint
-	if query.Upstream == "" {
-		query.Upstream = dial.Protocol + "://" + target.String()
+	if bound == nil {
+		return query, false
 	}
-	return query, true
+	return *bound, true
+}
+
+// diagnosticDNSEgress mirrors selectDialOption on the sampled state. An
+// unsampled selection leaves the egress unknown; an empty egress means the
+// no-connectivity fallback blocks the dial.
+func (c *ControlPlane) diagnosticDNSEgress(state *diagnosticState, proto consts.L4ProtoType, ip netip.Addr, decision routeDecision) (string, bool) {
+	index := diagnosticNetworkIndex(proto, consts.IpVersionFromAddr(ip))
+	switch outbound := servingOutbound(decision.outbound, *index.NetworkType(), false, c.noConnectivityOutbound, state.matcher.outboundUsable); outbound {
+	case consts.OutboundDirect:
+		return c.dnsEgress(nil, true, decision.mark), true
+	case consts.OutboundBlock:
+		return "", true
+	default:
+		if int(outbound) >= len(c.outbounds) {
+			return "", false
+		}
+		if selected := state.selected[index][uint8(outbound)]; selected != nil {
+			return c.dnsEgress(selected, false, decision.mark), true
+		}
+		return "", false
+	}
 }
 
 // The API boundary validates and defaults the question before building it once.

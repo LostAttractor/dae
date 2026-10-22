@@ -558,7 +558,7 @@ func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.dnsDialOption(context.Background(), "udp", "192.0.2.1:53", "", request, routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
+	got, err := c.dnsUpstreamOption(context.Background(), "udp", "192.0.2.1:53", "", request, routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
 	if err != nil {
 		t.Fatalf("chooseBestDnsDialer: %v", err)
 	}

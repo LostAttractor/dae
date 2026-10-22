@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/trie"
 )
@@ -30,6 +31,7 @@ type diagnosticState struct {
 	names             map[uint8]string
 	network           common.NetworkIndex // The flow's network.
 	networks          map[common.NetworkIndex]map[uint8]api.ExplainOutbound
+	selected          map[common.NetworkIndex]map[uint8]*dialer.Dialer
 	connectivity      map[common.NetworkIndex]map[uint8]bool
 	electing          map[uint8]bool // Groups electing a path on the flow's network.
 	domains           map[netip.Addr]diagnosticDomain
@@ -70,15 +72,17 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 		return nil, err
 	}
 	s.networks = make(map[common.NetworkIndex]map[uint8]api.ExplainOutbound)
+	s.selected = make(map[common.NetworkIndex]map[uint8]*dialer.Dialer)
 	s.connectivity = make(map[common.NetworkIndex]map[uint8]bool)
 	for index := range common.NetworkIndex(common.NetworkTypeCount) {
 		network := index.NetworkType()
 		s.networks[index] = make(map[uint8]api.ExplainOutbound)
+		s.selected[index] = make(map[uint8]*dialer.Dialer)
 		s.connectivity[index] = map[uint8]bool{uint8(consts.OutboundDirect): true, uint8(consts.OutboundBlock): true}
 		for i, group := range c.outbounds {
 			id := uint8(i)
 			s.names[id] = group.Name
-			s.networks[index][id] = group.ExplainSelection(network)
+			s.networks[index][id], s.selected[index][id] = group.ExplainSelection(network)
 			s.connectivity[index][id] = group.Available(*network)
 		}
 	}
@@ -630,8 +634,8 @@ func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRe
 			candidates = []plugin.DiagnosticDial{{Protocol: query.Network, Target: api.DiagnosticTarget{IP: query.Destination.Addr().String(), Port: int(query.Destination.Port())}}}
 		}
 		checkCache := true
-		if output.Complete && len(candidates) == 1 {
-			query, checkCache = diagnosticDNSUpstream(ctx, state, query, candidates[0])
+		if output.Complete && len(candidates) != 0 {
+			query, checkCache = c.diagnosticDNSUpstream(ctx, state, query, candidates)
 		}
 		if checkCache {
 			cache := host.ExplainDNSUpstream(ctx, request, query)

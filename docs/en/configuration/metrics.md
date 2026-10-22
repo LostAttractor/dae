@@ -29,7 +29,7 @@ uses in-memory state and does not depend on log level.
 
 | Name | Type | Additional labels / meaning |
 | --- | --- | --- |
-| `dns_cache_lookups_total` | Counter | `result`: `hit`, `miss`, `bypass` |
+| `dns_cache_lookups_total` | Counter | `result`: `hit`, `miss`, `bypass`; once per upstream query |
 | `dns_cache_entries` | Gauge | Retained entries, including entries awaiting expiry cleanup |
 | `dns_cache_capacity_entries` | Gauge | Entry limit |
 | `dns_cache_memory_bytes` | Gauge | Conservative accounted bytes, not RSS |

@@ -375,49 +375,36 @@ func (d requestDialer) ListenPacket(ctx context.Context, target string) (net.Pac
 }
 
 func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream, metrics *routerMetrics, name, purpose string) (*plugin.DNSResponse, error) {
-	response, err := happyeyeballs.Race(ctx, upstream.Addresses, func(ctx context.Context, ip netip.Addr) (*plugin.DNSResponse, error) {
-		query := request.MessageCopy()
-		protocols := upstream.Protocols()
-		var last error
-		target := netip.AddrPortFrom(ip, upstream.Port)
-		// A cached fallback can skip transport failures only within the same
-		// routing policy. A different route may return a different DNS view.
-		var primary *plugin.PreparedDNSExchange
-		var primaryErr error
-		if len(protocols) > 1 && request.SelectCaches != nil {
-			var policyKey plugin.DNSPolicyKey
-			for i, protocol := range protocols {
-				endpoint := upstream.Target(ip, protocol)
-				prepared, err := request.PrepareUpstream(ctx, endpoint)
-				if i == 0 {
-					primary, primaryErr = prepared, err
-				}
-				if err != nil || i > 0 && prepared.PolicyKey() != policyKey {
-					break
-				}
-				policyKey = prepared.PolicyKey()
-				if response := prepared.Lookup(); response != nil {
-					return response, nil
-				}
+	query := request.UpstreamQuery()
+	protocols := upstream.Protocols()
+	// Answer cache hits without resolving a hostname upstream again: the race
+	// below looks up the same preferred candidate first.
+	if known := upstream.KnownAddresses(); upstream.Ip46 == nil && len(known) != 0 {
+		if prepared, err := query.Prepare(ctx, upstream.Target(known[0], protocols[0])); err == nil {
+			if response := prepared.Lookup(); response != nil {
+				query.Finish(response)
+				return response, nil
 			}
 		}
+	}
+	response, err := happyeyeballs.Race(ctx, upstream.Addresses, func(ctx context.Context, ip netip.Addr) (*plugin.DNSResponse, error) {
+		message := request.MessageCopy()
+		target := netip.AddrPortFrom(ip, upstream.Port)
 		var truncated *plugin.DNSResponse
+		var last error
 		for i, protocol := range protocols {
-			operation := ctx
-			cancel := func() {}
+			operation, cancel := ctx, context.CancelFunc(func() {})
 			if i+1 < len(protocols) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
-			endpoint := upstream.Target(ip, protocol)
-			attempt, err := primary, primaryErr
-			if i > 0 || attempt == nil && err == nil {
-				attempt, err = request.PrepareUpstream(operation, endpoint)
-			}
+			// Prepare each transport after the previous one's I/O, so routing
+			// changes take effect. A cached answer for its route skips the I/O.
+			prepared, err := query.Prepare(operation, upstream.Target(ip, protocol))
 			var response *plugin.DNSResponse
 			if err == nil {
-				response, err = attempt.Exchange(operation, func(ctx context.Context, prepared *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				response, err = prepared.Exchange(operation, func(ctx context.Context, prepared *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 					started := time.Now()
-					message, err := transport.Exchange(ctx, upstream, requestDialer{prepared, upstream.Hostname}, target, string(protocol), query)
+					message, err := transport.Exchange(ctx, upstream, requestDialer{prepared, upstream.Hostname}, target, string(protocol), message)
 					metrics.attempt(ctx, name, upstream.TransportName(protocol), purpose, err, message != nil && message.Truncated, started)
 					if err != nil {
 						return nil, err
@@ -443,6 +430,7 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 		}
 		return nil, last
 	}, nil)
+	query.Finish(response)
 	if err != nil {
 		return nil, fmt.Errorf("DNS exchange with %s: %w", upstream, err)
 	}

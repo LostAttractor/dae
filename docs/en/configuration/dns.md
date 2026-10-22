@@ -108,16 +108,26 @@ and capacity bounds all retained entries.
   have separate cache entries.
 
 The optional `dns-cache` plugin caches raw upstream answers after request policy,
-server selection and routing admission. Response policy runs on every request,
-including hits. Keys include the routing generation, plugin chain, selected
-outbound/mark, actual resolver endpoint, transport and query; client addresses
-and source ports are excluded. Different client-selected servers stay separate
-unless policy redirects them to the same upstream and routing policy.
+server selection, routing and node selection. Response policy runs on every
+request, including hits. Keys include the egress, the resolver identity and the
+query; client addresses and source ports are excluded. The egress is the selected
+node's physical path, or direct traffic with its effective mark. Outbound groups
+only choose an egress and are not part of the key: groups selecting the same node
+share answers, and a failover or reload that changes the node stops using the
+previous node's answers. The resolver identity excludes resolved addresses: plain
+DNS is `dns://host:port` for UDP and TCP alike, other protocols keep their full
+URL. Different client-selected servers stay separate unless policy redirects them
+to the same upstream and egress. Without a selectable node the egress is unknown
+and no cached answer applies. Each upstream query counts one lookup per cache,
+however many addresses or transports it races. The IP version preference's
+probe of the other family, an upstream chosen by a response rule and each
+server of a Surge multi-server race are upstream queries of their own.
 
-Static diagnostics check caches after upstream selection and route policy. A
-known cache hit needs no available outbound node. Missing query or routing data,
-multiple candidates and runtime-dependent policies remain uncertain; diagnostics
-do not dial or change cache counters and LRU order.
+Static diagnostics check caches after upstream selection, routing and the sampled
+node selection, including the no-connectivity fallback. Missing query or routing
+data, candidates with different egresses and runtime-dependent policies remain
+uncertain; diagnostics do not dial or change
+cache counters and LRU order.
 
 The internal resolver, `dns-cache` and Surge DNS script results reuse the bounded
 LRU storage in `pkg/dnscache`, while retaining their own entries and budgets.

@@ -15,11 +15,12 @@ const maxDNSScriptCacheEntries = 4096
 
 // Only address results are cached. Scripts see the domain, not DNS wire fields;
 // each hit constructs a fresh reply for the current ID, flags and question type.
-// A script's TTL publishes its domain result to the active configuration's clients.
+// A script's TTL publishes its domain result to clients of the same plugin chain,
+// across reloads that keep it.
 type dnsScriptCacheKey struct {
 	script *Script
 	domain string
-	policy plugin.DNSPolicyKey
+	chain  uint64
 }
 
 type dnsScriptCache struct {
@@ -32,8 +33,7 @@ func newDNSScriptCache() *dnsScriptCache {
 
 func dnsScriptKey(script *Script, request *plugin.DNSExchange) dnsScriptCacheKey {
 	question, _ := request.Question()
-	return dnsScriptCacheKey{script: script, domain: dns.CanonicalName(question.Name),
-		policy: request.PolicyKey}
+	return dnsScriptCacheKey{script: script, domain: dns.CanonicalName(question.Name), chain: request.Chain}
 }
 
 func (c *dnsScriptCache) get(key dnsScriptCacheKey, request *plugin.DNSExchange) *plugin.DNSResponse {

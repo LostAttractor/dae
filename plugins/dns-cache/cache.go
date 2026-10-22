@@ -79,12 +79,20 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 func (*Cache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
 func cacheKey(request *plugin.DNSExchange) (key, bool) {
-	message := request.MessageCopy()
-	if !clientCacheEDNS(message) {
+	query, ok := queryKey(request)
+	// An answer is attributable only to a known resolver and egress.
+	if !ok || request.Egress == "" || request.Upstream == "" {
 		return key{}, false
 	}
-	query, ok := cachepolicy.QueryKey(message)
-	return key{upstream: request.UpstreamKey(), query: query}, ok
+	return key{upstream: request.UpstreamKey(), query: query}, true
+}
+
+func queryKey(request *plugin.DNSExchange) (cachepolicy.Query, bool) {
+	message := request.MessageCopy()
+	if !clientCacheEDNS(message) {
+		return cachepolicy.Query{}, false
+	}
+	return cachepolicy.QueryKey(message)
 }
 
 // Until the client cache implements each option's response semantics, option
@@ -95,17 +103,29 @@ func clientCacheEDNS(m *dns.Msg) bool {
 	return valid && (opt == nil || len(opt.Option) == 0)
 }
 
-// Speculative fallback misses must not duplicate the real exchange's counters.
 func (c *Cache) LookupDNSUpstream(request *plugin.DNSExchange) *plugin.DNSResponse {
 	k, ok := cacheKey(request)
 	if !ok {
 		return nil
 	}
 	now := time.Now()
-	if entry, hit := c.store.GetIfPresent(k, now); hit {
+	if entry, hit := c.store.Lookup(k, now); hit {
 		return replayResponse(entry, request.MessageCopy(), now)
 	}
 	return nil
+}
+
+// RecordDNSUpstream counts once per upstream query; queries outside the cache's
+// key semantics bypass it. The query is not bound to an upstream candidate.
+func (c *Cache) RecordDNSUpstream(request *plugin.DNSExchange, hit bool) {
+	// Only a query within the key semantics can hit.
+	if !hit {
+		if _, ok := queryKey(request); !ok {
+			c.bypasses.Add(1)
+			return
+		}
+	}
+	c.store.Record(hit)
 }
 
 func replayResponse(entry cachepolicy.Record[*plugin.DNSResponse], query *dns.Msg, now time.Time) *plugin.DNSResponse {
@@ -119,81 +139,52 @@ func replayResponse(entry cachepolicy.Record[*plugin.DNSResponse], query *dns.Ms
 	return response
 }
 
-func (c *Cache) WrapDNSUpstream(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
-		k, ok := cacheKey(request)
-		var query *dns.Msg
-		if ok {
-			query = request.MessageCopy()
-			now := time.Now()
-			if e, hit := c.store.Get(k, now); hit {
-				return replayResponse(e, query, now), nil
-			}
-		} else {
-			c.bypasses.Add(1)
-		}
-		response, err := next(ctx, request)
-		if err == nil && ctx.Err() == nil && response != nil && !response.Cached && ok {
-			if response.ReceivedAt.IsZero() {
-				response = response.Copy()
-				response.ReceivedAt = time.Now()
-			}
-			if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists {
-				// Wire is authoritative. Never repair an opaque/malformed packet
-				// by unpacking loosely and then discarding the original bytes.
-				message := response.MessageCopy()
-				if clientCacheEDNS(message) && netutils.ValidateDnsResponse(query, message, query.Id) == nil && !cachepolicy.Signed(message) {
-					response = response.Copy()
-					for _, rr := range message.Answer {
-						rr.Header().Ttl = ttl
-					}
-					message.AuthenticatedData = false
-					response.DNSPacket = plugin.DNSMessage(message)
-				}
-			}
-			c.storeResponse(request, response)
-		}
-		return response, err
-	}
-}
-
-func (c *Cache) storeResponse(request *plugin.DNSExchange, response *plugin.DNSResponse) {
-	if response.Cached {
-		return
-	}
+func (c *Cache) StoreDNSUpstream(request *plugin.DNSExchange, response *plugin.DNSResponse) *plugin.DNSResponse {
 	k, ok := cacheKey(request)
 	if !ok {
-		return
+		return response
 	}
-	m := response.MessageCopy()
-	if !clientCacheEDNS(m) {
-		return
+	if response.ReceivedAt.IsZero() {
+		response = response.Copy()
+		response.ReceivedAt = time.Now()
 	}
 	query := request.MessageCopy()
-	if netutils.ValidateDnsResponse(query, m, query.Id) != nil {
-		return
+	// Wire is authoritative. Never repair an opaque/malformed packet by
+	// unpacking loosely and then discarding the original bytes.
+	m := response.MessageCopy()
+	if !clientCacheEDNS(m) || netutils.ValidateDnsResponse(query, m, query.Id) != nil {
+		return response
 	}
-	if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists && ttl == 0 {
-		return
+	ttl, fixed := c.fixed[dns.CanonicalName(query.Question[0].Name)]
+	if fixed && !cachepolicy.Signed(m) {
+		for _, rr := range m.Answer {
+			rr.Header().Ttl = ttl
+		}
+		m.AuthenticatedData = false
+		response = response.Copy()
+		response.DNSPacket = plugin.DNSMessage(m)
 	}
-	ttl := cachepolicy.Prepare(query.Question[0].Qtype, m)
-	if ttl == 0 {
-		return
+	if fixed && ttl == 0 {
+		return response
+	}
+	if ttl = cachepolicy.Prepare(query.Question[0].Qtype, m); ttl == 0 {
+		return response
 	}
 	cachepolicy.StripOPT(m)
 	at := response.ReceivedAt
 	expires := at.Add(time.Duration(ttl) * time.Second)
 	if !time.Now().Before(expires) {
-		return
+		return response
 	}
 	wire, err := m.Pack()
 	if err != nil {
-		return
+		return response
 	}
-	bytes := 4*len(wire) + len(k.upstream.Endpoint) + len(k.query.Question.Name) + len(k.query.Options) + 512
+	bytes := 4*len(wire) + len(k.upstream.Endpoint) + len(k.upstream.Egress) + len(k.query.Question.Name) + len(k.query.Options) + 512
 	owned := response.Copy()
 	owned.DNSPacket = plugin.DNSMessage(m)
 	c.store.Put(k, cachepolicy.Record[*plugin.DNSResponse]{Value: owned, ReceivedAt: at, Expires: expires}, bytes)
+	return response
 }
 
 func (c *Cache) Run(ctx context.Context, _ *http.Client) error {

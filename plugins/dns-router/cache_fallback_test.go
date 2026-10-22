@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/common/netutils"
@@ -29,7 +31,8 @@ func TestCachedTCPFallbackRespectsRouting(t *testing.T) {
 		{name: "dead UDP", wantCached: true, wantUDP: 1, wantTCP: 1, wantAnswer: "198.51.100.1"},
 		{name: "recovered UDP", udpRecovered: true, wantCached: true, wantUDP: 1, wantTCP: 1, wantAnswer: "198.51.100.1"},
 		{name: "different protocol policy", differentPolicy: true, udpRecovered: true, wantUDP: 2, wantTCP: 1, wantAnswer: "198.51.100.2"},
-		{name: "blocked TCP", blockTCP: true, wantError: true, wantUDP: 2, wantTCP: 1},
+		// UDP may still reach the resolver through the route TCP used.
+		{name: "blocked TCP", blockTCP: true, wantCached: true, wantUDP: 1, wantTCP: 1, wantAnswer: "198.51.100.1"},
 		{name: "changed policy", newPolicy: true, wantUDP: 2, wantTCP: 2, wantAnswer: "198.51.100.1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,12 +58,12 @@ func TestCachedTCPFallbackRespectsRouting(t *testing.T) {
 				if warm && test.blockTCP && upstream.Network == "tcp" {
 					return nil, errors.New("TCP blocked by policy")
 				}
-				r.PolicyKey.Outbound = 0
+				r.Egress = "direct/0"
 				if test.differentPolicy && upstream.Network == "tcp" {
-					r.PolicyKey.Outbound = 2
+					r.Egress = "path/proxy"
 				}
 				if warm && test.newPolicy {
-					r.PolicyKey.Generation++
+					r.Egress = "path/other"
 				}
 				return r, nil
 			}
@@ -114,8 +117,8 @@ func TestCachedTCPFallbackRespectsRouting(t *testing.T) {
 			if response, err := ask(); err != nil || response.Cached {
 				t.Fatalf("warm cache: %+v, %v", response, err)
 			}
-			if preparations["udp"] != 1 || preparations["tcp"] != 2 {
-				t.Fatalf("primary was prepared twice or fallback reused a stale decision: %v", preparations)
+			if preparations["udp"] != 1 || preparations["tcp"] != 1 {
+				t.Fatalf("each transport is prepared once, after the previous transport's I/O: %v", preparations)
 			}
 			warm = true
 			started := time.Now()
@@ -131,8 +134,8 @@ func TestCachedTCPFallbackRespectsRouting(t *testing.T) {
 				t.Fatalf("dials: UDP=%d TCP=%d, want UDP=%d TCP=%d", udp, tcp, test.wantUDP, test.wantTCP)
 			}
 			stats := c.Report().(map[string]any)
-			if test.wantCached && (stats["hits"] != uint64(1) || stats["misses"] != uint64(2)) {
-				t.Fatalf("speculative lookups changed cache counts: %v", stats)
+			if test.wantCached && (stats["hits"] != uint64(1) || stats["misses"] != uint64(1)) {
+				t.Fatalf("each upstream query counts one lookup: %v", stats)
 			}
 		})
 	}
@@ -162,7 +165,75 @@ func TestFallbackRechecksPolicyAfterTransport(t *testing.T) {
 		return nil, net.ErrClosed
 	}
 	upstream := &policy.Upstream{Scheme: policy.UpstreamScheme_TCP_UDP, Hostname: "192.0.2.53", Port: 53, Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53")}}
-	if _, err := exchangeForTest(t.Context(), request, upstream); !errors.Is(err, denied) || tcpChecks != 2 || dials != 1 {
+	if _, err := exchangeForTest(t.Context(), request, upstream); !errors.Is(err, denied) || tcpChecks != 1 || dials != 1 {
 		t.Fatalf("stale fallback decision: TCP checks=%d, dials=%d, err=%v", tcpChecks, dials, err)
 	}
+}
+
+// Racing a hostname upstream's addresses is one upstream query: each cache
+// records a single outcome, whichever address answers.
+func TestRacedAddressesCountOneLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sections, err := config_parser.Parse("cache {}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		factory, err := cache.Configure(plugin.Spec{Config: sections[0]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := factory(t.Context(), plugin.Services{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := p.(*cache.Cache)
+		request := safetyRequest(dns.TypeA)
+		request.SelectCaches = func(plugin.DNSPacket) []plugin.DNSUpstreamCache { return []plugin.DNSUpstreamCache{c} }
+		var mu sync.Mutex
+		dialed := make(map[string]int)
+		request.DialContext = func(ctx context.Context, network, target, hostname string) (net.Conn, error) {
+			mu.Lock()
+			dialed[target]++
+			mu.Unlock()
+			// The first address never answers, so the race reaches the other.
+			if target == "[2001:db8::53]:53" {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			conn, peer := net.Pipe()
+			go func() {
+				defer peer.Close()
+				wire := make([]byte, 4096)
+				n, err := peer.Read(wire)
+				query := new(dns.Msg)
+				if err != nil || query.Unpack(wire[:n]) != nil {
+					return
+				}
+				message := new(dns.Msg).SetReply(query)
+				message.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: query.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("198.51.100.1")}}
+				wire, _ = message.Pack()
+				_, _ = peer.Write(wire)
+			}()
+			return conn, nil
+		}
+		upstream := &policy.Upstream{Scheme: policy.UpstreamScheme_UDP, Hostname: "dns.example", Port: 53,
+			Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53"), Ip6: netip.MustParseAddr("2001:db8::53")}}
+		for i, wantCached := range []bool{false, true} {
+			ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			response, err := exchangeForTest(ctx, request, upstream)
+			cancel()
+			if err != nil || response.Cached != wantCached {
+				t.Fatalf("query %d: %+v, %v", i, response, err)
+			}
+			mu.Lock()
+			raced := dialed["192.0.2.53:53"] != 0 && dialed["[2001:db8::53]:53"] != 0
+			mu.Unlock()
+			if i == 0 && !raced {
+				t.Fatal("the first query did not race both addresses")
+			}
+		}
+		if stats := c.Report().(map[string]any); stats["hits"] != uint64(1) || stats["misses"] != uint64(1) {
+			t.Fatalf("raced addresses counted %v, want one miss and one hit", stats)
+		}
+	})
 }

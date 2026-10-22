@@ -14,10 +14,10 @@ import (
 func TestExplainDoesNotTouchCacheLifetimeOrLRU(t *testing.T) {
 	c := testCache(t, "")
 	request := testRequest()
-	c.storeResponse(request, testResponse(request))
+	c.StoreDNSUpstream(request, testResponse(request))
 	other := request.Copy()
-	other.PolicyKey = plugin.DNSPolicyKey{Generation: 2}
-	c.storeResponse(other, testResponse(other))
+	other.Egress = "path/proxy"
+	c.StoreDNSUpstream(other, testResponse(other))
 	before := c.store.Snapshot()
 	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), request.DNSRequest)
 	input := api.ExplainRequest{Kind: "dns", DNS: &api.DiagnosticDNS{Name: "test.example.", Type: "A"}}
@@ -53,7 +53,7 @@ func TestExplainDoesNotTouchCacheLifetimeOrLRU(t *testing.T) {
 func TestExplainKnownQuestionWithoutIdentityStaysUnknown(t *testing.T) {
 	c := testCache(t, "")
 	request := testRequest()
-	request.PolicyKey = plugin.DNSPolicyKey{}
+	request.Egress = ""
 	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), request.DNSRequest)
 	if result := c.Explain(ctx, api.ExplainRequest{Kind: "dns"}); result.Complete || result.Steps[0].Reason != "cache_lookup_after_upstream_routing" {
 		t.Fatalf("incomplete identity became a cache miss: %+v", result)

@@ -24,14 +24,14 @@ func TestCacheRebuildsOPTForCurrentTransaction(t *testing.T) {
 		message := response.MessageCopy()
 		message.SetEdns0(4096, false)
 		response.DNSPacket = plugin.DNSMessage(message)
-		c.storeResponse(request, response)
+		c.StoreDNSUpstream(request, response)
 		key, _ := cacheKey(request)
 		if entry, ok := c.store.Peek(key); !ok || entry.Value.MessageCopy().IsEdns0() != nil {
 			t.Fatal("missing answer or stored an OPT control record")
 		}
 		query.Id++
 		request.DNSPacket = plugin.DNSMessage(query)
-		hit, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		hit, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			t.Fatal("ordinary answer missed cache")
 			return nil, nil
 		})(t.Context(), request)
@@ -75,7 +75,7 @@ func TestCacheBypassesEDNSOptionsWithoutChangingTTL(t *testing.T) {
 				response.DNSPacket = plugin.DNSMessage(message)
 			}
 			calls := 0
-			handler := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+			handler := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				calls++
 				return response, nil
 			})
@@ -84,7 +84,7 @@ func TestCacheBypassesEDNSOptionsWithoutChangingTTL(t *testing.T) {
 				if err != nil || got != response {
 					t.Fatalf("changed unsupported option %T (query=%t)", option, inQuery)
 				}
-				c.storeResponse(request, got)
+				c.StoreDNSUpstream(request, got)
 			}
 			if calls != 2 || c.store.Snapshot().Entries != 0 {
 				t.Fatalf("cached unsupported option %T (query=%t)", option, inQuery)

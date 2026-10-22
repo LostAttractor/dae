@@ -34,7 +34,7 @@ global {
 
 | 指标 | 类型 | 含义 |
 | --- | --- | --- |
-| `dns_cache_lookups_total{result}` | Counter | `hit`、`miss`、`bypass` |
+| `dns_cache_lookups_total{result}` | Counter | `hit`、`miss`、`bypass`，每次上游查询计一次 |
 | `dns_cache_entries` | Gauge | 当前保留条目，包括等待过期清理的条目 |
 | `dns_cache_capacity_entries` | Gauge | 条目上限 |
 | `dns_cache_memory_bytes` | Gauge | 保守计账内存，不是 RSS |

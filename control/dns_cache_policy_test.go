@@ -86,7 +86,8 @@ routing { request { sip(192.0.2.3) -> reject fallback:test } }
 				blocked, noNodes            bool
 			}{
 				{"192.0.2.1:40001", "192.0.2.53:53", "198.51.100.1", 1, false, false},
-				{"192.0.2.1:40002", "192.0.2.53:53", "198.51.100.1", 1, false, true},
+				// Without a node the egress is unknown, so no cached answer applies.
+				{"192.0.2.1:40002", "192.0.2.53:53", "", 1, true, true},
 				{"192.0.2.2:40003", "192.0.2.53:53", "198.51.100.2", 1, false, false},
 				{"192.0.2.1:40003", "192.0.2.55:53", "198.51.100.1", 1, false, false},
 				{"192.0.2.3:40003", "192.0.2.53:53", "", 1, false, false},
@@ -135,9 +136,11 @@ routing { request { sip(192.0.2.3) -> reject fallback:test } }
 
 func TestDNSRawCacheSurvivesFailedClientDelivery(t *testing.T) {
 	host := integrationDNSHost(t, integrationDNSPlugin(t, cache.Plugin, ""))
-	plane := &ControlPlane{mitmHost: host}
-	query := dnsTestRequest(t, "test.example.", 1)
-	query.Destination = netip.MustParseAddrPort("192.0.2.53:53")
+	plane := &ControlPlane{mitmHost: host, outbounds: dnsTestOutbounds(t)}
+	query, _, err := plane.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	terminal := func(_ context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		calls++
@@ -157,9 +160,9 @@ func TestDNSRawCacheSurvivesFailedClientDelivery(t *testing.T) {
 	}
 }
 
-func TestDNSCacheSeparatesClientSelectedServersAndRoutingGenerations(t *testing.T) {
+func TestDNSCacheSeparatesClientSelectedServersAcrossReloads(t *testing.T) {
 	host := integrationDNSHost(t, integrationDNSPlugin(t, cache.Plugin, ""))
-	plane := &ControlPlane{mitmHost: host}
+	plane := &ControlPlane{mitmHost: host, outbounds: dnsTestOutbounds(t)}
 	calls := 0
 	terminal := func(_ context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		calls++
@@ -175,7 +178,8 @@ func TestDNSCacheSeparatesClientSelectedServersAndRoutingGenerations(t *testing.
 		{"192.0.2.53:53", 1, 1},
 		{"192.0.2.54:53", 1, 2},
 		{"192.0.2.53:53", 1, 2},
-		{"192.0.2.53:53", 2, 3},
+		// A reload that keeps the server's egress keeps its answers.
+		{"192.0.2.53:53", 2, 2},
 	} {
 		plane.routingGeneration = test.generation
 		packet := dnsTestRequest(t, "test.example.", uint16(i))

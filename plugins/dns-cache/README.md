@@ -39,9 +39,13 @@ plugins {
 Its position in the plugin list does not affect upstream caching. `size` limits entry
 count; `memory_limit` is a conservative accounted byte budget, not an RSS limit.
 LRU eviction and periodic expiration bound retained state. Cache keys include
-the routing generation, plugin chain, selected outbound/mark, actual endpoint
-(including encrypted protocol and HTTP path/query), destination IP, TCP/UDP and
-query flags. Client IPs and source ports are not keys. Hits preserve
+the egress (the selected node's physical path, or direct traffic with its
+effective mark), the resolver identity and the query
+flags. Answers with an
+unknown egress are not cached.
+The resolver identity excludes resolved addresses: plain DNS is
+`dns://host:port` for UDP and TCP alike, while encrypted protocols keep their
+full URL including HTTP path/query. Client IPs and source ports are not keys. Hits preserve
 original receipt time, restore the caller's ID/question and age RR TTLs. Negative
 responses require an SOA and use its minimum TTL. Truncated, zero-TTL, signed and
 transaction-specific responses are not replayed. `fixed_domain_ttl: 0` disables
@@ -69,16 +73,18 @@ when the transport omits it. A validated upstream response can be cached even
 if response policy rejects it or client delivery fails. Only answers sent to the
 client contribute to DomainRegistry; they are registered before delivery, and a
 failed delivery keeps them.
-Unchanged instances retain their cache and counters across reload. The host's
-policy namespace separates answers when the ordered plugin instances or core
-routing generation change;
-draining hosts can still use their old answers. Old entries remain subject to
-the same expiration and capacity limits. Domain evidence persists independently.
+Unchanged instances retain their cache and counters across reload. An answer
+applies only while its resolver and egress serve the query: after a reload,
+failover or latency switch selects another node, answers obtained through the
+previous node apply only if that node serves again. Raw answers do not depend on the plugin chain. Old entries remain subject to the same expiration
+and capacity limits. Domain evidence persists independently.
 `dae plugins dns-cache status` reports entry count, byte usage, hits and misses.
 Static diagnostics evaluate middleware and route policy before peeking at the
-cache. A known single endpoint can report a raw cache hit even when its outbound
-has no available node. Missing query/routing data, multiple candidates and
-runtime-dependent policies remain uncertain. Peeks do not change counters or LRU
+cache. When every transport candidate shares one cache key, a raw cache hit is
+reported. A candidate whose group has no available node takes the egress of its
+no-connectivity fallback, and a blocking fallback removes the candidate. Missing
+query/routing data, candidates with different egresses and runtime-dependent
+policies remain uncertain. Peeks do not change counters or LRU
 order, and a raw hit never bypasses response policies.
 
 ## Prometheus metrics
@@ -89,7 +95,7 @@ host's `plugin_type` and `plugin_instance` labels and the `dae_plugin_` prefix:
 
 | Local name | Type | Meaning |
 | --- | --- | --- |
-| `dns_cache_lookups_total{result}` | Counter | `hit`, `miss`, `bypass` |
+| `dns_cache_lookups_total{result}` | Counter | `hit`, `miss`, `bypass`, once per upstream query |
 | `dns_cache_entries` | Gauge | Retained entries |
 | `dns_cache_capacity_entries` | Gauge | Entry limit |
 | `dns_cache_memory_bytes` | Gauge | Accounted bytes, not RSS |

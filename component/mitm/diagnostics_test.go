@@ -28,14 +28,14 @@ func (p *diagnosticTestPlugin) Wrap(_ plugin.Flow, next plugin.Handler) plugin.H
 }
 
 func TestExplainDNSRewritePreservesCanonicalPacket(t *testing.T) {
-	for _, identity := range []plugin.DNSPolicyKey{{}, {Generation: 1}} {
+	for _, egress := range []string{"", "path/proxy"} {
 		query := new(dns.Msg).SetQuestion("original.example.", dns.TypeTXT)
 		query.Question[0].Qclass = dns.ClassCHAOS
 		query.RecursionDesired, query.CheckingDisabled = false, true
 		query.SetEdns0(1232, true)
 		query.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_LOCAL{Code: 65001, Data: []byte{1, 2, 3}}}
 		original := query.Copy()
-		ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query), PolicyKey: identity})
+		ctx := plugin.WithDiagnosticDNSRequest(t.Context(), plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query), Egress: egress})
 		rewrite := &diagnosticTestPlugin{explain: func(ctx context.Context, _ api.ExplainRequest) plugin.Explanation {
 			request, _ := plugin.DiagnosticDNSRequest(ctx)
 			message := request.MessageCopy()
@@ -51,7 +51,7 @@ func TestExplainDNSRewritePreservesCanonicalPacket(t *testing.T) {
 			if !reflect.DeepEqual(request.MessageCopy(), expected) {
 				t.Fatalf("packet lost fields: %s", request.MessageCopy())
 			}
-			if request.PolicyKey.Chain != 7 || request.PolicyKey.Generation != identity.Generation || request.Upstream != "" {
+			if request.Chain != 7 || request.Egress != egress || request.Upstream != "" {
 				t.Fatal("plugin namespace or unknown upstream changed")
 			}
 			return plugin.Explanation{Complete: true}

@@ -111,7 +111,10 @@ func TestDNSRetainedTCPStreamDoesNotPoisonNewRoute(t *testing.T) {
 	}
 }
 
-func TestDNSDiagnosticDoesNotDeclareDropForWarmCache(t *testing.T) {
+// The cache applies to the egress a query would leave through: a warm answer
+// is replayed while its proxy is available, but not once the proxy's
+// no-connectivity behavior blocks the query.
+func TestDNSDiagnosticWarmCacheFollowsEgress(t *testing.T) {
 	plane := diagnosticPlane(t, "dip(192.0.2.53) -> proxy", "")
 	plane.core = nil
 	plane.noConnectivityOutbound = consts.OutboundBlock
@@ -157,8 +160,11 @@ func TestDNSDiagnosticDoesNotDeclareDropForWarmCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("live_cache_calls=%d current=%+v proxy_offline=%+v", calls, result.Current.Decision, result.Compared.Decision)
-	if !result.Compared.Decision.Complete || result.Compared.Decision.Verdict != "userspace" || len(result.Compared.Decision.Targets) != 0 {
-		t.Fatalf("warm cache was not diagnosed before node availability: %+v", result.Compared)
+	if !result.Current.Decision.Complete || result.Current.Decision.Verdict != "userspace" || len(result.Current.Decision.Targets) != 0 {
+		t.Fatalf("warm cache was not diagnosed for its egress: %+v", result.Current)
+	}
+	if !result.Compared.Decision.Complete || result.Compared.Decision.Verdict != "drop" {
+		t.Fatalf("a blocked query replayed another egress's answer: %+v", result.Compared)
 	}
 	input.DNS.DO = false
 	result, err = plane.Explain(t.Context(), input, false)
@@ -236,8 +242,11 @@ func TestDNSDiagnosticChecksCacheAfterRouterSelection(t *testing.T) {
 				t.Fatal(err)
 			}
 			warm, err := plane.Explain(t.Context(), input, false)
-			if err != nil || !warm.Compared.Decision.Complete || warm.Compared.Decision.Verdict != "userspace" || len(warm.Compared.Decision.Targets) != 0 {
+			if err != nil || !warm.Current.Decision.Complete || warm.Current.Decision.Verdict != "userspace" || len(warm.Current.Decision.Targets) != 0 {
 				t.Fatalf("warm selected upstream: %+v, %v", warm, err)
+			}
+			if !warm.Compared.Decision.Complete || warm.Compared.Decision.Verdict != "drop" {
+				t.Fatalf("a blocked query replayed another egress's answer: %+v", warm.Compared)
 			}
 			if dials.Load() != 1 {
 				t.Fatalf("diagnostics dialed: %d", dials.Load())

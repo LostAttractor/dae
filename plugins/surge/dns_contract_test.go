@@ -27,7 +27,7 @@ func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
 			return nil, errors.New("downstream")
 		})
 		query := hostDNSRequest(t, "script.test.", dns.TypeA)
-		query.PolicyKey = plugin.DNSPolicyKey{Generation: 1}
+		query.Chain = 1
 		query.Source = netip.MustParseAddrPort("192.0.2.1:40001")
 		first, err := handler(t.Context(), query)
 		if err != nil {
@@ -42,12 +42,12 @@ func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
 		if err != nil || !cached.Cached || cached.MessageCopy().Id != otherID.Id || cached.MessageCopy().Answer[0].Header().Ttl != 7 || !cached.ReceivedAt.Equal(first.ReceivedAt) {
 			t.Fatalf("cached response: %+v %v", cached, err)
 		}
-		query.PolicyKey = plugin.DNSPolicyKey{Generation: 2}
+		query.Chain = 2
 		isolated, err := handler(t.Context(), query)
 		if err != nil || isolated.Cached || isolated.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.2" {
-			t.Fatalf("routing cache collision: %+v %v", isolated, err)
+			t.Fatalf("plugin chain cache collision: %+v %v", isolated, err)
 		}
-		query.PolicyKey = plugin.DNSPolicyKey{Generation: 1}
+		query.Chain = 1
 		time.Sleep(7 * time.Second)
 		expired, err := handler(t.Context(), query)
 		if err != nil || expired.Cached || expired.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.3" {
@@ -64,12 +64,12 @@ func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
 func TestDNSScriptMultiplePlainServersWithoutResolver(t *testing.T) {
 	request := hostDNSRequest(t, "script.test.", dns.TypeA)
 	request.Source = netip.MustParseAddrPort("192.0.2.10:53000")
-	request.PolicyKey = plugin.DNSPolicyKey{Generation: 1, Mark: 7}
+	request.Egress, request.Chain = "path/proxy", 1
 	var calls atomic.Int32
 	started := make(chan struct{})
 	response, err := resolveHostServers(t.Context(), request, []string{"192.0.2.53", "192.0.2.54"}, func(ctx context.Context, query *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		calls.Add(1)
-		if !query.Independent() || !query.ServerAssigned || query.Source != request.Source || query.PolicyKey != request.PolicyKey {
+		if !query.Independent() || !query.ServerAssigned || query.Source != request.Source || query.Egress != request.Egress || query.Chain != request.Chain {
 			t.Error("DNS routing identity/lifetime lost")
 		}
 		if query.Destination.Addr().String() == "192.0.2.53" {

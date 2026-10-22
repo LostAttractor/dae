@@ -335,6 +335,71 @@ func TestDiagnosticsDNSRoutesChosenUpstreamWithOriginalIdentity(t *testing.T) {
 	}
 }
 
+// Both plain-DNS transports of one resolver address share an upstream identity.
+type diagnosticTransports struct{}
+
+func (diagnosticTransports) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func (diagnosticTransports) WrapDNS(plugin.DNSHandler) plugin.DNSHandler {
+	panic("diagnostics entered DNS execution")
+}
+func (diagnosticTransports) Explain(context.Context, api.ExplainRequest) plugin.Explanation {
+	dial := func(protocol string) plugin.DiagnosticDial {
+		return plugin.DiagnosticDial{Protocol: protocol, Endpoint: "dns://resolver.example:53", Target: api.DiagnosticTarget{IP: "203.0.113.53", Domain: "resolver.example", Port: 53}}
+	}
+	return plugin.Explanation{Complete: true, Dials: []plugin.DiagnosticDial{dial("udp"), dial("tcp")}}
+}
+
+type diagnosticCache struct{ cached plugin.DNSUpstreamKey }
+
+func (diagnosticCache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func (diagnosticCache) LookupDNSUpstream(*plugin.DNSExchange) *plugin.DNSResponse {
+	panic("diagnostics entered DNS execution")
+}
+func (diagnosticCache) RecordDNSUpstream(*plugin.DNSExchange, bool) {
+	panic("diagnostics changed cache counters")
+}
+func (diagnosticCache) StoreDNSUpstream(*plugin.DNSExchange, *plugin.DNSResponse) *plugin.DNSResponse {
+	panic("diagnostics entered DNS execution")
+}
+func (c diagnosticCache) Explain(ctx context.Context, _ api.ExplainRequest) plugin.Explanation {
+	request, _ := plugin.DiagnosticDNSRequest(ctx)
+	return plugin.Explanation{Complete: request.Egress != "", CacheHit: request.UpstreamKey() == c.cached}
+}
+
+func TestDiagnosticsDNSCacheCoversTransportsSharingAnEgress(t *testing.T) {
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	proxy := downloadTestGroup(t, "proxy", unused)
+	for _, test := range []struct {
+		rules  string
+		egress string
+		hit    bool
+	}{
+		{"dip(203.0.113.53) -> direct(mark:91)", "direct/91", true},
+		{"dip(203.0.113.53) && l4proto(tcp) -> direct(mark:92)\ndip(203.0.113.53) -> direct(mark:91)", "direct/91", false},
+		// The sampled node, not the group, identifies a proxied resolver.
+		{"dip(203.0.113.53) -> proxy", new(ControlPlane).dnsEgress(proxy.Dialers[0], false, 0), true},
+	} {
+		c := diagnosticPlane(t, test.rules, "")
+		c.outbounds = []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), proxy}
+		cached := plugin.DNSUpstreamKey{Egress: test.egress, Endpoint: "dns://resolver.example:53"}
+		host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "cache", Type: "fixture", Plugin: diagnosticCache{cached}}, mitm.Instance{ID: "resolver", Type: "fixture", Plugin: diagnosticTransports{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = host.Close() })
+		c.mitmHost = host
+		request := diagnosticRequest()
+		request.Kind = "dns"
+		request.Flow.Protocol = "udp"
+		request.Flow.Destination.Port = 53
+		request.DNS = &api.DiagnosticDNS{Name: "target.example", Type: "A"}
+		response, err := c.Explain(t.Context(), request, false)
+		if err != nil || (len(response.Current.Decision.Targets) == 0) != test.hit || response.Current.Decision.Complete != test.hit {
+			t.Fatalf("rules %q: %+v, %v", test.rules, response.Current.Decision, err)
+		}
+	}
+}
+
 func TestDiagnosticsExplicitTargetRewritesBeforeRouting(t *testing.T) {
 	c := diagnosticPlane(t, "dip(198.51.100.10) -> block", "dip(198.51.100.10) -> dnat(203.0.113.10)")
 	request := diagnosticRequest()

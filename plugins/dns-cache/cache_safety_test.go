@@ -35,7 +35,7 @@ func TestHighBitTTLIsNotCached(t *testing.T) {
 				message.Extra = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "ns.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}, A: message.Answer[0].(*dns.A).A}}
 			}
 			r.DNSPacket = plugin.DNSMessage(message)
-			c.storeResponse(q, r)
+			c.StoreDNSUpstream(q, r)
 			if c.store.Snapshot().Entries != 0 {
 				t.Fatalf("cached high-bit %s TTL %x", section, ttl)
 			}
@@ -68,7 +68,7 @@ func TestFixedTTLStrictWireAndCorrelation(t *testing.T) {
 			}
 			r.DNSPacket = plugin.DNSWire(wire)
 			original := bytes.Clone(wire)
-			got, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return r, nil })(t.Context(), q)
+			got, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return r, nil })(t.Context(), q)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,8 +99,8 @@ func TestNegativeReplayAgesSOAMinimum(t *testing.T) {
 		message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 5}}
 		r.DNSPacket = plugin.DNSMessage(message)
 		r.ReceivedAt = time.Now().Add(-3 * time.Second)
-		c.storeResponse(q, r)
-		got, err := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		c.StoreDNSUpstream(q, r)
+		got, err := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			t.Fatal("cache miss")
 			return nil, nil
 		})(t.Context(), q)

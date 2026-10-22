@@ -13,8 +13,9 @@ import (
 )
 
 // ExplainSelection samples selection without creating a connection lease,
-// waiting for checks, waking a transport or consuming randomness.
-func (g *DialerGroup) ExplainSelection(network *common.NetworkType) api.ExplainOutbound {
+// waiting for checks, waking a transport or consuming randomness. It also
+// returns the sampled node, nil when none is selected or selection is random.
+func (g *DialerGroup) ExplainSelection(network *common.NetworkType) (api.ExplainOutbound, *dialer.Dialer) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	result := api.ExplainOutbound{Name: g.Name, Policy: g.DisplayPolicy(), Network: network.String(), ObservedAt: time.Now(), Nodes: make([]api.ExplainNode, 0, len(g.Dialers))}
@@ -63,5 +64,5 @@ func (g *DialerGroup) ExplainSelection(network *common.NetworkType) api.ExplainO
 		}
 		result.Nodes = append(result.Nodes, node)
 	}
-	return result
+	return result, selected
 }

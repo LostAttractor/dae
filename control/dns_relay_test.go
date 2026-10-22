@@ -80,7 +80,7 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer host.Close()
-			c := &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host}
+			c := &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host, outbounds: dnsTestOutbounds(t)}
 			query := dnsTestRequest(t, "test.example.", 1)
 			request, bypass, err := c.dnsRequest(dnsTestWire(t, query), "udp", netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDestination})
 			if err != nil || bypass != tc.must {
@@ -493,14 +493,14 @@ func TestDNSDialPreservesIngressAndReroutesAssignedServer(t *testing.T) {
 		target string
 		mark   uint32
 	}{{request.Destination.String(), 91}, {"203.0.113.53:5353", 73}} {
-		option, err := c.dnsDialOption(context.Background(), "udp", test.target, "", request, identity)
+		option, err := c.dnsUpstreamOption(context.Background(), "udp", test.target, "", request, identity)
 		if err != nil || option.Mark != test.mark || option.Outbound.Name != "proxy" || option.DialTarget != test.target {
 			t.Fatalf("server route: %+v %v", option, err)
 		}
 	}
 	identity = routingResult{CaptureFlags: captureDNS, Mark: 37, Outbound: uint8(consts.OutboundDirect)}
 	request.OriginalDestination, request.Destination = netip.MustParseAddrPort("203.0.113.53:53"), netip.MustParseAddrPort("203.0.113.53:53")
-	option, err := c.dnsDialOption(context.Background(), "udp", request.Destination.String(), "", request, identity)
+	option, err := c.dnsUpstreamOption(context.Background(), "udp", request.Destination.String(), "", request, identity)
 	if err != nil || option.Mark != 37 || option.Outbound.Name != "direct" {
 		t.Fatalf("kernel DNS decision lost: %+v %v", option, err)
 	}

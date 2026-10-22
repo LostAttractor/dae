@@ -18,7 +18,7 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func TestCacheIsolatesReloadedDNSPolicy(t *testing.T) {
+func TestCacheFollowsReloadedResolver(t *testing.T) {
 	services := plugin.Services{BaseDir: t.TempDir()}
 	load := func(previous *mitm.Host, ip string) (*mitm.Host, *pluginhost.Configuration) {
 		t.Helper()
@@ -50,7 +50,7 @@ func TestCacheIsolatesReloadedDNSPolicy(t *testing.T) {
 		return host, configuration
 	}
 	query := safetyRequest(dns.TypeA)
-	query.PolicyKey = plugin.DNSPolicyKey{Generation: 1}
+	query.Chain = 1
 	query.DialContext = func(ctx context.Context, network, target, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, target)
 	}
@@ -75,8 +75,8 @@ func TestCacheIsolatesReloadedDNSPolicy(t *testing.T) {
 		if len(message.Answer) != 1 || message.Answer[0].(*dns.A).A.String() != wantIP || response.Cached != wantCached {
 			t.Fatalf("answer=%v cached=%v, want %s cached=%v", message, response.Cached, wantIP, wantCached)
 		}
-		if query.PolicyKey != (plugin.DNSPolicyKey{Generation: 1}) {
-			t.Fatal("host leaked its cache namespace into caller identity")
+		if query.Chain != 1 || query.Egress != "" || query.Upstream != "" {
+			t.Fatal("host leaked its chain or upstream binding into caller identity")
 		}
 	}
 	old, configuration := load(nil, "192.0.2.1")
@@ -97,7 +97,7 @@ func TestCacheIsolatesReloadedDNSPolicy(t *testing.T) {
 	}
 	lookup(next, "192.0.2.2", false)
 	lookup(next, "192.0.2.2", true)
-	lookup(old, "192.0.2.1", true) // Draining generations keep their own answers.
+	lookup(old, "192.0.2.1", true) // A draining host keeps its resolver's answers.
 	ctx := plugin.WithDiagnosticDNSRequest(t.Context(), query.DNSRequest)
 	explanation := next.Explain(ctx, api.ExplainRequest{DNS: &api.DiagnosticDNS{Name: "test.example.", Type: "A", Class: "IN"}}, true)
 	if !explanation.Complete || explanation.Terminal || explanation.DNS != nil || len(explanation.Dials) != 1 || explanation.DNSQuery == nil {

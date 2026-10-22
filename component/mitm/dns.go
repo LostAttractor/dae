@@ -30,11 +30,12 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 	h.requests.Add(1)
 	h.mu.Unlock()
 	defer h.requests.Done()
-	// An unchanged cache instance can be shared with a new DNS chain. Keep
-	// their answers separate, including observers invoked by the finalizer.
-	previousChain := request.PolicyKey.Chain
-	request.PolicyKey.Chain = h.dnsChain
-	defer func() { request.PolicyKey.Chain = previousChain }()
+	// An unchanged plugin instance can be shared with a new DNS chain. Results
+	// derived by plugins, including in observers invoked by the finalizer, stay
+	// separate per chain; raw upstream answers do not depend on it.
+	previousChain := request.Chain
+	request.Chain = h.dnsChain
+	defer func() { request.Chain = previousChain }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(h.forceContext, cancel)

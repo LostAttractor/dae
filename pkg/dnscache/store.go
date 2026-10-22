@@ -42,31 +42,46 @@ func NewStore[K comparable, V any](entries, memoryBytes int) *Store[K, V] {
 }
 
 func (s *Store[K, V]) Get(key K, now time.Time) (Record[V], bool) {
-	return s.get(key, now, true)
-}
-
-// GetIfPresent refreshes hits normally but does not count speculative misses.
-func (s *Store[K, V]) GetIfPresent(key K, now time.Time) (Record[V], bool) {
-	return s.get(key, now, false)
-}
-
-func (s *Store[K, V]) get(key K, now time.Time, countMiss bool) (Record[V], bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	record, hit := s.lookupLocked(key, now)
+	s.recordLocked(hit)
+	return record, hit
+}
+
+// Lookup refreshes a live record's LRU position without counting the lookup.
+// Callers consulting several keys for one request then Record its outcome once.
+func (s *Store[K, V]) Lookup(key K, now time.Time) (Record[V], bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupLocked(key, now)
+}
+
+func (s *Store[K, V]) lookupLocked(key K, now time.Time) (Record[V], bool) {
 	if elem := s.entries[key]; elem != nil {
 		e := elem.Value.(*stored[K, V])
 		if now.Before(e.Expires) {
 			s.lru.MoveToFront(elem)
-			s.hits++
 			return e.Record, true
 		}
 		s.remove(elem)
 		s.expired++
 	}
-	if countMiss {
+	return Record[V]{}, false
+}
+
+func (s *Store[K, V]) Record(hit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordLocked(hit)
+}
+
+func (s *Store[K, V]) recordLocked(hit bool) {
+	if hit {
+		s.hits++
+	} else {
 		s.misses++
 	}
-	return Record[V]{}, false
 }
 
 // Peek includes expired records and does not change counters, lifetime or LRU.

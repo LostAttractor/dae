@@ -193,9 +193,16 @@ func (u *Upstream) TransportName(protocol consts.L4ProtoStr) string {
 	return string(u.Scheme)
 }
 
-// Target preserves resolver identity for execution and pure cache diagnostics.
+// Target binds one address and transport to the resolver's identity, which
+// every address and plain-DNS transport of this upstream shares.
 func (u *Upstream) Target(ip netip.Addr, protocol consts.L4ProtoStr) plugin.DNSUpstream {
-	endpoint := (&url.URL{Scheme: u.TransportName(protocol), Host: net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port))), Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}).String()
+	host := net.JoinHostPort(u.Hostname, strconv.Itoa(int(u.Port)))
+	endpoint := plugin.PlainDNSEndpoint(host)
+	switch u.Scheme {
+	case UpstreamScheme_TCP, UpstreamScheme_UDP, UpstreamScheme_TCP_UDP:
+	default:
+		endpoint = (&url.URL{Scheme: string(u.Scheme), Host: host, Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery}).String()
+	}
 	return plugin.DNSUpstream{Network: string(protocol), Address: netip.AddrPortFrom(ip, u.Port), Hostname: u.Hostname, Endpoint: endpoint}
 }
 

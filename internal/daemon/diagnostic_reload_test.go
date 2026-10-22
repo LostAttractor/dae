@@ -46,7 +46,11 @@ func TestReloadRetainsDiagnosticAndDNSCache(t *testing.T) {
 	}
 	calls := 0
 	lookup := func(host *mitm.Host) bool {
-		request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion("example.test.", dns.TypeA)), Network: "udp", Destination: netip.MustParseAddrPort("192.0.2.53:53")}
+		request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion("example.test.", dns.TypeA)), Network: "udp", Destination: netip.MustParseAddrPort("192.0.2.53:53"),
+			RouteUpstream: func(_ context.Context, q *plugin.DNSExchange, _ plugin.DNSUpstream) (*plugin.DNSExchange, error) {
+				q.Egress = "direct/0"
+				return q, nil
+			}}
 		response, err := host.HandleDNS(t.Context(), request, func(_ context.Context, q *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			calls++
 			answer := new(dns.Msg).SetReply(q.MessageCopy())

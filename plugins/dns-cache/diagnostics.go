@@ -15,10 +15,10 @@ import (
 // Explain peeks at the exact cache key without moving its LRU position,
 // removing expired entries, extending TTL or incrementing any counter.
 func (c *Cache) Explain(ctx context.Context, input api.ExplainRequest) plugin.Explanation {
-	step := api.ExplainStep{ID: "cache", Stage: "dns_cache", Expression: "policy + actual upstream + transport + canonical query", Status: "evaluated", Match: "unknown", Reason: "cache_lookup_after_upstream_routing"}
+	step := api.ExplainStep{ID: "cache", Stage: "dns_cache", Expression: "egress + resolver + canonical query", Status: "evaluated", Match: "unknown", Reason: "cache_lookup_after_upstream_routing"}
 	result := plugin.Explanation{Steps: []api.ExplainStep{step}}
 	request, ok := plugin.DiagnosticDNSRequest(ctx)
-	if !ok || request.Upstream == "" || !request.PolicyKey.Routed {
+	if !ok || request.Upstream == "" || request.Egress == "" {
 		return result
 	}
 	k, cacheable := cacheKey(&plugin.DNSExchange{DNSRequest: request})

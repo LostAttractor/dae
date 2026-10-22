@@ -53,16 +53,16 @@ func TestCacheMetricsTrackAuthoritativeState(t *testing.T) {
 	}
 	c := p.(*Cache)
 	request := testRequest()
-	handler := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
+	handler := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
 	_, _ = handler(t.Context(), request) // miss
-	c.storeResponse(request, testResponse(request))
-	_, _ = handler(t.Context(), request)            // hit
-	c.storeResponse(request, testResponse(request)) // replacement, not eviction
+	c.StoreDNSUpstream(request, testResponse(request))
+	_, _ = handler(t.Context(), request)               // hit
+	c.StoreDNSUpstream(request, testResponse(request)) // replacement, not eviction
 	other := request.Copy()
-	other.PolicyKey = plugin.DNSPolicyKey{Generation: 2}
-	c.storeResponse(other, testResponse(other)) // capacity eviction
-	c.store.Expire(time.Now().Add(time.Minute)) // worker expiration
-	c.storeResponse(request, testResponse(request))
+	other.Egress = "path/proxy"
+	c.StoreDNSUpstream(other, testResponse(other)) // capacity eviction
+	c.store.Expire(time.Now().Add(time.Minute))    // worker expiration
+	c.StoreDNSUpstream(request, testResponse(request))
 	key, _ := cacheKey(request)
 	entry, _ := c.store.Peek(key)
 	entry.Expires = time.Now().Add(-time.Second)
@@ -97,9 +97,9 @@ func TestCacheMetricsConcurrentCollection(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			request := testRequest()
-			handler := c.WrapDNSUpstream(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
+			handler := throughCache(c, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return nil, nil })
 			for range 50 {
-				c.storeResponse(request, testResponse(request))
+				c.StoreDNSUpstream(request, testResponse(request))
 				_, _ = handler(t.Context(), request)
 				if _, err := registry.Gather(); err != nil {
 					t.Error(err)

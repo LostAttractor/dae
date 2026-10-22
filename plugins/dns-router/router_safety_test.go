@@ -24,7 +24,13 @@ import (
 func safetyRequest(qtype uint16) *plugin.DNSExchange {
 	m := new(dns.Msg).SetQuestion("test.example.", qtype)
 	wire, _ := m.Pack()
-	return &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:2345"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")}
+	return &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:2345"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53"), RouteUpstream: routeDirect}
+}
+
+// routeDirect is the host's upstream routing hook for a single direct egress.
+func routeDirect(_ context.Context, request *plugin.DNSExchange, _ plugin.DNSUpstream) (*plugin.DNSExchange, error) {
+	request.Egress = "direct/0"
+	return request, nil
 }
 
 func packetWire(t *testing.T, packet interface{ Wire() ([]byte, error) }) []byte {

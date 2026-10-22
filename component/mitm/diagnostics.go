@@ -19,7 +19,7 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 	result := plugin.Explanation{Complete: true}
 	if dns {
 		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok {
-			identity.PolicyKey.Chain = h.dnsChain
+			identity.Chain = h.dnsChain
 			ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
 		}
 	}
@@ -162,7 +162,6 @@ func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool
 func (h *Host) ExplainDNSUpstream(ctx context.Context, input api.ExplainRequest, query plugin.DNSRequest) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
 	input.Kind = "dns"
-	query.PolicyKey.Chain = h.dnsChain
 	ctx = plugin.WithDiagnosticDNSRequest(ctx, query)
 	for _, instance := range h.dnsCaches {
 		if !instance.matchesDNS(query.DNSPacket) {

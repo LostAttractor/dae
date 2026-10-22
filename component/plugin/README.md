@@ -86,20 +86,16 @@ scope, CA or client MITM switch. All captured TCP/UDP port-53 flows can enter
 the DNS chain; DNS scopes do not expand HTTP capture.
 
 `DNSRequest` contains a `DNSPacket`, transport, source, original/effective
-destination, interface and a structured `DNSPolicyKey`. `DNSExchange` embeds
+destination, interface, plugin chain and upstream binding. `DNSExchange` embeds
 that data and adds invocation-scoped `DialContext`, `ListenPacket`, `Resolve` and
 `Client`. Handlers receive `*DNSExchange`; `Copy()` isolates query/routing changes
 while retaining the same services.
 
-During DNS handling and observation, the host sets `PolicyKey.Chain` to its ordered
-plugin instances. An unchanged chain shares that namespace across reload;
-replacing or reordering instances creates a new namespace. Reused caches cannot
-replay old-policy answers into the new chain, while draining hosts retain their
-own answers. Preserve `PolicyKey` in derived requests: it contains the chain,
-routing generation, selected outbound and mark, plus whether routing is known.
-It never contains client IP/port. `DNSRequest.UpstreamKey()` combines that policy
-with the actual protocol, address and endpoint; raw answer caches and retained
-TCP streams use this same identity.
+During DNS handling and observation, the host sets `Chain` to its ordered plugin
+instances. An unchanged chain keeps its value across reload; replacing or
+reordering instances creates a new one. Caches of results derived by plugins,
+such as Surge script results, isolate the chain; draining hosts keep their own.
+Preserve `Chain` in derived requests. It never contains client IP/port.
 
 `DNSPacket` is immutable and shared safely by copies. `DNSWire(bytes)` copies an
 exact received packet, including malformed/opaque bytes. `DNSMessage(message)`
@@ -109,31 +105,42 @@ publish an edit. There is no separate Wire field to synchronize. `Wire()` return
 read-only bytes or a local encoding error; `IsWire()` identifies exact packets.
 
 Resolver transports call `exchange.ExchangeUpstream(ctx, upstream, transport)`
-with the concrete network, address, trusted hostname and full endpoint identity
-(including HTTP path/query). The core prepares access/routing once before cache
-lookup and installs dial callbacks using that decision. Node selection and dial
-accounting happen only on misses. Use the prepared exchange inside `transport`.
-`DNSUpstreamCache` wraps this boundary independently of middleware order. Only
-raw upstream answers are stored; local answers and response policy remain
-outside it. `DNSRequest.Upstream` is set at this boundary.
+for a single candidate, after request policy and before response policy. Pass the
+concrete network, address and trusted hostname, plus the resolver identity in
+`Endpoint`: `dns://host:port` for plain DNS over UDP or TCP alike, otherwise the
+full URL including HTTP path/query. Before any cache lookup the core checks access,
+routes the candidate and selects its node, sets `Egress` to the selected node's
+physical path (or direct traffic with its effective mark), and installs dial
+callbacks bound to that selection. Groups only choose an egress and never enter
+it. Dial accounting happens only on misses. Use the prepared exchange inside
+`transport`. `DNSRequest.Upstream` and `Egress` are set at this boundary.
 
-`exchange.PrepareUpstream(ctx, upstream)` returns a `PreparedDNSExchange` with a
-checked route and matching cache providers. Its `Lookup()` performs a speculative
-cache lookup without counting misses; `Exchange(ctx, transport)` uses the same
-selection for a real attempt. The router reuses the primary preparation when
-preflight misses, but prepares a fallback again after transport I/O so intervening
-policy changes take effect. A cached alternate protocol may skip the primary
-transport only for the same endpoint and equal prepared `PolicyKey()`.
+A query with several candidates (addresses, transports, fallbacks) uses one
+`exchange.UpstreamQuery()`. `Prepare(ctx, upstream)` routes one candidate and
+returns a `PreparedDNSExchange`; prepare a candidate again after network I/O, so
+intervening policy and node changes take effect. `Exchange(ctx, transport)`
+replays a cached answer for the candidate, or runs the attempt and offers its raw
+answer to the caches; `Lookup()` only replays, e.g. to answer before resolving a
+hostname upstream. `Finish(response)` records at most one outcome per consulted
+cache for the whole query: a replay is a hit in its cache and a miss in caches
+consulted before it.
 
-Diagnostics evaluate request middleware before upstream caches. Once a single
-endpoint and its route are known, the control layer applies the shared route-only
-evaluator to its snapshot and asks the host to explain the cache without I/O,
-LRU changes or counters. Scripts, unresolved endpoints, multiple candidates and
-unknown response policies remain explicitly uncertain.
+`DNSUpstreamCache` stores only raw upstream answers; local answers and response
+policy remain outside it. Its key `DNSRequest.UpstreamKey()` combines the egress
+with the resolver identity, independently of the resolved address and the
+plain-DNS transport. An empty egress is unknown and must not be cached. A reload
+that keeps the node keeps its answers.
+
+Diagnostics evaluate request middleware before upstream caches. Once the
+endpoint and every candidate's route are known, the control layer derives each
+candidate's egress from the shared route evaluator and its sampled node selection,
+and asks the host to explain the cache without I/O, LRU changes or counters.
+Candidates with different egresses, random node selection, scripts, unresolved
+endpoints and unknown response policies remain explicitly uncertain.
 
 Use exchange-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
 preserve client identity and route the selected target, with marks, accounting
-and connection lifetimes. Close every owned connection before returning.
+and connection lifetimes. A prepared exchange dials the node selected for it. Close every owned connection before returning.
 Use the system resolver to bootstrap upstream hostnames.
 
 DNS dial callbacks take `(ctx, network, address, hostname)` for connections and
@@ -162,10 +169,11 @@ select a different resolver. Unsupported operations should pass through unchange
 `DNSObserver` receives isolated copies of final correlated responses, including
 local answers, while host admission remains held. `DNSResolver` supplies an
 optional cross-plugin explicit-server service. `ServerAssigned` marks a preceding
-plugin's authoritative server choice. `DNSAddressPolicy` can retain an already
-selected DNS IP for direct/proxy dialing; it never captures additional traffic.
-`UseDNSAddress(host, proxy)` returns `(use, applicable)`; the first applicable
-instance wins even when `use` is false, matching Host answer precedence.
+plugin's authoritative server choice. Direct connections always dial the client's
+address; `DNSAddressPolicy` decides whether a proxied connection dials its DNS IP
+instead of sending the sniffed name, and never captures additional traffic.
+`UseDNSAddress(host)` returns `(use, applicable)`; the first applicable instance
+wins even when `use` is false, matching Host answer precedence.
 
 See [DNS configuration](../../docs/en/configuration/dns.md) for persistence,
 middleware ordering and the router/cache plugins.

@@ -55,26 +55,31 @@ func TestStoreReplacementAndEntryOnlyBudget(t *testing.T) {
 	}
 }
 
-func TestStoreSpeculativeLookupCountsOnlyHits(t *testing.T) {
+func TestStoreLookupCountsOnRecord(t *testing.T) {
 	s := NewStore[string, string](2, 0)
 	now := time.Now()
 	record := Record[string]{Value: "answer", ReceivedAt: now, Expires: now.Add(time.Minute)}
 	s.Put("a", record, 1)
 	s.Put("b", record, 1)
-	if _, hit := s.GetIfPresent("absent", now); hit || s.Snapshot().Misses != 0 {
-		t.Fatal("speculative miss counted as an exchange")
+	if _, hit := s.Lookup("absent", now); hit {
+		t.Fatal("absent key hit")
 	}
-	if got, hit := s.GetIfPresent("a", now); !hit || got != record || s.Snapshot().Hits != 1 {
-		t.Fatal("speculative hit was not counted")
+	if got, hit := s.Lookup("a", now); !hit || got != record {
+		t.Fatal("live key missed")
 	}
+	if stats := s.Snapshot(); stats.Hits != 0 || stats.Misses != 0 {
+		t.Fatalf("lookup counted before its outcome was recorded: %+v", stats)
+	}
+	s.Record(true)
+	s.Record(false)
 	s.Put("c", record, 1)
 	if _, present := s.Peek("b"); present {
-		t.Fatal("speculative hit did not refresh LRU order")
+		t.Fatal("lookup hit did not refresh LRU order")
 	}
-	if _, hit := s.GetIfPresent("a", record.Expires); hit {
-		t.Fatal("speculative lookup returned an expired answer")
+	if _, hit := s.Lookup("a", record.Expires); hit {
+		t.Fatal("lookup returned an expired answer")
 	}
-	if stats := s.Snapshot(); stats.Misses != 0 || stats.Expired != 1 || stats.Entries != 1 {
-		t.Fatalf("speculative expiry accounting: %+v", stats)
+	if stats := s.Snapshot(); stats.Hits != 1 || stats.Misses != 1 || stats.Expired != 1 || stats.Entries != 1 {
+		t.Fatalf("lookup accounting: %+v", stats)
 	}
 }
