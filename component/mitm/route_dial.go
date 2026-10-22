@@ -18,7 +18,12 @@ import (
 )
 
 // Shared transport dials must give every waiter the same destination pool.
-type routeChanged struct{ pool *routePool }
+// dialed reports that the race connected the pool's route; otherwise the pool
+// was selected only for connections it may already hold.
+type routeChanged struct {
+	pool   *routePool
+	dialed bool
+}
 
 func (*routeChanged) Error() string { return "mitm: connection selected another route" }
 
@@ -49,11 +54,11 @@ type routeDial struct {
 	cancel  context.CancelFunc
 	mu      sync.Mutex
 	first   UpstreamPlan
-	exclude map[*routePool]bool // Pools whose cache-only attempt missed.
+	exclude map[string]bool // Plan keys whose cache-only attempt missed.
 	result  *connectedRoute
 }
 
-func newRouteDial(ctx context.Context, first UpstreamPlan, exclude map[*routePool]bool) *routeDial {
+func newRouteDial(ctx context.Context, first UpstreamPlan, exclude map[string]bool) *routeDial {
 	ctx, cancel := context.WithCancel(ctx)
 	return &routeDial{ctx: ctx, cancel: cancel, first: first, exclude: exclude}
 }
@@ -114,7 +119,7 @@ func (d *routeDial) connect(parent context.Context, p *plannedTransport, current
 			}
 			p.mu.Lock()
 			cached := p.pools[plan.Key]
-			if cached != nil && cached != current && !d.exclude[cached] {
+			if cached != nil && cached != current && !d.exclude[plan.Key] {
 				cached.refs++
 			} else {
 				cached = nil
@@ -153,7 +158,7 @@ func (d *routeDial) connect(parent context.Context, p *plannedTransport, current
 		p.mu.Unlock()
 	}
 	if d.result.pool != current {
-		return nil, &routeChanged{pool: d.result.pool}
+		return nil, &routeChanged{pool: d.result.pool, dialed: d.result.stream != nil || d.result.packet != nil}
 	}
 	return attempt(ctx, current)
 }

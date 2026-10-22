@@ -107,28 +107,29 @@ func (p *plannedTransport) RoundTripPolicy(request *http.Request, policy string)
 }
 
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	var exclude map[*routePool]bool
+	var exclude map[string]bool
 	for {
 		response, missed, err := p.roundTrip(request, exclude)
-		if missed == nil {
+		if missed == "" {
 			return response, err
 		}
 		// A cached route can be busy or expire between selection and use.
-		// Rediscover all candidates, without selecting that empty pool again.
+		// Rediscover all candidates, without selecting that key's pool again.
+		// Only such cache selections miss, so each key misses at most once.
 		if exclude == nil {
-			exclude = make(map[*routePool]bool)
+			exclude = make(map[string]bool)
 		}
 		exclude[missed] = true
 	}
 }
 
-func (p *plannedTransport) roundTrip(request *http.Request, exclude map[*routePool]bool) (*http.Response, *routePool, error) {
+func (p *plannedTransport) roundTrip(request *http.Request, exclude map[string]bool) (*http.Response, string, error) {
 	plan, err := p.plan(request)
 	if err != nil {
 		if request.Body != nil {
 			_ = request.Body.Close()
 		}
-		return nil, nil, err
+		return nil, "", err
 	}
 	if plan.Close != nil {
 		defer plan.Close()
@@ -152,7 +153,7 @@ func (p *plannedTransport) roundTrip(request *http.Request, exclude map[*routePo
 		if request.Body != nil {
 			_ = request.Body.Close()
 		}
-		return nil, nil, err
+		return nil, "", err
 	}
 	cachedOnly := false
 	for {
@@ -185,16 +186,16 @@ func (p *plannedTransport) roundTrip(request *http.Request, exclude map[*routePo
 			} else {
 				response.Body = wrapped
 			}
-			return response, nil, nil
+			return response, "", nil
 		}
 		if miss {
-			return nil, pool, nil
+			return nil, pool.plan.Key, nil
 		}
 		if !retry {
 			if p.packet {
 				err = markHTTP3ConnectionFailure(err, err)
 			}
-			return response, nil, err
+			return response, "", err
 		}
 		next := changed.pool
 		if next.plan.Check != nil {
@@ -203,14 +204,20 @@ func (p *plannedTransport) roundTrip(request *http.Request, exclude map[*routePo
 					body.commit()
 					_ = body.Close()
 				}
-				return nil, nil, err
+				return nil, "", err
 			}
 		}
 		if !p.retain(next) {
-			return nil, next, nil
+			return nil, next.plan.Key, nil
 		}
 		p.release(pool)
 		pool = next
+		if changed.dialed {
+			// The race proved this route. Another waiter may have used its
+			// connection; dialing the same route again cannot miss.
+			request = request.WithContext(context.WithValue(request.Context(), routeDialKey{}, (*routeDial)(nil)))
+			continue
+		}
 		cachedOnly = true
 		probe := new(atomic.Bool)
 		probe.Store(true)

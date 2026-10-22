@@ -233,6 +233,46 @@ func TestRouteEmptyFallbackPoolRediscoversBeforeSending(t *testing.T) {
 	}
 }
 
+func TestRouteRedialsWhenPreparedConnectionIsTaken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	defer server.Close()
+	var plans, dials atomic.Int32
+	var transport *plannedTransport
+	fallback := UpstreamPlan{Key: "IPv4", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		dials.Add(1)
+		return new(net.Dialer).DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}, Check: func() error {
+		// Another waiter on the selected pool consumes the raced connection.
+		transport.mu.Lock()
+		var taken []*connectedRoute
+		if pool := transport.pools["IPv4"]; pool != nil {
+			taken, pool.prepared = pool.prepared, nil
+		}
+		transport.mu.Unlock()
+		for _, route := range taken {
+			route.close()
+		}
+		return nil
+	}}
+	transport = new(Host).plannedTransport(func(*http.Request) (UpstreamPlan, error) {
+		plans.Add(1)
+		return UpstreamPlan{Key: "IPv6", Dial: func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("unreachable") }, Next: func(context.Context) (UpstreamPlan, error) { return fallback, nil }}, nil
+	}, false)
+	defer transport.close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	request, _ := http.NewRequestWithContext(ctx, "GET", "http://example.com/", nil)
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("error=%v plans=%d dials=%d", err, plans.Load(), dials.Load())
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if plans.Load() != 1 || dials.Load() != 2 {
+		t.Fatalf("plans=%d dials=%d", plans.Load(), dials.Load())
+	}
+}
+
 func TestRouteFallbackPreservesNativeRequestRetry(t *testing.T) {
 	for _, packet := range []bool{false, true} {
 		t.Run(fmt.Sprintf("HTTP3=%t", packet), func(t *testing.T) {
@@ -388,5 +428,53 @@ func TestHTTP3EvictedDialCancellation(t *testing.T) {
 	transport.close()
 	if refs != 0 || owned {
 		t.Fatalf("evicted pool was not released: refs=%d owned=%t", refs, owned)
+	}
+}
+
+// A cache-only selection that misses excludes its plan key, not its pool: a
+// pool replaced under the same key cannot miss again.
+func TestRouteCacheMissExcludesReplacedPool(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	defer server.Close()
+	var plans, dials atomic.Int32
+	var transport *plannedTransport
+	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		dials.Add(1)
+		return new(net.Dialer).DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}
+	fallback := UpstreamPlan{Key: "IPv4", Dial: dial, Check: func() error {
+		// Each selection finds a new pool without connections under the key.
+		transport.mu.Lock()
+		var closeOld func()
+		if old := transport.pools["IPv4"]; old != nil {
+			delete(transport.pools, "IPv4")
+			closeOld = transport.releaseLocked(old)
+		}
+		transport.mu.Unlock()
+		if closeOld != nil {
+			closeOld()
+		}
+		pool, err := transport.acquire(UpstreamPlan{Key: "IPv4", Dial: dial})
+		if err == nil {
+			transport.release(pool)
+		}
+		return err
+	}}
+	transport = new(Host).plannedTransport(func(*http.Request) (UpstreamPlan, error) {
+		plans.Add(1)
+		return UpstreamPlan{Key: "IPv6", Dial: func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("unreachable") }, Next: func(context.Context) (UpstreamPlan, error) { return fallback, nil }}, nil
+	}, false)
+	defer transport.close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	request, _ := http.NewRequestWithContext(ctx, "GET", "http://example.com/", nil)
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("error=%v plans=%d dials=%d", err, plans.Load(), dials.Load())
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if plans.Load() != 2 || dials.Load() != 1 {
+		t.Fatalf("plans=%d dials=%d; want one miss, then one dial", plans.Load(), dials.Load())
 	}
 }
