@@ -389,14 +389,24 @@ func (c *pathCounters) snapshot() api.PathStats {
 }
 
 // Reconcile retains detail for current identities while old connections drain.
-func (s *Store) Reconcile(nodes map[string]NodeIdentity, groups map[string]struct{}, sources ...SelectionMetricsSource) {
-	s.availabilityStore.Reconcile(nodes, groups, sources...)
+// groups lists every configured group, true when it checks connectivity: all
+// keep traffic totals, while only checking groups track availability.
+func (s *Store) Reconcile(nodes map[string]NodeIdentity, groups map[string]bool, sources ...SelectionMetricsSource) {
+	configured := make(map[string]struct{}, len(groups))
+	checked := make(map[string]struct{}, len(groups))
+	for name, checks := range groups {
+		configured[name] = struct{}{}
+		if checks {
+			checked[name] = struct{}{}
+		}
+	}
+	s.availabilityStore.Reconcile(nodes, checked, sources...)
 	current := make(map[string]NodeIdentity, len(nodes))
 	for key, identity := range nodes {
 		current[NodeID(key)] = identity
 	}
 	s.pathsMu.Lock()
-	s.currentNodes, s.currentGroups = current, maps.Clone(groups)
+	s.currentNodes, s.currentGroups = current, configured
 	maps.DeleteFunc(s.retiredGroups, func(name string, _ [common.NetworkTypeCount]api.PathStats) bool {
 		_, exists := groups[name]
 		return !exists

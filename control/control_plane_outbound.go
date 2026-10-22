@@ -297,11 +297,11 @@ func collectRoutingTargetNames(routingConfig *config.Routing) []string {
 
 func (c *ControlPlane) reconcileStats() {
 	nodes := make(map[string]stats.NodeIdentity)
-	groups := make(map[string]struct{}, len(c.outbounds))
+	groups := make(map[string]bool, len(c.outbounds))
 	var selections []stats.SelectionMetricsSource
 	for _, group := range c.outbounds {
-		groups[group.Name] = struct{}{}
-		if group.ChecksConnectivity() {
+		groups[group.Name] = group.ChecksConnectivity()
+		if groups[group.Name] {
 			selections = append(selections, group)
 		}
 		for _, d := range group.Dialers {

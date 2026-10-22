@@ -260,7 +260,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 }
 
 func TestDialerGroupStartsChecking(t *testing.T) {
-	stats.DefaultStore.Reconcile(nil, map[string]struct{}{t.Name(): {}})
+	stats.DefaultStore.Reconcile(nil, map[string]bool{t.Name(): true})
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	d := newCheckedDialer(t, t.Name())
 	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector,
@@ -627,7 +627,7 @@ func TestDialerGroupFixedWaitsOnlyForSelectedCandidate(t *testing.T) {
 
 func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) {
 	name := fmt.Sprintf("%s/%d", t.Name(), selectorDialerSequence.Add(1))
-	stats.DefaultStore.Reconcile(nil, map[string]struct{}{name: {}})
+	stats.DefaultStore.Reconcile(nil, map[string]bool{name: true})
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	stats.DefaultStore.RecordGroup(name, true)
 	dialers := []*dialer.Dialer{
@@ -669,7 +669,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 
 func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
 	g := &DialerGroup{Name: t.Name(), Kind: GroupKindSelector}
-	stats.DefaultStore.Reconcile(nil, map[string]struct{}{g.Name: {}})
+	stats.DefaultStore.Reconcile(nil, map[string]bool{g.Name: true})
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	if err := g.initializeConnectivity(); err != nil {
 		t.Fatal(err)
@@ -693,7 +693,7 @@ func TestCandidateGroupStatsWaitForPublication(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			g := &DialerGroup{Name: t.Name(), Kind: GroupKindSelector}
-			groups := map[string]struct{}{g.Name: {}}
+			groups := map[string]bool{g.Name: true}
 			stats.DefaultStore.Reconcile(nil, nil)
 			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 			if retained {

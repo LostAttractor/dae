@@ -209,7 +209,7 @@ func TestRecordNodeConnFail(t *testing.T) {
 func TestRecordGroup_Snapshot(t *testing.T) {
 	store := newStoreAt(time.Now())
 	name := t.Name()
-	store.Reconcile(nil, map[string]struct{}{name: {}})
+	store.Reconcile(nil, map[string]bool{name: true})
 	if avail := store.GetGroup(name); avail.Seen {
 		t.Fatalf("unrecorded group should not be seen")
 	}
@@ -440,7 +440,7 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 	store.Reconcile(map[string]NodeIdentity{
 		keepKey:   {Subtag: "sub", Name: "keep"},
 		removeKey: {Subtag: "sub", Name: "remove"},
-	}, map[string]struct{}{keepGroup: {}, removeGroup: {}})
+	}, map[string]bool{keepGroup: true, removeGroup: true})
 	store.RecordNodeCheck(keepKey, true, time.Time{})
 	store.RecordNodeCheck(removeKey, true, time.Time{})
 	store.RecordNodeCheck(removeKey, true, time.Time{})
@@ -449,7 +449,7 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 
 	store.Reconcile(map[string]NodeIdentity{
 		keepKey: {Subtag: "sub", Name: "keep"},
-	}, map[string]struct{}{keepGroup: {}})
+	}, map[string]bool{keepGroup: true})
 
 	if avail := store.GetNode(keepKey); !avail.Seen || avail.ChecksTotal != 1 {
 		t.Fatalf("retained node lost its history: %+v", avail)
@@ -475,7 +475,7 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 	store.Reconcile(map[string]NodeIdentity{
 		keepKey:   {Subtag: "sub", Name: "keep"},
 		removeKey: {Subtag: "sub", Name: "remove"},
-	}, map[string]struct{}{keepGroup: {}})
+	}, map[string]bool{keepGroup: true})
 	store.RecordNodeCheck(removeKey, true, time.Time{})
 	if avail := store.GetNode(removeKey); avail.ChecksTotal != 1 {
 		t.Fatalf("re-added node should have fresh counters: %+v", avail)

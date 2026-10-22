@@ -21,7 +21,7 @@ func TestRetirementPreservesProcessTotalsAndCurrentPaths(t *testing.T) {
 	old := trafficTestPath("removed")
 	live := trafficTestPath("draining")
 	failed := trafficTestPath("failed")
-	store.Reconcile(map[string]NodeIdentity{"current": {Name: current.Dialer, Subtag: current.Subtag}}, map[string]struct{}{current.Outbound: {}})
+	store.Reconcile(map[string]NodeIdentity{"current": {Name: current.Dialer, Subtag: current.Subtag}}, map[string]bool{current.Outbound: true})
 	for _, path := range []Path{current, old} {
 		c := store.OpenConnection(path, true)
 		c.RecordUpload(100)
@@ -164,7 +164,12 @@ func TestRetiredNodeKeepsCurrentGroupTotals(t *testing.T) {
 	now := time.Now()
 	store := newStoreAt(now)
 	path := trafficTestPath("removed-node")
-	store.Reconcile(nil, map[string]struct{}{path.Outbound: {}})
+	// A group without connectivity checks keeps traffic totals but no availability.
+	store.Reconcile(nil, map[string]bool{path.Outbound: false})
+	store.RecordGroup(path.Outbound, true)
+	if store.GetGroup(path.Outbound).Seen {
+		t.Fatal("unchecked group recorded availability")
+	}
 	connection := store.OpenConnection(path, false)
 	connection.RecordUpload(123)
 	connection.Close()
