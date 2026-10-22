@@ -7,12 +7,12 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"net"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,7 +94,7 @@ type Upstream struct {
 	RawQuery string // Configured HTTP parameters, before adding the DNS query.
 	*netutils.Ip46
 	mu       sync.Mutex
-	resolved []netip.Addr
+	families [2][]netip.Addr // Latest complete hostname answer: IPv6, IPv4.
 }
 
 func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
@@ -127,8 +127,9 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 	}, nil
 }
 
-// Addresses refreshes hostnames through the daemon's TTL-aware resolver.
-// Only literal addresses are fixed; diagnostic snapshots never drive dialing.
+// Addresses refreshes hostnames through the daemon's TTL-aware resolver; only
+// literal addresses are fixed. Each family's complete answer is recorded even
+// when an early connection stops the other lookup. Records never drive dialing.
 func (u *Upstream) Addresses(ctx context.Context) iter.Seq2[netip.Addr, error] {
 	return func(yield func(netip.Addr, error) bool) {
 		if u.Ip46 != nil {
@@ -141,16 +142,20 @@ func (u *Upstream) Addresses(ctx context.Context) iter.Seq2[netip.Addr, error] {
 		}
 		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
 		defer cancel()
-		var resolved []netip.Addr
-		defer func() {
-			u.mu.Lock()
-			u.resolved = resolved
-			u.mu.Unlock()
-		}()
-		for ip, err := range happyeyeballs.Resolve(ctx, net.DefaultResolver, "ip", u.Hostname) {
-			if err == nil {
-				resolved = append(resolved, ip)
+		lookup := func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+			ips, err := net.DefaultResolver.LookupNetIP(ctx, network, host)
+			if dnsErr, ok := errors.AsType[*net.DNSError](err); err == nil || ok && dnsErr.IsNotFound {
+				family := 0
+				if network == "ip4" {
+					family = 1
+				}
+				u.mu.Lock()
+				u.families[family] = ips
+				u.mu.Unlock()
 			}
+			return ips, err
+		}
+		for ip, err := range happyeyeballs.ResolveWith(ctx, lookup, "ip", u.Hostname) {
 			if !yield(ip, err) {
 				return
 			}
@@ -158,13 +163,14 @@ func (u *Upstream) Addresses(ctx context.Context) iter.Seq2[netip.Addr, error] {
 	}
 }
 
-func (u *Upstream) resolvedAddresses() []netip.Addr {
+// KnownAddresses lists the latest recorded addresses, IPv6 first.
+func (u *Upstream) KnownAddresses() []netip.Addr {
 	if u.Ip46 != nil {
 		return []netip.Addr{u.Ip6, u.Ip4}
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return slices.Clone(u.resolved)
+	return append(append([]netip.Addr(nil), u.families[0]...), u.families[1]...)
 }
 
 func (u *Upstream) Protocols() (l4protos []consts.L4ProtoStr) {

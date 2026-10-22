@@ -257,7 +257,7 @@ func (u *UpstreamResolver) diagnosticDials(ctx context.Context) []plugin.Diagnos
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		if u.upstream != nil {
-			return u.upstream.resolvedAddresses()
+			return u.upstream.KnownAddresses()
 		}
 		ip, _ := netip.ParseAddr(hostname)
 		return []netip.Addr{ip}

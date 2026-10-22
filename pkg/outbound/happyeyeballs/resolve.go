@@ -15,14 +15,25 @@ import (
 
 const resolutionDelay = 50 * time.Millisecond
 
+// Lookup resolves one address family, ip4 or ip6, like net.Resolver.LookupNetIP.
+type Lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)
+
 // Resolve queries both families independently, prefers IPv6, and interleaves
 // available addresses without waiting for a slow family (RFC 8305 sections 3-4).
 // network is ip, ip4, or ip6. The resolver supplies ordering within each family.
+// A nil resolver is net.DefaultResolver at iteration time.
 func Resolve(ctx context.Context, resolver *net.Resolver, network, host string) iter.Seq2[netip.Addr, error] {
-	return func(yield func(netip.Addr, error) bool) {
+	return ResolveWith(ctx, func(ctx context.Context, network, host string) ([]netip.Addr, error) {
 		if resolver == nil {
-			resolver = net.DefaultResolver
+			return net.DefaultResolver.LookupNetIP(ctx, network, host)
 		}
+		return resolver.LookupNetIP(ctx, network, host)
+	}, network, host)
+}
+
+// ResolveWith is Resolve with a caller-supplied per-family lookup.
+func ResolveWith(ctx context.Context, lookup Lookup, network, host string) iter.Seq2[netip.Addr, error] {
+	return func(yield func(netip.Addr, error) bool) {
 		if network != "ip" && network != "ip4" && network != "ip6" {
 			yield(netip.Addr{}, net.UnknownNetworkError(network))
 			return
@@ -52,7 +63,7 @@ func Resolve(ctx context.Context, resolver *net.Resolver, network, host string) 
 				continue
 			}
 			go func() {
-				ips, err := resolver.LookupNetIP(ctx, query, host)
+				ips, err := lookup(ctx, query, host)
 				answers <- answer{family, ips, err}
 			}()
 		}
