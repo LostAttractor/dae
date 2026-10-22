@@ -46,6 +46,28 @@ func TestReadFragmentedHeader(t *testing.T) {
 	}
 }
 
+func TestReadDrainsControlFramePayloads(t *testing.T) {
+	var wire []byte
+	frame := func(status, option byte, data string) {
+		wire = append(wire, 0, 4, 0, 0, status, option)
+		if option&OptionData != 0 {
+			wire = append(wire, 0, byte(len(data)))
+			wire = append(wire, data...)
+		}
+	}
+	frame(SessionStatusKeepAlive, OptionData, "ping")
+	frame(SessionStatusNew, OptionData, "meta")
+	frame(SessionStatusKeep, OptionData, "")
+	frame(SessionStatusKeep, OptionData|OptionError, "hello")
+	frame(SessionStatusKeepAlive, OptionNone, "")
+	frame(SessionStatusKeep, OptionData, " world")
+	conn := NewConn(&frameConn{reader: bytes.NewReader(wire)}, MuxOption{Host: "127.0.0.1"})
+	payload, err := io.ReadAll(conn)
+	if string(payload) != "hello world" || err != nil {
+		t.Fatalf("Read = %q, %v", payload, err)
+	}
+}
+
 func TestRemoteEndDoesNotWaitForCarrierClose(t *testing.T) {
 	for _, option := range []byte{OptionNone, OptionError, OptionData} {
 		t.Run(fmt.Sprint(option), func(t *testing.T) {

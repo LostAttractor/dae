@@ -48,21 +48,7 @@ func (m *Conn) Read(b []byte) (int, error) {
 	if m.readErr != nil {
 		return 0, m.readErr
 	}
-	if m.remain != 0 {
-		length := m.remain
-		if len(b) < m.remain {
-			length = len(b)
-		}
-
-		n, err := m.Conn.Read(b[:length])
-		if err != nil {
-			return 0, err
-		}
-		m.remain -= n
-		return n, nil
-	}
-
-	for {
+	for m.remain == 0 {
 		_, err := io.ReadFull(m.Conn, m.length[:])
 		if err != nil {
 			return 0, err
@@ -82,41 +68,41 @@ func (m *Conn) Read(b []byte) (int, error) {
 			return 0, err
 		}
 
-		if _, err := io.CopyN(io.Discard, m.Conn, int64(length)-4); err != nil {
-			return 0, err
+		// Skip metadata extensions; frames usually have none.
+		if length > 4 {
+			if _, err := io.CopyN(io.Discard, m.Conn, int64(length)-4); err != nil {
+				return 0, err
+			}
 		}
-		opcode := m.status[0]
+		opcode, opts := m.status[0], m.status[1]
 		if opcode == SessionStatusEnd {
 			m.readErr = io.EOF
-			if m.status[1]&OptionError != 0 {
+			if opts&OptionError != 0 {
 				m.readErr = errors.New("mux: remote session failed")
 			}
 			return 0, m.readErr
 		}
-		if opcode == SessionStatusKeepAlive {
+		// Any frame with the data option carries a length-prefixed payload,
+		// which must be consumed to keep the stream framed.
+		if opts&OptionData == 0 {
 			continue
 		}
-
-		opts := m.status[1]
-
-		if opts != OptionData {
-			continue
-		}
-
 		_, err = io.ReadFull(m.Conn, m.length[:])
 		if err != nil {
 			return 0, err
 		}
-		dataLen := int(binary.BigEndian.Uint16(m.length[:]))
-		m.remain = dataLen
-		if dataLen > len(b) {
-			dataLen = len(b)
+		dataLen := int64(binary.BigEndian.Uint16(m.length[:]))
+		if opcode != SessionStatusKeep {
+			if _, err := io.CopyN(io.Discard, m.Conn, dataLen); err != nil {
+				return 0, err
+			}
+			continue
 		}
-
-		n, err := m.Conn.Read(b[:dataLen])
-		m.remain -= n
-		return n, err
+		m.remain = int(dataLen)
 	}
+	n, err := m.Conn.Read(b[:min(len(b), m.remain)])
+	m.remain -= n
+	return n, err
 }
 
 func (m *Conn) Write(b []byte) (int, error) {
