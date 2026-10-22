@@ -33,15 +33,13 @@ func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagno
 	if request.Context.Origin == "daemon" {
 		verified, verificationKnown = hostname != "", true
 	}
-	covered := s.paired[key][ingress.Addr()].KernelCovered
-	facts.shouldReroute = routingTruth(hostname != "" && !covered)
 	facts.verified = routingTruth(verified)
 	if !verificationKnown {
 		facts.verified = predicateUnknown
 	}
 	hostnameMissing := request.Context.Origin != "daemon" && missing["hostname"]
 	if hostnameMissing {
-		facts.verified, facts.shouldReroute = predicateUnknown, predicateUnknown
+		facts.verified = predicateUnknown
 	}
 	plan := planRoute(facts)
 	switch plan.action {
@@ -50,8 +48,6 @@ func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagno
 			return plan, false, []string{"hostname"}
 		}
 		return plan, false, []string{"hostname_verification"}
-	case routeUntrusted:
-		return plan, false, []string{"trusted_hostname"}
 	}
 	return plan, verified, nil
 }

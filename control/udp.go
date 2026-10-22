@@ -304,9 +304,8 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 			return err
 		}
 		if pending.sniffer.NeedMore() {
-			// Wait for the sniff identity before refreshing. Publishing an IP
-			// promotion here could hide the first packet's kernel coverage gap
-			// from the eventual routing decision.
+			// Wait for the sniffed name, which selects the evidence the
+			// activity renews.
 			pending.observedAt = observedAt
 			return nil
 		}
@@ -330,8 +329,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	} else {
 		option, err = c.RouteDialOption(ctx, param)
 	}
-	// Preserve the initial kernel-coverage decision before activity can promote
-	// an omitted candidate. The client's attempt counts even if routing fails.
+	// Activity renews the destination's DNS evidence; failed attempts count.
 	pending.observedAt = time.Time{}
 	ue.activity.observe(ue.firstDst.Addr(), domain, observedAt)
 	if dst != ue.firstDst {

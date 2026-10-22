@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// kernelCurrent reports whether the kernel holds the IP's current evidence.
+func kernelCurrent(g *DomainRegistry, ip netip.Addr) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	installed, resident := g.kernel.resident[ip]
+	s := g.byIP[ip]
+	return resident && s != nil && installed.equal(domainBitmaps{s.bump, s.routing})
+}
+
 func TestDomainProjectionRetriesInstalledState(t *testing.T) {
 	g, fake := newTestRegistry(1, time.Minute)
 	now := time.Now()
@@ -19,7 +28,7 @@ func TestDomainProjectionRetriesInstalledState(t *testing.T) {
 	g.kernel.update = func(netip.Addr, []uint32, []uint32) error { return failure }
 	g.Upsert("shared.example.", a, testBitmap(1), 60, now)
 	bump, routing := g.kernelRoutingBitmaps(a)
-	if !slices.Equal(bump, testBitmap(0)) || !slices.Equal(routing, testBitmap(0)) || g.Verify("shared.example.", a).KernelCovered {
+	if !slices.Equal(bump, testBitmap(0)) || !slices.Equal(routing, testBitmap(0)) || kernelCurrent(g, a) {
 		t.Fatal("failed update was reported as installed")
 	}
 	for range 100 {
@@ -30,7 +39,7 @@ func TestDomainProjectionRetriesInstalledState(t *testing.T) {
 	}
 	g.kernel.update = fake.update
 	g.retryProjection(now.Add(time.Second))
-	if len(g.kernel.pending) != 0 || !g.Verify("shared.example.", a).KernelCovered {
+	if len(g.kernel.pending) != 0 || !kernelCurrent(g, a) {
 		t.Fatal("retry did not publish desired bitmap")
 	}
 	g.kernel.remove = func(netip.Addr) error { return failure }

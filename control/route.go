@@ -41,14 +41,13 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	facts := routeFacts{
 		outbound: decision.outbound, capture: p.routingResult.CaptureFlags,
 		destination: p.destination.IsValid(), mode: c.rerouteMode,
-		verified: predicateUnknown, shouldReroute: predicateUnknown,
-		dialOverride: c.dialTargetOverride,
+		verified: predicateUnknown, dialOverride: c.dialTargetOverride,
 	}
 	if planRoute(facts).preserve {
 		decision.apply(p.routingResult)
 		return c.selectDialOption(ctx, p, decision.outbound, decision.mark, false)
 	}
-	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
+	verified, err := c.verifySniff(ctx, p.Dest, p.Domain)
 	if err != nil {
 		return nil, err
 	}
@@ -56,17 +55,24 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	if !verified {
 		domain = ""
 	}
-	facts.verified, facts.shouldReroute = routingTruth(verified), routingTruth(shouldReroute)
+	facts.verified = routingTruth(verified)
 	plan := planRoute(facts)
 	switch plan.action {
 	case routeTarget:
 		return c.routeDestination(ctx, p, domain)
-	case routeUntrusted:
-		return nil, fmt.Errorf("cannot preserve ambiguous DNS routing for %s without a trusted hostname", p.Dest.Addr())
 	case routeMatch:
-		decision.outbound, decision.mark, decision.must, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult)
+		// Without a trusted hostname this resolves a kernel handoff with the
+		// kernel's own DNS evidence. Ambiguity it could not resolve remains.
+		input := p.routingInput(domain, p.Dest)
+		if domain == "" {
+			input.domainBumpBitmap, input.domainBitmap = c.kernelDomainEvidence(p.Dest.Addr())
+		}
+		decision.outbound, decision.mark, decision.must, err = c.routingMatcher.match(input)
 		if err != nil {
 			return nil, err
+		}
+		if decision.outbound >= consts.OutboundMustRules {
+			return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", p.Dest.Addr())
 		}
 	}
 
@@ -81,8 +87,8 @@ func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, doma
 	// A captured connection with no trusted hostname keeps its DNS-IP evidence.
 	// Explicit IP URLs have a known logical target and do not borrow that identity.
 	var bump, routing []uint32
-	if domain == "" && !p.explicitTarget && c.core != nil && c.core.domainRegistry != nil {
-		bump, routing = c.core.domainRegistry.kernelRoutingBitmaps(input.dst.Addr())
+	if domain == "" && !p.explicitTarget {
+		bump, routing = c.kernelDomainEvidence(input.dst.Addr())
 	}
 	input = input.targetInput(domain, p.explicitTarget, bump, routing)
 	outbound, mark, must, err := c.routingMatcher.match(input)
@@ -99,8 +105,13 @@ func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, doma
 	return c.selectDialOption(ctx, p, outbound, mark, c.dialTargetOverride && domain != "")
 }
 
-func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *routingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
-	return c.routingMatcher.match(routingResult.routingInput(src, dst, domain, l4proto))
+// kernelDomainEvidence returns the domain bitmaps the kernel routes the address
+// with: the AND and OR of every domain the address is mapped to.
+func (c *ControlPlane) kernelDomainEvidence(addr netip.Addr) (bump, routing []uint32) {
+	if c.core == nil || c.core.domainRegistry == nil {
+		return nil, nil
+	}
+	return c.core.domainRegistry.kernelRoutingBitmaps(addr)
 }
 
 // A decision contains policy only. Selecting a node and creating a marked
@@ -125,10 +136,9 @@ func kernelRoute(result *routingResult) (routeDecision, bool) {
 }
 
 // verified 返回 domain 是不是 dst 的域名
-// shouldReroute 返回 Kernel 是否有可能没有正确 Route
 // SniffVerifyMode_Loose 在这个域名存在时, 通过认证
 // SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
-func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool, err error) {
+func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, domain string) (verified bool, err error) {
 	if err = ctx.Err(); err != nil {
 		return
 	}
@@ -137,12 +147,9 @@ func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, doma
 	}
 	fqdn := dnsmessage.CanonicalName(domain)
 	// Pairing remains valid until time GC, even if the corresponding kernel
-	// state is capacity-evicted. Keep
-	// that trust decision separate from whether the current kernel map could
-	// route this connection accurately.
+	// state is capacity-evicted.
 	verification := c.core.domainRegistry.Verify(fqdn, dst.Addr())
 	if verification.Registered {
-		shouldReroute = !verification.KernelCovered
 		switch c.sniffVerifyMode {
 		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
 			verified = true
@@ -151,7 +158,6 @@ func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, doma
 		}
 	} else {
 		// Successful sniff without DNS lookup record.
-		shouldReroute = true
 		// Check if the domain is in real-domain set (bloom filter).
 		switch c.sniffVerifyMode {
 		case consts.SniffVerifyMode_None:

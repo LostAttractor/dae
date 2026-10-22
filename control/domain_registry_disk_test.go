@@ -102,7 +102,7 @@ func TestDomainRegistryDiskRoundTrip(t *testing.T) {
 		t.Fatal("restoration lost a pair or restored stale evidence")
 	}
 	for ip, deadline := range map[netip.Addr]time.Time{ip4: now.Add(time.Hour), ip6: now.Add(2 * time.Hour)} {
-		if !restored.Verify(live, ip).KernelCovered || !restored.retention(live, ip).Equal(deadline) ||
+		if !restored.Verify(live, ip).Paired || !kernelCurrent(restored, ip) || !restored.retention(live, ip).Equal(deadline) ||
 			!bitmapHas(fake.routing[ip], 3) || bitmapHas(fake.bump[ip], 0) {
 			t.Fatal("restoration changed the original deadline or current bitmap")
 		}

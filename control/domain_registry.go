@@ -168,9 +168,8 @@ func (g *DomainRegistry) trackDeadline(deadline time.Time) {
 }
 
 type DomainVerification struct {
-	Registered    bool // evidence exists in the destination's address family
-	Paired        bool
-	KernelCovered bool
+	Registered bool // evidence exists in the destination's address family
+	Paired     bool
 }
 
 // Verify is read-only. A capacity-evicted pair remains evidence until GC.
@@ -186,13 +185,7 @@ func (g *DomainRegistry) verifyLocked(name string, ip netip.Addr) (result Domain
 		return result
 	}
 	if _, paired := r.addresses[ip]; paired {
-		installed, resident := g.kernel.resident[ip]
-		covered := domainBitmapAllZero(r.bitmap)
-		if resident {
-			s := g.byIP[ip]
-			covered = installed.equal(domainBitmaps{s.bump, s.routing})
-		}
-		return DomainVerification{true, true, covered}
+		return DomainVerification{Registered: true, Paired: true}
 	}
 	for addr := range r.addresses {
 		if addr.Is4() == ip.Is4() {

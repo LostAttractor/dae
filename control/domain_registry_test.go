@@ -231,7 +231,7 @@ func TestDomainVerificationAddressFamily(t *testing.T) {
 			g.Upsert(name, only, testBitmap(0), 120, now)
 			for _, destination := range []netip.Addr{ip4, ip6, netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("::ffff:192.0.2.1")} {
 				paired := destination.Unmap() == only
-				want := DomainVerification{Registered: destination.Unmap().Is4() == only.Is4(), Paired: paired, KernelCovered: paired}
+				want := DomainVerification{Registered: destination.Unmap().Is4() == only.Is4(), Paired: paired}
 				if got := g.Verify(name, destination); got != want {
 					t.Fatalf("destination %s: got %+v, want %+v", destination, got, want)
 				}
@@ -251,7 +251,7 @@ func TestDomainVerificationAddressFamily(t *testing.T) {
 			if got := g.Verify(name, other); got != (DomainVerification{}) {
 				t.Fatalf("other family still counts as registered after GC: %+v", got)
 			}
-			if got := g.Verify(name, only); got != (DomainVerification{true, true, true}) {
+			if got := g.Verify(name, only); got != (DomainVerification{Registered: true, Paired: true}) {
 				t.Fatalf("GC removed the surviving family: %+v", got)
 			}
 		})
@@ -352,14 +352,14 @@ func TestDomainSharedIPGCRecomputesAND(t *testing.T) {
 	}
 }
 
-func TestVerifySniffReroutesCapacityEvictedPair(t *testing.T) {
+func TestVerifySniffTrustsCapacityEvictedPair(t *testing.T) {
 	g, _ := newTestRegistry(0, time.Hour)
 	ip := netip.MustParseAddr("192.0.2.1")
 	g.Upsert("example.com.", ip, testBitmap(0), 1, time.Now())
 	c := &ControlPlane{core: &controlPlaneCore{domainRegistry: g}, sniffVerifyMode: consts.SniffVerifyMode_Strict}
-	verified, reroute, err := c.verifySniff(context.Background(), netip.AddrPortFrom(ip, 443), "example.com")
-	if err != nil || !verified || !reroute {
-		t.Fatalf("verification=%v reroute=%v error=%v", verified, reroute, err)
+	verified, err := c.verifySniff(context.Background(), netip.AddrPortFrom(ip, 443), "example.com")
+	if err != nil || !verified {
+		t.Fatalf("verification=%v error=%v", verified, err)
 	}
 }
 

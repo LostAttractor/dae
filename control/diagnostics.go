@@ -266,7 +266,7 @@ func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]
 				next.registeredCount[name]++
 				next.registered[name] = true
 			}
-			pairs[ip] = DomainVerification{Registered: true, Paired: true, KernelCovered: true}
+			pairs[ip] = DomainVerification{Registered: true, Paired: true}
 			next.paired[name] = pairs
 		}
 		next.domains[ip] = domain
@@ -506,9 +506,10 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		return result, nil
 	}
 	if plan.action == routeMatch || plan.action == routeTarget {
-		input.kernel, input.domainBitmap, input.domainBumpBitmap = false, nil, nil
+		// Without a trusted hostname, a handoff keeps the kernel's DNS evidence.
+		input.kernel = false
 		if verified || request.Context.Origin == "daemon" {
-			input.domain = hostname
+			input.domain, input.domainBitmap, input.domainBumpBitmap = hostname, nil, nil
 		} else {
 			input.domain = ""
 		}

@@ -165,7 +165,7 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 		return routingEvaluation{}, fmt.Errorf("invalid routing address")
 	}
 	predicates := routingPredicates{input: p, ipVersion: consts.IpVersionFromAddr(p.dst.Addr())}
-	simulateKernel := (p.kernel || p.domainBumpBitmap != nil) && p.stage != routeAfterTarget
+	simulateKernel := p.kernel && p.stage != routeAfterTarget
 	var subrule, must predicateResult
 	var ruleUnknown, flowBump bool
 	var uncertainUntil uint32

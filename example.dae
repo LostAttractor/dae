@@ -110,11 +110,10 @@ global {
     # 1. "none". Never re-route using the sniffed domain. Routing decisions purely rely on the original
     #       destination (IP/port). Sniffed domains are only used to override the dial target (see
     #       dial_target_override).
-    # 2. "while_needed". Re-route using the sniffed domain only when the kernel may not have routed correctly,
-    #       e.g. the sniffed domain is not backed by a DNS lookup that went through dae. This is the default
-    #       and recovers most domain based traffic split ability in such cases.
-    # 3. "force". Always re-route traffic using the sniffed domain. It fully recovers domain based traffic
-    #       split ability but consumes more CPU resources.
+    # 2. "while_needed". Re-route traffic that reaches the control plane (proxied, captured, or traffic the
+    #       kernel cannot route from DNS evidence alone) using its verified sniffed domain. This is the default.
+    # 3. "force". Re-evaluate all traffic that reaches the control plane.
+    # Without a verified sniffed domain, the kernel decision and its DNS evidence are kept.
     reroute_mode: while_needed
 
     # How strictly the sniffed domain is verified before being trusted. Optional values:

@@ -95,9 +95,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		routingResult: routingResult, networkType: networkType,
 		Domain: domain, Src: src, Dest: dst,
 	})
-	// Route against the pre-activity projection first. Promoting a missing IP
-	// before verification would conceal the kernel coverage gap that requires
-	// while_needed rerouting for this connection. Failed attempts still count.
+	// Activity renews the destination's DNS evidence; failed attempts count.
 	c.domainActivity().observe(dst.Addr(), domain, observedAt)
 	if blocked, ok := errors.AsType[*routeBlocked](err); ok {
 		c.logBlocked(src, dst, domain, networkType.String(), routingResult, blocked)

@@ -10,20 +10,18 @@ const (
 	routeKeep routeAction = iota
 	routeMatch
 	routeTarget
-	routeUntrusted
 	routeUnknown
 )
 
 // Routing facts contain no I/O. Diagnostics can leave sniffing or verification
 // unknown; the live path supplies definite results after verifySniff.
 type routeFacts struct {
-	outbound      consts.OutboundIndex
-	capture       uint8
-	destination   bool
-	mode          consts.RerouteMode
-	verified      predicateResult
-	shouldReroute predicateResult
-	dialOverride  bool
+	outbound     consts.OutboundIndex
+	capture      uint8
+	destination  bool
+	mode         consts.RerouteMode
+	verified     predicateResult
+	dialOverride bool
 }
 
 type routePlan struct {
@@ -47,12 +45,15 @@ func planRoute(f routeFacts) routePlan {
 		p.preserve = true
 		return p
 	}
+	// A kernel decision changes only with a trusted hostname: without one,
+	// userspace has no evidence beyond the kernel's. With one, routing it is
+	// exact whatever evidence the kernel held when the flow arrived.
 	reroute := predicateMiss
 	switch {
 	case p.target, !valid, f.mode == consts.RerouteMode_Force:
 		reroute = predicateMatch
 	case f.mode == consts.RerouteMode_WhileNeed:
-		reroute = f.shouldReroute
+		reroute = f.verified
 	}
 	// A direct flow that keeps its route dials the client's address, so only a
 	// reroute or a proxy's dial target needs the hostname verified.
@@ -63,13 +64,9 @@ func planRoute(f routeFacts) routePlan {
 	}
 	p.override = override && f.verified == predicateMatch
 	if reroute == predicateMatch {
-		switch {
-		case p.target:
+		p.action = routeMatch
+		if p.target {
 			p.action = routeTarget
-		case f.capture != 0 && f.verified != predicateMatch:
-			p.action = routeUntrusted
-		default:
-			p.action = routeMatch
 		}
 	}
 	return p

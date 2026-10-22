@@ -98,7 +98,7 @@ dport(443) -> must`, "")
 		bitmap := matcher.domainMatcher.MatchDomainBitmap("api.example.com")
 		got, err := matcher.evaluateSpans(matcher.profiles[matcher.defaultProfileID], routingInput{
 			src: netip.AddrPortFrom(address, 12345), dst: netip.AddrPortFrom(address, 443),
-			l4proto:      consts.L4ProtoType_TCP,
+			l4proto: consts.L4ProtoType_TCP, kernel: true,
 			domainBitmap: bitmap, domainBumpBitmap: bitmap,
 		})
 		want, flags := consts.OutboundControlPlaneRouting, captureDestination

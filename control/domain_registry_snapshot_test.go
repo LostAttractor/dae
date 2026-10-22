@@ -39,12 +39,12 @@ func TestDomainSnapshotRetainsVerificationAndInstalledState(t *testing.T) {
 		t.Fatal("name selection lost cross-family registration")
 	}
 	before := snapshot.names["new.example."].pairs[ip]
-	if !before.resident || before.verification.KernelCovered || !slices.Equal(snapshot.kernel[ip].routing, testBitmap(0)) {
+	if !before.resident || kernelCurrent(g, ip) || !slices.Equal(snapshot.kernel[ip].routing, testBitmap(0)) {
 		t.Fatal("snapshot confused installed routing with current evidence")
 	}
 	g.kernel.update = fake.update
 	g.retryProjection(now.Add(time.Second))
-	if !g.Verify("new.example.", ip).KernelCovered || snapshot.names["new.example."].pairs[ip] != before || !slices.Equal(snapshot.kernel[ip].routing, testBitmap(0)) {
+	if !kernelCurrent(g, ip) || snapshot.names["new.example."].pairs[ip] != before || !slices.Equal(snapshot.kernel[ip].routing, testBitmap(0)) {
 		t.Fatal("projection retry changed an earlier snapshot")
 	}
 	current := g.Snapshot([]netip.Addr{ip}, "")
@@ -58,7 +58,9 @@ func TestDomainSnapshotRetainsVerificationAndInstalledState(t *testing.T) {
 	}
 }
 
-func TestDiagnosticsCoverageMatchesVerifyDuringProjectionRetry(t *testing.T) {
+// The kernel projection only narrows what a flow reaches userspace with. A
+// trusted hostname reroutes whether or not the projection has been published.
+func TestDiagnosticsMatchVerifyDuringProjectionRetry(t *testing.T) {
 	for _, relevant := range []bool{false, true} {
 		t.Run(map[bool]string{false: "zero-bit domain", true: "routing domain"}[relevant], func(t *testing.T) {
 			rules := "domain(full: initial.example) -> proxy"
@@ -90,14 +92,14 @@ func TestDiagnosticsCoverageMatchesVerifyDuringProjectionRetry(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				verified, reroute, err := c.verifySniff(t.Context(), input.dst, "target.example")
-				if err != nil || !verified || reroute == retry {
-					t.Fatalf("live verification: verified=%v reroute=%v err=%v", verified, reroute, err)
+				verified, err := c.verifySniff(t.Context(), input.dst, "target.example")
+				if err != nil || !verified {
+					t.Fatalf("live verification: verified=%v err=%v", verified, err)
 				}
 				facts := routeFacts{outbound: consts.OutboundUserDefinedMin, mode: consts.RerouteMode_WhileNeed}
 				got, known, missing := c.diagnosticRoutePlan(request, state, input.dst, "target.example", nil, facts)
-				facts.verified, facts.shouldReroute = routingTruth(verified), routingTruth(reroute)
-				if want := planRoute(facts); got != want || !known || len(missing) != 0 {
+				facts.verified = routingTruth(verified)
+				if want := planRoute(facts); got != want || got.action != routeMatch || !known || len(missing) != 0 {
 					t.Fatalf("diagnostic=%+v live=%+v missing=%v", got, want, missing)
 				}
 			}

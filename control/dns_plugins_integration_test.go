@@ -161,7 +161,7 @@ func TestDNSDialEndpointHostnameEnforcesBlock(t *testing.T) {
 		}
 		c := &ControlPlane{outbounds: []*outbound.DialerGroup{direct, block}, routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}}
 		source := netip.MustParseAddrPort("192.0.2.1:2345")
-		outbound, _, _, err := c.Route(source, target, "dns.example", consts.L4ProtoType_UDP, &routingResult{})
+		outbound, _, _, err := c.routingMatcher.match(new(routingResult).routingInput(source, target, "dns.example", consts.L4ProtoType_UDP))
 		if err != nil || outbound != consts.OutboundBlock {
 			t.Fatalf("fixture route: %v %v", outbound, err)
 		}

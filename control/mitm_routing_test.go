@@ -296,11 +296,6 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 			}
 		}
 	}
-	plane.sniffVerifyMode = consts.SniffVerifyMode_Strict
-	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP}}
-	if _, err := plane.RouteDialOption(context.Background(), p); err == nil {
-		t.Fatal("ambiguous kernel route accepted without a trusted domain")
-	}
 }
 
 func TestMITMDialReportsConnectivityFailures(t *testing.T) {
