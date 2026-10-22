@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/internal/pluginctx"
 	"github.com/daeuniverse/dae/pkg/outbound/happyeyeballs"
 )
@@ -57,7 +58,9 @@ func requestHTTPTarget(request *http.Request) (httpTarget, error) {
 
 // One candidate stream serves intercepted requests and daemon downloads.
 // Each candidate has its own pool key; requests and downloads consume candidates
-// lazily and stop after a successful dial. A block terminates the stream.
+// lazily and stop after a successful dial. Routing applies per address, so a
+// blocked address is skipped like an unreachable one, as a client falls back.
+// The daemon resolves here only because no client chose an address.
 func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, target httpTarget, source netip.AddrPort, identity routingResult) iter.Seq2[*DialOption, error] {
 	return func(yield func(*DialOption, error) bool) {
 		if network != "tcp" && network != "tcp4" && network != "tcp6" && network != "udp" {
@@ -78,6 +81,12 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 		if _, err := netip.ParseAddr(domain); err == nil {
 			domain = ""
 		}
+		type dial struct {
+			dialer *dialer.Dialer
+			target string
+			mark   uint32
+		}
+		dialed := make(map[dial]bool)
 		var failures []error
 		yielded := false
 		for ip, err := range happyeyeballs.Resolve(ctx, net.DefaultResolver, family, target.host) {
@@ -91,9 +100,16 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 				continue
 			}
 			if option.Outbound.IsBlock() {
-				yield(nil, fmt.Errorf("HTTP upstream blocked by routing"))
-				return
+				failures = append(failures, fmt.Errorf("HTTP upstream blocked by routing"))
+				continue
 			}
+			// A proxy receives the name to resolve remotely, so addresses
+			// routed to the same node share one dial.
+			key := dial{option.Dialer, option.DialTarget, option.Mark}
+			if dialed[key] {
+				continue
+			}
+			dialed[key] = true
 			yielded = true
 			if !yield(option, nil) {
 				return

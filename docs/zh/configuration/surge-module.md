@@ -208,7 +208,7 @@ jq 的解析、编译、JSON 解码与执行由 Surge 插件启动同一 dae 二
 
 启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP/UDP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
 
-HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP（代理连接按 `dial_target_override` 发送域名），其他目标经系统解析器解析，再执行目标规则和路由，保留客户端来源、接口及策略。请求型模块在 HTTP 处理后确定路由；纯检查模块保留原路由。出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应。
+HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP（代理连接按 `dial_target_override` 发送域名），其他目标经系统解析器解析，每个地址分别执行目标规则和路由，保留客户端来源、接口及策略。请求型模块在 HTTP 处理后确定路由；纯检查模块保留原路由。出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应。
 
 支持 HTTP/1.1、TLS HTTP/2 和 HTTP/3（QUIC v1/v2）。HTTP/3 自动使用现有 CA、客户端开关和 hostname 范围；只有完整 ClientHello 的 ALPN 包含 `h3` 才解密，其它 QUIC/UDP 保持转发。客户端与上游都使用 HTTP/3，支持同一源/目标/域名下多连接及重连；上游握手失败不会自动改用 TCP 重试。HTTP/3 上游按最终目标匹配 UDP 路由；命中 block 时不会建立上游连接，模块的本地响应仍可直接返回。
 

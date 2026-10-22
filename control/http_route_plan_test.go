@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,13 +26,51 @@ type routeTestBody struct {
 	closed atomic.Int32
 }
 
-func TestHTTPRaceDoesNotBypassBlockedFirstAddress(t *testing.T) {
-	var dials atomic.Int32
-	dial := func(context.Context, string, string) (net.Conn, error) {
-		dials.Add(1)
-		return nil, errors.New("unexpected dial")
+func TestHTTPRaceRoutesEachAddress(t *testing.T) {
+	for _, test := range []struct{ rules, dialed string }{
+		{"dip('2001:db8::/32') -> block", "198.51.100.1:80"},
+		{"domain(blocked.test) -> block", ""},
+	} {
+		t.Run(test.rules, func(t *testing.T) {
+			var dialed []string
+			dial := func(_ context.Context, _, address string) (net.Conn, error) {
+				dialed = append(dialed, address)
+				conn, peer := net.Pipe()
+				_ = peer.Close()
+				return conn, nil
+			}
+			plane := downloadTestPlane(t, test.rules, downloadTestGroup(t, "direct", dial), downloadTestGroup(t, "block", dial))
+			attachDownloadTestDNS(t, plane, "", "", func(message *dnsmessage.Msg) {
+				q := message.Question[0]
+				if q.Qtype == dnsmessage.TypeA {
+					message.Answer = []dnsmessage.RR{testARecord(q.Name, "198.51.100.1")}
+				} else {
+					message.Answer = []dnsmessage.RR{&dnsmessage.AAAA{Hdr: dnsmessage.RR_Header{Name: q.Name, Rrtype: dnsmessage.TypeAAAA, Class: dnsmessage.ClassINET}, AAAA: net.ParseIP("2001:db8::1")}}
+				}
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			conn, err := mitmClientDialContext(plane)(ctx, "tcp", "blocked.test:80")
+			if test.dialed == "" {
+				if err == nil || !strings.Contains(err.Error(), "blocked") || len(dialed) != 0 {
+					t.Fatalf("blocked target: err=%v dialed=%v", err, dialed)
+				}
+				return
+			}
+			if err != nil || len(dialed) != 1 || dialed[0] != test.dialed {
+				t.Fatalf("blocked address: err=%v dialed=%v", err, dialed)
+			}
+			_ = conn.Close()
+		})
 	}
-	plane := downloadTestPlane(t, "dip('2001:db8::/32') -> block", downloadTestGroup(t, "direct", dial), downloadTestGroup(t, "block", dial))
+}
+
+// The daemon resolves to route each address, but a proxy receives the name;
+// addresses routed to one node therefore share a single dial.
+func TestHTTPCandidatesShareProxiedName(t *testing.T) {
+	unused := func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed }
+	plane := downloadTestPlane(t, "domain(named.test) -> proxy", downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused))
+	plane.dialTargetOverride = true
 	attachDownloadTestDNS(t, plane, "", "", func(message *dnsmessage.Msg) {
 		q := message.Question[0]
 		if q.Qtype == dnsmessage.TypeA {
@@ -40,16 +79,15 @@ func TestHTTPRaceDoesNotBypassBlockedFirstAddress(t *testing.T) {
 			message.Answer = []dnsmessage.RR{&dnsmessage.AAAA{Hdr: dnsmessage.RR_Header{Name: q.Name, Rrtype: dnsmessage.TypeAAAA, Class: dnsmessage.ClassINET}, AAAA: net.ParseIP("2001:db8::1")}}
 		}
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	_, err := mitmClientDialContext(plane)(ctx, "tcp", "blocked.test:80")
-	if err == nil || !strings.Contains(err.Error(), "blocked") || dials.Load() != 0 {
-		t.Fatalf("blocked route: err=%v dials=%d", err, dials.Load())
-	}
-	for option, err := range plane.httpRouteCandidates(ctx, "tcp4", httpTarget{"blocked.test", 80}, netip.AddrPort{}, routingResult{}) {
-		if err != nil || option.Outbound.IsBlock() {
-			t.Fatalf("explicit IPv4 route=%v err=%v", option, err)
+	var targets []string
+	for option, err := range plane.httpRouteCandidates(t.Context(), "tcp", httpTarget{"named.test", 80}, netip.AddrPort{}, routingResult{}) {
+		if err != nil {
+			t.Fatal(err)
 		}
+		targets = append(targets, option.DialTarget)
+	}
+	if !slices.Equal(targets, []string{"named.test:80"}) {
+		t.Fatalf("proxied candidates = %v", targets)
 	}
 }
 
