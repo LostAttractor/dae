@@ -63,7 +63,7 @@ MITM 上游清理同步检查资源和组策略的 Abort 原因，再结束客�
 
 ## 恢复调度
 
-路由只选择就绪节点。失败 relay 结束，后台恢复只供后续请求使用。`connectivity_check.go` 的单个调度循环串行执行健康检查、容量补充和能力探测，发布执行状态和 `retry_at`；探测与状态处理分别位于 `connectivity_probe.go`、`connectivity_state.go`。
+路由只选择就绪节点。失败 relay 结束，后台恢复只供后续请求使用。`connectivity_check.go` 的单个调度循环依次执行健康检查、容量补充和后台能力探测，路径存活后，选举和升级的单次测试按网络模式并发，发布执行状态和 `retry_at`；探测与状态处理分别位于 `connectivity_probe.go`、`connectivity_state.go`。
 
 共享资源故障按实际依赖子树终止，容量补充保留健康兄弟连接。混合链由第一个未就绪依赖决定恢复执行者；库自行恢复时 DAE 不重复重连。认证/证书错误阻断快速重试，等待环境变化或显式重查。
 

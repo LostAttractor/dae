@@ -107,9 +107,9 @@ func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 
 // RequestVerification asks for a representative result newer than the
 // observation a group switched on, even while automatic checks are paused.
-// The worker is serial, so a probe already running started after that
-// observation: it answers every verification requested meanwhile, and only a
-// result that is not applied leaves the request for another probe.
+// A probe already running ends after that observation, so its result answers
+// every verification requested meanwhile; only a result that is not applied
+// leaves the request for another probe.
 func (d *pathRuntime) RequestVerification() {
 	d.mu.Lock()
 	if d.ctx.Err() != nil || !d.checksConnectivity || d.checks.verify {

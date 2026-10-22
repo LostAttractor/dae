@@ -101,8 +101,8 @@ func TestSelectionAuthenticationBlocksBackgroundRetries(t *testing.T) {
 	defer c.stopRetries()
 	flight := d.queueSelectionCheckLocked(common.NetworkTCP4, time.Now().Add(time.Second))
 	defer flight.cancel()
-	c.flight = flight
-	result := checkResult{kind: checkSelection, probes: []probeResult{{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth})}}}
+	c.selections[flight.network] = flight
+	result := checkResult{kind: checkSelection, request: flight, probes: []probeResult{{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth})}}}
 	result.attempted = true
 	c.finishSelectionCheck(result)
 	c.dispatch()

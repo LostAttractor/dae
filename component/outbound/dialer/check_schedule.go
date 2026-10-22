@@ -158,6 +158,14 @@ func (c *connectivityChecker) dispatch() {
 	if c.cancel != nil || c.d.ctx.Err() != nil {
 		return
 	}
+	// Further selection checks join running ones; a requested check waits
+	// for them and runs before any further one.
+	if c.selecting() {
+		if !c.d.connectivityCheckRequested() {
+			c.startSelectionChecks()
+		}
+		return
+	}
 	status := c.d.runtimeStatus()
 	if c.d.session != nil && status.Session.State == netproxy.SessionClosed {
 		c.stopRetries()
@@ -168,7 +176,7 @@ func (c *connectivityChecker) dispatch() {
 		c.start(c.requestedCheckKind())
 		return
 	}
-	if c.startSelectionCheck() {
+	if c.startSelectionChecks() {
 		return
 	}
 	if c.blockedBy != "" {

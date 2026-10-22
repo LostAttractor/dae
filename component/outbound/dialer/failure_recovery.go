@@ -69,7 +69,7 @@ func (c *connectivityChecker) startRecoveryCheck(timeout time.Duration) {
 	network := firstSupportedNetwork(c.d.health.networks)
 	c.d.queueSelectionCheckLocked(network, time.Now().Add(timeout)).waiters++
 	c.d.mu.Unlock()
-	c.startSelectionCheck()
+	c.startSelectionChecks()
 }
 
 func (d *Dialer) degradationLocked() (bool, time.Duration, time.Duration) {

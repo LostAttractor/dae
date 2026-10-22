@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestSelectionCheckExpiredBudgetDoesNotStartWork(t *testing.T) {
@@ -206,9 +207,9 @@ func TestAliveCheckDoesNotProbe(t *testing.T) {
 }
 
 // A verification needs a representative result newer than the observation a
-// group switched on. The serial worker makes an in-flight probe one, repeated
-// requests coalesce even while checks are paused, and a capability probe that
-// leaves health unchanged does not answer it.
+// group switched on. An in-flight probe provides one, repeated requests
+// coalesce even while checks are paused, and a capability probe that leaves
+// health unchanged does not answer it.
 func TestVerificationNeedsOneRepresentativeResult(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
@@ -273,5 +274,99 @@ func TestVerificationNeedsOneRepresentativeResult(t *testing.T) {
 		gate <- struct{}{}
 		discovery.Wait()
 		want(common.NetworkTCP6, common.NetworkTCP6, common.NetworkTCP4, common.NetworkTCP6)
+	})
+}
+
+// Requests for different networks of one path do not wait for each other,
+// even when one arrives while the other's probe runs.
+func TestSelectionChecksOfDifferentNetworksRunConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		d.SetCheckEnabled(false)
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		start := make(chan struct{})
+		close(start)
+		var worker sync.WaitGroup
+		worker.Go(func() { checker.run(start) })
+		defer func() { _ = d.Close(); worker.Wait() }()
+		began := time.Now()
+		var clients sync.WaitGroup
+		for i, network := range []common.NetworkIndex{common.NetworkTCP6, common.NetworkTCP4} {
+			arrival := time.Duration(i) * 10 * time.Millisecond
+			clients.Go(func() {
+				time.Sleep(arrival)
+				release, err := d.Check(t.Context(), network, 80*time.Millisecond)
+				if err != nil {
+					t.Errorf("%v: %v after %v", network, err, time.Since(began))
+					return
+				}
+				release()
+				if elapsed := time.Since(began); elapsed != arrival+50*time.Millisecond {
+					t.Errorf("%v answered after %v, want its own probe only", network, elapsed)
+				}
+			})
+		}
+		clients.Wait()
+	})
+}
+
+// Connecting and the representative probe belong to the path: a sleeping path
+// connects once and proves itself before discovery of another network runs.
+func TestSelectionChecksProveASleepingPathOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, err := NewRecreatableDialer(func() (*netproxy.Runtime, error) {
+			return netproxy.NewRuntime(netproxy.Layer{Data: new(sleepingTestTransport)}), nil
+		}, &GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour}, &Property{Name: t.Name()}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.SetCheckEnabled(false)
+		d.mu.Lock()
+		d.health.networks[common.NetworkTCP6] = networkSupported // The representative network.
+		d.mu.Unlock()
+		var mu sync.Mutex
+		var probed []common.NetworkIndex
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
+			mu.Lock()
+			probed = append(probed, network.Index())
+			mu.Unlock()
+			select {
+			case <-time.After(50 * time.Millisecond):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		start := make(chan struct{})
+		close(start)
+		var worker sync.WaitGroup
+		worker.Go(func() { checker.run(start) })
+		defer func() { _ = d.Close(); worker.Wait() }()
+		began := time.Now()
+		var clients sync.WaitGroup
+		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+			clients.Go(func() {
+				release, err := d.Check(t.Context(), network, time.Second)
+				if err != nil {
+					t.Errorf("%v: %v", network, err)
+					return
+				}
+				release()
+			})
+		}
+		clients.Wait()
+		d.mu.RLock()
+		attempts := d.recovery.Attempt
+		d.mu.RUnlock()
+		if !slices.Equal(probed, []common.NetworkIndex{common.NetworkTCP6, common.NetworkTCP4}) || attempts != 1 || time.Since(began) != 100*time.Millisecond {
+			t.Fatalf("probed %v with %d connection attempts in %v, want the representative probe, then discovery after one connection", probed, attempts, time.Since(began))
+		}
 	})
 }

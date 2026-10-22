@@ -47,7 +47,9 @@ type connectivityChecker struct {
 	d       *pathRuntime
 	probe   func(context.Context, *common.NetworkType) error
 	results chan checkResult
-	flight  *selectionCheck
+	// Running selection checks by network. They answer their own requests and
+	// may run concurrently; any other operation (c.cancel) runs alone.
+	selections [common.NetworkTypeCount]*selectionCheck
 
 	runningKind      checkKind
 	cancel           context.CancelFunc
@@ -139,8 +141,8 @@ func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 			}
 		}
 	}
-	if c.cancel != nil {
-		if c.runningKind == checkSupport && (advanced || needsRecovery) {
+	if c.cancel != nil || c.selecting() {
+		if c.cancel != nil && c.runningKind == checkSupport && (advanced || needsRecovery) {
 			c.healthAt = time.Now()
 		}
 		return
@@ -203,6 +205,12 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 				c.cancel()
 				<-c.results
 			}
+			// Requests derive from the path's context and have ended with it.
+			for _, running := range c.selections {
+				if running != nil {
+					<-c.results
+				}
+			}
 			return
 
 		case event, ok := <-sessionEvents:
@@ -231,7 +239,9 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 func (c *connectivityChecker) finish(result checkResult) bool {
 	defer func() {
 		c.d.mu.Lock()
-		c.d.checks.operation = checkIdle
+		if !c.selecting() {
+			c.d.checks.operation = checkIdle
+		}
 		if c.d.checks.paused {
 			c.d.resetRecoveryObservationLocked()
 		}
@@ -252,8 +262,7 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 	}()
 	if result.kind == checkSelection {
 		c.finishSelectionCheck(result)
-		c.cancel()
-		c.cancel = nil
+		result.request.cancel()
 		return c.d.ctx.Err() == nil
 	}
 	c.cancel()

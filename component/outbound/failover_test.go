@@ -448,9 +448,7 @@ func TestStartupElectionPublishesElecting(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			transport := new(failoverTransport)
-			// Families are discovered one after another; both fit in the
-			// probe timeout.
-			transport.delay.Store(int64(40 * time.Millisecond))
+			transport.delay.Store(int64(50 * time.Millisecond))
 			transport.offline.Store(offline)
 			g := newFailoverTestGroup(t, testFailoverPolicy(), nil, true, transport)
 			var mu sync.Mutex
@@ -737,8 +735,7 @@ func TestElectionServesFirstAliveThenCommitsOnlyBetter(t *testing.T) {
 				best, backup, weighted := new(failoverTransport), new(failoverTransport), new(failoverTransport)
 				best.delay.Store(int64(time.Millisecond))
 				backup.delay.Store(int64(10 * time.Millisecond))
-				// Untested families are discovered one after another; both
-				// fit in the probe timeout.
+				// It answers after the others, within the probe timeout.
 				weighted.delay.Store(int64(40 * time.Millisecond))
 				weighted.offline.Store(!weightedOnline)
 				annotations := emptyAnnotations(3)

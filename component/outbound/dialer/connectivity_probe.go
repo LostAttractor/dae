@@ -145,6 +145,7 @@ type checkResult struct {
 	capacityBefore int
 	connectErr     error
 	probes         []probeResult
+	request        *selectionCheck // The selection request this result answers.
 }
 
 // Failures can arise while establishing a session or while opening a probe

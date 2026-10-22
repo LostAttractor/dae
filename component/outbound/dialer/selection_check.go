@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -179,30 +180,47 @@ func (d *pathRuntime) queueSelectionCheckLocked(network common.NetworkIndex, dea
 	return flight
 }
 
-// The worker's operation gate (c.cancel) serializes dispatch and completion.
-func (c *connectivityChecker) startSelectionCheck() bool {
+// startSelectionChecks starts waiting requests. Connecting and the
+// representative probe belong to the whole path, so until the path is alive,
+// or accepting before any capability is known, one check runs at a time,
+// preferring the representative one. Afterwards requests for different
+// networks run concurrently; a network's checks run one after another. The
+// worker dispatches and completes each of them.
+func (c *connectivityChecker) startSelectionChecks() bool {
 	c.d.mu.Lock()
-	var flight *selectionCheck
-	for i, queued := range c.d.checks.selection {
-		if queued == nil {
+	canonical := firstSupportedNetwork(c.d.health.networks)
+	ready := c.d.session == nil || c.d.sessionSnapshot().Accepting
+	if canonical.Valid() {
+		ready = c.d.aliveLocked(canonical)
+	}
+	var flights []*selectionCheck
+	for network, queued := range c.d.checks.selection {
+		if queued == nil || c.selections[network] != nil {
 			continue
 		}
 		if err := queued.ctx.Err(); err != nil {
 			queued.err = err
 			close(queued.done)
-			c.d.checks.selection[i] = nil
+			c.d.checks.selection[network] = nil
 			continue
 		}
 		// A representative success after the request satisfies it.
 		if c.d.aliveLocked(queued.network) && !c.d.health.measuredAt.Before(queued.requestedAt) {
 			close(queued.done)
-			c.d.checks.selection[i] = nil
+			c.d.checks.selection[network] = nil
 			continue
 		}
-		flight = queued
-		break
+		flights = append(flights, queued)
 	}
-	if flight == nil {
+	if !ready && len(flights) != 0 {
+		if c.selecting() {
+			flights = nil
+		} else {
+			lead := slices.IndexFunc(flights, func(flight *selectionCheck) bool { return flight.network == canonical })
+			flights = flights[max(lead, 0):][:1]
+		}
+	}
+	if len(flights) == 0 {
 		c.d.mu.Unlock()
 		return false
 	}
@@ -210,19 +228,23 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 	c.d.checks.operation = checkProbing
 	c.d.updateTransportDemandLocked()
 	c.d.mu.Unlock()
-	c.flight = flight
 	c.blockedBy = ""
 	c.libraryRequested = false
-	c.runningKind = checkSelection
-	c.cancel = flight.cancel
-	go func() {
-		c.results <- c.performSelectionCheck(flight, generation)
-	}()
+	for _, flight := range flights {
+		c.selections[flight.network] = flight
+		go func() {
+			c.results <- c.performSelectionCheck(flight, generation)
+		}()
+	}
 	return true
 }
 
+func (c *connectivityChecker) selecting() bool {
+	return slices.ContainsFunc(c.selections[:], func(flight *selectionCheck) bool { return flight != nil })
+}
+
 func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64) checkResult {
-	result := checkResult{kind: checkSelection, generation: generation}
+	result := checkResult{kind: checkSelection, generation: generation, request: flight}
 	ctx := flight.ctx
 	c.d.setRecovery(api.RecoveryQueued, time.Time{}, "connectivity_slot")
 	if err := acquireConnectivityCheckSlot(ctx); err != nil {
@@ -274,8 +296,8 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 }
 
 func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
-	flight := c.flight
-	c.flight = nil
+	flight := result.request
+	c.selections[flight.network] = nil
 	err := result.failure()
 	blocked := ""
 	rediscover := false
