@@ -79,7 +79,7 @@ type DNSResponse struct {
 	DNSPacket
 	ReceivedAt time.Time
 	// Cached marks replayed responses. ReceivedAt remains the original receipt
-	// time; successful client delivery independently refreshes registry retention.
+	// time; registering the answer before delivery refreshes registry retention.
 	Cached bool
 	Origin string
 }
@@ -179,7 +179,8 @@ type DNSPlugin interface {
 
 // DNSObserver sees final valid responses, including local and cached answers,
 // after middleware and successful delivery. It cannot change the delivered response.
-// ReceivedAt is nonzero: the core supplies delivery time if the producer omitted it.
+// ReceivedAt is nonzero: the core supplies the time it registered the answer,
+// just before delivery, if the producer omitted it.
 // Calls may be concurrent; background consumers must copy retained data.
 type DNSObserver interface {
 	ObserveDNS(context.Context, *DNSExchange, *DNSResponse)

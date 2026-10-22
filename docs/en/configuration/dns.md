@@ -1,7 +1,7 @@
 # DNS relay, evidence retention and plugins
 
 Core transparently relays captured **TCP/UDP destination port 53** and observes
-successfully delivered DNS replies. `DomainRegistry` supplies evidence for sniff
+the DNS replies it delivers. `DomainRegistry` supplies evidence for sniff
 verification, domain routing and domain-based MITM/DNAT capture. Complete response
 caching and advanced resolution belong to optional plugins.
 
@@ -148,7 +148,7 @@ window `W`:
 
 | Observation | Update |
 | --- | --- |
-| Valid DNS reply successfully delivered | `max(retain_until, delivered_at + max(ttl, W))` |
+| Valid DNS reply registered just before delivery to the client | `max(retain_until, registered_at + max(ttl, W))` |
 | Actual connection/traffic activity | `max(retain_until, observed_at + W)` |
 | GC | Delete due pairs, recompute affected IPs, and adjust kernel residency |
 
@@ -172,9 +172,13 @@ Only correlated, successful, complete ordinary IN A/AAAA replies contribute.
 Validate ID, opcode and questions, follow bounded reachable CNAME chains, and
 reject cycles, unrelated answers, errors, TC responses and malformed frames.
 
-Upstream, local and **cached replies all refresh retention after delivery**:
-the client has just received an answer it may retain anew. This does not change
-cache TTL aging or the original `ReceivedAt`. Failed delivery publishes nothing.
+Upstream, local and **cached replies are all registered before delivery**, so
+the kernel holds a reply's domain evidence before the client can connect to an
+answered address. Failed delivery keeps the evidence: the reply is valid, and
+retention collects it as usual. Plugin DNS observers run after successful
+delivery. A cached reply refreshes retention because the client has just received
+an answer it may retain anew. This does not change cache TTL aging or the
+original `ReceivedAt`.
 
 RRSIG time checks still apply when accepting a reply; dae does not authenticate
 DNSSEC. Once accepted, historical retention is independent of signature expiry.

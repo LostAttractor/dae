@@ -82,7 +82,7 @@ type domainObservation struct {
 	ttl    int
 }
 
-// ObserveDNS records one successfully delivered response, including replay.
+// ObserveDNS records one response as it is delivered, including replay.
 // A delayed observation retains its own timestamp; the clock prevents it from
 // reviving evidence already collected after a newer observation.
 func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Time) {

@@ -60,14 +60,15 @@ restart a full SOA MINIMUM interval on each hit. Fixed TTL changes require stric
 wire parsing and request correlation; malformed or unrelated packets pass through
 unchanged and cannot be repaired into cacheable answers.
 
-Cache hits retain their original receipt time and are marked as replays. On
-successful client delivery, dae independently refreshes DomainRegistry retention
-using the delivered TTL and `global.dns_retention_window`; this does not renew the
-cached response's own TTL or receipt time.
+Cache hits retain their original receipt time and are marked as replays. When
+delivering a reply, dae independently refreshes DomainRegistry retention using the
+delivered TTL and `global.dns_retention_window`; this does not renew the cached
+response's own TTL or receipt time.
 TTL aging uses the response's `ReceivedAt`; the cache supplies the receipt time
 when the transport omits it. A validated upstream response can be cached even
-if response policy rejects it or client delivery fails. Only delivered answers
-contribute to DomainRegistry.
+if response policy rejects it or client delivery fails. Only answers sent to the
+client contribute to DomainRegistry; they are registered before delivery, and a
+failed delivery keeps them.
 Unchanged instances retain their cache and counters across reload. The host's
 policy namespace separates answers when the ordered plugin instances or core
 routing generation change;

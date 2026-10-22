@@ -65,7 +65,7 @@ MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins
 
 ## DNS
 
-核心的 `dns_relay.go` / `dns_stream.go` 透明转发 TCP/UDP 53，`dns_observer.go` 观察成功交付的应答（包括缓存回放）。报文通过 `netutils.UnpackDnsMessage` 严格解析后才能进入插件和证据观察。域名证据按职责组织：
+核心的 `dns_relay.go` / `dns_stream.go` 透明转发 TCP/UDP 53，`dns_observer.go` 在交付前登记应答证据（包括缓存回放），插件 observer 在成功交付后观察。报文通过 `netutils.UnpackDnsMessage` 严格解析后才能进入插件和证据观察。域名证据按职责组织：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -86,7 +86,7 @@ MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins
 
 家族偏好探测使用独立的时间预算和 TCP 连接，其取消不会关闭客户端的共享流。查询失败或取消时不发布应答副本；I/O worker 负责释放连接，取消返回不等待阻塞的 outbound `Close`。
 
-缓存按应答的 `ReceivedAt` 老化 TTL。核心在交付 observer 前为缺失的时间戳填入交付时间；缓存命中保留原始时间戳，成功交付则独立刷新 Registry 的保留期限。
+缓存按应答的 `ReceivedAt` 老化 TTL。核心在登记证据前为缺失的时间戳填入交付时间；缓存命中保留原始时间戳，每次交付独立刷新 Registry 的保留期限。
 
 ### 证据生命周期
 

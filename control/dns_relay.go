@@ -250,21 +250,27 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := deliver(wire); err != nil {
-			return err
-		}
-		deliveredAt := time.Now()
-		// Publish only successfully delivered bytes, including local truncation.
+		// Observe exactly the delivered bytes, including local truncation.
 		if !response.IsWire() {
 			response.DNSPacket = plugin.DNSWire(wire)
 		}
-		if dnsResponseMatches(query, response.MessageCopy()) {
+		matches := dnsResponseMatches(query, response.MessageCopy())
+		if matches {
+			now := time.Now()
 			if response.ReceivedAt.IsZero() {
-				response.ReceivedAt = deliveredAt
+				response.ReceivedAt = now
 			}
+			// The kernel holds the answer's domain evidence before the client
+			// can connect to an answered address. A failed delivery keeps it:
+			// the answer is genuine, only undelivered.
 			if c.core != nil && c.routingMatcher != nil {
-				c.observeDNS(request, response, deliveredAt)
+				c.observeDNS(request, response, now)
 			}
+		}
+		if err := deliver(wire); err != nil {
+			return err
+		}
+		if matches {
 			host.ObserveDNS(ctx, request, response)
 		}
 		return nil

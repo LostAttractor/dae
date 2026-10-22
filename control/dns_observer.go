@@ -11,7 +11,7 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, deliveredAt time.Time) {
+func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) {
 	if registry == nil || match == nil || request == nil || response == nil {
 		return
 	}
@@ -26,7 +26,6 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 	if q.Qclass != dns.ClassINET || q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
 		return
 	}
-	at := deliveredAt
 	type link struct {
 		target string
 		ttl    uint32

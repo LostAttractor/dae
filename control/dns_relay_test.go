@@ -57,12 +57,14 @@ func (p *relayTestPlugin) ObserveDNS(context.Context, *plugin.DNSExchange, *plug
 }
 
 func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
+	// Domain evidence precedes delivery so the kernel has it before the client
+	// connects; plugins observe only delivered answers.
 	for _, tc := range []struct {
 		name                 string
 		must, fail, trailing bool
-		want                 int
+		evidence, observers  int
 	}{
-		{name: "delivered", want: 1}, {name: "failed delivery", fail: true},
+		{name: "delivered", evidence: 1, observers: 1}, {name: "failed delivery", fail: true, evidence: 1},
 		{name: "trailing bytes", trailing: true}, {name: "must after DNAT", must: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,8 +96,8 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 			err = c.processDNS(t.Context(), request, routingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 			}, func(got []byte) error {
-				if p.observations != 0 || registry.Usage().UserUsed != 0 {
-					t.Error("published before delivery")
+				if p.observations != 0 || registry.Usage().UserUsed != tc.evidence {
+					t.Errorf("before delivery: observers=%d evidence=%d", p.observations, registry.Usage().UserUsed)
 				}
 				if !bytes.Equal(got, wire) {
 					t.Error("changed transparent bytes")
@@ -106,7 +108,7 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 				}
 				return nil
 			})
-			if (err != nil) != tc.fail || !delivered || p.observations != tc.want || registry.Usage().UserUsed != tc.want {
+			if (err != nil) != tc.fail || !delivered || p.observations != tc.observers || registry.Usage().UserUsed != tc.evidence {
 				t.Fatalf("delivery=%v observers=%d registry=%d err=%v", delivered, p.observations, registry.Usage().UserUsed, err)
 			}
 			if tc.must && p.calls != 0 {
