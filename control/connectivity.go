@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	// Values stored in outbound_connectivity_map. They encode both the
+	// States stored in outbound_connectivity_map. They encode both the
 	// group's actual connectivity and the action for an unannotated rule.
 	outboundConnectivityAlive           uint32 = routingabi.OUTBOUND_CONNECTIVITY_ALIVE
 	outboundConnectivityNoAliveDirect   uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT
@@ -47,56 +48,80 @@ func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConne
 	}
 }
 
-func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(available bool, networkType *common.NetworkType) error {
-	return func(available bool, networkType *common.NetworkType) error {
+// The kernel forwards a group's direct fallback itself. Its token ties those
+// flows to the group's fallback generation, so connection policies end them
+// with the generation's relays.
+func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivity, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) bpfOutboundConnectivity {
+	value := bpfOutboundConnectivity{State: encodeOutboundConnectivity(update.Available, noConnectivityTrySniff, noConnectivityOutbound)}
+	if value.State == outboundConnectivityNoAliveDirect && c.bpf != nil && c.bpf.Runtime != nil {
+		value.Fallback = c.bpf.fallbacks.token(update.Fallback)
+	}
+	return value
+}
+
+func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
+	return func(update outbound.Connectivity) error {
 		c.outboundCallbackMu.Lock()
 		defer c.outboundCallbackMu.Unlock()
 		if c.closed != nil && c.closed.Err() != nil {
 			return c.closed.Err()
 		}
+		networkType := update.Network
 		if log.IsLevelEnabled(log.TraceLevel) {
 			state := "UNAVAILABLE"
-			if available {
+			if update.Available {
 				state = "AVAILABLE"
 			}
 			log.WithFields(log.Fields{
-				"outboundId":       outbound,
+				"outboundId":       id,
 				"kernel_published": c.outboundConnectivityPublished,
 			}).Debugf("Outbound <%v> %v -> %v", outboundName, networkType.String(), state)
 		}
 
 		key := bpfOutboundConnectivityQuery{
-			Outbound:  outbound,
+			Outbound:  id,
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}
-		network := networkType.Index()
-		value := encodeOutboundConnectivity(available, noConnectivityTrySniff, noConnectivityOutbound)
-		if !c.outboundConnectivityPublished {
-			if c.pendingOutboundConnectivity == nil {
-				c.pendingOutboundConnectivity = make(map[bpfOutboundConnectivityQuery]uint32)
-			}
-			c.pendingOutboundConnectivity[key] = value
-		} else {
-			updateKernel := func(value uint32) error {
-				if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
-					return fmt.Errorf("publish %s connectivity for %s (value %d): %w", networkType, outboundName, value, err)
-				}
-				return nil
-			}
-			if err := updateKernel(value); err != nil {
-				previous := c.outboundConnectivityMap[outbound][network].Load()
-				rollbackValue := encodeOutboundConnectivity(previous, noConnectivityTrySniff, noConnectivityOutbound)
-				return errors.Join(err, updateKernel(rollbackValue))
-			}
+		value := c.outboundConnectivityValue(update, noConnectivityTrySniff, noConnectivityOutbound)
+		wasAvailable := c.anyOutboundAvailable(networkType.Index())
+		if err := c.writeOutboundConnectivity(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity{key: value}); err != nil {
+			return fmt.Errorf("publish %s connectivity for %s: %w", networkType, outboundName, err)
 		}
-
-		recovered := c.recordOutboundConnectivity(outbound, network, available)
-		if recovered != nil {
-			recovered()
+		// A recovery from no usable outbound at all rechecks the others.
+		if !wasAvailable && update.Available && c.outboundRecovery != nil {
+			c.outboundRecovery()
 		}
 		return nil
 	}
+}
+
+// writeOutboundConnectivity applies all values or none. Before publication it
+// only prepares them for publishOutboundConnectivity.
+func (c *controlPlaneCore) writeOutboundConnectivity(values map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity) error {
+	if c.outboundConnectivityPublished {
+		var written []bpfOutboundConnectivityQuery
+		for key, value := range values {
+			if previous, ok := c.outboundConnectivityValues[key]; ok && previous == value {
+				continue
+			}
+			written = append(written, key)
+			if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+				err = fmt.Errorf("protocol %d, IPv%d (state %d): %w", key.L4proto, key.Ipversion, value.State, err)
+				for _, key := range written {
+					if previous, ok := c.outboundConnectivityValues[key]; ok {
+						err = errors.Join(err, c.bpf.OutboundConnectivityMap.Update(key, previous, ebpf.UpdateAny))
+					}
+				}
+				return err
+			}
+		}
+	}
+	if c.outboundConnectivityValues == nil {
+		c.outboundConnectivityValues = make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity)
+	}
+	maps.Copy(c.outboundConnectivityValues, values)
+	return nil
 }
 
 // publishOutboundConnectivity initializes the candidate's private map after
@@ -110,12 +135,11 @@ func (c *controlPlaneCore) publishOutboundConnectivity() error {
 	if c.outboundConnectivityPublished {
 		return nil
 	}
-	for key, value := range c.pendingOutboundConnectivity {
+	for key, value := range c.outboundConnectivityValues {
 		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("publish outbound %d connectivity (protocol %d, IPv%d): %w", key.Outbound, key.L4proto, key.Ipversion, err)
 		}
 	}
-	c.pendingOutboundConnectivity = nil
 	c.outboundConnectivityPublished = true
 	return nil
 }
@@ -126,51 +150,16 @@ func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {
 	c.outboundRecovery = callback
 }
 
-func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network common.NetworkIndex, available bool) func() {
-	if outbound > uint8(consts.OutboundUserDefinedMax) {
-		return nil
-	}
-	wasAvailable := c.anyOutboundAvailable(network)
-	c.outboundConnectivityMap[outbound][network].Store(available)
-	if !wasAvailable && available {
-		return c.outboundRecovery
-	}
-	return nil
-}
-
+// anyOutboundAvailable reports whether this plane published any user-defined
+// outbound as alive on the network. Caller holds outboundCallbackMu.
 func (c *controlPlaneCore) anyOutboundAvailable(network common.NetworkIndex) bool {
-	for outbound := uint8(consts.OutboundUserDefinedMin); outbound <= uint8(consts.OutboundUserDefinedMax); outbound++ {
-		if c.outboundConnectivityMap[outbound][network].Load() {
+	l4proto, ipversion := network.NetworkType().L4Proto.ToL4Proto(), network.NetworkType().IpVersion.ToIpVersion()
+	for key, value := range c.outboundConnectivityValues {
+		if key.Outbound >= uint8(consts.OutboundUserDefinedMin) && key.L4proto == l4proto && key.Ipversion == ipversion && value.State == outboundConnectivityAlive {
 			return true
 		}
 	}
 	return false
-}
-
-// outboundUsable reports whether the group can serve the requested network.
-// Unknown network masks conservatively remain usable.
-func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {
-	if outbound > uint8(consts.OutboundUserDefinedMax) {
-		return true
-	}
-	var networkType common.NetworkType
-	switch {
-	case l4proto&consts.L4ProtoType_TCP != 0:
-		networkType.L4Proto = consts.L4ProtoStr_TCP
-	case l4proto&consts.L4ProtoType_UDP != 0:
-		networkType.L4Proto = consts.L4ProtoStr_UDP
-	default:
-		return true
-	}
-	switch {
-	case ipVersion&consts.IpVersion_4 != 0:
-		networkType.IpVersion = consts.IpVersionStr_4
-	case ipVersion&consts.IpVersion_6 != 0:
-		networkType.IpVersion = consts.IpVersionStr_6
-	default:
-		return true
-	}
-	return c.outboundConnectivityMap[outbound][networkType.Index()].Load()
 }
 
 const initialConnectivityTimeout = 60 * time.Second

@@ -157,7 +157,7 @@ func TestHTTPClientAdmissionKernelParity(t *testing.T) {
 					if proto == consts.L4ProtoType_UDP {
 						protocol = 17
 					}
-					if err := collection.Maps["outbound_connectivity_map"].Update(bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: family, L4proto: protocol}, uint32(1), ebpf.UpdateAny); err != nil {
+					if err := collection.Maps["outbound_connectivity_map"].Update(bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: family, L4proto: protocol}, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 					for _, port := range []uint16{22, 80, 443, 53, 8443, 8888} {

@@ -79,10 +79,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 			id := uint8(i)
 			s.names[id] = group.Name
 			s.networks[index][id] = group.ExplainSelection(network)
-			s.connectivity[index][id] = s.networks[index][id].Available
-			if c.core != nil && id >= uint8(consts.OutboundUserDefinedMin) {
-				s.connectivity[index][id] = c.core.outboundUsable(id, network.L4Proto.ToL4ProtoType(), network.IpVersion.ToIpVersionType())
-			}
+			s.connectivity[index][id] = group.Available(*network)
 		}
 	}
 	s.outbounds, s.usable = s.networks[network.Index()], s.connectivity[network.Index()]
@@ -460,10 +457,15 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 	spans := s.matcher.profiles[input.profileID]
 	// The classifier rejects unavailable ordinary proxies immediately when
 	// configured to block. Capture and DNS run their own userspace decisions.
-	handoff := c.diagnosticHandoffState(input, evaluation, s.usable[uint8(evaluation.outbound)])
-	if handoff == outboundConnectivityNoAliveBlock {
+	switch c.diagnosticHandoffState(input, evaluation, s.usable[uint8(evaluation.outbound)]) {
+	case outboundConnectivityNoAliveBlock:
 		decision.Verdict = "drop"
 		result.Notes = append(result.Notes, "No available outbound; kernel no-connectivity policy blocks this flow.")
+		return result, nil
+	case outboundConnectivityNoAliveDirect:
+		decision.Verdict = "kernel_direct"
+		decision.OriginalOutbound, decision.Outbound = decision.Outbound, s.names[uint8(consts.OutboundDirect)]
+		result.Notes = append(result.Notes, "No available outbound; kernel no-connectivity policy forwards this flow directly.")
 		return result, nil
 	}
 	if request.Kind == "dns" || evaluation.captureFlags&captureDNS != 0 {
@@ -479,12 +481,6 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		}
 	}
 	hostname := diagnosticHostname(request)
-	noSniff := handoff == outboundConnectivityNoAliveDirect
-	if noSniff {
-		hostname = ""
-		delete(missing, "hostname")
-		result.Notes = append(result.Notes, "Kernel no-connectivity handoff disables sniffing for this flow.")
-	}
 	if evaluation.captureFlags&captureHTTP != 0 {
 		c.explainPlugins(ctx, request, s, &result, false)
 		if !decision.Complete || decision.Verdict == "local_response" {
@@ -504,7 +500,7 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		rewritten = selected
 	}
 
-	plan, verified, needs := c.diagnosticRoutePlan(request, s, ingressDestination, hostname, noSniff, missing, facts)
+	plan, verified, needs := c.diagnosticRoutePlan(request, s, ingressDestination, hostname, missing, facts)
 	if len(needs) != 0 {
 		decision.Complete, decision.Outbound, decision.Missing = false, "", needs
 		return result, nil
@@ -539,20 +535,17 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		return result, nil
 	}
 	networkIndex := diagnosticNetworkIndex(input.l4proto, consts.IpVersionFromAddr(input.dst.Addr()))
-	degraded := false
 	if outbound, exists := s.networks[networkIndex][uint8(evaluation.outbound)]; exists {
 		result.Outbounds = append(result.Outbounds, outbound)
-		if !outbound.Available && evaluation.outbound >= consts.OutboundUserDefinedMin {
-			degraded = true
-			decision.OriginalOutbound, decision.Outbound = decision.Outbound, s.names[uint8(c.noConnectivityOutbound)]
-			result.Notes = append(result.Notes, "No usable node in the sampled state; automatic recovery can change the next connection's choice.")
-			if c.noConnectivityOutbound == consts.OutboundBlock {
-				decision.Verdict = "drop"
-			}
-		}
 	}
-	// A degraded connection dials the client's address like any direct one.
-	if !degraded && c.dialsName(plan.override, evaluation.outbound, input.l4proto, hostname, rewritten) {
+	name := c.dialsName(plan.override, evaluation.outbound, input.l4proto, hostname, rewritten)
+	if selected := servingOutbound(evaluation.outbound, *networkIndex.NetworkType(), name, c.noConnectivityOutbound, s.matcher.outboundUsable); selected != evaluation.outbound {
+		decision.OriginalOutbound, decision.Outbound = decision.Outbound, s.names[uint8(selected)]
+		result.Notes = append(result.Notes, "No usable node in the sampled state; automatic recovery can change the next connection's choice.")
+		if selected == consts.OutboundBlock {
+			decision.Verdict = "drop"
+		}
+	} else if name {
 		decision.Targets = []string{net.JoinHostPort(hostname, fmt.Sprint(input.dst.Port()))}
 	}
 	return result, ctx.Err()

@@ -11,11 +11,9 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
-	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
 )
@@ -47,16 +45,13 @@ type controlPlaneCore struct {
 	ownedInterfaces *network.InterfaceManager
 	netmon          *network.HostNetworkMonitor
 
-	// outboundConnectivityMap stores actual outbound usability per network. It
-	// mirrors the eBPF map for userspace skip_while_noalive evaluation. A zero
-	// value also represents state that has not been reported yet.
-	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][common.NetworkTypeCount]atomic.Bool
-	outboundCallbackMu      sync.Mutex
-	outboundRecovery        func()
+	outboundCallbackMu sync.Mutex
+	outboundRecovery   func()
 	// Candidate checks update userspace immediately; PrepareKernel enables the
-	// private BPF projection before its programs can be published.
+	// private BPF projection before its programs can be published. Values hold
+	// the latest projection, pending until then and mirrored afterwards.
 	outboundConnectivityPublished bool
-	pendingOutboundConnectivity   map[bpfOutboundConnectivityQuery]uint32
+	outboundConnectivityValues    map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity
 }
 
 func newControlPlaneCore(
@@ -87,15 +82,14 @@ func newControlPlaneCore(
 		return nil, err
 	}
 	core := &controlPlaneCore{
-		kernelLinks:                 &bpf.kernelLinks,
-		bpf:                         bpf,
-		isReload:                    isReload,
-		ifmgr:                       ifmgr,
-		ownedInterfaces:             ownedInterfaces,
-		netmon:                      netmon,
-		closed:                      closed,
-		close:                       toClose,
-		pendingOutboundConnectivity: make(map[bpfOutboundConnectivityQuery]uint32),
+		kernelLinks:     &bpf.kernelLinks,
+		bpf:             bpf,
+		isReload:        isReload,
+		ifmgr:           ifmgr,
+		ownedInterfaces: ownedInterfaces,
+		netmon:          netmon,
+		closed:          closed,
+		close:           toClose,
 	}
 	core.hostBinder = &hostBinder{kernelLinks: &bpf.kernelLinks, bpf: bpf, ifmgr: ifmgr, closed: closed, wanBindings: make(map[int]*wanBinding)}
 	// The kernel-side capacity is read back from the map itself so it can

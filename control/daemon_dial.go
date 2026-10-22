@@ -4,7 +4,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -46,9 +45,6 @@ func (c *ControlPlane) DNSResolverDialer() netutils.ResolverDialContext {
 		option, err := c.selectRoutedAddress(network, netip.AddrPort{}, identity, "", server)
 		if err != nil {
 			return nil, err
-		}
-		if option.Outbound.IsBlock() {
-			return nil, errors.New("internal DNS destination blocked by routing")
 		}
 		return c.dialDNSUpstream(ctx, network, option, identity)
 	}

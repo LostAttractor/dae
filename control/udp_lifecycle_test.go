@@ -184,13 +184,12 @@ func TestUDPDirectFallbackRetainsOriginalGroupPolicy(t *testing.T) {
 	if !route.Direct || route.OriginalOutbound != original || route.PolicyLease == nil {
 		t.Fatalf("fallback lost group ownership: %+v", route)
 	}
-	originalSelection, err := original.SelectConnection(network, true)
-	if !errors.Is(err, outbound.ErrNoAliveDialer) || originalSelection.Lease != route.PolicyLease {
+	if original.FallbackLease(network) != route.PolicyLease {
 		t.Fatalf("fallback policy is not owned by original group")
 	}
 	c.noConnectivityOutbound = consts.OutboundBlock
-	route, err = c.RouteDialOption(context.Background(), &RouteParam{routingResult: &routingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
-	if err != nil || route.Outbound != block {
-		t.Fatalf("block fallback = %+v, %v", route, err)
+	_, err = c.RouteDialOption(context.Background(), &RouteParam{routingResult: &routingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
+	if blocked, ok := errors.AsType[*routeBlocked](err); !ok || blocked.original != original {
+		t.Fatalf("block fallback = %v", err)
 	}
 }

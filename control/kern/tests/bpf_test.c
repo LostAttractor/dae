@@ -100,6 +100,27 @@ int test_entry_mark_other(struct __sk_buff *skb)
 	return test_entry_mark_owner(skb, false);
 }
 
+/* An element marked closing by a closer that then deleted another key, e.g.
+ * after the element was reused for this source, is removed at its expiry. */
+SEC("tc/test_expire_closing_udp_route")
+int test_expire_closing_udp_route(struct __sk_buff *skb)
+{
+	struct udp_routing_cache_key key = { .sport = bpf_htons(20099) };
+	struct routing_result result = { .generation = routing_generation };
+	struct udp_routing_cache_value *value;
+
+	if (save_udp_route(&key, &result, 0))
+		return TC_ACT_SHOT;
+	value = bpf_map_lookup_elem(&udp_routing_cache_map, &key);
+	if (!value)
+		return TC_ACT_SHOT;
+	bpf_spin_lock(&value->lock);
+	value->fallback = UDP_ROUTE_CLOSING;
+	bpf_spin_unlock(&value->lock);
+	expire_udp_route(&udp_routing_cache_map, &key, value);
+	return bpf_map_lookup_elem(&udp_routing_cache_map, &key) ? TC_ACT_SHOT : TC_ACT_OK;
+}
+
 SEC("tc/benchmark/parser")
 int test_parser_benchmark(struct __sk_buff *skb)
 {
@@ -338,7 +359,9 @@ int testsetup_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
 		.ipversion = 4,
 		.l4proto = IPPROTO_TCP,
 	};
-	__u32 state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT;
+	struct outbound_connectivity state = {
+		.state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT,
+	};
 
 	set_routing_fallback(outbound, false, &zero_key);
 	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
@@ -349,8 +372,9 @@ int testsetup_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
 SEC("tc/check/ipv4_first_fragment_noalive_direct")
 int testcheck_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
 {
+	/* The kernel degrades a fragmented first packet like an unfragmented one. */
 	clear_routing_entry(&zero_key);
-	return check_status_code(skb, TCX_DROP);
+	return check_status_code(skb, TCX_NEXT);
 }
 
 SEC("tc/pktgen/ipv4_first_fragment_noalive_block")
@@ -369,7 +393,9 @@ int testsetup_ipv4_first_fragment_noalive_block(struct __sk_buff *skb)
 		.ipversion = 4,
 		.l4proto = IPPROTO_TCP,
 	};
-	__u32 state = OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK;
+	struct outbound_connectivity state = {
+		.state = OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK,
+	};
 
 	set_routing_fallback(outbound, false, &zero_key);
 	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
@@ -3134,14 +3160,14 @@ int testcheck_udp_bound_source_skips_routing(struct __sk_buff *skb)
 		IPV4(192,168,2,1), IPV4(9,9,9,9), 21001, 443, false, false, 0);
 }
 
-SEC("tc/pktgen/udp_noalive_direct_is_managed")
-int testpktgen_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+SEC("tc/pktgen/udp_noalive_direct_forwards_in_kernel")
+int testpktgen_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 {
 	return set_ipv4_udp(skb, IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443);
 }
 
-SEC("tc/setup/udp_noalive_direct_is_managed")
-int testsetup_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+SEC("tc/setup/udp_noalive_direct_forwards_in_kernel")
+int testsetup_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 {
 	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 50, false, &zero_key);
 	set_outbound_connectivity_state(OUTBOUND_USER_DEFINED_MIN + 50,
@@ -3150,11 +3176,12 @@ int testsetup_udp_noalive_direct_is_managed(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/udp_noalive_direct_is_managed")
-int testcheck_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+/* A new flow of an unavailable group is cached as a kernel direct decision. */
+SEC("tc/check/udp_noalive_direct_forwards_in_kernel")
+int testcheck_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
-	return check_ipv4_udp_routing_cache(skb, TC_ACT_REDIRECT,
-		IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443, true,
-		OUTBOUND_USER_DEFINED_MIN + 50);
+	return check_ipv4_udp_routing_state(skb, TCX_NEXT,
+		IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443, false, true,
+		OUTBOUND_DIRECT);
 }

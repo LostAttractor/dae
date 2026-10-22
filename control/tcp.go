@@ -99,6 +99,10 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 	// before verification would conceal the kernel coverage gap that requires
 	// while_needed rerouting for this connection. Failed attempts still count.
 	c.domainActivity().observe(dst.Addr(), domain, observedAt)
+	if blocked, ok := errors.AsType[*routeBlocked](err); ok {
+		c.logBlocked(src, dst, domain, networkType.String(), routingResult, blocked)
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

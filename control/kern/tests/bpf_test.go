@@ -187,7 +187,7 @@ func benchmarkUDPRoutingCache(b *testing.B, obj *bpftestObjects, rules int, hit 
 	connectivityKey := bpftestOutboundConnectivityQuery{
 		Outbound: outbound, L4proto: unix.IPPROTO_UDP, Ipversion: 4,
 	}
-	connectivityAlive := uint32(0)
+	connectivityAlive := bpftestOutboundConnectivity{}
 	if err := obj.OutboundConnectivityMap.Update(&connectivityKey, &connectivityAlive, ebpf.UpdateAny); err != nil {
 		b.Fatal(err)
 	}
@@ -441,11 +441,11 @@ func TestFixtureObjectsIsolated(t *testing.T) {
 			if obj.TestBridgeIngress != nil {
 				t.Fatal("loaded an unrelated fixture program")
 			}
-			var value uint32
+			var value bpftestOutboundConnectivity
 			if err := obj.OutboundConnectivityMap.Lookup(key, &value); !errors.Is(err, ebpf.ErrKeyNotExist) {
-				t.Fatalf("fixture inherited connectivity state: value=%d err=%v", value, err)
+				t.Fatalf("fixture inherited connectivity state: value=%+v err=%v", value, err)
 			}
-			if err := obj.OutboundConnectivityMap.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+			if err := obj.OutboundConnectivityMap.Update(key, bpftestOutboundConnectivity{State: 1}, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 		})

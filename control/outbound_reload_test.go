@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 )
@@ -58,7 +57,7 @@ routing { dport(80) -> stable fallback: changed }`)
 		release()
 	}
 	// A live projection still receives updates after the old core stopped.
-	detach, err := stable.ObserveConnectivity(func(_ bool, _ *common.NetworkType) error { return nil })
+	detach, err := stable.ObserveConnectivity(func(outbound.Connectivity) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

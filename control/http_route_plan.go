@@ -94,9 +94,6 @@ func (p *httpRoutePlanner) originalRoute(ctx context.Context) (*DialOption, erro
 }
 
 func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option *DialOption) (mitm.UpstreamPlan, error) {
-	if option.Outbound.IsBlock() {
-		return mitm.UpstreamPlan{}, fmt.Errorf("HTTP upstream blocked by routing")
-	}
 	if cause := option.PolicyLease.AbortCause(); cause != nil {
 		return mitm.UpstreamPlan{}, cause
 	}

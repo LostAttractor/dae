@@ -990,7 +990,7 @@
             "description": "Process-wide body buffer budget, present even when no plugin instances are active."
           },
           "direct_fallback_connections": {
-            "description": "Process-lifetime count of established no-connectivity fallbacks to direct; preserved across reloads. Not a per-path or per-node counter.",
+            "description": "Process-lifetime count of no-connectivity fallbacks to direct established in userspace; excludes fallback flows forwarded directly by eBPF. Preserved across reloads. Not a per-path or per-node counter.",
             "format": "int64",
             "type": "integer"
           },

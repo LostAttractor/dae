@@ -8,6 +8,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
@@ -54,10 +55,10 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 			a := newCheckedDialer(t, "a")
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
 			g.SetConnectionPolicy(true, closeFallback)
-			fallback, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
-			if !errors.Is(err, ErrNoAliveDialer) {
+			if _, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true); !errors.Is(err, ErrNoAliveDialer) {
 				t.Fatalf("selection = %v", err)
 			}
+			fallback := g.FallbackLease(*common.NetworkUDP4.NetworkType())
 			otherNetwork := g.connectionLease(common.NetworkUDP6.NetworkType(), true)
 			regular := g.connectionLease(common.NetworkUDP4.NetworkType(), false)
 			other := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
@@ -67,8 +68,11 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 				t.Fatal(err)
 			}
 			g.closeRecoveredConnections()
-			if (fallback.Lease.AbortCause() != nil) != closeFallback {
-				t.Fatalf("fallback termination = %v", fallback.Lease.AbortCause())
+			if (fallback.AbortCause() != nil) != closeFallback {
+				t.Fatalf("fallback termination = %v", fallback.AbortCause())
+			}
+			if (g.FallbackLease(*common.NetworkUDP4.NetworkType()).AbortCause() != nil) != closeFallback {
+				t.Fatal("a fallback setup racing the recovery escaped its policy")
 			}
 			if regular.AbortCause() != nil || otherNetwork.AbortCause() != nil || otherGroup.AbortCause() != nil {
 				t.Fatal("fallback recovery affected unrelated connections")
@@ -148,8 +152,7 @@ func TestReloadRetainsUnavailableManualChoice(t *testing.T) {
 			if (previous.Lease.AbortCause() != nil) != closeOld || (old.connectionLease(network, false).AbortCause() != nil) != closeOld {
 				t.Fatal("manual reload policy missed established or late predecessor connections")
 			}
-			fallback, err := next.SelectConnection(*network, true)
-			if !errors.Is(err, ErrNoAliveDialer) || !fallback.Lease.Valid() {
+			if _, err := next.SelectConnection(*network, true); !errors.Is(err, ErrNoAliveDialer) || !next.FallbackLease(*network).Valid() {
 				t.Fatalf("current unavailable selection lost its fallback lease: %v", err)
 			}
 		})
@@ -311,5 +314,124 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 				t.Fatal("incorrect generation reuse")
 			}
 		})
+	}
+}
+
+// observeFallbacks records the latest fallback generation published per network.
+func observeFallbacks(t *testing.T, g *DialerGroup) *[common.NetworkTypeCount]*netproxy.Lease {
+	t.Helper()
+	published := new([common.NetworkTypeCount]*netproxy.Lease)
+	detach, err := g.ObserveConnectivity(func(update Connectivity) error {
+		published[update.Network.Index()] = update.Fallback
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(detach)
+	return published
+}
+
+func TestFallbackPublicationSharesInterruptibleGeneration(t *testing.T) {
+	for _, closeFallback := range []bool{false, true} {
+		t.Run(map[bool]string{false: "keep", true: "close"}[closeFallback], func(t *testing.T) {
+			g := newSelectorTestGroup(t, []*dialer.Dialer{newCheckedDialer(t, "a")}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+			g.SetConnectionPolicy(false, closeFallback)
+			published := observeFallbacks(t, g)
+			tcp4, udp4 := common.NetworkTCP4.NetworkType(), common.NetworkUDP4.NetworkType()
+			if !closeFallback {
+				if published[tcp4.Index()] != nil {
+					t.Fatal("a fallback kept on recovery was published as interruptible")
+				}
+				return
+			}
+			fallback := g.FallbackLease(*tcp4)
+			if fallback == nil || fallback != published[tcp4.Index()] {
+				t.Fatal("relays and published fallback use different generations")
+			}
+			unrelated := published[udp4.Index()]
+			if err := g.publishNetworkAvailable(tcp4, true); err != nil {
+				t.Fatal(err)
+			}
+			g.closeRecoveredConnections()
+			if published[tcp4.Index()] != nil || fallback.AbortCause() == nil || unrelated.AbortCause() != nil {
+				t.Fatal("recovery did not end exactly the recovered network's fallback generation")
+			}
+		})
+	}
+}
+
+func TestReselectionRenewsUnavailableFallback(t *testing.T) {
+	a, b := newCheckedDialer(t, "a"), newCheckedDialer(t, "b")
+	g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, emptyAnnotations(2), dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
+	g.SetConnectionPolicy(true, false)
+	published := observeFallbacks(t, g)
+	network := common.NetworkTCP4.NetworkType()
+	previous := published[network.Index()]
+	if err := g.SetSelection(b.StatsID()); err != nil {
+		t.Fatal(err)
+	}
+	current := published[network.Index()]
+	if previous.AbortCause() == nil || current == previous || !current.Valid() {
+		t.Fatal("reselection did not publish a fresh fallback generation")
+	}
+	if g.FallbackLease(*network) != current {
+		t.Fatal("new fallback relays joined another generation")
+	}
+}
+
+func TestReloadPublishesInheritedFallbackUntilRemoval(t *testing.T) {
+	group := func() *DialerGroup {
+		g := newSelectorTestGroup(t, []*dialer.Dialer{newCheckedDialer(t, "a")}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		g.SetConnectionPolicy(false, true)
+		return g
+	}
+	network := common.NetworkTCP4.NetworkType()
+	old := group()
+	inherited := observeFallbacks(t, old)[network.Index()]
+	next := group()
+	published := observeFallbacks(t, next)
+	initial := published[network.Index()]
+	next.InheritConnections(old)
+	if initial.AbortCause() == nil || published[network.Index()] != inherited || !inherited.Valid() {
+		t.Fatal("reload did not publish the inherited fallback generation")
+	}
+	_ = old.Close()
+	if !inherited.Valid() {
+		t.Fatal("retiring the predecessor ended an inherited fallback generation")
+	}
+	_ = next.Close()
+	if inherited.AbortCause() == nil {
+		t.Fatal("a removed group kept its interruptible fallback connections")
+	}
+}
+
+// A reload to keep leaves inherited interruptible fallback connections open,
+// but removing the group ends them and releases their kernel tokens.
+func TestKeptInterruptibleFallbackEndsWithRemovedGroup(t *testing.T) {
+	group := func(closeOnRecovery bool) *DialerGroup {
+		g := newSelectorTestGroup(t, []*dialer.Dialer{newCheckedDialer(t, "a")}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+		g.SetConnectionPolicy(false, closeOnRecovery)
+		return g
+	}
+	network := common.NetworkTCP4.NetworkType()
+	old := group(true)
+	inherited := observeFallbacks(t, old)[network.Index()]
+	kept := group(false)
+	kept.InheritConnections(old)
+	_ = old.Close()
+	if err := kept.publishNetworkAvailable(network, true); err != nil {
+		t.Fatal(err)
+	}
+	kept.closeRecoveredConnections()
+	if !inherited.Valid() || kept.FallbackLease(*network) == inherited {
+		t.Fatal("keep ended inherited fallback connections or added new ones to them")
+	}
+	last := group(false)
+	last.InheritConnections(kept)
+	_ = kept.Close()
+	_ = last.Close()
+	if inherited.AbortCause() == nil {
+		t.Fatal("a removed group kept inherited interruptible fallback connections")
 	}
 }

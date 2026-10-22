@@ -46,6 +46,12 @@ enum outbound_index {
 	OUTBOUND_LOGICAL_AND = 0xFF,
 };
 
+/* Userspace issues fallback tokens other than 0 and FALLBACK_TOKEN_RESERVED,
+ * so flow state can keep a token in a field it shares with a marker. */
+enum fallback_token {
+	FALLBACK_TOKEN_RESERVED = 1,
+};
+
 enum outbound_connectivity_state {
 	OUTBOUND_CONNECTIVITY_ALIVE = 0,
 	OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT = 1,

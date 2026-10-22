@@ -115,18 +115,12 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 			if err != nil {
 				return nil, err
 			}
-			if option.Outbound.IsBlock() {
-				return nil, errors.New("DNS destination blocked by routing")
-			}
 			return c.dialDNSUpstream(ctx, network, option, identity)
 		}
 		query.ListenPacket = func(ctx context.Context, address, hostname string) (net.PacketConn, error) {
 			option, err := selectOption("udp", address, hostname)
 			if err != nil {
 				return nil, err
-			}
-			if option.Outbound.IsBlock() {
-				return nil, errors.New("DNS destination blocked by routing")
 			}
 			return c.listenDNSUpstream(ctx, option, identity)
 		}
@@ -154,11 +148,7 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 	if err != nil {
 		return nil, err
 	}
-	option, err := c.selectDialOption(param, decision.outbound, decision.mark, false)
-	if err == nil && option.Outbound.IsBlock() {
-		err = errors.New("DNS destination blocked by routing")
-	}
-	return option, err
+	return c.selectDialOption(param, decision.outbound, decision.mark, false)
 }
 
 func (matcher *RoutingMatcher) dnsRoute(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*RouteParam, routeDecision, error) {

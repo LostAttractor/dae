@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -99,17 +100,26 @@ dip('2001:db8::20') -> dnat(203.0.113.40)`)
 			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: original, Domain: test.domain, networkType: common.NetworkType{L4Proto: test.proto, IpVersion: consts.IpVersionStr_4},
 				routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
 			option, err := plane.RouteDialOption(context.Background(), p)
+			if p.routingResult.Mark != 91 || p.routingResult.Must != 1 || !p.destination.IsValid() || p.Dest != original {
+				t.Fatalf("destination rewrite lost rewritten context: result=%+v", p.routingResult)
+			}
+			if test.candidate == "block" {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
+					t.Fatalf("blocked candidate = %+v, %v", option, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			wantTarget := "[2001:db8::20]:53"
-			if option.Outbound.Name != test.candidate || option.Mark != 91 || p.routingResult.Must != 1 || !p.destination.IsValid() || p.Dest != original {
-				t.Fatalf("destination rewrite lost rewritten context: option=%+v result=%+v", option, p.routingResult)
+			if option.Outbound.Name != test.candidate || option.Mark != 91 {
+				t.Fatalf("destination rewrite lost rewritten context: option=%+v", option)
 			}
-			if test.candidate != "block" && option.DialTarget != wantTarget {
+			if option.DialTarget != wantTarget {
 				t.Fatalf("dial target=%s, want %s", option.DialTarget, wantTarget)
 			}
-			if test.candidate != "block" && option.NetworkType.IpVersion != consts.IpVersionStr_6 {
+			if option.NetworkType.IpVersion != consts.IpVersionStr_6 {
 				t.Fatal("destination rewrite lost rewritten IP family")
 			}
 		})
@@ -159,9 +169,9 @@ func TestDestinationCandidateMissStillRoutesOriginalTarget(t *testing.T) {
 	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused)}}
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort("192.0.2.1:443"), networkType: *common.NetworkTCP4.NetworkType(),
 		routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
-	option, err := plane.RouteDialOption(context.Background(), p)
-	if err != nil || option.Outbound.Name != "block" || p.routingResult.Mark != 19 || p.destination.IsValid() {
-		t.Fatalf("candidate miss bypassed routing: option=%+v err=%v", option, err)
+	_, err := plane.RouteDialOption(context.Background(), p)
+	if _, blocked := errors.AsType[*routeBlocked](err); !blocked || p.routingResult.Mark != 19 || p.destination.IsValid() {
+		t.Fatalf("candidate miss bypassed routing: result=%+v err=%v", p.routingResult, err)
 	}
 }
 
@@ -181,13 +191,14 @@ func TestRewrittenTargetDoesNotReenterAPIBypass(t *testing.T) {
 		t.Run(network, func(t *testing.T) {
 			param := &RouteParam{Src: source, Dest: destination, routingResult: &routingResult{CaptureFlags: captureDestination},
 				networkType: common.NetworkType{L4Proto: consts.L4ProtoStr(network), IpVersion: consts.IpVersionStr_4}}
-			option, err := plane.RouteDialOption(t.Context(), param)
-			if err != nil || option.Outbound.Name != "block" || option.Mark != 73 {
-				t.Fatalf("DNAT target reused API ingress bypass: %+v, %v", option, err)
+			_, err := plane.RouteDialOption(t.Context(), param)
+			if _, blocked := errors.AsType[*routeBlocked](err); !blocked || param.routingResult.Mark != 73 {
+				t.Fatalf("DNAT target reused API ingress bypass: %+v, %v", param.routingResult, err)
 			}
-			option, err = plane.selectRoutedAddress(network, source, routingResult{}, "", netip.MustParseAddrPort("10.0.0.1:8081"))
-			if err != nil || option.Outbound.Name != "block" || option.Mark != 73 {
-				t.Fatalf("HTTP target reused API ingress bypass: %+v, %v", option, err)
+			identity := routingResult{}
+			_, err = plane.selectAddress(network, source, identity, "", netip.MustParseAddrPort("10.0.0.1:8081"), nil)
+			if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
+				t.Fatalf("HTTP target reused API ingress bypass: %v", err)
 			}
 		})
 	}

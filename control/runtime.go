@@ -60,6 +60,7 @@ type Runtime struct {
 	tcpConnections    tcpConnectionSet
 	udpEndpoints      *UdpEndpointPool
 	deviceRoutes      *deviceRoutes
+	fallbacks         *fallbackTokens
 	tcpMonitor        tcpRelayMonitor
 	listener          *Listener
 	ingress           sync.WaitGroup
@@ -120,10 +121,11 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 	for name, m := range map[string]*ebpf.Map{
 		"cookie_pid_map":    b.CookiePidMap,
 		"device_routes_map": b.DeviceRoutesMap, "unused_device_routes": b.UnusedDeviceRoutes,
-		"exited_map": b.ExitedMap, "listen_socket_map": b.ListenSocketMap,
-		"redirect_track": b.RedirectTrack, "routing_tuples_map": b.RoutingTuplesMap,
-		"tcp_flow_map":     b.TcpFlowMap,
-		"udp_bindings_map": b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
+		"exited_map": b.ExitedMap, "fallback_lease_map": b.FallbackLeaseMap,
+		"listen_socket_map": b.ListenSocketMap, "redirect_track": b.RedirectTrack,
+		"routing_tuples_map": b.RoutingTuplesMap,
+		"tcp_flow_map":       b.TcpFlowMap,
+		"udp_bindings_map":   b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
 		"udp_routing_cache_map": b.UdpRoutingCacheMap,
 	} {
 		owned, err := m.Clone()
@@ -133,6 +135,7 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		r.shared[name] = owned
 	}
 	r.deviceRoutes = &deviceRoutes{outer: r.shared["device_routes_map"]}
+	r.fallbacks = newFallbackTokens(r.shared["fallback_lease_map"])
 	return nil
 }
 

@@ -179,7 +179,8 @@ global {
 
     # keep (default) or close old connections after a device joins/leaves a client set
     # used by routing, or after a group recovers from direct fallback. Membership changes
-    # affect the whole device; recovery affects only that group/network's fallback flows.
+    # affect the whole device; recovery affects only that group/network's fallback flows,
+    # including those forwarded directly in the kernel.
     #route_change_behavior: keep
 }
 

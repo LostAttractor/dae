@@ -140,7 +140,7 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)
 	}
-	if err := collection.Maps["outbound_connectivity_map"].Update(bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: 4, L4proto: 17}, uint32(0), ebpf.UpdateAny); err != nil {
+	if err := collection.Maps["outbound_connectivity_map"].Update(bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: 4, L4proto: 17}, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
 	for i, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {

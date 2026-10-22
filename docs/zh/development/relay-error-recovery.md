@@ -40,16 +40,18 @@ UDP 以 `sip/sport` 固定首包路由和节点。改变目的地址或节点可
 
 HTTP/3 仅接管首目标经完整 ClientHello 确认的 `h3`。纯检查保留原路由；请求改写按最终 HTTP 目标选择上游，连接池按节点、mark、目标和策略代次隔离。请求路由模式不接受同源 UDP 向其他目的地址迁移。实际上游的资源、组策略或设备路由 Abort 会关闭客户端；单次 HTTP 请求错误不扩大为节点故障。重载排空期间只向已有 HTTP/3 目标交付报文，不创建新会话。
 
-`no_connectivity_behavior: direct` 建立并固定 direct fallback，保留原组归属；`block` 丢弃且不建立转发会话。以下策略均默认 `keep`，可配置为 `close`：
+组无可用节点时按 `no_connectivity_behavior` 降级，状态模型见[出站连通性](../design/outbound-connectivity.md#无可用节点降级)：`block` 丢弃且不建立转发会话；`direct` 固定为直连，连接属于原组的 fallback 代次。以下策略均默认 `keep`，可配置为 `close`：
 
 | 配置 | 关闭范围 |
 | --- | --- |
 | group `reselect_behavior` | 选择从 A 变为 B 时，该组对应网络类型的旧连接，包括 fallback；手动 selector 同样生效，`random` 不支持 close |
-| global `route_change_behavior` | 设备加入/退出被路由引用的 client set 时，该 MAC 的全部旧转发连接；fallback 恢复时，仅原组对应网络类型的 fallback 连接 |
+| global `route_change_behavior` | 设备加入/退出被路由引用的 client set 时，该 MAC 的全部旧转发连接；fallback 恢复时，仅原组对应网络类型的 fallback 连接，包括内核直连转发的 fallback 流 |
+
+任一策略为 `close` 时，删除组也结束它的 fallback 连接。reload 把策略改为 `keep` 后，此前可结束的 fallback 连接不再随恢复或改选关闭，删除组时仍结束。
 
 设备策略覆盖 TCP/UDP、IPv4/IPv6、直连、代理及 MITM，API 自身除外。通过 MAC 代次识别旧连接，无需逐条重算路由。API 与运行时设置文件均在提交成功后推进代次；重复操作、未引用的集合和失败回滚不触发关闭。
 
-用户态 TCP 立即 RST；内核直连 TCP 下次发送时交给透明监听入口拒绝旧流，失效首片丢弃。UDP 等旧 endpoint 释放绑定后建立新生命周期，过期代次的初始化报文丢弃。正常 reload 交接设备和同名组的连接归属；UDP 初始化可在旧代宽限期内完成，期满仍未完成的会话结束。
+用户态 TCP 立即 RST；内核直连 TCP 下次发送时交给透明监听入口拒绝旧流，失效首片丢弃。设备代次变化后，UDP 等旧 endpoint 释放绑定后建立新生命周期，过期代次的初始化报文丢弃；fallback 令牌撤销后，内核直连 UDP 的路由缓存失效，下一报文重新路由。正常 reload 交接设备和同名组的连接归属；UDP 初始化可在旧代宽限期内完成，期满仍未完成的会话结束。
 
 ## Reload 与停止
 

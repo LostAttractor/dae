@@ -99,10 +99,6 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 				failures = append(failures, err)
 				continue
 			}
-			if option.Outbound.IsBlock() {
-				failures = append(failures, fmt.Errorf("HTTP upstream blocked by routing"))
-				continue
-			}
 			// A proxy receives the name to resolve remotely, so addresses
 			// routed to the same node share one dial.
 			key := dial{option.Dialer, option.DialTarget, option.Mark}

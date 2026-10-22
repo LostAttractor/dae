@@ -67,7 +67,7 @@ var (
 	)
 	fallbackConnectionsDesc = prometheus.NewDesc(
 		"dae_fallback_connections_total",
-		"Cumulative number of established connections falling back to direct when no proxy node is available.",
+		"Cumulative number of userspace connections established as direct fallback when no proxy node is available; kernel-forwarded fallback flows are not counted.",
 		nil,
 		nil,
 	)

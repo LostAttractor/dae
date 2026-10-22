@@ -134,7 +134,7 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 								cached.Result.CaptureFlags != result.CaptureFlags || cached.Result.ProfileId != result.ProfileId ||
 								cached.Result.Ifindex != result.Ifindex || cached.Result.Mac != result.Mac ||
 								cached.Result.Dscp != result.Dscp || cached.Result.Protocol != result.Protocol ||
-								cached.Result.NoSniff != result.NoSniff || cached.Result.RouteEpoch != result.RouteEpoch {
+								cached.Fallback != 0 || cached.Result.RouteEpoch != result.RouteEpoch {
 								t.Fatalf("first UDP route was not pinned: %+v, %v", cached, err)
 							}
 						}

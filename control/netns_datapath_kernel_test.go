@@ -164,7 +164,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 		for _, proto := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
 			must(objects.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 				Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: family, L4proto: proto,
-			}, uint32(0), ebpf.UpdateAny))
+			}, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny))
 		}
 	}
 	internalLinks, err := ns.attachPrograms(objects.bpfPrograms)

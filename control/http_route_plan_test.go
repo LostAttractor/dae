@@ -52,7 +52,7 @@ func TestHTTPRaceRoutesEachAddress(t *testing.T) {
 			defer cancel()
 			conn, err := mitmClientDialContext(plane)(ctx, "tcp", "blocked.test:80")
 			if test.dialed == "" {
-				if err == nil || !strings.Contains(err.Error(), "blocked") || len(dialed) != 0 {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked || len(dialed) != 0 {
 					t.Fatalf("blocked target: err=%v dialed=%v", err, dialed)
 				}
 				return

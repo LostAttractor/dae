@@ -14,15 +14,14 @@ import (
 )
 
 // ConnectionSelection binds the selected path to its network and policy lifetime.
-// A failed selection can still carry the original group's fallback policy.
 type ConnectionSelection struct {
 	Dialer  *dialer.Dialer
 	Network common.NetworkType
 	Lease   *netproxy.Lease
 }
 
-// SelectConnection returns the policy termination signal with the selection.
-// On ErrNoAliveDialer the signal belongs to this group's fallback connections.
+// SelectConnection returns the selected path with its connection generation.
+// A name target (strictIP false) may use the other address family.
 func (g *DialerGroup) SelectConnection(network common.NetworkType, strictIP bool) (ConnectionSelection, error) {
 	if g.automatic != nil {
 		deadline := time.Now().Add(g.selectionPolicy.SelectionTimeout)
@@ -32,24 +31,25 @@ func (g *DialerGroup) SelectConnection(network common.NetworkType, strictIP bool
 			g.automatic.wait(other.Index(), deadline)
 		}
 	}
-	// Serialize fallback registration with availability publication. A recovery
-	// that races a failed selection must also terminate that fallback setup.
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	requested := network
 	d, err := g.selectLocked(&network)
 	if !strictIP && errors.Is(err, ErrNoAliveDialer) {
 		network.IpVersion = (consts.IpVersion_X - network.IpVersion.ToIpVersionType()).ToIpVersionStr()
 		d, err = g.selectLocked(&network)
 	}
-	var lease *netproxy.Lease
-	if err == nil {
-		lease = g.connectionLease(&network, false)
-	} else if errors.Is(err, ErrNoAliveDialer) {
-		network = requested
-		lease = g.connectionLease(&requested, true)
+	if err != nil {
+		return ConnectionSelection{}, err
 	}
-	return ConnectionSelection{Dialer: d, Network: network, Lease: lease}, err
+	return ConnectionSelection{Dialer: d, Network: network, Lease: g.connectionLease(&network, false)}, nil
+}
+
+// FallbackLease returns the generation that a new no-connectivity fallback
+// connection of the network joins.
+func (g *DialerGroup) FallbackLease(network common.NetworkType) *netproxy.Lease {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.connectionLease(&network, true)
 }
 
 func (g *DialerGroup) IsSelector() bool {

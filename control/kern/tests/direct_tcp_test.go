@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,16 +44,18 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 		previous    bpftestRoutingResult
 		mark        uint32
 		unavailable bool
+		fallback    uint32
 	}{
 		{name: "proxy to plain direct", previous: bpftestRoutingResult{Outbound: proxy}},
 		{name: "marked to plain direct", previous: bpftestRoutingResult{Outbound: direct, Mark: 42}},
 		{name: "proxy to marked direct", previous: bpftestRoutingResult{Outbound: proxy}, mark: 73},
 		{name: "proxy to unavailable selector direct fallback", previous: bpftestRoutingResult{Outbound: proxy}, unavailable: true},
+		{name: "proxy to interruptible direct fallback", previous: bpftestRoutingResult{Outbound: proxy}, unavailable: true, fallback: 9},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			previous := bpftestTcpFlowState{Mark: test.previous.Mark}
 			if test.previous.Outbound == proxy {
-				previous.Proxy = 1
+				previous.Owner = tcpFlowProxy
 			}
 			if err := obj.TcpFlowMap.Update(key, previous, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
@@ -60,8 +64,12 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 			if test.unavailable {
 				fallback.Outbound = proxy
 				query := bpftestOutboundConnectivityQuery{Outbound: proxy, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
-				const noAliveDirect uint32 = 1
-				if err := obj.OutboundConnectivityMap.Update(query, noAliveDirect, ebpf.UpdateAny); err != nil {
+				if err := obj.OutboundConnectivityMap.Update(query, bpftestOutboundConnectivity{State: routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT, Fallback: test.fallback}, ebpf.UpdateAny); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.fallback != 0 {
+				if err := obj.FallbackLeaseMap.Update(test.fallback, uint8(1), ebpf.UpdateAny); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -76,13 +84,10 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 			if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, ack, ctx); err != nil || status != want {
 				t.Fatalf("existing ACK: status %d, error %v; want %d", status, err, want)
 			}
-			want = uint32(next)
-			if test.unavailable {
-				want = redirect
-			}
+			// An unavailable group degrades to direct in the kernel.
 			for _, packet := range [][]byte{syn, ack} {
 				status, _, ctxOut, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
-				if err != nil || status != want {
+				if err != nil || status != next {
 					t.Fatalf("new direct flow: status %d, error %v", status, err)
 				}
 				// __sk_buff.mark is its third uint32 field.
@@ -91,25 +96,108 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 				}
 			}
 			var result bpftestRoutingResult
-			err := lookupHandoff(obj.RoutingTuplesMap, key, &result)
-			if test.unavailable {
-				if err != nil || result.Outbound != proxy || result.NoSniff != 1 {
-					t.Fatalf("fallback lost group ownership: %+v, %v", result, err)
-				}
-			} else {
+			if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				t.Fatalf("direct retained a setup handoff: %+v, %v", result, err)
+			}
+			var flow bpftestTcpFlowState
+			err := obj.TcpFlowMap.Lookup(key, &flow)
+			if test.mark == 0 && test.fallback == 0 {
 				if !errors.Is(err, ebpf.ErrKeyNotExist) {
-					t.Fatalf("direct retained a setup handoff: %+v, %v", result, err)
+					t.Fatalf("plain direct retained state: %+v, %v", flow, err)
 				}
-				var flow bpftestTcpFlowState
-				err := obj.TcpFlowMap.Lookup(key, &flow)
-				if test.mark == 0 {
-					if !errors.Is(err, ebpf.ErrKeyNotExist) {
-						t.Fatalf("plain direct retained state: %+v, %v", flow, err)
-					}
-				} else if err != nil || flow.Proxy != 0 || flow.Mark != test.mark {
-					t.Fatalf("marked direct flow = %+v, %v", flow, err)
-				}
+			} else if err != nil || flow.Owner != test.fallback || flow.Mark != test.mark {
+				t.Fatalf("direct flow = %+v, %v", flow, err)
+			}
+			if test.fallback == 0 {
+				return
+			}
+			// Recovery ends the fallback generation; its flows are rejected
+			// like those of a changed device route.
+			if err := obj.FallbackLeaseMap.Delete(test.fallback); err != nil {
+				t.Fatal(err)
+			}
+			if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, ack, ctx); err != nil || status != redirect {
+				t.Fatalf("ended fallback ACK: status %d, error %v; want redirect to the rejecting listener", status, err)
 			}
 		})
+	}
+}
+
+func TestFallbackRecoveryReroutesUDP(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, packet, ctx, err := runBpfProgram(obj.TestpktgenUdpRouteCacheMiss, make([]byte, 4096-256-320), make([]byte, 256))
+	if err != nil || status != 0 {
+		t.Fatalf("generate packet: status %d, error %v", status, err)
+	}
+	const (
+		proxy    = 2
+		token    = uint32(7)
+		next     = math.MaxUint32 // TCX_NEXT
+		redirect = 7              // TC_ACT_REDIRECT
+	)
+	if err := obj.RoutingMap.Update(uint32(0), bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: proxy}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	query := bpftestOutboundConnectivityQuery{Outbound: proxy, L4proto: unix.IPPROTO_UDP, Ipversion: 4}
+	if err := obj.OutboundConnectivityMap.Update(query, bpftestOutboundConnectivity{State: routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT, Fallback: token}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.FallbackLeaseMap.Update(token, uint8(1), ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearUDPRoutingCache(obj.UdpRoutingCacheMap); err != nil {
+		t.Fatal(err)
+	}
+	run := func(want uint32) {
+		t.Helper()
+		if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx); err != nil || status != want {
+			t.Fatalf("status %d, error %v; want %d", status, err, want)
+		}
+	}
+	run(next)
+	var key bpftestUdpRoutingCacheKey
+	var cached bpftestUdpRoutingCacheValue
+	if iter := obj.UdpRoutingCacheMap.Iterate(); !iter.Next(&key, &cached) || cached.Result.Outbound != 0 || cached.Fallback != token {
+		t.Fatalf("degraded source route = %+v", cached.Result)
+	}
+	// The source keeps its fallback decision until the generation ends.
+	if err := obj.OutboundConnectivityMap.Update(query, bpftestOutboundConnectivity{}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	run(next)
+	if err := obj.FallbackLeaseMap.Delete(token); err != nil {
+		t.Fatal(err)
+	}
+	run(redirect)
+}
+
+// A published fallback generation that has ended awaits its replacement, e.g.
+// while a reload hands over. New flows go to userspace instead of joining it
+// and being interrupted at their next packet.
+func TestEndedFallbackGenerationHandsNewFlowsToUserspace(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		proxy    = 2
+		token    = uint32(9)
+		redirect = 7 // TC_ACT_REDIRECT
+	)
+	installRoutingFlow(t, obj, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: proxy}})
+	query := bpftestOutboundConnectivityQuery{Outbound: proxy, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
+	if err := obj.OutboundConnectivityMap.Update(query, bpftestOutboundConnectivity{State: routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT, Fallback: token}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	packet, ctx, key := routingFlowPacket(t, obj)
+	if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx); err != nil || status != redirect {
+		t.Fatalf("new flow of an ended generation: status %d, error %v; want redirect", status, err)
+	}
+	var result bpftestRoutingResult
+	if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); err != nil || result.Outbound != proxy {
+		t.Fatalf("handoff = %+v, %v; want the group for userspace to degrade", result, err)
 	}
 }

@@ -92,7 +92,7 @@ func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, host string, p *Rou
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if mode != mitm.HTTPInspect || option.Outbound.IsBlock() {
+	if mode != mitm.HTTPInspect {
 		return option, nil, nil, nil
 	}
 	release, err := option.Dialer.Retain()

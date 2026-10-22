@@ -176,7 +176,7 @@ func TestUnusedOutboundsDoNotConsumeRuntimeCapacity(t *testing.T) {
 	if len(plane.outbounds) != 2 {
 		t.Fatalf("unused groups consumed runtime IDs: %+v", plane.outbounds)
 	}
-	if len(plane.core.pendingOutboundConnectivity) != 0 {
+	if len(plane.core.outboundConnectivityValues) != 0 {
 		t.Fatal("unused groups registered connectivity checks")
 	}
 }

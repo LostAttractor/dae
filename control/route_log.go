@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -81,6 +82,33 @@ func (c *ControlPlane) interfaceName(ifindex uint32) string {
 	return c.core.ifmgr.NameByIndex(int(ifindex))
 }
 
+func (c *ControlPlane) logBlocked(src, dst netip.AddrPort, domain, network string, routingResult *routingResult, blocked *routeBlocked) {
+	if !log.IsLevelEnabled(log.InfoLevel) {
+		return
+	}
+	destination := RefineAddrPortToShow(dst)
+	fields := routeLogFields(routingResult, c.interfaceName(routingResult.Ifindex), network, RefineSourceToShow(src, dst.Addr()), destination)
+	fields["action"] = "block"
+	fields["outbound"] = consts.OutboundBlock.String()
+	if domain != "" {
+		fields["sniffed"] = domain
+	}
+	if blocked.original != nil {
+		addOriginalOutbound(fields, blocked.original)
+	}
+	log.WithFields(fields).Info(routeLogMessage)
+}
+
+// addOriginalOutbound names the routed group whose no-connectivity behavior
+// handled the flow.
+func addOriginalOutbound(fields log.Fields, original *outbound.DialerGroup) {
+	fields["fallback"] = true
+	fields["original_outbound"] = original.Name
+	if policy := original.DisplayPolicy(); policy != "" {
+		fields["original_policy"] = policy
+	}
+}
+
 func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, network string, routingResult *routingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
 		destinationIP := RefineAddrPortToShow(dst)
@@ -102,22 +130,14 @@ func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOptio
 		if consts.OutboundIndex(routingResult.Outbound) == consts.OutboundControlPlaneRouting {
 			fields["control_plane_route"] = true
 		}
-		if dialOption.Outbound.IsBlock() {
-			fields["action"] = "block"
-		}
-		if dialOption.FallbackIpVersion || dialOption.OriginalOutbound != nil {
+		if dialOption.FallbackIpVersion {
 			fields["fallback"] = true
 		}
 		fields["outbound"] = dialOption.Outbound.Name
 		if dialOption.OriginalOutbound != nil {
-			fields["original_outbound"] = dialOption.OriginalOutbound.Name
-			if policy := dialOption.OriginalOutbound.DisplayPolicy(); policy != "" {
-				fields["original_policy"] = policy
-			}
-		} else {
-			if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
-				fields["policy"] = policy
-			}
+			addOriginalOutbound(fields, dialOption.OriginalOutbound)
+		} else if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
+			fields["policy"] = policy
 		}
 		log.WithFields(fields).Info(routeLogMessage)
 	}

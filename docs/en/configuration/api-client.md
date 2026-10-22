@@ -134,8 +134,8 @@ tor       UP     100.00%  [......++++]  tor                   0
 
 - `ACTIVE` is the group's active connection count. Fallback is a single
   process-lifetime direct counter, not a per-node, per-group or per-network metric.
-  It counts established connections using no-connectivity fallback, survives reloads
-  and resets on restart; it is not the number currently using fallback.
+  It counts no-connectivity fallback connections established in userspace, excluding
+  fallback flows forwarded directly by eBPF, survives reloads and resets on restart; it is not the number currently using fallback.
 - `SELECTED` uses `selected_node_ids`. This compact view only includes confirmed
   capabilities or live selections; `unknown` and `unsupported` networks without
   a current selection are omitted. If all displayed networks select one node,

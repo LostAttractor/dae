@@ -209,9 +209,10 @@ static __always_inline bool route_outbound_alive(const struct route_params *para
 		.ipversion = (params->ipversion_type & IpVersionType_4) ? 4 : 6,
 		.l4proto = (params->l4proto_type & L4ProtoType_TCP) ? IPPROTO_TCP : IPPROTO_UDP,
 	};
-	__u32 *connectivity = bpf_map_lookup_elem(&outbound_connectivity_map, &query);
+	struct outbound_connectivity *connectivity =
+		bpf_map_lookup_elem(&outbound_connectivity_map, &query);
 
-	return connectivity && *connectivity == OUTBOUND_CONNECTIVITY_ALIVE;
+	return connectivity && connectivity->state == OUTBOUND_CONNECTIVITY_ALIVE;
 }
 
 /* Capture flags and connectivity evidence are appended when route() finishes. */

@@ -1710,7 +1710,7 @@ export interface components {
             buffer_memory: components["schemas"]["BufferMemoryStatus"];
             /**
              * Format: int64
-             * @description Process-lifetime count of established no-connectivity fallbacks to direct; preserved across reloads. Not a per-path or per-node counter.
+             * @description Process-lifetime count of no-connectivity fallbacks to direct established in userspace; excludes fallback flows forwarded directly by eBPF. Preserved across reloads. Not a per-path or per-node counter.
              */
             direct_fallback_connections: number;
             groups: components["schemas"]["GroupStatus"][];

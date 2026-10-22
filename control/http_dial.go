@@ -5,7 +5,6 @@ package control
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -44,9 +43,6 @@ func logHTTPDial(source netip.AddrPort, domain string, option *DialOption, err e
 // Attribute HTTP traffic to its actual upstream route. A client connection may
 // visit several outbounds, and local responses must not open a fictitious route.
 func dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, error) {
-	if option.Outbound.IsBlock() {
-		return nil, fmt.Errorf("HTTP upstream blocked by routing")
-	}
 	conn, err := newUpstreamDial(option).establishUpstream(parent, func(ctx context.Context) (net.Conn, error) {
 		return option.dialerForConnection().DialContext(ctx, "tcp", option.DialTarget)
 	})

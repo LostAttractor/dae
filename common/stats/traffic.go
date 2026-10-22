@@ -107,8 +107,9 @@ func (s *Store) OpenConnection(path Path, directFallback bool) *Connection {
 	return &Connection{store: s, stats: counters, totals: totals}
 }
 
-// DirectFallbackConnections counts established no-connectivity fallbacks to
-// direct across all paths. Like traffic totals, it survives control-plane reloads.
+// DirectFallbackConnections counts no-connectivity fallbacks to direct
+// established in userspace across all paths; the kernel forwards other fallback
+// flows without accounting. Like traffic totals, it survives control-plane reloads.
 func (s *Store) DirectFallbackConnections() int64 {
 	return s.directFallback.Load()
 }

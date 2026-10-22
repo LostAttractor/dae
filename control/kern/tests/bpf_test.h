@@ -1153,14 +1153,16 @@ set_outbound_connectivity_state(__u8 outbound, __u32 state)
 		.l4proto = IPPROTO_TCP,
 		.ipversion = 4,
 	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	struct outbound_connectivity value = { .state = state };
+
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &value, BPF_ANY);
 	query.ipversion = 6;
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &value, BPF_ANY);
 	query.l4proto = IPPROTO_UDP;
 	query.ipversion = 4;
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &value, BPF_ANY);
 	query.ipversion = 6;
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &value, BPF_ANY);
 }
 
 static __always_inline void

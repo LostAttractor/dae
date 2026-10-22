@@ -8,12 +8,14 @@ package control
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
 
@@ -69,72 +71,75 @@ func TestOutboundConnectivityMapUsesNetworkKey(t *testing.T) {
 	if m == nil {
 		t.Fatal("outbound_connectivity_map is missing")
 	}
-	if m.KeySize != 3 || m.ValueSize != 4 || m.MaxEntries != 256*2*2 {
-		t.Fatalf("map shape = key:%d value:%d entries:%d, want 3/4/1024", m.KeySize, m.ValueSize, m.MaxEntries)
+	if m.KeySize != 3 || m.ValueSize != 8 || m.MaxEntries != 256*2*2 {
+		t.Fatalf("map shape = key:%d value:%d entries:%d, want 3/8/1024", m.KeySize, m.ValueSize, m.MaxEntries)
+	}
+}
+
+// publishTestConnectivity returns a candidate core's connectivity callback for
+// a user-defined outbound.
+func publishTestConnectivity(t *testing.T, core *controlPlaneCore, id uint8) func(common.NetworkIndex, bool) {
+	t.Helper()
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
+	return func(network common.NetworkIndex, available bool) {
+		t.Helper()
+		if err := callback(outbound.Connectivity{Network: network.NetworkType(), Available: available}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func TestOutboundRecoveryCallbackFiresOnGlobalRecovery(t *testing.T) {
-	core := new(controlPlaneCore)
-	var recoveries atomic.Int32
-	core.setOutboundRecoveryCallback(func() { recoveries.Add(1) })
-	first := uint8(consts.OutboundUserDefinedMin)
-	second := first + 1
+	core := &controlPlaneCore{closed: t.Context()}
+	var recoveries int
+	core.setOutboundRecoveryCallback(func() { recoveries++ })
+	first := publishTestConnectivity(t, core, uint8(consts.OutboundUserDefinedMin))
+	second := publishTestConnectivity(t, core, uint8(consts.OutboundUserDefinedMin)+1)
 	network := common.NetworkTCP4
 
-	if callback := core.recordOutboundConnectivity(first, network, true); callback != nil {
-		callback()
+	first(network, true)
+	if recoveries != 1 {
+		t.Fatalf("recoveries = %d, want 1", recoveries)
 	}
-	if got := recoveries.Load(); got != 1 {
-		t.Fatalf("recoveries = %d, want 1", got)
-	}
-	if callback := core.recordOutboundConnectivity(second, network, true); callback != nil {
-		callback()
-	}
-	if got := recoveries.Load(); got != 1 {
-		t.Fatalf("second live outbound triggered recovery: %d", got)
+	second(network, true)
+	if recoveries != 1 {
+		t.Fatalf("second live outbound triggered recovery: %d", recoveries)
 	}
 
-	core.recordOutboundConnectivity(first, network, false)
-	core.recordOutboundConnectivity(second, network, false)
-	if callback := core.recordOutboundConnectivity(second, network, true); callback != nil {
-		callback()
-	}
-	if got := recoveries.Load(); got != 2 {
-		t.Fatalf("second global recovery count = %d, want 2", got)
+	first(network, false)
+	second(network, false)
+	second(network, true)
+	if recoveries != 2 {
+		t.Fatalf("second global recovery count = %d, want 2", recoveries)
 	}
 }
 
 func TestOutboundRecoveryIsPerNetwork(t *testing.T) {
-	core := new(controlPlaneCore)
-	var recoveries atomic.Int32
-	core.setOutboundRecoveryCallback(func() { recoveries.Add(1) })
-	outbound := uint8(consts.OutboundUserDefinedMin)
+	core := &controlPlaneCore{closed: t.Context()}
+	var recoveries int
+	core.setOutboundRecoveryCallback(func() { recoveries++ })
+	publish := publishTestConnectivity(t, core, uint8(consts.OutboundUserDefinedMin))
 
-	if callback := core.recordOutboundConnectivity(outbound, 0, true); callback != nil {
-		callback()
-	}
-	if callback := core.recordOutboundConnectivity(outbound, 1, true); callback != nil {
-		callback()
-	}
-	if got := recoveries.Load(); got != 2 {
-		t.Fatalf("recoveries = %d, want one recovery per network", got)
+	publish(common.NetworkTCP4, true)
+	publish(common.NetworkTCP6, true)
+	if recoveries != 2 {
+		t.Fatalf("recoveries = %d, want one recovery per network", recoveries)
 	}
 }
 
-func TestOutboundUsableUsesRequestedNetwork(t *testing.T) {
-	core := new(controlPlaneCore)
-	outbound := uint8(consts.OutboundUserDefinedMin)
-	tcp4 := common.NetworkTCP4
-	udp6 := common.NetworkUDP6
-	core.outboundConnectivityMap[outbound][tcp4].Store(true)
-	core.outboundConnectivityMap[outbound][udp6].Store(false)
-
-	if !core.outboundUsable(outbound, consts.L4ProtoType_TCP, consts.IpVersion_4) {
-		t.Fatal("tcp4 was not usable")
+func TestOutboundAvailableFollowsPublishedConnectivity(t *testing.T) {
+	alive := downloadTestGroup(t, "alive", nil)
+	option := new(dialer.GlobalOption)
+	unchecked := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{Name: "unchecked"}, true, "")
+	unavailable := outbound.NewDialerGroup(option, "unavailable", outbound.GroupKindSelector, []*dialer.Dialer{unchecked}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
+	t.Cleanup(func() { _ = unavailable.Close() })
+	c := &ControlPlane{outbounds: []*outbound.DialerGroup{alive, alive, unavailable}}
+	id := uint8(consts.OutboundUserDefinedMin)
+	if !c.outboundAvailable(0, consts.L4ProtoType_UDP, consts.IpVersion_6) || c.outboundAvailable(id, consts.L4ProtoType_TCP, consts.IpVersion_4) {
+		t.Fatal("availability differs from the groups' published connectivity")
 	}
-	if core.outboundUsable(outbound, consts.L4ProtoType_UDP, consts.IpVersion_6) {
-		t.Fatal("udp6 inherited tcp4 availability")
+	if !c.outboundAvailable(id, 0, consts.IpVersion_4) || !c.outboundAvailable(id, consts.L4ProtoType_TCP, 0) {
+		t.Fatal("an unknown network mask was treated as unavailable")
 	}
 }
 
@@ -151,42 +156,43 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	closed, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	core := &controlPlaneCore{
-		closed:                      closed,
-		pendingOutboundConnectivity: make(map[bpfOutboundConnectivityQuery]uint32),
+		closed:                     closed,
+		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
 	}
 	var recoveries int
 	core.setOutboundRecoveryCallback(func() { recoveries++ })
-	outbound := uint8(consts.OutboundUserDefinedMin)
-	callback := core.outboundAliveChangeCallback(outbound, "proxy", false, consts.OutboundBlock)
+	id := uint8(consts.OutboundUserDefinedMin)
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
 	tcp4 := &common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	udp6 := &common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6}
 	for _, available := range []bool{false, true, false} {
-		if err := callback(available, tcp4); err != nil {
+		if err := callback(outbound.Connectivity{Network: tcp4, Available: available}); err != nil {
 			t.Fatal(err)
 		}
-		if got := core.outboundUsable(outbound, consts.L4ProtoType_TCP, consts.IpVersion_4); got != available {
+		key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: tcp4.L4Proto.ToL4Proto(), Ipversion: tcp4.IpVersion.ToIpVersion()}
+		if got := core.outboundConnectivityValues[key].State == outboundConnectivityAlive; got != available {
 			t.Fatalf("candidate tcp4 usability = %v, want %v", got, available)
 		}
 	}
-	if err := callback(true, udp6); err != nil {
+	if err := callback(outbound.Connectivity{Network: udp6, Available: true}); err != nil {
 		t.Fatal(err)
 	}
-	if recoveries != 2 || len(core.pendingOutboundConnectivity) != 2 {
-		t.Fatalf("recoveries = %d, pending networks = %d; want 2 each", recoveries, len(core.pendingOutboundConnectivity))
+	if recoveries != 2 || len(core.outboundConnectivityValues) != 2 {
+		t.Fatalf("recoveries = %d, pending networks = %d; want 2 each", recoveries, len(core.outboundConnectivityValues))
 	}
-	tcpKey := bpfOutboundConnectivityQuery{Outbound: outbound, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
-	udpKey := bpfOutboundConnectivityQuery{Outbound: outbound, L4proto: unix.IPPROTO_UDP, Ipversion: 6}
-	if core.pendingOutboundConnectivity[tcpKey] != outboundConnectivityNoAliveBlock || core.pendingOutboundConnectivity[udpKey] != outboundConnectivityAlive {
-		t.Fatalf("pending state did not retain the latest result per network: %v", core.pendingOutboundConnectivity)
+	tcpKey := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
+	udpKey := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_UDP, Ipversion: 6}
+	if core.outboundConnectivityValues[tcpKey].State != outboundConnectivityNoAliveBlock || core.outboundConnectivityValues[udpKey].State != outboundConnectivityAlive {
+		t.Fatalf("pending state did not retain the latest result per network: %v", core.outboundConnectivityValues)
 	}
 	cancel()
-	if err := callback(true, tcp4); !errors.Is(err, context.Canceled) {
+	if err := callback(outbound.Connectivity{Network: tcp4, Available: true}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("callback after closing = %v, want canceled", err)
 	}
 	if err := core.publishOutboundConnectivity(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("publish after closing = %v, want canceled", err)
 	}
-	if core.outboundConnectivityPublished || core.pendingOutboundConnectivity[tcpKey] != outboundConnectivityNoAliveBlock || recoveries != 2 {
+	if core.outboundConnectivityPublished || core.outboundConnectivityValues[tcpKey].State != outboundConnectivityNoAliveBlock || recoveries != 2 {
 		t.Fatal("closing changed prepared connectivity")
 	}
 }
@@ -195,7 +201,7 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
 		Type:       ebpf.Hash,
 		KeySize:    3,
-		ValueSize:  4,
+		ValueSize:  8,
 		MaxEntries: 4,
 	})
 	if err != nil {
@@ -210,36 +216,36 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 		bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 			OutboundConnectivityMap: m,
 		}}},
-		pendingOutboundConnectivity: make(map[bpfOutboundConnectivityQuery]uint32),
+		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
 	}
-	outbound := uint8(consts.OutboundUserDefinedMin)
-	key := bpfOutboundConnectivityQuery{Outbound: outbound, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
-	if err := m.Update(key, outboundConnectivityNoAliveDirect, ebpf.UpdateAny); err != nil {
+	id := uint8(consts.OutboundUserDefinedMin)
+	key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
+	if err := m.Update(key, bpfOutboundConnectivity{State: outboundConnectivityNoAliveDirect}, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
-	callback := core.outboundAliveChangeCallback(outbound, "proxy", false, consts.OutboundBlock)
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
 	network := &common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
-	if err := callback(true, network); err != nil {
+	if err := callback(outbound.Connectivity{Network: network, Available: true}); err != nil {
 		t.Fatal(err)
 	}
-	var value uint32
-	if err := m.Lookup(key, &value); err != nil || value != outboundConnectivityNoAliveDirect {
-		t.Fatalf("candidate changed old plane state: value = %d, error = %v", value, err)
+	var value bpfOutboundConnectivity
+	if err := m.Lookup(key, &value); err != nil || value.State != outboundConnectivityNoAliveDirect {
+		t.Fatalf("candidate changed old plane state: value = %+v, error = %v", value, err)
 	}
 	if err := core.publishOutboundConnectivity(); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Lookup(key, &value); err != nil || value != outboundConnectivityAlive {
-		t.Fatalf("published state = %d, error = %v; want alive", value, err)
+	if err := m.Lookup(key, &value); err != nil || value.State != outboundConnectivityAlive {
+		t.Fatalf("published state = %+v, error = %v; want alive", value, err)
 	}
-	if !core.outboundConnectivityPublished || core.pendingOutboundConnectivity != nil {
+	if !core.outboundConnectivityPublished {
 		t.Fatal("successful publication did not complete the transition")
 	}
-	if err := callback(false, network); err != nil {
+	if err := callback(outbound.Connectivity{Network: network}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Lookup(key, &value); err != nil || value != outboundConnectivityNoAliveBlock {
-		t.Fatalf("active callback state = %d, error = %v; want block", value, err)
+	if err := m.Lookup(key, &value); err != nil || value.State != outboundConnectivityNoAliveBlock {
+		t.Fatalf("active callback state = %+v, error = %v; want block", value, err)
 	}
 	if err := core.publishOutboundConnectivity(); err != nil {
 		t.Fatalf("repeated publication: %v", err)
@@ -247,18 +253,17 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := callback(true, network); err == nil {
+	if err := callback(outbound.Connectivity{Network: network, Available: true}); err == nil {
 		t.Fatal("active callback ignored a BPF write failure")
 	}
-	if core.outboundUsable(outbound, consts.L4ProtoType_TCP, consts.IpVersion_4) {
+	if core.outboundConnectivityValues[key].State != outboundConnectivityNoAliveBlock {
 		t.Fatal("failed active BPF write changed userspace state")
 	}
 	core.outboundConnectivityPublished = false
-	core.pendingOutboundConnectivity = map[bpfOutboundConnectivityQuery]uint32{key: outboundConnectivityAlive}
 	if err := core.publishOutboundConnectivity(); err == nil {
 		t.Fatal("publication ignored a BPF write failure")
 	}
-	if core.outboundConnectivityPublished || len(core.pendingOutboundConnectivity) != 1 {
+	if core.outboundConnectivityPublished || len(core.outboundConnectivityValues) != 1 {
 		t.Fatal("failed publication discarded prepared connectivity")
 	}
 }

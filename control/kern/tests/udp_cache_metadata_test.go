@@ -210,7 +210,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 						}
 					}
 					connectivity := bpftestOutboundConnectivityQuery{Outbound: test.outbound, L4proto: unix.IPPROTO_UDP, Ipversion: 4}
-					if err := obj.OutboundConnectivityMap.Update(connectivity, uint32(0), ebpf.UpdateAny); err != nil {
+					if err := obj.OutboundConnectivityMap.Update(connectivity, bpftestOutboundConnectivity{}, ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 					checkHandoff := func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 						if result.Outbound != wantOutbound || result.Mark != wantMark || result.Must != wantMust || result.CaptureFlags != test.capture {
 							t.Fatalf("lost cached routing decision: %+v", result)
 						}
-						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.NoSniff != 0 || result.Generation != generation {
+						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.Generation != generation {
 							t.Fatalf("lost initial source metadata: %+v", result)
 						}
 					}
@@ -297,5 +297,15 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestClosingUDPRouteIsRemovedAtExpiry(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _, err := runBpfProgram(obj.TestExpireClosingUdpRoute, make([]byte, 64), make([]byte, 256)); err != nil || status != 0 {
+		t.Fatalf("closing UDP route: status %d, error %v; want removal", status, err)
 	}
 }

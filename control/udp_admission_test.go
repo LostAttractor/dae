@@ -44,7 +44,7 @@ func TestFailedUDPFallbackIsNotEstablished(t *testing.T) {
 	t.Cleanup(pool.closeAll)
 	c := &ControlPlane{udpEndpoints: pool, outbounds: []*outbound.DialerGroup{direct, block, unavailable}, noConnectivityOutbound: consts.OutboundDirect}
 	src, dst := netip.MustParseAddrPort("192.0.2.1:12345"), netip.MustParseAddrPort("198.51.100.1:443")
-	endpoint := &UdpEndpoint{firstDst: dst, NatTimeout: time.Minute, pending: &udpSetup{routingResult: &routingResult{Outbound: 2, NoSniff: 1}, sniffer: sniffing.NewPacketSniffer(nil)}}
+	endpoint := &UdpEndpoint{firstDst: dst, NatTimeout: time.Minute, pending: &udpSetup{routingResult: &routingResult{Outbound: 2}, sniffer: sniffing.NewPacketSniffer(nil)}}
 	before := stats.DefaultStore.DirectFallbackConnections()
 	lock, _ := pool.UdpEndpointKeyLocker.Lock(src)
 	pool.addLocked(src, endpoint)

@@ -95,7 +95,7 @@ func TestDiagnosticsCoverageMatchesVerifyDuringProjectionRetry(t *testing.T) {
 					t.Fatalf("live verification: verified=%v reroute=%v err=%v", verified, reroute, err)
 				}
 				facts := routeFacts{outbound: consts.OutboundUserDefinedMin, mode: consts.RerouteMode_WhileNeed}
-				got, known, missing := c.diagnosticRoutePlan(request, state, input.dst, "target.example", false, nil, facts)
+				got, known, missing := c.diagnosticRoutePlan(request, state, input.dst, "target.example", nil, facts)
 				facts.verified, facts.shouldReroute = routingTruth(verified), routingTruth(reroute)
 				if want := planRoute(facts); got != want || !known || len(missing) != 0 {
 					t.Fatalf("diagnostic=%+v live=%+v missing=%v", got, want, missing)

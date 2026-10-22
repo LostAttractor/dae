@@ -133,7 +133,7 @@ policy 内的 `rules {}` 与出站规则共享过滤条件解析、别名和数�
 
 内核使用一张共享物理指令表 `routing_map`，每个 policy 的 spans 单独组织执行顺序：API 精确直通 → 策略 DNAT 与全局插件捕获 → 策略 must/bump 和纯 MITM 捕获（包含控制结束指令）→ 插件前置路由、策略正文、插件普通路由和 fallback。共享片段只编译一次；物理存储位置不决定阶段顺序。Go 的 span 保留阶段，目标选定后跳过入口阶段，不再依赖全局下标分界。每个 policy 的 DestinationProgram 引用该策略的 DNAT 和全局插件目标规则；精确谓词存放在用户态后缀，`BuildKernspace` 只上传内核池。TCP 连接和活动 UDP 会话复用已经选定的目标。内核段沿用 `MAX_MATCH_SET_LEN` 上限，用户态目的地址段独立检查容量，上限为它的两倍。
 
-内核以 `control_plane_routing` 表示未决路由。交接和 UDP 缓存共用无对齐空洞的 40 字节 `routing_result`：`route_epoch` 位于偏移 0，`profile_id` 位于偏移 16，`no_sniff` 位于偏移 30，`physinif` 位于偏移 32，`generation` 位于偏移 36。`generation` 标识配置代，`route_epoch` 独立标识设备连接策略版本。用户态 `routingResult` 嵌入该结果并保存内部请求的 PID/进程名。TCP 长期转发使用独立的 16 字节 `tcp_flow_state`，只保留设备版本、mark 和是否重定向；普通无 mark、无设备版本的内核直通无需记录。`routing_tuples_map` 是 16384 项的交接 LRU：48 字节值包含完整结果、单调秒数过期时间和 TCP 初始序列号，字段无空洞。TCP accept 原子取出并删除交接；相同 SYN 的重传在 30 秒内复用它且不续期；UDP 读取快照。交接容量和过期都不影响已建立 TCP 的转发状态。
+内核以 `control_plane_routing` 表示未决路由。交接和 UDP 缓存共用无对齐空洞的 40 字节 `routing_result`：`route_epoch` 位于偏移 0，`profile_id` 位于偏移 16，`physinif` 位于偏移 32，`generation` 位于偏移 36。`generation` 标识配置代，`route_epoch` 独立标识设备连接策略版本。用户态 `routingResult` 嵌入该结果并保存内部请求的 PID/进程名。TCP 长期转发使用独立的 16 字节 `tcp_flow_state`，只保留设备版本、mark 和 `owner`：`owner` 为 0 表示普通直通，全 1 表示重定向到用户态，其他值是内核降级直连所属 fallback 代次的令牌。用户态分配令牌时跳过 0 和全 1，因此令牌可以与这些标记共用字段；普通无 mark、无设备版本、无令牌的内核直通无需记录。`routing_tuples_map` 是 16384 项的交接 LRU：48 字节值包含完整结果、单调秒数过期时间和 TCP 初始序列号，字段无空洞。TCP accept 原子取出并删除交接；相同 SYN 的重传在 30 秒内复用它且不续期；UDP 读取快照。交接容量和过期都不影响已建立 TCP 的转发状态。
 
 编译后的目的地址谓词保存指令范围和目标 IP。`RouteParam.destination` 使用有效地址表示已选定目标，UDP 源生命周期固定首次选定的节点、路由及目的地址规则；规则或节点更新不改变已有生命周期，故障结束后同一源端口可按当前规则重新建立。`udp_destination.go` 管理目标 socket 与应答地址还原，`udp_binding.go` 管理源绑定。
 
@@ -163,7 +163,7 @@ HTTP 的最终请求和脚本子请求通过同一计划构建逻辑，在连接
 
 域名位图按独立的域名条件 ID 编号。重复域名条件（包括取反条件使用的同一正向集合）共用一个 ID；静态 LPM 集合也可跨程序复用。内核在一个包首次执行域名条件时取得域名映射快照，其余条件复用同一对位图；未找到映射也会记住，下一包重新查询。动态 `client()` 集合使用独立槽位，避免成员更新修改静态匹配条件；接口变更同步两端，用户态目的地址指令不会写入内核表。
 
-UDP 路由缓存按源 IP 和源端口标识生命周期，24 字节键不含目的地址和策略。缓存直接保存、恢复完整 `routing_result`，无需字段转换；其中保留首次入口的出站、mark、must、捕获标志、接口、profile、MAC、DSCP、协议、no_sniff、设备路由版本和 reload 规则版本。加上过期时间、定时器、锁和关闭标志，缓存值为 72 字节，无对齐空洞。进程谓词独立查询 socket cookie 映射。UDP 空闲超时、设备路由版本失效、reload 规则版本失效和用户态源绑定共同约束生命周期，结束后的报文按当前规则重新选路。
+UDP 路由缓存按源 IP 和源端口标识生命周期，24 字节键不含目的地址和策略。缓存直接保存、恢复完整 `routing_result`，无需字段转换；其中保留首次入口的出站、mark、must、捕获标志、接口、profile、MAC、DSCP、协议、设备路由版本和 reload 规则版本。加上过期时间、定时器、锁和 fallback 令牌，缓存值为 72 字节，无对齐空洞；生命周期结束时令牌字段改写为全 1 作为关闭标记，此时已不再需要令牌。进程谓词独立查询 socket cookie 映射。UDP 空闲超时、设备路由版本失效、reload 规则版本失效、fallback 令牌撤销和用户态源绑定共同约束生命周期，结束后的报文按当前规则重新选路。
 
 用户态 UDP endpoint 和 Anyfrom 回包 socket 各自保存空闲截止时间。活动在所属锁内延长截止时间，计时器首次建立后由到期回调检查最新值：提前触发时按剩余时间重新定时，真正到期时才删除对应实例并关闭 socket。持续活动无需逐包重设计时器；实例身份检查防止旧回调删除替代连接。
 

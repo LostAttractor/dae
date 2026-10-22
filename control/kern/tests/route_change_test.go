@@ -98,7 +98,7 @@ func TestDeviceRouteEpochs(t *testing.T) {
 			version = 6
 		}
 		for _, proto := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
-			if err := obj.OutboundConnectivityMap.Update(bpftestOutboundConnectivityQuery{Outbound: 2, Ipversion: version, L4proto: proto}, uint32(0), ebpf.UpdateAny); err != nil {
+			if err := obj.OutboundConnectivityMap.Update(bpftestOutboundConnectivityQuery{Outbound: 2, Ipversion: version, L4proto: proto}, bpftestOutboundConnectivity{}, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -155,7 +155,7 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		run(syn, next)
 		run(ack, next)
 		var saved bpftestTcpFlowState
-		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 || saved.Proxy != 0 {
+		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 || saved.Owner != 0 {
 			t.Fatalf("new direct flow %+v: %v", saved, err)
 		}
 		epoch(2, 0)
@@ -163,9 +163,10 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		route(2)
 		run(syn, redirect)
 		run(ack, redirect)
-		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 2 || saved.Proxy != 1 {
+		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 2 || saved.Owner != tcpFlowProxy {
 			t.Fatalf("new proxy flow %+v: %v", saved, err)
 		}
+		run(rst, redirect) // a live proxied flow's RST reaches its relay
 
 		epoch(0, 0)
 		route(0)

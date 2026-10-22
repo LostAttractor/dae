@@ -88,7 +88,7 @@ var GlobalDesc = Desc{
 	"lan_interface":                "The LAN interface to bind. Use it if you want to proxy LAN.",
 	"wan_interface":                "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to follow host default routes.",
 	"allow_insecure":               "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
-	"route_change_behavior":        "Keep (default) or close old connections when a device joins/leaves a routing-referenced client set, or when a group recovers from direct fallback. Membership changes affect that device across TCP/UDP and IPv4/IPv6; recovery affects only that group/network's fallback connections.",
+	"route_change_behavior":        "Keep (default) or close old connections when a device joins/leaves a routing-referenced client set, or when a group recovers from direct fallback. Membership changes affect that device across TCP/UDP and IPv4/IPv6; recovery affects only that group/network's fallback connections, including those forwarded directly in the kernel.",
 	"disable_waiting_network":      "Disable waiting for network before pulling subscriptions.",
 	"auto_config_kernel_parameter": "Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out https://github.com/daeuniverse/dae/blob/main/docs/en/user-guide/kernel-parameters.md to see what will dae do.",
 	"sniffing_timeout":             "Budget for waiting for the first bytes used by domain sniffing (default 100ms). Applies when dial-target override or rerouting requires sniffing; increase for high-latency LANs.",

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -209,8 +208,8 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 	}
 	id := uint8(len(b.outbounds))
 	callback := b.core.outboundAliveChangeCallback(id, name, b.global.NoConnectivityTrySniff, b.noConnectivityOutbound)
-	detach, err := group.ObserveConnectivity(func(available bool, network *common.NetworkType) error {
-		err := callback(available, network)
+	detach, err := group.ObserveConnectivity(func(update outbound.Connectivity) error {
+		err := callback(update)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		} // The group outlives retired projections.

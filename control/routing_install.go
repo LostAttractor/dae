@@ -30,7 +30,7 @@ func (c *ControlPlane) installRouting(rules *preparedRules, outbounds map[string
 		}
 		critical[index] = true
 	}
-	matcher.outboundUsable = c.core.outboundUsable
+	matcher.outboundUsable = c.outboundAvailable
 	c.routingMatcher, c.routingState = matcher, matcher.routingState
 	c.criticalOutbounds = critical
 	c.outboundCheckAsync = configureOutboundChecks(c.outbounds, groups, critical)

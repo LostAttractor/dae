@@ -81,7 +81,7 @@ routing {
 					src := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(40000+round*100+i))
 					packet, ipProto := routingKernelPacket(src, dst, proto)
 					connectivityKey := bpfOutboundConnectivityQuery{Outbound: built.nameToID["proxy"], Ipversion: 4, L4proto: ipProto}
-					if err := collection.Maps["outbound_connectivity_map"].Update(connectivityKey, encodeOutboundConnectivity(alive, false, consts.OutboundBlock), ebpf.UpdateAny); err != nil {
+					if err := collection.Maps["outbound_connectivity_map"].Update(connectivityKey, bpfOutboundConnectivity{State: encodeOutboundConnectivity(alive, false, consts.OutboundBlock)}, ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 					capture := alive && tc.domain == "target.example" && dst.Port() == 443 && (tc.name != "API bypass" || proto == consts.L4ProtoType_UDP)

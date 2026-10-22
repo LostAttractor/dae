@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +16,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -336,8 +336,8 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 				if err == nil {
 					t.Fatal("blocked client completed TLS")
 				}
-				if err := wait(); err == nil || !strings.Contains(err.Error(), "selected block outbound") {
-					t.Fatalf("block was not retained: %v", err)
+				if _, blocked := errors.AsType[*routeBlocked](wait()); !blocked {
+					t.Fatal("block was not retained")
 				}
 			} else {
 				if err != nil {
@@ -381,9 +381,13 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 					t.Fatal("upstream did not receive the request")
 				}
 			}
+			// A blocked route never dials.
 			selectedDialer := int(test.outbound)
-			if test.outbound == consts.OutboundDirect {
+			switch test.outbound {
+			case consts.OutboundDirect:
 				selectedDialer = 3
+			case consts.OutboundBlock:
+				selectedDialer = -1
 			}
 			for i, d := range dialers {
 				want := 0

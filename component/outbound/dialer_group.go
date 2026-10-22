@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -59,17 +60,27 @@ type DialerGroup struct {
 	closeOnce         sync.Once
 }
 
+// Connectivity is one network's routing projection. Fallback is the
+// generation of the group's no-connectivity fallback connections while the
+// network is unavailable, if a connection policy can end it, and nil
+// otherwise.
+type Connectivity struct {
+	Network   *common.NetworkType
+	Available bool
+	Fallback  *netproxy.Lease
+}
+
 type connectivityObserver struct {
-	publish func(bool, *common.NetworkType) error
+	publish func(Connectivity) error
 }
 
 // ObserveConnectivity immediately initializes one routing projection and keeps
 // it current until detached. A group is independent of any particular BPF map.
-func (g *DialerGroup) ObserveConnectivity(publish func(bool, *common.NetworkType) error) (func(), error) {
+func (g *DialerGroup) ObserveConnectivity(publish func(Connectivity) error) (func(), error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for i, available := range g.networkAvailable {
-		if err := publish(available, common.NetworkIndex(i).NetworkType()); err != nil {
+		if err := publish(g.connectivity(common.NetworkIndex(i), available)); err != nil {
 			return nil, err
 		}
 	}
@@ -81,9 +92,22 @@ func (g *DialerGroup) ObserveConnectivity(publish func(bool, *common.NetworkType
 	return sync.OnceFunc(func() { g.mu.Lock(); delete(g.observers, observer); g.mu.Unlock() }), nil
 }
 
-func (g *DialerGroup) publishConnectivity(available bool, network *common.NetworkType) (err error) {
+// Caller holds mu.
+func (g *DialerGroup) connectivity(network common.NetworkIndex, available bool) Connectivity {
+	update := Connectivity{Network: network.NetworkType(), Available: available}
+	if !available {
+		update.Fallback = g.interruptibleFallback(update.Network)
+	}
+	return update
+}
+
+func (g *DialerGroup) publishConnectivity(network common.NetworkIndex, available bool) (err error) {
+	if len(g.observers) == 0 {
+		return nil
+	}
+	update := g.connectivity(network, available)
 	for observer := range g.observers {
-		err = errors.Join(err, observer.publish(available, network))
+		err = errors.Join(err, observer.publish(update))
 	}
 	return err
 }
@@ -206,6 +230,7 @@ func (g *DialerGroup) Close() error {
 		// Drain notifications that passed the closed check before shutdown.
 		g.mu.Lock()
 		g.releaseStartupReady(true)
+		g.closeRemovedFallbacks()
 		g.mu.Unlock()
 		if g.automatic != nil {
 			g.automatic.close()
@@ -231,8 +256,7 @@ func (g *DialerGroup) initializeConnectivity() error {
 	}
 	var err error
 	for i := range g.networkAvailable {
-		networkType := common.NetworkIndex(i).NetworkType()
-		err = errors.Join(err, g.publishConnectivity(false, networkType))
+		err = errors.Join(err, g.publishConnectivity(common.NetworkIndex(i), false))
 	}
 	if err != nil {
 		return err
@@ -350,12 +374,19 @@ func (g *DialerGroup) recordAvailability(previous, available bool) {
 	}
 }
 
+// Available reports the connectivity the group last published for the network.
+func (g *DialerGroup) Available(network common.NetworkType) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.networkAvailable[network.Index()]
+}
+
 func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, available bool) error {
 	index := networkType.Index()
 	if g.networkAvailable[index] == available {
 		return nil
 	}
-	if err := g.publishConnectivity(available, networkType); err != nil {
+	if err := g.publishConnectivity(index, available); err != nil {
 		return err
 	}
 	g.networkAvailable[index] = available
@@ -470,9 +501,4 @@ func (g *DialerGroup) automaticChanged(network common.NetworkIndex, selected *di
 		return
 	}
 	g.closeRecoveredConnections()
-}
-
-// IsBlock identifies the reserved blocking outbound. Its name cannot be assigned to user targets.
-func (g *DialerGroup) IsBlock() bool {
-	return g.Name == consts.OutboundBlock.String()
 }

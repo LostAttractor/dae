@@ -61,7 +61,11 @@ func TestHTTPPolicyOverridesRetainedOutbound(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || option.Mark != 91 || option.DialTarget != "192.0.2.20:80" {
+		if policy == "REJECT" {
+			if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
+				t.Fatalf("REJECT policy selected an outbound: %+v %v", option, err)
+			}
+		} else if err != nil || option.Mark != 91 || option.DialTarget != "192.0.2.20:80" {
 			t.Fatalf("policy=%s changed address or mark: %+v %v", policy, option, err)
 		}
 		request, _ := http.NewRequestWithContext(t.Context(), "GET", "http://original.example/", nil)

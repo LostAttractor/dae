@@ -9,7 +9,11 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/internal/routingabi"
 )
+
+// tcp_flow_state.owner of a userspace relay.
+const tcpFlowProxy = routingabi.FALLBACK_TOKEN_RESERVED
 
 func lookupHandoff(m *ebpf.Map, key any, result *bpftestRoutingResult) error {
 	var handoff bpftestRoutingHandoff
@@ -30,7 +34,7 @@ func assertDirectTCPFlow(t *testing.T, obj *bpftestObjects, key bpftestTuplesKey
 		if !errors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("plain direct retained state: %+v, %v", flow, err)
 		}
-	} else if err != nil || flow.Proxy != 0 || flow.Mark != mark {
+	} else if err != nil || flow.Owner != 0 || flow.Mark != mark {
 		t.Fatalf("direct flow lost mark: %+v, %v; want %d", flow, err, mark)
 	}
 }

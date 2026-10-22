@@ -197,7 +197,7 @@ func TestMITMDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 					t.Fatalf("direct calls = %d, error = %v", directCalls, err)
 				}
 				_ = conn.Close()
-			} else if err == nil || !strings.Contains(err.Error(), "blocked by routing") || directCalls != 0 {
+			} else if _, blocked := errors.AsType[*routeBlocked](err); !blocked || directCalls != 0 {
 				t.Fatalf("blocked result = %v; direct calls = %d", err, directCalls)
 			}
 		})

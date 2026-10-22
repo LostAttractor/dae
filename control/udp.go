@@ -296,9 +296,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	var isQuic bool
 	if dst == ue.firstDst {
 		pending.sniffer.AppendData(data)
-		if pending.routingResult.NoSniff == 0 {
-			domain, isQuic, err = pending.sniffer.SniffUdp()
-		}
+		domain, isQuic, err = pending.sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			pending.observedAt = time.Time{}
 			ue.activity.observe(dst.Addr(), domain, observedAt)
@@ -341,6 +339,11 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	}
 	if err != nil {
 		p.removeInBackgroundLocked(src, ue)
+		// A blocked flow has no association to preserve. A later packet can
+		// try again after the group recovers.
+		if _, blocked := errors.AsType[*routeBlocked](err); blocked {
+			return nil
+		}
 		return err
 	}
 	var conn net.PacketConn
@@ -365,12 +368,6 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 			return err
 		}
 	} else {
-		// A block fallback has no association to preserve. A later packet can
-		// try again after the group recovers.
-		if option.Outbound.IsBlock() {
-			p.removeInBackgroundLocked(src, ue)
-			return nil
-		}
 		path, fallback := option.trafficAttribution()
 		ue.policyLease = option.PolicyLease
 		ue.fallback = fallback

@@ -279,11 +279,20 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 		for _, host := range []string{"", "different.example"} {
 			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: host, networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{Outbound: uint8(out), Mark: 37, Must: 1, CaptureFlags: captureHTTP}}
 			got, err := plane.RouteDialOption(context.Background(), p)
+			if p.routingResult.Mark != 37 || p.routingResult.Must != 1 {
+				t.Fatalf("capture changed route: %+v", p.routingResult)
+			}
+			if out == consts.OutboundBlock {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
+					t.Fatalf("capture changed blocked route: %+v, %v", got, err)
+				}
+				continue
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Outbound != groups[out] || got.DialTarget != p.Dest.String() || p.routingResult.Mark != 37 || p.routingResult.Must != 1 {
-				t.Fatalf("capture changed route: %+v, %+v", got, p.routingResult)
+			if got.Outbound != groups[out] || got.DialTarget != p.Dest.String() {
+				t.Fatalf("capture changed route: %+v", got)
 			}
 		}
 	}

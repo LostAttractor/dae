@@ -9,6 +9,7 @@ const (
 	CAPTURE_DESTINATION                     = 2
 	CAPTURE_HTTP_REQUEST                    = 4
 	CAPTURE_DNS                             = 8
+	FALLBACK_TOKEN_RESERVED                 = 1
 	HANDOFF_LIFETIME_SECONDS                = 30
 	TPROXY_MARK                             = 134217728
 	HTTP_CLIENT_ALL                         = 0

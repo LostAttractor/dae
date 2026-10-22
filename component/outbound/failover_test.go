@@ -429,8 +429,8 @@ func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		var down atomic.Int32
-		detach, err := g.ObserveConnectivity(func(available bool, network *common.NetworkType) error {
-			if !available && network.Index() == common.NetworkTCP4 {
+		detach, err := g.ObserveConnectivity(func(update Connectivity) error {
+			if !update.Available && update.Network.Index() == common.NetworkTCP4 {
 				down.Add(1)
 			}
 			return nil

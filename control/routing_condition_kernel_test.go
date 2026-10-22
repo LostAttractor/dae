@@ -65,7 +65,7 @@ func TestConditionalUseKernelIntegration(t *testing.T) {
 					version = 6
 				}
 				connectivity := bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: version, L4proto: ipProto}
-				if err := collection.Maps["outbound_connectivity_map"].Update(connectivity, encodeOutboundConnectivity(true, false, consts.OutboundBlock), ebpf.UpdateAny); err != nil {
+				if err := collection.Maps["outbound_connectivity_map"].Update(connectivity, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny); err != nil {
 					t.Fatal(err)
 				}
 				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}

@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -194,17 +195,17 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 				}
 			}
 			option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+			if test.denied {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked || planner != nil {
+					t.Fatal("client exclusion bypassed original routing")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if release != nil {
 				defer release()
-			}
-			if test.denied {
-				if planner != nil || option == nil || option.Outbound.Name != "block" {
-					t.Fatal("client exclusion bypassed original routing")
-				}
-				return
 			}
 			if option != nil || planner == nil {
 				t.Fatal("local response was stopped by original target block")
@@ -241,7 +242,7 @@ func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 				if err == nil {
 					t.Fatal("ambiguous domain route silently became direct")
 				}
-			} else if err != nil || option.Outbound.Name != "block" {
+			} else if _, blocked := errors.AsType[*routeBlocked](err); !blocked {
 				t.Fatalf("lost original DNS routing evidence: %+v, %v", option, err)
 			}
 			// An explicit IP URL has a known logical target with no hostname;

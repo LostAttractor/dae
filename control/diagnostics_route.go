@@ -20,7 +20,7 @@ func (c *ControlPlane) diagnosticHandoffState(input routingInput, evaluation rou
 
 // Sample evidence without running the resolver or refreshing DNS retention.
 // planRoute owns the decision; this adapter only describes what is known.
-func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagnosticState, ingress netip.AddrPort, hostname string, noSniff bool, missing map[string]bool, facts routeFacts) (routePlan, bool, []string) {
+func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagnosticState, ingress netip.AddrPort, hostname string, missing map[string]bool, facts routeFacts) (routePlan, bool, []string) {
 	verified := hostname != "" && c.sniffVerifyMode == consts.SniffVerifyMode_None
 	verificationKnown := true
 	key := hostname + "."
@@ -39,7 +39,7 @@ func (c *ControlPlane) diagnosticRoutePlan(request api.ExplainRequest, s *diagno
 	if !verificationKnown {
 		facts.verified = predicateUnknown
 	}
-	hostnameMissing := request.Context.Origin != "daemon" && missing["hostname"] && !noSniff
+	hostnameMissing := request.Context.Origin != "daemon" && missing["hostname"]
 	if hostnameMissing {
 		facts.verified, facts.shouldReroute = predicateUnknown, predicateUnknown
 	}

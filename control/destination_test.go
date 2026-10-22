@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
@@ -56,6 +57,12 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 				routingResult: &routingResult{Outbound: map[string]uint8{"direct": 0, "block": 1, "proxy": 2}[test.route], Mark: 37, Must: 1, CaptureFlags: captureDestination},
 			}
 			option, err := plane.RouteDialOption(context.Background(), param)
+			if test.route == "block" {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked || !param.destination.IsValid() || param.destination.Addr() != netip.MustParseAddr(test.target) || param.routingResult.Mark != 37 || param.routingResult.Must != 1 {
+					t.Fatalf("rewrite did not route the new target: %v, %+v", err, param.routingResult)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,6 +87,12 @@ func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
 	for _, fallback := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		plane.noConnectivityOutbound = fallback
 		option, err := plane.RouteDialOption(context.Background(), &RouteParam{Src: netip.MustParseAddrPort("192.0.2.5:12345"), Dest: dst, routingResult: &routingResult{Outbound: uint8(consts.OutboundUserDefinedMin)}, networkType: *common.NetworkTCP4.NetworkType()})
+		if fallback == consts.OutboundBlock {
+			if blocked, ok := errors.AsType[*routeBlocked](err); !ok || blocked.original != group {
+				t.Fatalf("block fallback lost the original group: %v", err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
