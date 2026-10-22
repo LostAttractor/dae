@@ -6,6 +6,8 @@ package dnsrouter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -127,9 +129,20 @@ func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Ser
 	if err != nil {
 		return plugin.Resources{}, err
 	}
-	conf, err = expandRules(ctx, conf, services.BaseDir)
-	// Expanded rules are both the reuse identity and the immutable factory input.
-	return plugin.Resources{Config: conf, Value: conf}, err
+	expanded, err := expandRules(ctx, conf, services.BaseDir)
+	if err != nil {
+		return plugin.Resources{}, err
+	}
+	// Geodata contents enter the reuse identity as a digest of the expanded
+	// rules; the host retains only the parsed configuration for comparison.
+	digest := sha256.New()
+	for _, rules := range [][]*config_parser.RoutingRule{expanded.Routing.Request.Rules, expanded.Routing.Response.Rules} {
+		for _, rule := range rules {
+			digest.Write([]byte(rule.String(false, true, true) + "\n"))
+		}
+		digest.Write([]byte{0})
+	}
+	return plugin.Resources{Config: conf, Key: hex.EncodeToString(digest.Sum(nil)), Value: expanded}, nil
 }
 
 func expandRules(ctx context.Context, conf policy.Config, baseDir string) (policy.Config, error) {
