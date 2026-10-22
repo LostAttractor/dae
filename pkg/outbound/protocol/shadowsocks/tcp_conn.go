@@ -23,9 +23,6 @@ const (
 	TCPChunkMaxLen = (1 << 14) - 1
 )
 
-// Limit read-ahead copying for large frames while coalescing short frames.
-var tcpReaderPool = pool.NewReaderPool(1024)
-
 // TCPConn represents a Shadowsocks TCP connection
 type TCPConn struct {
 	net.Conn
@@ -92,7 +89,7 @@ func (c *TCPConn) Read(b []byte) (n int, err error) {
 	}
 
 	if c.reader == nil {
-		c.reader = tcpReaderPool.Get(c.Conn)
+		c.reader = pool.FrameReaders.Get(c.Conn)
 	}
 	if !c.onceRead {
 		var salt = pool.GetBuffer(c.cipherConf.SaltLen)
@@ -166,7 +163,7 @@ func (c *TCPConn) Close() error {
 	c.readMutex.Lock()
 	c.readErr = net.ErrClosed
 	if c.reader != nil {
-		tcpReaderPool.Put(c.reader)
+		pool.FrameReaders.Put(c.reader)
 		c.reader = nil
 	}
 	if c.readBuf != nil {

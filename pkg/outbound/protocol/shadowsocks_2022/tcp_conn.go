@@ -32,9 +32,6 @@ const (
 	MaxPaddingLength       = 900
 )
 
-// Limit read-ahead copying for large frames while coalescing short frames.
-var tcpReaderPool = pool.NewReaderPool(1024)
-
 type TCPConn struct {
 	net.Conn
 	addr                    *socks5.AddressInfo
@@ -72,7 +69,7 @@ func (c *TCPConn) Read(b []byte) (int, error) {
 	}
 	if c.reader == nil {
 		// Read frame headers and payloads together when already available.
-		c.reader = tcpReaderPool.Get(c.Conn)
+		c.reader = pool.FrameReaders.Get(c.Conn)
 	}
 	if c.readBuf == nil {
 		payload, err := c.readChunk()
@@ -171,7 +168,7 @@ func (c *TCPConn) Close() error {
 		c.readMutex.Lock()
 		defer c.readMutex.Unlock()
 		if c.reader != nil {
-			tcpReaderPool.Put(c.reader)
+			pool.FrameReaders.Put(c.reader)
 			c.reader = nil
 		}
 		if c.readBuf != nil {
