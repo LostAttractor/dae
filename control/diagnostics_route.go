@@ -15,7 +15,7 @@ func (c *ControlPlane) diagnosticHandoffState(input routingInput, evaluation rou
 	if !input.kernel || input.dst.Port() == 53 || evaluation.captureFlags != 0 || evaluation.outbound < consts.OutboundUserDefinedMin || evaluation.outbound >= consts.OutboundMustRules {
 		return outboundConnectivityAlive
 	}
-	return encodeOutboundConnectivity(available, c.noConnectivityTrySniff, c.noConnectivityOutbound)
+	return encodeOutboundConnectivity(available, c.rerouteMode == consts.RerouteMode_WhilePossible, c.noConnectivityOutbound)
 }
 
 // Sample evidence without running the resolver or refreshing DNS retention.

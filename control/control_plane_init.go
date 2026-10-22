@@ -71,7 +71,6 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		mitmClients:               mitmClients,
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		noConnectivityOutbound:    noConnectivityOutbound,
-		noConnectivityTrySniff:    global.NoConnectivityTrySniff,
 		lanInterface:              uniqueInterfaceNames(global.LanInterface),
 		wanInterface:              wanInterface,
 		autoWan:                   autoWan,

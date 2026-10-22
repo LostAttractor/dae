@@ -1199,8 +1199,8 @@ static __always_inline void clear_routing_entry(const void *key)
 }
 
 static __always_inline void
-set_outbound_connectivity_dead_try_sniff(__u8 outbound)
+set_outbound_connectivity_dead_userspace(__u8 outbound)
 {
 	set_outbound_connectivity_state(
-		outbound, OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF);
+		outbound, OUTBOUND_CONNECTIVITY_NOALIVE_USERSPACE);
 }

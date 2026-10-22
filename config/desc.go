@@ -68,7 +68,7 @@ var MITMDesc = Desc{
 
 var GlobalDesc = Desc{
 	"dial_target_override":         "Use a verified sniffed domain to override the dial target (default true).",
-	"reroute_mode":                 "Reevaluate routing with userspace information: none, while_needed (default), or force. Applies only to traffic already admitted to userspace.",
+	"reroute_mode":                 "Reevaluate routing with a verified sniffed domain: none, while_needed, or while_possible (default). while_needed reroutes traffic already admitted to userspace; while_possible also admits traffic of groups with no connectivity.",
 	"sniff_verify_mode":            "Verify sniffed domains against DNS evidence: none, loose (default), or strict. Strict requires the original destination to belong to the domain's recorded addresses.",
 	"resource_cache":               "Cache validated HTTP/HTTPS configuration resources (subscriptions and plugin resources). Network-first with fallback on download or validation failure. Defaults to true; false disables disk cache reads, writes and cleanup. Accepted resources remain available in memory while running.",
 	"resource_update_interval":     "Automatic refresh interval for remote subscriptions, modules and dependencies. Defaults to 24h; 0 disables these automatic checks. Plugins may refresh individual resources on their own schedules. Reload and the resource refresh API always attempt downloads.",

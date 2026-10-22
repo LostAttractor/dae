@@ -47,7 +47,7 @@ func TestUntrustedHostnameRoutesWithKernelEvidence(t *testing.T) {
 	handoff.Outbound = uint8(consts.OutboundControlPlaneRouting)
 	captured := handoff
 	captured.CaptureFlags = captureHTTP
-	for _, mode := range []consts.RerouteMode{consts.RerouteMode_WhileNeed, consts.RerouteMode_Force} {
+	for _, mode := range []consts.RerouteMode{consts.RerouteMode_WhileNeed, consts.RerouteMode_WhilePossible} {
 		for _, host := range []string{"", "unregistered.example"} {
 			if got, err := route(mode, proxy, unique, host); err != nil || got != "proxy" {
 				t.Fatalf("%s, sniffed %q: kernel decision from DNS evidence became %s, %v", mode, host, got, err)
@@ -79,7 +79,7 @@ func TestDiagnosticsUntrustedHostnameKeepsKernelEvidence(t *testing.T) {
 	request.Flow.SNI = new("unregistered.example")
 	ip := netip.MustParseAddr(request.Flow.Destination.IP)
 	c.core.domainRegistry.Upsert("one.example.", ip, c.routingMatcher.domainMatcher.MatchDomainBitmap("one.example."), 120, time.Now())
-	for _, mode := range []consts.RerouteMode{consts.RerouteMode_WhileNeed, consts.RerouteMode_Force} {
+	for _, mode := range []consts.RerouteMode{consts.RerouteMode_WhileNeed, consts.RerouteMode_WhilePossible} {
 		c.rerouteMode = mode
 		response, err := c.Explain(t.Context(), request, false)
 		if err != nil || !response.Current.Decision.Complete || response.Current.Decision.Outbound != "proxy" {

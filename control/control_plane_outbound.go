@@ -207,7 +207,7 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 		b.borrowed[group] = true
 	}
 	id := uint8(len(b.outbounds))
-	callback := b.core.outboundAliveChangeCallback(id, name, b.global.NoConnectivityTrySniff, b.noConnectivityOutbound)
+	callback := b.core.outboundAliveChangeCallback(id, name, b.global.RerouteMode == consts.RerouteMode_WhilePossible, b.noConnectivityOutbound)
 	detach, err := group.ObserveConnectivity(func(update outbound.Connectivity) error {
 		err := callback(update)
 		if errors.Is(err, context.Canceled) {

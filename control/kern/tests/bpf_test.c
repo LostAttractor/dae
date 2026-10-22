@@ -2396,8 +2396,8 @@ int testpktgen_skip_while_noalive_dead(struct __sk_buff *skb)
 SEC("tc/setup/skip_while_noalive_dead")
 int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
 {
-	/* dport(80) -> proxy(skip_while_noalive); proxy group is dead but
-	 * no_connectivity_try_sniff is enabled. */
+	/* dport(80) -> proxy(skip_while_noalive); the dead proxy group still
+	 * hands its flows to userspace. */
 	struct match_set ms = {
 		.port_range = {80, 80},
 		.type = MatchType_Port,
@@ -2405,7 +2405,7 @@ int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
 		.flags = MATCH_FLAG_SKIP_NOALIVE,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
-	set_outbound_connectivity_dead_try_sniff(OUTBOUND_USER_DEFINED_MIN);
+	set_outbound_connectivity_dead_userspace(OUTBOUND_USER_DEFINED_MIN);
 
 	/* fallback: must_direct */
 	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
@@ -2417,32 +2417,32 @@ int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
 SEC("tc/check/skip_while_noalive_dead")
 int testcheck_skip_while_noalive_dead(struct __sk_buff *skb)
 {
-	/* The rule-level annotation takes precedence over try-sniff, so the rule
-	 * is skipped and traffic falls through to the must_direct fallback. */
+	/* The rule-level annotation takes precedence over the userspace handoff,
+	 * so the rule is skipped and traffic falls through to must_direct. */
 	return check_routing_ipv4_tcp(skb,
 				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
 
-SEC("tc/pktgen/noalive_try_sniff")
-int testpktgen_noalive_try_sniff(struct __sk_buff *skb)
+SEC("tc/pktgen/noalive_userspace")
+int testpktgen_noalive_userspace(struct __sk_buff *skb)
 {
 	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
 }
 
-SEC("tc/setup/noalive_try_sniff")
-int testsetup_noalive_try_sniff(struct __sk_buff *skb)
+SEC("tc/setup/noalive_userspace")
+int testsetup_noalive_userspace(struct __sk_buff *skb)
 {
-	/* Without skip_while_noalive, a dead group still reaches the control
-	 * plane when no_connectivity_try_sniff is enabled. */
+	/* Without skip_while_noalive, a dead group that hands its flows to
+	 * userspace still reaches the control plane. */
 	struct match_set ms = {
 		.port_range = {80, 80},
 		.type = MatchType_Port,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
-	set_outbound_connectivity_dead_try_sniff(OUTBOUND_USER_DEFINED_MIN);
+	set_outbound_connectivity_dead_userspace(OUTBOUND_USER_DEFINED_MIN);
 
 	/* fallback: must_direct */
 	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
@@ -2451,8 +2451,8 @@ int testsetup_noalive_try_sniff(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/noalive_try_sniff")
-int testcheck_noalive_try_sniff(struct __sk_buff *skb)
+SEC("tc/check/noalive_userspace")
+int testcheck_noalive_userspace(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
@@ -3049,15 +3049,15 @@ int testcheck_udp_route_cache_connectivity_block(struct __sk_buff *skb)
 		20005, 443, true, OUTBOUND_USER_DEFINED_MIN + 37);
 }
 
-SEC("tc/pktgen/udp_route_cache_connectivity_try_sniff")
-int testpktgen_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+SEC("tc/pktgen/udp_route_cache_connectivity_userspace")
+int testpktgen_udp_route_cache_connectivity_userspace(struct __sk_buff *skb)
 {
 	return set_ipv4_udp(skb, IPV4(192,168,1,6), IPV4(1,1,1,6),
 			    20006, 443);
 }
 
-SEC("tc/setup/udp_route_cache_connectivity_try_sniff")
-int testsetup_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+SEC("tc/setup/udp_route_cache_connectivity_userspace")
+int testsetup_udp_route_cache_connectivity_userspace(struct __sk_buff *skb)
 {
 	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 39;
 
@@ -3065,13 +3065,13 @@ int testsetup_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
 		20006, 443, cached_outbound,
 		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
 	set_routing_fallback(cached_outbound, false, &zero_key);
-	set_outbound_connectivity_dead_try_sniff(cached_outbound);
+	set_outbound_connectivity_dead_userspace(cached_outbound);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/udp_route_cache_connectivity_try_sniff")
-int testcheck_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+SEC("tc/check/udp_route_cache_connectivity_userspace")
+int testcheck_udp_route_cache_connectivity_userspace(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
 	return check_ipv4_udp_routing_cache(

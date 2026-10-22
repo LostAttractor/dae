@@ -111,10 +111,13 @@ global {
     #       destination (IP/port). Sniffed domains are only used to override the dial target (see
     #       dial_target_override).
     # 2. "while_needed". Re-route traffic that reaches the control plane (proxied, captured, or traffic the
-    #       kernel cannot route from DNS evidence alone) using its verified sniffed domain. This is the default.
-    # 3. "force". Re-evaluate all traffic that reaches the control plane.
+    #       kernel cannot route from DNS evidence alone) using its verified sniffed domain.
+    # 3. "while_possible". Like "while_needed", and traffic of a group with no connectivity also reaches the
+    #       control plane instead of degrading in eBPF, so its verified sniffed domain may re-route it to an
+    #       available outbound. Such traffic costs userspace processing while the group is down. This is the
+    #       default.
     # Without a verified sniffed domain, the kernel decision and its DNS evidence are kept.
-    reroute_mode: while_needed
+    reroute_mode: while_possible
 
     # How strictly the sniffed domain is verified before being trusted. Optional values:
     # 1. "none". Trust any sniffed domain.
@@ -165,13 +168,12 @@ global {
     # dns_resolver above. No DNS plugin is needed for dae's own lookups.
 
     # Behavior when all nodes of a group have no connectivity.
-    # If no_connectivity_try_sniff is true (default), traffic of the group is still sent to the control plane
-    # so that sniffing and re-routing may recover it. If it is false, traffic immediately falls back to
-    # no_connectivity_behavior.
-    #no_connectivity_try_sniff: true
+    # With the default reroute_mode "while_possible", traffic of the group still reaches the control plane,
+    # so a verified sniffed domain may re-route it. Otherwise eBPF applies no_connectivity_behavior
+    # immediately and forwards direct fallback traffic in the kernel.
 
-    # What to do with traffic when the group has no connectivity (and no_connectivity_try_sniff does not
-    # apply): "block" (default) drops it; "direct" sends it directly without proxy. In a dual-stack
+    # What to do with traffic when the group has no connectivity and the control plane cannot route it
+    # elsewhere: "block" (default) drops it; "direct" sends it directly without proxy. In a dual-stack
     # environment, if the node does not support IPv6, "direct" may allow programs attempting to use an IPv6
     # connection to actually dial to the target using IPv4.
     #no_connectivity_behavior: block

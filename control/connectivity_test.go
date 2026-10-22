@@ -23,22 +23,22 @@ func TestEncodeOutboundConnectivity(t *testing.T) {
 	tests := []struct {
 		name                   string
 		alive                  bool
-		noConnectivityTrySniff bool
+		admitted               bool
 		noConnectivityOutbound consts.OutboundIndex
 		want                   uint32
 	}{
 		{
 			name:                   "alive",
 			alive:                  true,
-			noConnectivityTrySniff: true,
+			admitted:               true,
 			noConnectivityOutbound: consts.OutboundBlock,
 			want:                   outboundConnectivityAlive,
 		},
 		{
-			name:                   "dead with try sniff",
-			noConnectivityTrySniff: true,
+			name:                   "dead and admitted to userspace",
+			admitted:               true,
 			noConnectivityOutbound: consts.OutboundBlock,
-			want:                   outboundConnectivityNoAliveTrySniff,
+			want:                   outboundConnectivityNoAliveUserspace,
 		},
 		{
 			name:                   "dead fallback direct",
@@ -54,7 +54,7 @@ func TestEncodeOutboundConnectivity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := encodeOutboundConnectivity(tt.alive, tt.noConnectivityTrySniff, tt.noConnectivityOutbound)
+			got := encodeOutboundConnectivity(tt.alive, tt.admitted, tt.noConnectivityOutbound)
 			if got != tt.want {
 				t.Fatalf("encodeOutboundConnectivity() = %d, want %d", got, tt.want)
 			}
@@ -194,6 +194,29 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	}
 	if core.outboundConnectivityPublished || core.outboundConnectivityValues[tcpKey].State != outboundConnectivityNoAliveBlock || recoveries != 2 {
 		t.Fatal("closing changed prepared connectivity")
+	}
+}
+
+// With reroute_mode while_possible every flow of an unavailable group tries a name.
+func TestUnavailableGroupAdmission(t *testing.T) {
+	for _, whilePossible := range []bool{false, true} {
+		core := &controlPlaneCore{
+			closed:                     context.Background(),
+			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+		}
+		id := uint8(consts.OutboundUserDefinedMin)
+		callback := core.outboundAliveChangeCallback(id, "proxy", whilePossible, consts.OutboundDirect)
+		key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_UDP, Ipversion: 4}
+		if err := callback(outbound.Connectivity{Network: common.NetworkUDP4.NetworkType()}); err != nil {
+			t.Fatal(err)
+		}
+		want := outboundConnectivityNoAliveDirect
+		if whilePossible {
+			want = outboundConnectivityNoAliveUserspace
+		}
+		if got := core.outboundConnectivityValues[key].State; got != want {
+			t.Fatalf("while_possible=%v: state %d, want %d", whilePossible, got, want)
+		}
 	}
 }
 

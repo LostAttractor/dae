@@ -273,7 +273,7 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	groups := []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}
 	matcher, _ := routingMatcherForTest(t, preparedRules{})
-	plane := &ControlPlane{outbounds: groups, routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None, rerouteMode: consts.RerouteMode_Force, dialTargetOverride: true}
+	plane := &ControlPlane{outbounds: groups, routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None, rerouteMode: consts.RerouteMode_WhileNeed, dialTargetOverride: true}
 	plane.markedDirectDialers.Store(uint32(37), unused)
 	for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		for _, host := range []string{"", "different.example"} {

@@ -36,7 +36,7 @@ type Global struct {
 	WanInterface              []string               `mapstructure:"wan_interface" reload:"plane"`
 	AllowInsecure             bool                   `mapstructure:"allow_insecure" default:"false" reload:"plane"`
 	DialTargetOverride        bool                   `mapstructure:"dial_target_override" default:"true" reload:"plane"`
-	RerouteMode               consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_needed" reload:"plane"`
+	RerouteMode               consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_possible" reload:"plane"`
 	SniffVerifyMode           consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose" reload:"plane"`
 	SniffingTimeout           time.Duration          `mapstructure:"sniffing_timeout" default:"100ms" reload:"plane"`
 	DNSRetentionWindow        time.Duration          `mapstructure:"dns_retention_window" default:"168h" reload:"plane"`
@@ -53,7 +53,6 @@ type Global struct {
 	Mptcp                     bool                   `mapstructure:"mptcp" default:"false" reload:"plane"`
 	BandwidthMaxTx            string                 `mapstructure:"bandwidth_max_tx" default:"0" reload:"plane"`
 	BandwidthMaxRx            string                 `mapstructure:"bandwidth_max_rx" default:"0" reload:"plane"`
-	NoConnectivityTrySniff    bool                   `mapstructure:"no_connectivity_try_sniff" default:"true" reload:"plane"`
 	// TODO: skip?
 	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block" reload:"plane"`
 	RouteChangeBehavior    string        `mapstructure:"route_change_behavior" default:"keep" reload:"plane"`

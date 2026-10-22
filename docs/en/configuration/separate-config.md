@@ -35,7 +35,7 @@ global {
     wan_interface: auto
     auto_config_kernel_parameter: true
     dial_target_override: true
-    reroute_mode: while_needed
+    reroute_mode: while_possible
 }
 ```
 

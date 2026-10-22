@@ -50,9 +50,9 @@ func planRoute(f routeFacts) routePlan {
 	// exact whatever evidence the kernel held when the flow arrived.
 	reroute := predicateMiss
 	switch {
-	case p.target, !valid, f.mode == consts.RerouteMode_Force:
+	case p.target, !valid:
 		reroute = predicateMatch
-	case f.mode == consts.RerouteMode_WhileNeed:
+	case f.mode == consts.RerouteMode_WhileNeed, f.mode == consts.RerouteMode_WhilePossible:
 		reroute = f.verified
 	}
 	// A direct flow that keeps its route dials the client's address, so only a

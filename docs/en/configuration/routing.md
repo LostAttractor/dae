@@ -376,9 +376,8 @@ domain(geosite:disney) -> direct(mark: 0x800)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # Notes:
-# - This rule-level annotation takes precedence over global "no_connectivity_try_sniff":
-#   an unavailable target is skipped immediately. The global setting still applies to rules
-#   without this annotation.
+# - An unavailable target is skipped immediately, including when reroute_mode is
+#   "while_possible". Rules without this annotation still degrade by no_connectivity_behavior.
 # - It only works with user-defined groups and direct node targets. Using it with "direct" or "block" is a
 #   configuration error because built-in outbounds do not participate in connectivity checks.
 # - It cannot be used on the fallback rule.

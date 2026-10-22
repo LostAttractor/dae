@@ -25,7 +25,6 @@ type planeOutbounds struct {
 	criticalOutbounds      []bool
 	outboundCheckAsync     []bool
 	noConnectivityOutbound consts.OutboundIndex
-	noConnectivityTrySniff bool
 }
 
 type planeTraffic struct {

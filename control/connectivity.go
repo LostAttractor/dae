@@ -25,18 +25,18 @@ import (
 const (
 	// States stored in outbound_connectivity_map. They encode both the
 	// group's actual connectivity and the action for an unannotated rule.
-	outboundConnectivityAlive           uint32 = routingabi.OUTBOUND_CONNECTIVITY_ALIVE
-	outboundConnectivityNoAliveDirect   uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT
-	outboundConnectivityNoAliveBlock    uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK
-	outboundConnectivityNoAliveTrySniff uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF
+	outboundConnectivityAlive            uint32 = routingabi.OUTBOUND_CONNECTIVITY_ALIVE
+	outboundConnectivityNoAliveDirect    uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT
+	outboundConnectivityNoAliveBlock     uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK
+	outboundConnectivityNoAliveUserspace uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_USERSPACE
 )
 
-func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) uint32 {
+func encodeOutboundConnectivity(alive, admitted bool, noConnectivityOutbound consts.OutboundIndex) uint32 {
 	if alive {
 		return outboundConnectivityAlive
 	}
-	if noConnectivityTrySniff {
-		return outboundConnectivityNoAliveTrySniff
+	if admitted {
+		return outboundConnectivityNoAliveUserspace
 	}
 	switch noConnectivityOutbound {
 	case consts.OutboundDirect:
@@ -51,15 +51,17 @@ func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConne
 // The kernel forwards a group's direct fallback itself. Its token ties those
 // flows to the group's fallback generation, so connection policies end them
 // with the generation's relays.
-func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivity, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) bpfOutboundConnectivity {
-	value := bpfOutboundConnectivity{State: encodeOutboundConnectivity(update.Available, noConnectivityTrySniff, noConnectivityOutbound)}
+func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivity, admitted bool, noConnectivityOutbound consts.OutboundIndex) bpfOutboundConnectivity {
+	value := bpfOutboundConnectivity{State: encodeOutboundConnectivity(update.Available, admitted, noConnectivityOutbound)}
 	if value.State == outboundConnectivityNoAliveDirect && c.bpf != nil && c.bpf.Runtime != nil {
 		value.Fallback = c.bpf.fallbacks.token(update.Fallback)
 	}
 	return value
 }
 
-func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
+// With reroute_mode while_possible, flows to an unavailable group enter
+// userspace instead of degrading in the kernel, to try a sniffed name.
+func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, whilePossible bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
 	return func(update outbound.Connectivity) error {
 		c.outboundCallbackMu.Lock()
 		defer c.outboundCallbackMu.Unlock()
@@ -83,7 +85,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}
-		value := c.outboundConnectivityValue(update, noConnectivityTrySniff, noConnectivityOutbound)
+		value := c.outboundConnectivityValue(update, whilePossible, noConnectivityOutbound)
 		wasAvailable := c.anyOutboundAvailable(networkType.Index())
 		if err := c.writeOutboundConnectivity(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity{key: value}); err != nil {
 			return fmt.Errorf("publish %s connectivity for %s: %w", networkType, outboundName, err)

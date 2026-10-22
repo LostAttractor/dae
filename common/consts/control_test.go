@@ -8,12 +8,12 @@ package consts
 import "testing"
 
 func TestVerifyRerouteMode(t *testing.T) {
-	for _, mode := range []string{"none", "while_needed", "force"} {
+	for _, mode := range []string{"none", "while_needed", "while_possible"} {
 		if err := VerifyRerouteMode(mode); err != nil {
 			t.Errorf("VerifyRerouteMode(%q) = %v", mode, err)
 		}
 	}
-	for _, mode := range []string{"", "NONE", "whileneeded", "always", "force "} {
+	for _, mode := range []string{"", "NONE", "whileneeded", "always", "force"} {
 		if err := VerifyRerouteMode(mode); err == nil {
 			t.Errorf("VerifyRerouteMode(%q) unexpectedly succeeded", mode)
 		}

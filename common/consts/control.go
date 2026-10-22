@@ -17,10 +17,12 @@ const (
 
 type RerouteMode string
 
+// Rerouting uses a verified sniffed domain. WhilePossible also admits flows of
+// a group that has no connectivity, whose sniffed domain may route elsewhere.
 const (
-	RerouteMode_None      RerouteMode = "none"
-	RerouteMode_WhileNeed RerouteMode = "while_needed"
-	RerouteMode_Force     RerouteMode = "force"
+	RerouteMode_None          RerouteMode = "none"
+	RerouteMode_WhileNeed     RerouteMode = "while_needed"
+	RerouteMode_WhilePossible RerouteMode = "while_possible"
 )
 
 func VerifySniffVerifyMode(mode string) error {
@@ -34,7 +36,7 @@ func VerifySniffVerifyMode(mode string) error {
 
 func VerifyRerouteMode(mode string) error {
 	switch mode {
-	case "none", "while_needed", "force":
+	case "none", "while_needed", "while_possible":
 		return nil
 	default:
 		return fmt.Errorf("unsupported reroute mode: %v", mode)

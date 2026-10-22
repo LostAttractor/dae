@@ -316,7 +316,7 @@ routing {
 	if !g.DialTargetOverride {
 		t.Errorf("DialTargetOverride should default to true")
 	}
-	if g.RerouteMode != consts.RerouteMode_WhileNeed {
+	if g.RerouteMode != consts.RerouteMode_WhilePossible {
 		t.Errorf("RerouteMode: got %v", g.RerouteMode)
 	}
 	if g.SniffVerifyMode != consts.SniffVerifyMode_Loose {
@@ -334,9 +334,6 @@ routing {
 	if g.MetricsPort != 0 {
 		t.Errorf("MetricsPort: got %v", g.MetricsPort)
 	}
-	if !g.NoConnectivityTrySniff {
-		t.Errorf("NoConnectivityTrySniff should default to true")
-	}
 	if g.NoConnectivityBehavior != "block" {
 		t.Errorf("NoConnectivityBehavior: got %v", g.NoConnectivityBehavior)
 	}
@@ -348,10 +345,9 @@ routing {
 func TestNew_GlobalExplicitValues(t *testing.T) {
 	conf := parseConfig(t, `
 global {
-	reroute_mode: force
+	reroute_mode: while_needed
 	sniff_verify_mode: strict
 	dial_target_override: false
-	no_connectivity_try_sniff: false
 	no_connectivity_behavior: direct
 	check_interval: 45s
 	check_interval_max: 10m
@@ -364,7 +360,7 @@ routing {
 }
 `)
 	g := conf.Global
-	if g.RerouteMode != consts.RerouteMode_Force {
+	if g.RerouteMode != consts.RerouteMode_WhileNeed {
 		t.Errorf("RerouteMode: got %v", g.RerouteMode)
 	}
 	if g.SniffVerifyMode != consts.SniffVerifyMode_Strict {
@@ -372,9 +368,6 @@ routing {
 	}
 	if g.DialTargetOverride {
 		t.Errorf("DialTargetOverride should be false")
-	}
-	if g.NoConnectivityTrySniff {
-		t.Errorf("NoConnectivityTrySniff should be false")
 	}
 	if g.NoConnectivityBehavior != "direct" {
 		t.Errorf("NoConnectivityBehavior: got %v", g.NoConnectivityBehavior)

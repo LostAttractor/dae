@@ -346,7 +346,7 @@ func TestDiagnosticsExplicitTargetRewritesBeforeRouting(t *testing.T) {
 
 func TestDiagnosticsRemovingBindingDoesNotRetainHostnameTrust(t *testing.T) {
 	c := diagnosticPlane(t, "domain(full: target.example) -> block\ndport(443) -> proxy", "")
-	c.sniffVerifyMode, c.rerouteMode, c.noConnectivityTrySniff = consts.SniffVerifyMode_Loose, consts.RerouteMode_Force, true
+	c.sniffVerifyMode, c.rerouteMode = consts.SniffVerifyMode_Loose, consts.RerouteMode_WhilePossible
 	request := diagnosticRequest()
 	request.Flow.SNI = new("target.example")
 	ip := netip.MustParseAddr(request.Flow.Destination.IP)
