@@ -54,11 +54,14 @@ func planRoute(f routeFacts) routePlan {
 	case f.mode == consts.RerouteMode_WhileNeed:
 		reroute = f.shouldReroute
 	}
-	if reroute == predicateUnknown || f.verified == predicateUnknown && (reroute == predicateMatch || f.dialOverride) {
+	// A direct flow that keeps its route dials the client's address, so only a
+	// reroute or a proxy's dial target needs the hostname verified.
+	override := f.dialOverride && (reroute == predicateMatch || f.outbound != consts.OutboundDirect)
+	if reroute == predicateUnknown || f.verified == predicateUnknown && (reroute == predicateMatch || override) {
 		p.action = routeUnknown
 		return p
 	}
-	p.override = f.dialOverride && f.verified == predicateMatch
+	p.override = override && f.verified == predicateMatch
 	if reroute == predicateMatch {
 		switch {
 		case p.target:

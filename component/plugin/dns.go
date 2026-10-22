@@ -191,11 +191,12 @@ type DNSResolver interface {
 	ResolveDNS(context.Context, *DNSExchange, []string) (*DNSResponse, error)
 }
 
-// DNSAddressPolicy can preserve an already selected DNS IP when dialing an
-// intercepted flow. It never captures traffic or invents a destination. The
+// DNSAddressPolicy decides whether a proxied intercepted flow dials its DNS
+// address instead of sending the sniffed name. Direct flows always dial the
+// client's address. It never captures traffic or invents a destination. The
 // first applicable policy wins, including an applicable false decision.
 type DNSAddressPolicy interface {
-	UseDNSAddress(host string, proxy bool) (use, applicable bool)
+	UseDNSAddress(host string) (use, applicable bool)
 }
 
 // An empty name/type list matches everything; an empty Plan.DNS matches no

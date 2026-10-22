@@ -17,9 +17,8 @@ func TestHostDNSAndLiteralDestinationPlans(t *testing.T) {
 		if len(plan.Destinations) != 1 || len(plan.DNS) != 1 || len(module.DNSHosts) != 1 || len(module.Warnings) != 0 {
 			t.Fatalf("domain Host must be DNS-only: module=%+v plan=%+v", module, plan)
 		}
-		direct, directMatch := engine.UseDNSAddress("example.com", false)
-		proxy, proxyMatch := engine.UseDNSAddress("example.com", true)
-		if !directMatch || !proxyMatch || !direct || proxy != (enabled == "true") {
+		proxy, proxyMatch := engine.UseDNSAddress("example.com")
+		if !proxyMatch || proxy != (enabled == "true") {
 			t.Fatal("Host proxy address policy lost")
 		}
 	}

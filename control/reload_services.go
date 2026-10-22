@@ -77,8 +77,8 @@ func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM) error {
 // SetAPIKey is called after both API transports have drained.
 func (c *planeAPI) SetAPIKey(key string) { c.apiKey = key }
 
-func (c *planeHTTP) useDNSAddress(name string, proxy bool) bool {
+func (c *planeHTTP) useDNSAddress(name string) bool {
 	c.mitmMu.RLock()
 	defer c.mitmMu.RUnlock()
-	return c.mitmHost.UseDNSAddress(name, proxy)
+	return c.mitmHost.UseDNSAddress(name)
 }

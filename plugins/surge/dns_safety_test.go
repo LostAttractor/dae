@@ -189,10 +189,10 @@ func TestSurgeHostPolicyFollowsFirstMatchingInstance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if response.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.1" || host.UseDNSAddress("example.com", true) != enabled {
+		if response.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.1" || host.UseDNSAddress("example.com") != enabled {
 			t.Fatal("shadowed Host changed the winning entry's proxy policy")
 		}
-		if host.UseDNSAddress("other.example", true) != !enabled || host.UseDNSAddress("absent.example", true) {
+		if host.UseDNSAddress("other.example") != !enabled || host.UseDNSAddress("absent.example") {
 			t.Fatal("nonmatching instance stopped policy lookup")
 		}
 	}

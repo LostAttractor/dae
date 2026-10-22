@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"encoding/json/v2"
+	"net"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/macaddr"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -425,5 +427,23 @@ func TestDiagnosticsHTTPAdmissionUsesCurrentAndAssumedClientPolicy(t *testing.T)
 	result, err = plane.Explain(t.Context(), request, false)
 	if err != nil || result.Current.Decision.Complete || !slices.Contains(result.Current.Decision.Missing, "mitm_client_identity") {
 		t.Fatalf("unknown identity guessed HTTP admission: %+v %v", result, err)
+	}
+}
+
+// A destination rule that captures a flow but does not rewrite it leaves the
+// dial target to the sniffed name, as in live routing.
+func TestDiagnosticsUnmatchedDestinationRuleDialsName(t *testing.T) {
+	c := diagnosticPlane(t, "dport(443) -> proxy", "domain(full: other.example) -> dnat(203.0.113.20)")
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	c.outbounds = []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}
+	c.dialTargetOverride = true
+	request := diagnosticRequest()
+	request.Flow.SNI = new("named.example")
+	// The address answered both names, so the kernel captures the flow.
+	request.Compare = &api.DiagnosticAssumptions{Bindings: []api.DiagnosticBinding{{IP: request.Flow.Destination.IP, Domains: []string{"named.example", "other.example"}}}}
+	response, err := c.Explain(t.Context(), request, false)
+	decision := response.Compared.Decision
+	if err != nil || decision.Outbound != "proxy" || !slices.Equal(decision.Targets, []string{"named.example:443"}) {
+		t.Fatalf("dial target: %+v, %v", decision, err)
 	}
 }

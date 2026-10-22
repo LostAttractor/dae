@@ -23,7 +23,7 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 
 因此，当 DNS 请求无法通过 dae 时，基于 domain 的分流将会失效。
 
-> dae 在用户空间对已导入的流量进行域名嗅探。`dial_target_override`（默认 `true`）控制是否使用通过验证的嗅探域名覆盖拨号目标，使代理服务器能够重新解析域名；`sniff_verify_mode`（默认 `loose`）控制域名与 DNS 记录的验证方式。
+> dae 在用户空间对已导入的流量进行域名嗅探。`dial_target_override`（默认 `true`）控制代理连接是否使用通过验证的嗅探域名作为拨号目标，使代理服务器能够重新解析域名；direct 连接始终拨号客户端选择的目标 IP，地址族由客户端选择，客户端尝试的每个地址都经过路由；`sniff_verify_mode`（默认 `loose`）控制域名与 DNS 记录的验证方式。
 >
 > `reroute_mode`（默认 `while_needed`）控制是否根据用户态补充的信息重新匹配路由；`force` 强制重新匹配已进入用户态的流量，`none` 保留有效的内核路由决定。域名嗅探和重新匹配路由不扩大内核捕获范围。
 

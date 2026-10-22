@@ -29,6 +29,8 @@ func TestRoutePlanEvidenceAndCapture(t *testing.T) {
 		{"unknown trust needed by target", routeFacts{destination: true, verified: predicateUnknown}, routePlan{action: routeUnknown, target: true}},
 		{"unknown trust needed by override", routeFacts{outbound: 2, verified: predicateUnknown, dialOverride: true}, routePlan{action: routeUnknown}},
 		{"unused unknown trust is irrelevant", routeFacts{outbound: 2, verified: predicateUnknown}, routePlan{}},
+		{"kept direct route needs no trust", routeFacts{outbound: consts.OutboundDirect, mode: consts.RerouteMode_None, verified: predicateUnknown, dialOverride: true}, routePlan{}},
+		{"kept direct route dials the client address", routeFacts{outbound: consts.OutboundDirect, mode: consts.RerouteMode_None, verified: predicateMatch, dialOverride: true}, routePlan{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := planRoute(test.facts); got != test.want {

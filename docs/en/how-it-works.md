@@ -25,7 +25,7 @@ Despite these challenges, this approach is already an optimal solution compared 
 
 Hence, if DNS requests cannot pass through dae, domain-based splitting will not succeed.
 
-> dae sniffs domains in traffic already admitted to userspace. `dial_target_override` (default `true`) controls whether a verified sniffed domain replaces the dial target, allowing the proxy server to resolve it again. `sniff_verify_mode` (default `loose`) controls verification against DNS records.
+> dae sniffs domains in traffic already admitted to userspace. `dial_target_override` (default `true`) controls whether a verified sniffed domain replaces the dial target of proxied connections, allowing the proxy server to resolve it again. Direct connections always dial the destination IP the client chose, so the client selects the address family and every address it tries is routed. `sniff_verify_mode` (default `loose`) controls verification against DNS records.
 >
 > `reroute_mode` (default `while_needed`) controls whether information obtained in userspace triggers a new routing evaluation. `force` reevaluates traffic already in userspace; `none` preserves valid kernel routing decisions. Domain sniffing and rerouting do not expand kernel capture predicates.
 

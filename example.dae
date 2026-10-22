@@ -97,11 +97,13 @@ global {
 
     ##### Connecting options.
 
-    # Use the sniffed domain to override the dial target (destination) when it is available and verified.
+    # Use the sniffed domain as the dial target of proxied connections when it is available and verified.
     # This will relieve DNS pollution problem to a great extent if you have impure DNS environment. Generally,
     # it brings faster proxy response time because the proxy will re-resolve the domain in remote, thus get
-    # better IP result to connect. Set it false to dial using the destination IP. Explicit DNAT/Host IP
-    # rewrites take precedence over this option. Sniffing will be disabled if reroute_mode is also "none".
+    # better IP result to connect. Set it false to dial using the destination IP. Direct connections always
+    # dial the destination IP the client chose, so the client selects the address family and every address
+    # it tries is routed. Explicit DNAT/Host IP rewrites take precedence over this option. Sniffing will be
+    # disabled if reroute_mode is also "none".
     dial_target_override: true
 
     # Whether to re-route traffic using the sniffed domain. Optional values:

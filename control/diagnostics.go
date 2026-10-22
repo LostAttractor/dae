@@ -493,10 +493,15 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 	}
 	facts := routeFacts{outbound: evaluation.outbound, capture: evaluation.captureFlags, destination: !input.kernel, mode: c.rerouteMode, dialOverride: c.dialTargetOverride}
 	targetRoute := planRoute(facts).target
+	// As in live routing, only a rewritten target is explicit and never dials
+	// the sniffed name.
+	rewritten := false
 	if targetRoute {
-		if complete, err := c.explainDestination(ctx, s, &input, hostname, missing, &result); err != nil || !complete {
+		complete, selected, err := c.explainDestination(ctx, s, &input, hostname, missing, &result)
+		if err != nil || !complete {
 			return result, err
 		}
+		rewritten = selected
 	}
 
 	plan, verified, needs := c.diagnosticRoutePlan(request, s, ingressDestination, hostname, noSniff, missing, facts)
@@ -533,16 +538,12 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		decision.Verdict = "drop"
 		return result, nil
 	}
-	if plan.override && input.l4proto == consts.L4ProtoType_TCP && !targetRoute {
-		decision.Targets = []string{net.JoinHostPort(hostname, fmt.Sprint(input.dst.Port()))}
-		if host := c.MITMHost(); host != nil && host.UseDNSAddress(hostname, evaluation.outbound != consts.OutboundDirect) {
-			decision.Targets = []string{input.dst.String()}
-		}
-	}
 	networkIndex := diagnosticNetworkIndex(input.l4proto, consts.IpVersionFromAddr(input.dst.Addr()))
+	degraded := false
 	if outbound, exists := s.networks[networkIndex][uint8(evaluation.outbound)]; exists {
 		result.Outbounds = append(result.Outbounds, outbound)
 		if !outbound.Available && evaluation.outbound >= consts.OutboundUserDefinedMin {
+			degraded = true
 			decision.OriginalOutbound, decision.Outbound = decision.Outbound, s.names[uint8(c.noConnectivityOutbound)]
 			result.Notes = append(result.Notes, "No usable node in the sampled state; automatic recovery can change the next connection's choice.")
 			if c.noConnectivityOutbound == consts.OutboundBlock {
@@ -550,17 +551,23 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 			}
 		}
 	}
+	// A degraded connection dials the client's address like any direct one.
+	if !degraded && c.dialsName(plan.override, evaluation.outbound, input.l4proto, hostname, rewritten) {
+		decision.Targets = []string{net.JoinHostPort(hostname, fmt.Sprint(input.dst.Port()))}
+	}
 	return result, ctx.Err()
 }
 
-func (c *ControlPlane) explainDestination(ctx context.Context, s *diagnosticState, input *routingInput, hostname string, missing map[string]bool, result *api.ExplainResult) (bool, error) {
+// explainDestination reports whether the destination is known and whether a
+// rule rewrote it.
+func (c *ControlPlane) explainDestination(ctx context.Context, s *diagnosticState, input *routingInput, hostname string, missing map[string]bool, result *api.ExplainResult) (complete, rewritten bool, err error) {
 	decision := &result.Decision
 	for i, entry := range s.matcher.destinationProgram(input.profileID).predicates {
 		p := *input
 		p.kernel, p.domain, p.domainBitmap, p.domainBumpBitmap, p.stage = false, hostname, nil, nil, routeFromIngress
 		matched, trace, needs, _, err := s.matcher.explainSpans(ctx, []routingSpan{entry.span}, p, missing, s.names, fmt.Sprintf("destination/%d", i))
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		for j := range trace {
 			for _, ip := range entry.targets {
@@ -574,7 +581,7 @@ func (c *ControlPlane) explainDestination(ctx context.Context, s *diagnosticStat
 		result.Steps = append(result.Steps, trace...)
 		if len(needs) != 0 {
 			decision.Complete, decision.Missing = false, needs
-			return false, nil
+			return false, false, nil
 		}
 		if entry.domain && hostname == "" || !matched.matched {
 			continue
@@ -590,12 +597,12 @@ func (c *ControlPlane) explainDestination(ctx context.Context, s *diagnosticStat
 		if len(entry.targets) != 1 {
 			decision.Complete, decision.Outbound = false, ""
 			result.Notes = append(result.Notes, "Random destination candidates are listed; no target was selected.")
-			return false, nil
+			return false, false, nil
 		}
 		input.dst = netip.MustParseAddrPort(decision.Targets[0])
-		break
+		return true, true, nil
 	}
-	return true, nil
+	return true, false, nil
 }
 
 func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRequest, state *diagnosticState, result *api.ExplainResult, dns bool) bool {

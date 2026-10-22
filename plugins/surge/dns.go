@@ -42,12 +42,12 @@ func (e *Engine) findDNSHost(name string) (*Module, *HostEntry) {
 	return nil, nil
 }
 
-func (e *Engine) UseDNSAddress(name string, proxy bool) (use, applicable bool) {
+func (e *Engine) UseDNSAddress(name string) (use, applicable bool) {
 	module, host := e.findDNSHost(name)
 	if host == nil {
 		return false, false
 	}
-	if proxy && !module.UseHostsForProxy {
+	if !module.UseHostsForProxy {
 		return false, true
 	}
 	for range 16 {

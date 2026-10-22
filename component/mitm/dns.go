@@ -107,7 +107,9 @@ func (h *Host) ObserveDNS(ctx context.Context, request *plugin.DNSExchange, resp
 	}
 }
 
-func (h *Host) UseDNSAddress(host string, proxy bool) bool {
+// UseDNSAddress reports whether a proxied flow to host dials its DNS address
+// instead of sending the sniffed name.
+func (h *Host) UseDNSAddress(host string) bool {
 	if h == nil {
 		return false
 	}
@@ -121,7 +123,7 @@ func (h *Host) UseDNSAddress(host string, proxy bool) bool {
 	defer h.requests.Done()
 	for _, instance := range h.instances {
 		if policy, ok := instance.Plugin.(plugin.DNSAddressPolicy); ok {
-			if use, applicable := policy.UseDNSAddress(host, proxy); applicable {
+			if use, applicable := policy.UseDNSAddress(host); applicable {
 				return use
 			}
 		}

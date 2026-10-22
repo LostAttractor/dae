@@ -71,8 +71,19 @@ func (o *DialOption) trafficAttribution() (stats.Path, bool) {
 	return o.Dialer.StatsPath(o.Outbound.Name, &o.NetworkType), o.OriginalOutbound != nil
 }
 
+// dialsName reports whether a connection allowed to override its dial target
+// dials its sniffed name. Only a proxy receives the name, to resolve it
+// remotely. A direct connection dials the address the client chose, so the
+// client selects its address family and every address it tries is routed. UDP
+// relays keep IPs: sniffed QUIC hostnames break full-cone reply addressing. An
+// explicit destination always applies.
+func (c *ControlPlane) dialsName(override bool, outbound consts.OutboundIndex, l4proto consts.L4ProtoType, name string, explicit bool) bool {
+	return override && !explicit && outbound != consts.OutboundDirect && l4proto != consts.L4ProtoType_UDP && !c.useDNSAddress(name)
+}
+
 // selectDialOption applies the configured node policy and no-connectivity
-// fallback after routing has selected an outbound.
+// fallback after routing has selected an outbound. A fallback connection
+// dials the client's address like any direct connection.
 func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
@@ -81,22 +92,18 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	selectedOutbound := c.outbounds[outboundIndex]
-	// UDP relays use IPs; replacing them with sniffed QUIC hostnames breaks
-	// full-cone reply addressing. Explicit destination IP rewrites remain applicable.
-	override = override && p.networkType.L4Proto != consts.L4ProtoStr_UDP
-	if c.useDNSAddress(p.Domain, outboundIndex != consts.OutboundDirect) {
-		override = false
+	override = c.dialsName(override, outboundIndex, p.networkType.L4Proto.ToL4ProtoType(), p.Domain, p.destination.IsValid())
+	target := func(override bool) (string, common.NetworkType, bool) {
+		dialTarget := p.dialTarget(override)
+		networkType := p.networkType
+		address, err := netip.ParseAddrPort(dialTarget)
+		if err == nil {
+			networkType.IpVersion = consts.IpVersionStrFromAddr(address.Addr())
+		}
+		return dialTarget, networkType, err == nil
 	}
-	dialTarget := p.dialTarget(override)
-	target, ipErr := netip.ParseAddrPort(dialTarget)
-	networkType := p.networkType
-	if ipErr == nil {
-		networkType.IpVersion = consts.IpVersionStrFromAddr(target.Addr())
-	}
-	selection, err := selectedOutbound.SelectConnection(
-		networkType,
-		ipErr == nil,
-	)
+	dialTarget, networkType, ip := target(override)
+	selection, err := selectedOutbound.SelectConnection(networkType, ip)
 	selectedOutboundIndex := outboundIndex
 	var originalOutbound *outbound.DialerGroup
 	if err != nil {
@@ -109,6 +116,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		originalOutbound = selectedOutbound
 		selectedOutboundIndex = c.noConnectivityOutbound
 		selectedOutbound = c.outbounds[selectedOutboundIndex]
+		dialTarget, networkType, _ = target(false)
 		selection.Network = networkType
 		selection.Dialer, err = selectedOutbound.Select(&selection.Network)
 		if err != nil {
