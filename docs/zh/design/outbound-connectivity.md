@@ -80,6 +80,8 @@ HTTP/2 与 QUIC 连接池使用 `netproxy.PoolState` 聚合成员可用性、容
 
 不可用状态分为两种：内核直接降级，或交给用户态决定。默认 `reroute_mode: while_possible` 时，不可用组的流量始终交给用户态，以便可信的嗅探名称把它重路由到可用出口，仍不可用时按 `no_connectivity_behavior` 降级；代价是组不可用期间这部分流量的用户态处理。`while_needed` 或 `none` 时，自动选择的组尚未选出节点且此前没有选举失败时（启动期，包括 `check_async` 的组），发布为选举中：内核把流量交给用户态，用户态等待选举结果，失败后再降级。其他情况下普通代理流量由内核直接降级：`block` 丢弃，`direct` 在内核直连转发，不进入用户态；分片首片与完整报文规则相同。DNS 与捕获流量始终由用户态按同一状态降级。带 `skip_while_noalive` 的规则只在目标可用时匹配，按流量的地址族判断，选举中同样跳过，不触发降级。
 
+开启 `dial_target_override` 时，代理把嗅探到的 TCP 名称经任一地址族拨出。因此即使不是 `while_possible`，组在一个 TCP 地址族不可用、另一族可用时，该族的流量仍交给用户态：嗅探到可信名称的流量经另一地址族的节点代理，没有名称的流量在用户态按 `no_connectivity_behavior` 降级。另一族的可用性变化时，该族的发布状态随之更新。UDP 中继保留客户端地址，不受影响。
+
 降级连接属于原组对应网络类型的 fallback 代次。组的 `reselect_behavior` 或全局 `route_change_behavior` 为 `close` 时，代次可以结束：`route_change_behavior: close` 下恢复、`reselect_behavior: close` 下改选，以及任一策略下删除组，都会关闭旧代次的用户态 relay。内核直连的 fallback 流在 TCP 流状态和 UDP 路由缓存中记录代次令牌，代次结束时令牌从共享集合撤销，后续报文按失效处理，具体行为见[Relay 生命周期与恢复](../development/relay-error-recovery.md)。已发布的代次结束、替代代次尚未发布时（例如 reload 交接期间），新流交给用户态降级，不加入已结束的代次。策略均为 `keep` 时不分配令牌，内核 fallback 流持续到自然结束；reload 改为 `keep` 时，此前带令牌的连接不再随恢复或改选结束，但仍随删除组结束。令牌集合只属于当前进程，令牌从随机起点分配，重启后带令牌的旧流结束；集合已满时新流不带令牌并记录警告。TCP 流状态表按 LRU 淘汰，被淘汰的空闲流不再受代次约束，持续到自然结束。
 
 状态先发布、旧代次后结束：恢复时内核先按原组路由新流；改选或 reload 交接时先发布新代次，新流不会加入即将结束的代次。

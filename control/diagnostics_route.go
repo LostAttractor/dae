@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 )
 
@@ -16,8 +17,9 @@ func (c *ControlPlane) diagnosticHandoffState(input routingInput, evaluation rou
 		return outboundConnectivityAlive
 	}
 	id := uint8(evaluation.outbound)
-	admitted := s.electing[id] || c.rerouteMode == consts.RerouteMode_WhilePossible
-	return encodeOutboundConnectivity(s.connectivity[s.network][id], admitted, c.noConnectivityOutbound)
+	available := func(network common.NetworkIndex) bool { return s.connectivity[network][id] }
+	admitted := admitsUnavailable(s.network, s.electing[id], available, c.rerouteMode == consts.RerouteMode_WhilePossible, c.dialTargetOverride)
+	return encodeOutboundConnectivity(available(s.network), admitted, c.noConnectivityOutbound)
 }
 
 // Sample evidence without running the resolver or refreshing DNS retention.

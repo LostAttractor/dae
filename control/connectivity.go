@@ -48,6 +48,28 @@ func encodeOutboundConnectivity(alive, admitted bool, noConnectivityOutbound con
 	}
 }
 
+// tcpPeer returns the other family of a TCP network. A proxy dials a sniffed
+// TCP name over either family; UDP relays keep the client's address.
+func tcpPeer(network common.NetworkIndex) common.NetworkIndex {
+	switch network {
+	case common.NetworkTCP4:
+		return common.NetworkTCP6
+	case common.NetworkTCP6:
+		return common.NetworkTCP4
+	}
+	return common.NetworkInvalid
+}
+
+// admitsUnavailable reports whether flows to a group unavailable on a network
+// enter userspace instead of degrading in the kernel. They wait for an
+// election that has not failed yet; reroute_mode while_possible admits every
+// flow to try a sniffed name; and with dial_target_override, a group available
+// on the TCP peer family admits flows that may carry a name.
+func admitsUnavailable(network common.NetworkIndex, electing bool, available func(common.NetworkIndex) bool, whilePossible, dialTargetOverride bool) bool {
+	peer := tcpPeer(network)
+	return electing || whilePossible || dialTargetOverride && peer.Valid() && available(peer)
+}
+
 // The kernel forwards a group's direct fallback itself. Its token ties those
 // flows to the group's fallback generation, so connection policies end them
 // with the generation's relays.
@@ -59,10 +81,13 @@ func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivit
 	return value
 }
 
-// Flows to an unavailable group enter userspace instead of degrading in the
-// kernel while they wait for an election that has not failed yet, and with
-// reroute_mode while_possible, to try a sniffed name.
-func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, whilePossible bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
+func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName string, whilePossible, dialTargetOverride bool, noConnectivityOutbound consts.OutboundIndex) func(outbound.Connectivity) error {
+	// The latest update per network. A TCP family's state depends on its
+	// peer's availability, so an update can republish the peer.
+	var latest [common.NetworkTypeCount]*outbound.Connectivity
+	available := func(network common.NetworkIndex) bool {
+		return latest[network] != nil && latest[network].Available
+	}
 	return func(update outbound.Connectivity) error {
 		c.outboundCallbackMu.Lock()
 		defer c.outboundCallbackMu.Unlock()
@@ -81,14 +106,26 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 			}).Debugf("Outbound <%v> %v -> %v", outboundName, networkType.String(), state)
 		}
 
-		key := bpfOutboundConnectivityQuery{
-			Outbound:  id,
-			L4proto:   networkType.L4Proto.ToL4Proto(),
-			Ipversion: networkType.IpVersion.ToIpVersion(),
+		index := networkType.Index()
+		previous := latest[index]
+		latest[index] = &update
+		networks := []common.NetworkIndex{index}
+		if peer := tcpPeer(index); peer.Valid() && latest[peer] != nil {
+			networks = append(networks, peer)
 		}
-		value := c.outboundConnectivityValue(update, update.Electing || whilePossible, noConnectivityOutbound)
-		wasAvailable := c.anyOutboundAvailable(networkType.Index())
-		if err := c.writeOutboundConnectivity(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity{key: value}); err != nil {
+		values := make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity, len(networks))
+		for _, network := range networks {
+			key := bpfOutboundConnectivityQuery{
+				Outbound:  id,
+				L4proto:   network.NetworkType().L4Proto.ToL4Proto(),
+				Ipversion: network.NetworkType().IpVersion.ToIpVersion(),
+			}
+			admitted := admitsUnavailable(network, latest[network].Electing, available, whilePossible, dialTargetOverride)
+			values[key] = c.outboundConnectivityValue(*latest[network], admitted, noConnectivityOutbound)
+		}
+		wasAvailable := c.anyOutboundAvailable(index)
+		if err := c.writeOutboundConnectivity(values); err != nil {
+			latest[index] = previous
 			return fmt.Errorf("publish %s connectivity for %s: %w", networkType, outboundName, err)
 		}
 		// A recovery from no usable outbound at all rechecks the others.

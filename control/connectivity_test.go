@@ -80,7 +80,7 @@ func TestOutboundConnectivityMapUsesNetworkKey(t *testing.T) {
 // a user-defined outbound.
 func publishTestConnectivity(t *testing.T, core *controlPlaneCore, id uint8) func(common.NetworkIndex, bool) {
 	t.Helper()
-	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, false, consts.OutboundBlock)
 	return func(network common.NetworkIndex, available bool) {
 		t.Helper()
 		if err := callback(outbound.Connectivity{Network: network.NetworkType(), Available: available}); err != nil {
@@ -162,7 +162,7 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	var recoveries int
 	core.setOutboundRecoveryCallback(func() { recoveries++ })
 	id := uint8(consts.OutboundUserDefinedMin)
-	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, false, consts.OutboundBlock)
 	tcp4 := &common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	udp6 := &common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6}
 	for _, available := range []bool{false, true, false} {
@@ -197,6 +197,43 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	}
 }
 
+// A proxy dials a sniffed TCP name over either family, so a family the group
+// cannot serve admits flows to userspace while its TCP peer is available.
+func TestUnavailableTCPFamilyAdmitsNamesForItsPeer(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		core := &controlPlaneCore{
+			closed:                     context.Background(),
+			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+		}
+		id := uint8(consts.OutboundUserDefinedMin)
+		callback := core.outboundAliveChangeCallback(id, "proxy", false, override, consts.OutboundBlock)
+		state := func(network common.NetworkIndex) uint32 {
+			key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: network.NetworkType().L4Proto.ToL4Proto(), Ipversion: network.NetworkType().IpVersion.ToIpVersion()}
+			return core.outboundConnectivityValues[key].State
+		}
+		publish := func(network common.NetworkIndex, available bool) {
+			if err := callback(outbound.Connectivity{Network: network.NetworkType(), Available: available}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		named := outboundConnectivityNoAliveBlock
+		if override {
+			named = outboundConnectivityNoAliveUserspace
+		}
+		publish(common.NetworkTCP4, false)
+		publish(common.NetworkUDP4, false)
+		publish(common.NetworkUDP6, true)
+		publish(common.NetworkTCP6, true)
+		if state(common.NetworkTCP4) != named || state(common.NetworkUDP4) != outboundConnectivityNoAliveBlock {
+			t.Fatalf("override=%v: tcp4=%d udp4=%d with an available peer", override, state(common.NetworkTCP4), state(common.NetworkUDP4))
+		}
+		publish(common.NetworkTCP6, false)
+		if state(common.NetworkTCP4) != outboundConnectivityNoAliveBlock || state(common.NetworkTCP6) != outboundConnectivityNoAliveBlock {
+			t.Fatalf("override=%v: tcp4=%d tcp6=%d without an available family", override, state(common.NetworkTCP4), state(common.NetworkTCP6))
+		}
+	}
+}
+
 // Flows wait in userspace for an election that has not failed yet. With
 // reroute_mode while_possible every flow of an unavailable group tries a name.
 func TestUnavailableGroupAdmission(t *testing.T) {
@@ -206,7 +243,7 @@ func TestUnavailableGroupAdmission(t *testing.T) {
 			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
 		}
 		id := uint8(consts.OutboundUserDefinedMin)
-		callback := core.outboundAliveChangeCallback(id, "proxy", whilePossible, consts.OutboundDirect)
+		callback := core.outboundAliveChangeCallback(id, "proxy", whilePossible, false, consts.OutboundDirect)
 		key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_UDP, Ipversion: 4}
 		for _, electing := range []bool{true, false} {
 			if err := callback(outbound.Connectivity{Network: common.NetworkUDP4.NetworkType(), Electing: electing}); err != nil {
@@ -249,7 +286,7 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 	if err := m.Update(key, bpfOutboundConnectivity{State: outboundConnectivityNoAliveDirect}, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
-	callback := core.outboundAliveChangeCallback(id, "proxy", false, consts.OutboundBlock)
+	callback := core.outboundAliveChangeCallback(id, "proxy", false, false, consts.OutboundBlock)
 	network := &common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	if err := callback(outbound.Connectivity{Network: network, Available: true}); err != nil {
 		t.Fatal(err)

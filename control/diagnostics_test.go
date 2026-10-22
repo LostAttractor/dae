@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -446,4 +447,26 @@ func TestDiagnosticsUnmatchedDestinationRuleDialsName(t *testing.T) {
 	if err != nil || decision.Outbound != "proxy" || !slices.Equal(decision.Targets, []string{"named.example:443"}) {
 		t.Fatalf("dial target: %+v, %v", decision, err)
 	}
+}
+
+// With dial_target_override, a group unavailable on one TCP family but
+// available on the other hands that family to userspace, as the kernel does:
+// a trusted name can reach the other family's node.
+func TestDiagnosticsHandoffAdmitsUnavailableFamilyWithServingPeer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		checked, _ := checkedPlane(t, consts.DialerSelectionPolicy_MinLastLatency, &checkedTransport{ipv6Only: true})
+		time.Sleep(time.Second)
+		synctest.Wait()
+		for _, override := range []bool{false, true} {
+			c := diagnosticPlane(t, "dport(443) -> proxy", "")
+			c.outbounds, c.noConnectivityOutbound, c.rerouteMode, c.dialTargetOverride = checked.outbounds, consts.OutboundDirect, consts.RerouteMode_WhileNeed, override
+			response, err := c.Explain(t.Context(), diagnosticRequest(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if degraded := response.Current.Decision.Verdict == "kernel_direct"; degraded == override {
+				t.Fatalf("override=%v: %+v", override, response.Current.Decision)
+			}
+		}
+	})
 }

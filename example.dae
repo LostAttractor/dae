@@ -171,7 +171,9 @@ global {
     # With the default reroute_mode "while_possible", traffic of the group still reaches the control plane,
     # so a verified sniffed domain may re-route it. Otherwise eBPF applies no_connectivity_behavior
     # immediately and forwards direct fallback traffic in the kernel, except while an automatic group elects
-    # its first node (e.g. at startup).
+    # its first node (e.g. at startup), and, with dial_target_override, for TCP traffic of an address family
+    # the group cannot serve while the other TCP family is available, so a sniffed domain is proxied over
+    # that family.
 
     # What to do with traffic when the group has no connectivity and the control plane cannot route it
     # elsewhere: "block" (default) drops it; "direct" sends it directly without proxy. In a dual-stack
