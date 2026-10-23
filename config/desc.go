@@ -63,7 +63,6 @@ var MITMDesc = Desc{
 	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Plugins handle denied reservations according to their body processing policy. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
 	"enabled":               "Enable HTTP/TLS interception. DNS plugins, routing contributions and background tasks are configured independently in plugins{}.",
 	"client_source_address": "HTTP/MITM client selection; per-device settings take precedence. Does not gate destination rules.",
-	"_":                     "Ordered named plugin instances. The section name is the instance ID; type defaults to that name. Each plugin decodes its own settings.",
 }
 
 var GlobalDesc = Desc{

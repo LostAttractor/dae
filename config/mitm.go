@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/clientmatch"
@@ -28,33 +29,17 @@ type PluginSpec struct {
 	Config  *config_parser.Section `mapstructure:"_" outline:"-"`
 }
 
-var mitmHostKeys = map[string]bool{
-	"enabled": true, "client_source_address": true, "buffer_memory_limit": true,
-}
-
 var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
 
 func parseMITM(to *MITM, section *config_parser.Section) error {
 	*to = MITM{}
-	host := &config_parser.Section{Name: section.Name}
-	bufferLimitSet := false
-	for _, item := range section.Items {
-		switch value := item.Value.(type) {
-		case *config_parser.Param:
-			if !mitmHostKeys[value.Key] {
-				return fmt.Errorf("unknown mitm setting %q", value.Key)
-			}
-			host.Items = append(host.Items, item)
-			bufferLimitSet = bufferLimitSet || value.Key == "buffer_memory_limit"
-		case *config_parser.Section:
-			return fmt.Errorf("mitm.%s: move plugin instances to plugins{}", value.Name)
-		default:
-			return fmt.Errorf("mitm: expected a transport setting")
-		}
+	if err := ParamParser(reflect.ValueOf(to), section, nil); err != nil {
+		return fmt.Errorf("mitm: %w", err)
 	}
-	if err := ParamParser(reflect.ValueOf(to), host, nil); err != nil {
-		return err
-	}
+	bufferLimitSet := slices.ContainsFunc(section.Items, func(item *config_parser.Item) bool {
+		param, ok := item.Value.(*config_parser.Param)
+		return ok && param.Key == "buffer_memory_limit"
+	})
 	if to.BufferMemoryLimit < 0 || bufferLimitSet && to.BufferMemoryLimit == 0 {
 		return fmt.Errorf("mitm.buffer_memory_limit: expected a positive byte count")
 	}
@@ -72,9 +57,6 @@ func parsePlugins(to *Plugins, section *config_parser.Section) error {
 		case *config_parser.Section:
 			if !pluginIdentifier.MatchString(value.Name) {
 				return fmt.Errorf("invalid plugin instance name %q", value.Name)
-			}
-			if mitmHostKeys[value.Name] || value.Name == "type" {
-				return fmt.Errorf("reserved plugin instance name %q", value.Name)
 			}
 			if names[value.Name] {
 				return fmt.Errorf("duplicate plugin instance %q", value.Name)

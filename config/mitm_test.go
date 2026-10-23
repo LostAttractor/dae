@@ -74,9 +74,6 @@ fallback: direct }`)
 	if round.Routing.Policies[0].Rules[0].Rule.Outbound.Name != "must" || strings.Contains(string(b), "must_rules") {
 		t.Fatal("internal action name leaked into configuration")
 	}
-	if strings.Contains(string(b), "\nsurge {") {
-		t.Fatal("legacy surge emitted alongside mitm")
-	}
 }
 
 func TestMITMConfigRejectsInvalid(t *testing.T) {
@@ -85,10 +82,7 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`mitm { buffer_memory_limit: 0 }`,
 		`mitm { buffer_memory_limit: -1 }`,
 		`mitm { unknown: true }`,
-		`mitm { surge {} surge {} }`,
-		`mitm { ../escape {} }`,
-		`mitm { x { enabled: perhaps } }`,
-		`mitm { x { type: surge type: surge } }`,
+		`mitm { surge {} }`,
 		`mitm {} surge {}`,
 		`rules { dip(192.0.2.1) -> direct }`,
 		`rules { dip(192.0.2.1) -> must(mark: 37) }`,
@@ -115,5 +109,13 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 				t.Fatal("accepted invalid configuration")
 			}
 		})
+	}
+}
+
+// Instance names share no namespace with mitm settings.
+func TestPluginInstanceNamesAreNotReserved(t *testing.T) {
+	c := parseConfig(t, "global {}\nplugins { enabled {} type { type: surge } }\nrouting { fallback: direct }")
+	if len(c.Plugins) != 2 || c.Plugins[0].Name != "enabled" || c.Plugins[1].Name != "type" || c.Plugins[1].Type != "surge" {
+		t.Fatalf("plugins = %+v", c.Plugins)
 	}
 }
