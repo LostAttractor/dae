@@ -56,19 +56,47 @@ mount /sys/fs/bpf
 
 ## 安装 dae
 
-安装程序： <https://github.com/daeuniverse/dae-installer/>
-
-此安装程序提供了一个 dae 的 OpenRC 服务脚本，安装后，您需要在 `/usr/local/etc/dae/config.dae` 中添加一个配置文件，然后将其权限设置为 600 或 640：
+从 [Releases](https://github.com/LostAttractor/dae/releases) 下载对应架构的 `dae-<target>` 可执行文件，并以 root 安装，例如：
 
 ```sh
-chmod 640 /usr/local/etc/dae/config.dae
+install -m 755 dae-linux-x86_64 /usr/local/bin/dae
+```
+
+创建 OpenRC 服务脚本 `/etc/init.d/dae`：
+
+```sh
+#!/sbin/openrc-run
+
+description="dae Service"
+command="/usr/local/bin/dae"
+command_args="run --disable-timestamp -c /etc/dae/config.dae"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/dae.log"
+error_log="/var/log/dae.log"
+rc_ulimit="-n 1048576"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    "$command" validate -c /etc/dae/config.dae
+}
+```
+
+为脚本添加执行权限，在 `/etc/dae/config.dae` 中添加一个配置文件，然后将其权限设置为 600 或 640：
+
+```sh
+chmod 755 /etc/init.d/dae
+chmod 640 /etc/dae/config.dae
 ```
 
 以 root 检查内核支持和配置，然后启动 dae：
 
 ```sh
 dae check-kernel
-dae validate -c /usr/local/etc/dae/config.dae
+dae validate -c /etc/dae/config.dae
 rc-service dae start
 ```
 

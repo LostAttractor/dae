@@ -131,80 +131,14 @@ CI 产物、Release 二进制和 Docker 镜像均不附带 Geo 数据文件，�
 
 ## 安装
 
-### Arch Linux / Manjaro
+### 预编译二进制
 
-直接从官方仓库安装 dae 即可。
-
-除此之外，针对 AVX2 优化的最新二进制包和最新 Git 版可从 [AUR](https://aur.archlinux.org) 或 [archlinuxcn](https://github.com/archlinuxcn/repo) 获取。
-
-#### 官方仓库
-
-```shell
-sudo pacman -S dae
-```
-
-#### AUR
-
-使用 `yay` 安装，或将下述命令中的 `yay` 替换为 `paru`。
-
-##### 最新稳定版 (针对 x86-64 v3 / AVX2 优化)
-
-```shell
-yay -S dae-avx2-bin
-```
-
-##### 最新 Git 版
-
-```shell
-yay -S dae-git
-```
-
-#### archlinuxcn
-
-##### 最新稳定版 (针对 x86-64 v3 / AVX2 优化)
-
-```shell
-sudo pacman -S dae-avx2-bin
-```
-
-##### 最新 Git 版
-
-```shell
-sudo pacman -S dae-git
-```
-
-安装后，使用 systemctl 对服务进行控制：
-
-```shell
-# 启动 dae
-sudo systemctl start dae
-
-# 开机自动启动 dae
-sudo systemctl enable dae
-```
-
-### Gentoo Linux
-
-dae 已发布于 [gentoo-zh](https://github.com/microcai/gentoo-zh)，可以使用 `app-eselect/eselect-repository` 启用此 overlay:
-
-```shell
-eselect repository enable gentoo-zh
-emaint sync -r gentoo-zh
-emerge -a net-proxy/dae
-```
-
-### Fedora
-
-dae 已发布于 [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae)。
-
-```shell
-sudo dnf copr enable zhullyb/v2rayA
-sudo dnf install dae
-```
+从 [Releases](https://github.com/LostAttractor/dae/releases) 下载对应平台的 `dae-<target>` 可执行文件，如 `dae-linux-x86_64`。
+以 systemd 服务安装见 [run as daemon](../en/user-guide/run-as-daemon.md)；目标平台、校验文件及 `next` 分支构建见[分发流程](../en/user-guide/build-by-yourself.md#distribution-pipeline)。
 
 ### Alpine
 
-详见 [run on alpine](../en/tutorials/run-on-alpine.md)。
+详见 [run on alpine](tutorials/run-on-alpine.md)。
 
 ### Docker
 
@@ -225,16 +159,6 @@ git clone --depth=1 --recurse-submodules https://github.com/LostAttractor/dae
 cd dae
 docker compose up -d --build
 ```
-
-### 手动安装
-
-> **Note**: 这种方法仅建议高级用户使用。采用这种方法，用户可以灵活地测试各个版本的 dae。请注意，新引入的功能有时可能存在 bug，因此请自行承担风险。
-
-dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](../en/user-guide/run-as-daemon.md)。
-
-### 安装脚本
-
-见 [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer)（或使用 [镜像站](https://hubmirror.v2raya.org/daeuniverse/dae-installer)）。
 
 ### 手动构建
 
@@ -267,7 +191,7 @@ node {
   proxy: 'socks5://127.0.0.1:1080'
 }
 
-# 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
+# 更多的 Routing 样例见 https://github.com/LostAttractor/dae/blob/next/docs/zh/configuration/routing.md
 routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
@@ -283,7 +207,7 @@ routing {
 
 通过有序的 `use` 组合 `rule_set` 片段，每个 `policy` 独立声明一个 fallback。`default: 策略名` 和接口绑定可选择同一个策略。完整说明见[路由配置](configuration/routing.md)和[拆分配置文件](configuration/separate-config.md)。
 
-完整样例：[example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae)。
+完整样例：[example.dae](../../example.dae)。
 
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
 

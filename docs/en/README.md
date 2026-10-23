@@ -141,78 +141,13 @@ install or mount them separately when needed.
 
 ## Installation
 
-### Arch Linux / Manjaro
+### Pre-compiled binaries
 
-You can install dae directly from the official repository.
-
-Alternatively, get the latest AVX2-optimized binary package or the latest Git version from [AUR](https://aur.archlinux.org) or [archlinuxcn](https://github.com/archlinuxcn/repo).
-
-#### Official Repository
-
-```shell
-sudo pacman -S dae
-```
-
-#### AUR
-
-Install with `yay`, or replace `yay` with `paru` in the commands below.
-
-##### Latest Release (Optimized Binary for x86-64 v3 / AVX2)
-
-```shell
-yay -S dae-avx2-bin
-```
-
-##### Latest Git Version
-
-```shell
-yay -S dae-git
-```
-
-#### archlinuxcn
-
-##### Latest Release (Optimized Binary for x86-64 v3 / AVX2)
-
-```shell
-sudo pacman -S dae-avx2-bin
-```
-
-##### Latest Git Version
-
-```shell
-sudo pacman -S dae-git
-```
-
-After installation, use systemctl to control it.
-
-```shell
-# start dae
-sudo systemctl start dae
-
-# auto start dae at boot
-sudo systemctl enable dae
-```
-
-### Gentoo Linux
-
-dae has been released on [gentoo-zh](https://github.com/microcai/gentoo-zh)
-
-use `app-eselect/eselect-repository` to enable this overlay:
-
-```shell
-eselect repository enable gentoo-zh
-emaint sync -r gentoo-zh
-emerge -a net-proxy/dae
-```
-
-### Fedora
-
-dae has been released on [Fedora Copr](https://copr.fedorainfracloud.org/coprs/zhullyb/v2rayA/package/dae).
-
-```shell
-sudo dnf copr enable zhullyb/v2rayA
-sudo dnf install dae
-```
+Download the `dae-<target>` executable for your platform, such as
+`dae-linux-x86_64`, from [Releases](https://github.com/LostAttractor/dae/releases).
+See [run as a daemon](user-guide/run-as-daemon.md) to install it with systemd, and
+the [distribution pipeline](user-guide/build-by-yourself.md#distribution-pipeline)
+for targets, checksums and builds of the `next` branch.
 
 ### Alpine
 
@@ -239,16 +174,6 @@ git clone --depth=1 --recurse-submodules https://github.com/LostAttractor/dae
 cd dae
 docker compose up -d --build
 ```
-
-## Manual installation
-
-> **Note**: This approach is **ONLY** recommended for `advanced` users. With this approach, users may have flexibility to test various versions of dae. Noted that newly introduced features are sometimes buggy, do it at your own risk.
-
-dae can run as a daemon (systemd) service. See [run-as-daemon](user-guide/run-as-daemon.md)
-
-### Installation Script
-
-See [daeuniverse/dae-installer](https://github.com/daeuniverse/dae-installer) (or [mirror](https://hubmirror.v2raya.org/daeuniverse/dae-installer)).
 
 ### Build from scratch
 
@@ -283,7 +208,7 @@ node {
   proxy: 'socks5://127.0.0.1:1080'
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
+# See https://github.com/LostAttractor/dae/blob/next/docs/en/configuration/routing.md for full examples.
 routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
@@ -299,7 +224,7 @@ Advanced upstream selection and response caching use optional [DNS plugins](conf
 
 Compose `rule_set` fragments with ordered `use` statements. Each `policy` declares one fallback; `default: policy_name` and interface bindings can select the same policy. See [routing](configuration/routing.md) and [separate configuration files](configuration/separate-config.md) for complete examples.
 
-See more at [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
+See more at [example.dae](../../example.dae).
 
 If you use PVE, refer to [#37](https://github.com/daeuniverse/dae/discussions/37).
 

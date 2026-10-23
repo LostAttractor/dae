@@ -57,19 +57,49 @@ metadata; use the errors to identify missing mounts or kernel features.
 
 ## Install dae
 
-Installer: <https://github.com/daeuniverse/dae-installer/>
-
-This installer offered an OpenRC service script of dae, after installation, you should add a config file to `/usr/local/etc/dae/config.dae`, then set its permission to 600 or 640:
+Download the `dae-<target>` executable for your architecture from
+[Releases](https://github.com/LostAttractor/dae/releases) and install it as root,
+for example:
 
 ```sh
-chmod 640 /usr/local/etc/dae/config.dae
+install -m 755 dae-linux-x86_64 /usr/local/bin/dae
+```
+
+Create the OpenRC service script `/etc/init.d/dae`:
+
+```sh
+#!/sbin/openrc-run
+
+description="dae Service"
+command="/usr/local/bin/dae"
+command_args="run --disable-timestamp -c /etc/dae/config.dae"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/dae.log"
+error_log="/var/log/dae.log"
+rc_ulimit="-n 1048576"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    "$command" validate -c /etc/dae/config.dae
+}
+```
+
+Make the script executable, add a config file to `/etc/dae/config.dae`, then set its permission to 600 or 640:
+
+```sh
+chmod 755 /etc/init.d/dae
+chmod 640 /etc/dae/config.dae
 ```
 
 Validate kernel support and the configuration as root, then start dae:
 
 ```sh
 dae check-kernel
-dae validate -c /usr/local/etc/dae/config.dae
+dae validate -c /etc/dae/config.dae
 rc-service dae start
 ```
 

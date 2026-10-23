@@ -24,7 +24,7 @@ Third-party forks remain pinned as Git submodules: `third_party/quic-go`,
 The Surge plugin's default QuickJS-NG backend is compiled from C sources in `third_party/quickjs-go`, a fork of [buke/quickjs-go](https://github.com/buke/quickjs-go) containing the binding integration fixes. This backend requires `CGO_ENABLED=1`, including when Surge is compiled in but disabled in configuration. The Node.js backend builds without cgo. `netgo` and `osusergo` keep Go's DNS and user lookup implementations.
 
 ```sh
-git clone --recurse-submodules https://github.com/daeuniverse/dae.git
+git clone --recurse-submodules https://github.com/LostAttractor/dae.git
 cd dae
 make
 ```
@@ -513,10 +513,10 @@ popd
 Download the example config file:
 
 ```shell
-curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
+curl -L -o example.dae https://github.com/LostAttractor/dae/raw/next/example.dae
 ```
 
-See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
+See [example.dae](../../../example.dae).
 
 After fine tuning, validate the configuration and run dae:
 

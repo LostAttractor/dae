@@ -4,7 +4,7 @@ If you want to contribute to a project and make it better, your help is very wel
 
 ## Bug Reports and Feature Requests
 
-If you have found a `bug` or have a `feature request`, please use the search first in case a similar issue already exists. If not, please create an [issue](https://github.com/daeuniverse/dae/issues/new) in this repository
+If you have found a `bug` or have a `feature request`, please use the search first in case a similar issue already exists. If not, please create an [issue](https://github.com/LostAttractor/dae/issues/new/choose) in this repository
 
 ## Code
 
