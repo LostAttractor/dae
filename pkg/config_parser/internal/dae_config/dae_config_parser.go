@@ -40,77 +40,73 @@ func dae_configParserInit() {
 		"COMMENT_LINE_SHARP", "ID", "NON_ID", "QUOTE_STRING",
 	}
 	staticData.RuleNames = []string{
-		"start", "literal", "expression", "declaration", "optAnnotation", "annotationParameter",
-		"functionPrototype", "parameter", "arrowExpression", "arrowOperand",
-		"standaloneFunction",
+		"start", "literal", "expression", "declaration", "optAnnotation", "functionPrototype",
+		"parameter", "arrowExpression", "arrowOperand", "standaloneFunction",
 	}
 	staticData.PredictionContextCache = antlr.NewPredictionContextCache()
 	staticData.serializedATN = []int32{
-		4, 1, 17, 155, 2, 0, 7, 0, 2, 1, 7, 1, 2, 2, 7, 2, 2, 3, 7, 3, 2, 4, 7,
-		4, 2, 5, 7, 5, 2, 6, 7, 6, 2, 7, 7, 7, 2, 8, 7, 8, 2, 9, 7, 9, 2, 10, 7,
-		10, 1, 0, 5, 0, 24, 8, 0, 10, 0, 12, 0, 27, 9, 0, 1, 0, 1, 0, 1, 1, 1,
-		1, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 5, 2, 40, 8, 2, 10, 2, 12,
-		2, 43, 9, 2, 1, 2, 1, 2, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 5, 3, 52, 8, 3,
-		10, 3, 12, 3, 55, 9, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 5, 3,
-		64, 8, 3, 10, 3, 12, 3, 67, 9, 3, 1, 3, 1, 3, 3, 3, 71, 8, 3, 1, 4, 1,
-		4, 1, 4, 1, 4, 5, 4, 77, 8, 4, 10, 4, 12, 4, 80, 9, 4, 3, 4, 82, 8, 4,
-		1, 4, 1, 4, 3, 4, 86, 8, 4, 1, 5, 1, 5, 1, 5, 1, 5, 3, 5, 92, 8, 5, 1,
-		6, 3, 6, 95, 8, 6, 1, 6, 1, 6, 1, 6, 1, 6, 1, 6, 5, 6, 102, 8, 6, 10, 6,
-		12, 6, 105, 9, 6, 3, 6, 107, 8, 6, 1, 6, 1, 6, 1, 7, 1, 7, 1, 7, 1, 7,
-		3, 7, 115, 8, 7, 1, 8, 1, 8, 1, 8, 1, 8, 1, 8, 5, 8, 122, 8, 8, 10, 8,
-		12, 8, 125, 9, 8, 1, 9, 1, 9, 1, 9, 1, 9, 1, 9, 5, 9, 132, 8, 9, 10, 9,
-		12, 9, 135, 9, 9, 1, 9, 1, 9, 1, 9, 1, 9, 1, 9, 5, 9, 142, 8, 9, 10, 9,
-		12, 9, 145, 9, 9, 1, 9, 1, 9, 1, 9, 3, 9, 150, 8, 9, 1, 10, 1, 10, 1, 10,
-		1, 10, 0, 0, 11, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 0, 1, 1, 0, 15,
-		17, 165, 0, 25, 1, 0, 0, 0, 2, 30, 1, 0, 0, 0, 4, 32, 1, 0, 0, 0, 6, 70,
-		1, 0, 0, 0, 8, 85, 1, 0, 0, 0, 10, 91, 1, 0, 0, 0, 12, 94, 1, 0, 0, 0,
-		14, 114, 1, 0, 0, 0, 16, 116, 1, 0, 0, 0, 18, 149, 1, 0, 0, 0, 20, 151,
-		1, 0, 0, 0, 22, 24, 3, 4, 2, 0, 23, 22, 1, 0, 0, 0, 24, 27, 1, 0, 0, 0,
-		25, 23, 1, 0, 0, 0, 25, 26, 1, 0, 0, 0, 26, 28, 1, 0, 0, 0, 27, 25, 1,
-		0, 0, 0, 28, 29, 5, 0, 0, 1, 29, 1, 1, 0, 0, 0, 30, 31, 7, 0, 0, 0, 31,
-		3, 1, 0, 0, 0, 32, 33, 5, 15, 0, 0, 33, 41, 5, 1, 0, 0, 34, 40, 3, 16,
-		8, 0, 35, 40, 3, 6, 3, 0, 36, 40, 3, 20, 10, 0, 37, 40, 3, 2, 1, 0, 38,
-		40, 3, 4, 2, 0, 39, 34, 1, 0, 0, 0, 39, 35, 1, 0, 0, 0, 39, 36, 1, 0, 0,
-		0, 39, 37, 1, 0, 0, 0, 39, 38, 1, 0, 0, 0, 40, 43, 1, 0, 0, 0, 41, 39,
-		1, 0, 0, 0, 41, 42, 1, 0, 0, 0, 42, 44, 1, 0, 0, 0, 43, 41, 1, 0, 0, 0,
-		44, 45, 5, 2, 0, 0, 45, 5, 1, 0, 0, 0, 46, 47, 7, 0, 0, 0, 47, 48, 5, 3,
-		0, 0, 48, 53, 3, 12, 6, 0, 49, 50, 5, 4, 0, 0, 50, 52, 3, 12, 6, 0, 51,
-		49, 1, 0, 0, 0, 52, 55, 1, 0, 0, 0, 53, 51, 1, 0, 0, 0, 53, 54, 1, 0, 0,
-		0, 54, 56, 1, 0, 0, 0, 55, 53, 1, 0, 0, 0, 56, 57, 3, 8, 4, 0, 57, 71,
-		1, 0, 0, 0, 58, 59, 7, 0, 0, 0, 59, 60, 5, 3, 0, 0, 60, 65, 3, 2, 1, 0,
-		61, 62, 5, 5, 0, 0, 62, 64, 3, 2, 1, 0, 63, 61, 1, 0, 0, 0, 64, 67, 1,
-		0, 0, 0, 65, 63, 1, 0, 0, 0, 65, 66, 1, 0, 0, 0, 66, 68, 1, 0, 0, 0, 67,
-		65, 1, 0, 0, 0, 68, 69, 3, 8, 4, 0, 69, 71, 1, 0, 0, 0, 70, 46, 1, 0, 0,
-		0, 70, 58, 1, 0, 0, 0, 71, 7, 1, 0, 0, 0, 72, 81, 5, 6, 0, 0, 73, 78, 3,
-		10, 5, 0, 74, 75, 5, 5, 0, 0, 75, 77, 3, 10, 5, 0, 76, 74, 1, 0, 0, 0,
-		77, 80, 1, 0, 0, 0, 78, 76, 1, 0, 0, 0, 78, 79, 1, 0, 0, 0, 79, 82, 1,
-		0, 0, 0, 80, 78, 1, 0, 0, 0, 81, 73, 1, 0, 0, 0, 81, 82, 1, 0, 0, 0, 82,
-		83, 1, 0, 0, 0, 83, 86, 5, 7, 0, 0, 84, 86, 1, 0, 0, 0, 85, 72, 1, 0, 0,
-		0, 85, 84, 1, 0, 0, 0, 86, 9, 1, 0, 0, 0, 87, 92, 3, 14, 7, 0, 88, 89,
-		5, 15, 0, 0, 89, 90, 5, 3, 0, 0, 90, 92, 3, 12, 6, 0, 91, 87, 1, 0, 0,
-		0, 91, 88, 1, 0, 0, 0, 92, 11, 1, 0, 0, 0, 93, 95, 5, 8, 0, 0, 94, 93,
-		1, 0, 0, 0, 94, 95, 1, 0, 0, 0, 95, 96, 1, 0, 0, 0, 96, 97, 7, 0, 0, 0,
-		97, 106, 5, 9, 0, 0, 98, 103, 3, 14, 7, 0, 99, 100, 5, 5, 0, 0, 100, 102,
-		3, 14, 7, 0, 101, 99, 1, 0, 0, 0, 102, 105, 1, 0, 0, 0, 103, 101, 1, 0,
-		0, 0, 103, 104, 1, 0, 0, 0, 104, 107, 1, 0, 0, 0, 105, 103, 1, 0, 0, 0,
-		106, 98, 1, 0, 0, 0, 106, 107, 1, 0, 0, 0, 107, 108, 1, 0, 0, 0, 108, 109,
-		5, 10, 0, 0, 109, 13, 1, 0, 0, 0, 110, 111, 5, 15, 0, 0, 111, 112, 5, 3,
-		0, 0, 112, 115, 3, 2, 1, 0, 113, 115, 3, 2, 1, 0, 114, 110, 1, 0, 0, 0,
-		114, 113, 1, 0, 0, 0, 115, 15, 1, 0, 0, 0, 116, 117, 3, 18, 9, 0, 117,
-		118, 5, 11, 0, 0, 118, 123, 3, 18, 9, 0, 119, 120, 5, 11, 0, 0, 120, 122,
-		3, 18, 9, 0, 121, 119, 1, 0, 0, 0, 122, 125, 1, 0, 0, 0, 123, 121, 1, 0,
-		0, 0, 123, 124, 1, 0, 0, 0, 124, 17, 1, 0, 0, 0, 125, 123, 1, 0, 0, 0,
-		126, 127, 5, 15, 0, 0, 127, 128, 5, 3, 0, 0, 128, 133, 3, 12, 6, 0, 129,
-		130, 5, 4, 0, 0, 130, 132, 3, 12, 6, 0, 131, 129, 1, 0, 0, 0, 132, 135,
-		1, 0, 0, 0, 133, 131, 1, 0, 0, 0, 133, 134, 1, 0, 0, 0, 134, 136, 1, 0,
-		0, 0, 135, 133, 1, 0, 0, 0, 136, 137, 3, 8, 4, 0, 137, 150, 1, 0, 0, 0,
-		138, 143, 3, 12, 6, 0, 139, 140, 5, 4, 0, 0, 140, 142, 3, 12, 6, 0, 141,
-		139, 1, 0, 0, 0, 142, 145, 1, 0, 0, 0, 143, 141, 1, 0, 0, 0, 143, 144,
-		1, 0, 0, 0, 144, 146, 1, 0, 0, 0, 145, 143, 1, 0, 0, 0, 146, 147, 3, 8,
-		4, 0, 147, 150, 1, 0, 0, 0, 148, 150, 3, 2, 1, 0, 149, 126, 1, 0, 0, 0,
-		149, 138, 1, 0, 0, 0, 149, 148, 1, 0, 0, 0, 150, 19, 1, 0, 0, 0, 151, 152,
-		3, 12, 6, 0, 152, 153, 3, 8, 4, 0, 153, 21, 1, 0, 0, 0, 18, 25, 39, 41,
-		53, 65, 70, 78, 81, 85, 91, 94, 103, 106, 114, 123, 133, 143, 149,
+		4, 1, 17, 147, 2, 0, 7, 0, 2, 1, 7, 1, 2, 2, 7, 2, 2, 3, 7, 3, 2, 4, 7,
+		4, 2, 5, 7, 5, 2, 6, 7, 6, 2, 7, 7, 7, 2, 8, 7, 8, 2, 9, 7, 9, 1, 0, 5,
+		0, 22, 8, 0, 10, 0, 12, 0, 25, 9, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 2, 1, 2,
+		1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 5, 2, 38, 8, 2, 10, 2, 12, 2, 41, 9, 2, 1,
+		2, 1, 2, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 5, 3, 50, 8, 3, 10, 3, 12, 3, 53,
+		9, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 5, 3, 62, 8, 3, 10, 3,
+		12, 3, 65, 9, 3, 1, 3, 1, 3, 3, 3, 69, 8, 3, 1, 4, 1, 4, 1, 4, 1, 4, 5,
+		4, 75, 8, 4, 10, 4, 12, 4, 78, 9, 4, 3, 4, 80, 8, 4, 1, 4, 1, 4, 3, 4,
+		84, 8, 4, 1, 5, 3, 5, 87, 8, 5, 1, 5, 1, 5, 1, 5, 1, 5, 1, 5, 5, 5, 94,
+		8, 5, 10, 5, 12, 5, 97, 9, 5, 3, 5, 99, 8, 5, 1, 5, 1, 5, 1, 6, 1, 6, 1,
+		6, 1, 6, 3, 6, 107, 8, 6, 1, 7, 1, 7, 1, 7, 1, 7, 1, 7, 5, 7, 114, 8, 7,
+		10, 7, 12, 7, 117, 9, 7, 1, 8, 1, 8, 1, 8, 1, 8, 1, 8, 5, 8, 124, 8, 8,
+		10, 8, 12, 8, 127, 9, 8, 1, 8, 1, 8, 1, 8, 1, 8, 1, 8, 5, 8, 134, 8, 8,
+		10, 8, 12, 8, 137, 9, 8, 1, 8, 1, 8, 1, 8, 3, 8, 142, 8, 8, 1, 9, 1, 9,
+		1, 9, 1, 9, 0, 0, 10, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 0, 1, 1, 0, 15,
+		17, 157, 0, 23, 1, 0, 0, 0, 2, 28, 1, 0, 0, 0, 4, 30, 1, 0, 0, 0, 6, 68,
+		1, 0, 0, 0, 8, 83, 1, 0, 0, 0, 10, 86, 1, 0, 0, 0, 12, 106, 1, 0, 0, 0,
+		14, 108, 1, 0, 0, 0, 16, 141, 1, 0, 0, 0, 18, 143, 1, 0, 0, 0, 20, 22,
+		3, 4, 2, 0, 21, 20, 1, 0, 0, 0, 22, 25, 1, 0, 0, 0, 23, 21, 1, 0, 0, 0,
+		23, 24, 1, 0, 0, 0, 24, 26, 1, 0, 0, 0, 25, 23, 1, 0, 0, 0, 26, 27, 5,
+		0, 0, 1, 27, 1, 1, 0, 0, 0, 28, 29, 7, 0, 0, 0, 29, 3, 1, 0, 0, 0, 30,
+		31, 5, 15, 0, 0, 31, 39, 5, 1, 0, 0, 32, 38, 3, 14, 7, 0, 33, 38, 3, 6,
+		3, 0, 34, 38, 3, 18, 9, 0, 35, 38, 3, 2, 1, 0, 36, 38, 3, 4, 2, 0, 37,
+		32, 1, 0, 0, 0, 37, 33, 1, 0, 0, 0, 37, 34, 1, 0, 0, 0, 37, 35, 1, 0, 0,
+		0, 37, 36, 1, 0, 0, 0, 38, 41, 1, 0, 0, 0, 39, 37, 1, 0, 0, 0, 39, 40,
+		1, 0, 0, 0, 40, 42, 1, 0, 0, 0, 41, 39, 1, 0, 0, 0, 42, 43, 5, 2, 0, 0,
+		43, 5, 1, 0, 0, 0, 44, 45, 7, 0, 0, 0, 45, 46, 5, 3, 0, 0, 46, 51, 3, 10,
+		5, 0, 47, 48, 5, 4, 0, 0, 48, 50, 3, 10, 5, 0, 49, 47, 1, 0, 0, 0, 50,
+		53, 1, 0, 0, 0, 51, 49, 1, 0, 0, 0, 51, 52, 1, 0, 0, 0, 52, 54, 1, 0, 0,
+		0, 53, 51, 1, 0, 0, 0, 54, 55, 3, 8, 4, 0, 55, 69, 1, 0, 0, 0, 56, 57,
+		7, 0, 0, 0, 57, 58, 5, 3, 0, 0, 58, 63, 3, 2, 1, 0, 59, 60, 5, 5, 0, 0,
+		60, 62, 3, 2, 1, 0, 61, 59, 1, 0, 0, 0, 62, 65, 1, 0, 0, 0, 63, 61, 1,
+		0, 0, 0, 63, 64, 1, 0, 0, 0, 64, 66, 1, 0, 0, 0, 65, 63, 1, 0, 0, 0, 66,
+		67, 3, 8, 4, 0, 67, 69, 1, 0, 0, 0, 68, 44, 1, 0, 0, 0, 68, 56, 1, 0, 0,
+		0, 69, 7, 1, 0, 0, 0, 70, 79, 5, 6, 0, 0, 71, 76, 3, 12, 6, 0, 72, 73,
+		5, 5, 0, 0, 73, 75, 3, 12, 6, 0, 74, 72, 1, 0, 0, 0, 75, 78, 1, 0, 0, 0,
+		76, 74, 1, 0, 0, 0, 76, 77, 1, 0, 0, 0, 77, 80, 1, 0, 0, 0, 78, 76, 1,
+		0, 0, 0, 79, 71, 1, 0, 0, 0, 79, 80, 1, 0, 0, 0, 80, 81, 1, 0, 0, 0, 81,
+		84, 5, 7, 0, 0, 82, 84, 1, 0, 0, 0, 83, 70, 1, 0, 0, 0, 83, 82, 1, 0, 0,
+		0, 84, 9, 1, 0, 0, 0, 85, 87, 5, 8, 0, 0, 86, 85, 1, 0, 0, 0, 86, 87, 1,
+		0, 0, 0, 87, 88, 1, 0, 0, 0, 88, 89, 7, 0, 0, 0, 89, 98, 5, 9, 0, 0, 90,
+		95, 3, 12, 6, 0, 91, 92, 5, 5, 0, 0, 92, 94, 3, 12, 6, 0, 93, 91, 1, 0,
+		0, 0, 94, 97, 1, 0, 0, 0, 95, 93, 1, 0, 0, 0, 95, 96, 1, 0, 0, 0, 96, 99,
+		1, 0, 0, 0, 97, 95, 1, 0, 0, 0, 98, 90, 1, 0, 0, 0, 98, 99, 1, 0, 0, 0,
+		99, 100, 1, 0, 0, 0, 100, 101, 5, 10, 0, 0, 101, 11, 1, 0, 0, 0, 102, 103,
+		5, 15, 0, 0, 103, 104, 5, 3, 0, 0, 104, 107, 3, 2, 1, 0, 105, 107, 3, 2,
+		1, 0, 106, 102, 1, 0, 0, 0, 106, 105, 1, 0, 0, 0, 107, 13, 1, 0, 0, 0,
+		108, 109, 3, 16, 8, 0, 109, 110, 5, 11, 0, 0, 110, 115, 3, 16, 8, 0, 111,
+		112, 5, 11, 0, 0, 112, 114, 3, 16, 8, 0, 113, 111, 1, 0, 0, 0, 114, 117,
+		1, 0, 0, 0, 115, 113, 1, 0, 0, 0, 115, 116, 1, 0, 0, 0, 116, 15, 1, 0,
+		0, 0, 117, 115, 1, 0, 0, 0, 118, 119, 5, 15, 0, 0, 119, 120, 5, 3, 0, 0,
+		120, 125, 3, 10, 5, 0, 121, 122, 5, 4, 0, 0, 122, 124, 3, 10, 5, 0, 123,
+		121, 1, 0, 0, 0, 124, 127, 1, 0, 0, 0, 125, 123, 1, 0, 0, 0, 125, 126,
+		1, 0, 0, 0, 126, 128, 1, 0, 0, 0, 127, 125, 1, 0, 0, 0, 128, 129, 3, 8,
+		4, 0, 129, 142, 1, 0, 0, 0, 130, 135, 3, 10, 5, 0, 131, 132, 5, 4, 0, 0,
+		132, 134, 3, 10, 5, 0, 133, 131, 1, 0, 0, 0, 134, 137, 1, 0, 0, 0, 135,
+		133, 1, 0, 0, 0, 135, 136, 1, 0, 0, 0, 136, 138, 1, 0, 0, 0, 137, 135,
+		1, 0, 0, 0, 138, 139, 3, 8, 4, 0, 139, 142, 1, 0, 0, 0, 140, 142, 3, 2,
+		1, 0, 141, 118, 1, 0, 0, 0, 141, 130, 1, 0, 0, 0, 141, 140, 1, 0, 0, 0,
+		142, 17, 1, 0, 0, 0, 143, 144, 3, 10, 5, 0, 144, 145, 3, 8, 4, 0, 145,
+		19, 1, 0, 0, 0, 17, 23, 37, 39, 51, 63, 68, 76, 79, 83, 86, 95, 98, 106,
+		115, 125, 135, 141,
 	}
 	deserializer := antlr.NewATNDeserializer(nil)
 	staticData.atn = deserializer.Deserialize(staticData.serializedATN)
@@ -170,17 +166,16 @@ const (
 
 // dae_configParser rules.
 const (
-	dae_configParserRULE_start               = 0
-	dae_configParserRULE_literal             = 1
-	dae_configParserRULE_expression          = 2
-	dae_configParserRULE_declaration         = 3
-	dae_configParserRULE_optAnnotation       = 4
-	dae_configParserRULE_annotationParameter = 5
-	dae_configParserRULE_functionPrototype   = 6
-	dae_configParserRULE_parameter           = 7
-	dae_configParserRULE_arrowExpression     = 8
-	dae_configParserRULE_arrowOperand        = 9
-	dae_configParserRULE_standaloneFunction  = 10
+	dae_configParserRULE_start              = 0
+	dae_configParserRULE_literal            = 1
+	dae_configParserRULE_expression         = 2
+	dae_configParserRULE_declaration        = 3
+	dae_configParserRULE_optAnnotation      = 4
+	dae_configParserRULE_functionPrototype  = 5
+	dae_configParserRULE_parameter          = 6
+	dae_configParserRULE_arrowExpression    = 7
+	dae_configParserRULE_arrowOperand       = 8
+	dae_configParserRULE_standaloneFunction = 9
 )
 
 // IStartContext is an interface to support dynamic dispatch.
@@ -302,7 +297,7 @@ func (p *dae_configParser) Start_() (localctx IStartContext) {
 	var _la int
 
 	p.EnterOuterAlt(localctx, 1)
-	p.SetState(25)
+	p.SetState(23)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -311,11 +306,11 @@ func (p *dae_configParser) Start_() (localctx IStartContext) {
 
 	for _la == dae_configParserID {
 		{
-			p.SetState(22)
+			p.SetState(20)
 			p.Expression()
 		}
 
-		p.SetState(27)
+		p.SetState(25)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -323,7 +318,7 @@ func (p *dae_configParser) Start_() (localctx IStartContext) {
 		_la = p.GetTokenStream().LA(1)
 	}
 	{
-		p.SetState(28)
+		p.SetState(26)
 		p.Match(dae_configParserEOF)
 		if p.HasError() {
 			// Recognition error - abort rule
@@ -431,7 +426,7 @@ func (p *dae_configParser) Literal() (localctx ILiteralContext) {
 
 	p.EnterOuterAlt(localctx, 1)
 	{
-		p.SetState(30)
+		p.SetState(28)
 		_la = p.GetTokenStream().LA(1)
 
 		if !((int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&229376) != 0) {
@@ -747,7 +742,7 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 
 	p.EnterOuterAlt(localctx, 1)
 	{
-		p.SetState(32)
+		p.SetState(30)
 		p.Match(dae_configParserID)
 		if p.HasError() {
 			// Recognition error - abort rule
@@ -755,14 +750,14 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 		}
 	}
 	{
-		p.SetState(33)
+		p.SetState(31)
 		p.Match(dae_configParserT__0)
 		if p.HasError() {
 			// Recognition error - abort rule
 			goto errorExit
 		}
 	}
-	p.SetState(41)
+	p.SetState(39)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -770,7 +765,7 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 	_la = p.GetTokenStream().LA(1)
 
 	for (int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&229632) != 0 {
-		p.SetState(39)
+		p.SetState(37)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -779,31 +774,31 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 		switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 1, p.GetParserRuleContext()) {
 		case 1:
 			{
-				p.SetState(34)
+				p.SetState(32)
 				p.ArrowExpression()
 			}
 
 		case 2:
 			{
-				p.SetState(35)
+				p.SetState(33)
 				p.Declaration()
 			}
 
 		case 3:
 			{
-				p.SetState(36)
+				p.SetState(34)
 				p.StandaloneFunction()
 			}
 
 		case 4:
 			{
-				p.SetState(37)
+				p.SetState(35)
 				p.Literal()
 			}
 
 		case 5:
 			{
-				p.SetState(38)
+				p.SetState(36)
 				p.Expression()
 			}
 
@@ -811,7 +806,7 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 			goto errorExit
 		}
 
-		p.SetState(43)
+		p.SetState(41)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -819,7 +814,7 @@ func (p *dae_configParser) Expression() (localctx IExpressionContext) {
 		_la = p.GetTokenStream().LA(1)
 	}
 	{
-		p.SetState(44)
+		p.SetState(42)
 		p.Match(dae_configParserT__1)
 		if p.HasError() {
 			// Recognition error - abort rule
@@ -1039,7 +1034,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 	p.EnterRule(localctx, 6, dae_configParserRULE_declaration)
 	var _la int
 
-	p.SetState(70)
+	p.SetState(68)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -1049,7 +1044,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 	case 1:
 		p.EnterOuterAlt(localctx, 1)
 		{
-			p.SetState(46)
+			p.SetState(44)
 
 			var _lt = p.GetTokenStream().LT(1)
 
@@ -1067,7 +1062,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			}
 		}
 		{
-			p.SetState(47)
+			p.SetState(45)
 			p.Match(dae_configParserT__2)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1075,10 +1070,10 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			}
 		}
 		{
-			p.SetState(48)
+			p.SetState(46)
 			p.FunctionPrototype()
 		}
-		p.SetState(53)
+		p.SetState(51)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -1087,7 +1082,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 
 		for _la == dae_configParserT__3 {
 			{
-				p.SetState(49)
+				p.SetState(47)
 				p.Match(dae_configParserT__3)
 				if p.HasError() {
 					// Recognition error - abort rule
@@ -1095,11 +1090,11 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 				}
 			}
 			{
-				p.SetState(50)
+				p.SetState(48)
 				p.FunctionPrototype()
 			}
 
-			p.SetState(55)
+			p.SetState(53)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -1107,14 +1102,14 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			_la = p.GetTokenStream().LA(1)
 		}
 		{
-			p.SetState(56)
+			p.SetState(54)
 			p.OptAnnotation()
 		}
 
 	case 2:
 		p.EnterOuterAlt(localctx, 2)
 		{
-			p.SetState(58)
+			p.SetState(56)
 
 			var _lt = p.GetTokenStream().LT(1)
 
@@ -1132,7 +1127,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			}
 		}
 		{
-			p.SetState(59)
+			p.SetState(57)
 			p.Match(dae_configParserT__2)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1140,10 +1135,10 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			}
 		}
 		{
-			p.SetState(60)
+			p.SetState(58)
 			p.Literal()
 		}
-		p.SetState(65)
+		p.SetState(63)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -1152,7 +1147,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 
 		for _la == dae_configParserT__4 {
 			{
-				p.SetState(61)
+				p.SetState(59)
 				p.Match(dae_configParserT__4)
 				if p.HasError() {
 					// Recognition error - abort rule
@@ -1160,11 +1155,11 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 				}
 			}
 			{
-				p.SetState(62)
+				p.SetState(60)
 				p.Literal()
 			}
 
-			p.SetState(67)
+			p.SetState(65)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -1172,7 +1167,7 @@ func (p *dae_configParser) Declaration() (localctx IDeclarationContext) {
 			_la = p.GetTokenStream().LA(1)
 		}
 		{
-			p.SetState(68)
+			p.SetState(66)
 			p.OptAnnotation()
 		}
 
@@ -1201,8 +1196,8 @@ type IOptAnnotationContext interface {
 	GetParser() antlr.Parser
 
 	// Getter signatures
-	AllAnnotationParameter() []IAnnotationParameterContext
-	AnnotationParameter(i int) IAnnotationParameterContext
+	AllParameter() []IParameterContext
+	Parameter(i int) IParameterContext
 
 	// IsOptAnnotationContext differentiates from other interfaces.
 	IsOptAnnotationContext()
@@ -1240,20 +1235,20 @@ func NewOptAnnotationContext(parser antlr.Parser, parent antlr.ParserRuleContext
 
 func (s *OptAnnotationContext) GetParser() antlr.Parser { return s.parser }
 
-func (s *OptAnnotationContext) AllAnnotationParameter() []IAnnotationParameterContext {
+func (s *OptAnnotationContext) AllParameter() []IParameterContext {
 	children := s.GetChildren()
 	len := 0
 	for _, ctx := range children {
-		if _, ok := ctx.(IAnnotationParameterContext); ok {
+		if _, ok := ctx.(IParameterContext); ok {
 			len++
 		}
 	}
 
-	tst := make([]IAnnotationParameterContext, len)
+	tst := make([]IParameterContext, len)
 	i := 0
 	for _, ctx := range children {
-		if t, ok := ctx.(IAnnotationParameterContext); ok {
-			tst[i] = t.(IAnnotationParameterContext)
+		if t, ok := ctx.(IParameterContext); ok {
+			tst[i] = t.(IParameterContext)
 			i++
 		}
 	}
@@ -1261,11 +1256,11 @@ func (s *OptAnnotationContext) AllAnnotationParameter() []IAnnotationParameterCo
 	return tst
 }
 
-func (s *OptAnnotationContext) AnnotationParameter(i int) IAnnotationParameterContext {
+func (s *OptAnnotationContext) Parameter(i int) IParameterContext {
 	var t antlr.RuleContext
 	j := 0
 	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(IAnnotationParameterContext); ok {
+		if _, ok := ctx.(IParameterContext); ok {
 			if j == i {
 				t = ctx.(antlr.RuleContext)
 				break
@@ -1278,7 +1273,7 @@ func (s *OptAnnotationContext) AnnotationParameter(i int) IAnnotationParameterCo
 		return nil
 	}
 
-	return t.(IAnnotationParameterContext)
+	return t.(IParameterContext)
 }
 
 func (s *OptAnnotationContext) GetRuleContext() antlr.RuleContext {
@@ -1306,7 +1301,7 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 	p.EnterRule(localctx, 8, dae_configParserRULE_optAnnotation)
 	var _la int
 
-	p.SetState(85)
+	p.SetState(83)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -1316,14 +1311,14 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 	case dae_configParserT__5:
 		p.EnterOuterAlt(localctx, 1)
 		{
-			p.SetState(72)
+			p.SetState(70)
 			p.Match(dae_configParserT__5)
 			if p.HasError() {
 				// Recognition error - abort rule
 				goto errorExit
 			}
 		}
-		p.SetState(81)
+		p.SetState(79)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -1332,10 +1327,10 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 
 		if (int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&229376) != 0 {
 			{
-				p.SetState(73)
-				p.AnnotationParameter()
+				p.SetState(71)
+				p.Parameter()
 			}
-			p.SetState(78)
+			p.SetState(76)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -1344,7 +1339,7 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 
 			for _la == dae_configParserT__4 {
 				{
-					p.SetState(74)
+					p.SetState(72)
 					p.Match(dae_configParserT__4)
 					if p.HasError() {
 						// Recognition error - abort rule
@@ -1352,11 +1347,11 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 					}
 				}
 				{
-					p.SetState(75)
-					p.AnnotationParameter()
+					p.SetState(73)
+					p.Parameter()
 				}
 
-				p.SetState(80)
+				p.SetState(78)
 				p.GetErrorHandler().Sync(p)
 				if p.HasError() {
 					goto errorExit
@@ -1366,7 +1361,7 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 
 		}
 		{
-			p.SetState(83)
+			p.SetState(81)
 			p.Match(dae_configParserT__6)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1379,167 +1374,6 @@ func (p *dae_configParser) OptAnnotation() (localctx IOptAnnotationContext) {
 
 	default:
 		p.SetError(antlr.NewNoViableAltException(p, nil, nil, nil, nil, nil))
-		goto errorExit
-	}
-
-errorExit:
-	if p.HasError() {
-		v := p.GetError()
-		localctx.SetException(v)
-		p.GetErrorHandler().ReportError(p, v)
-		p.GetErrorHandler().Recover(p, v)
-		p.SetError(nil)
-	}
-	p.ExitRule()
-	return localctx
-	goto errorExit // Trick to prevent compiler error if the label is not used
-}
-
-// IAnnotationParameterContext is an interface to support dynamic dispatch.
-type IAnnotationParameterContext interface {
-	antlr.ParserRuleContext
-
-	// GetParser returns the parser.
-	GetParser() antlr.Parser
-
-	// Getter signatures
-	Parameter() IParameterContext
-	ID() antlr.TerminalNode
-	FunctionPrototype() IFunctionPrototypeContext
-
-	// IsAnnotationParameterContext differentiates from other interfaces.
-	IsAnnotationParameterContext()
-}
-
-type AnnotationParameterContext struct {
-	antlr.BaseParserRuleContext
-	parser antlr.Parser
-}
-
-func NewEmptyAnnotationParameterContext() *AnnotationParameterContext {
-	var p = new(AnnotationParameterContext)
-	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, nil, -1)
-	p.RuleIndex = dae_configParserRULE_annotationParameter
-	return p
-}
-
-func InitEmptyAnnotationParameterContext(p *AnnotationParameterContext) {
-	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, nil, -1)
-	p.RuleIndex = dae_configParserRULE_annotationParameter
-}
-
-func (*AnnotationParameterContext) IsAnnotationParameterContext() {}
-
-func NewAnnotationParameterContext(parser antlr.Parser, parent antlr.ParserRuleContext, invokingState int) *AnnotationParameterContext {
-	var p = new(AnnotationParameterContext)
-
-	antlr.InitBaseParserRuleContext(&p.BaseParserRuleContext, parent, invokingState)
-
-	p.parser = parser
-	p.RuleIndex = dae_configParserRULE_annotationParameter
-
-	return p
-}
-
-func (s *AnnotationParameterContext) GetParser() antlr.Parser { return s.parser }
-
-func (s *AnnotationParameterContext) Parameter() IParameterContext {
-	var t antlr.RuleContext
-	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(IParameterContext); ok {
-			t = ctx.(antlr.RuleContext)
-			break
-		}
-	}
-
-	if t == nil {
-		return nil
-	}
-
-	return t.(IParameterContext)
-}
-
-func (s *AnnotationParameterContext) ID() antlr.TerminalNode {
-	return s.GetToken(dae_configParserID, 0)
-}
-
-func (s *AnnotationParameterContext) FunctionPrototype() IFunctionPrototypeContext {
-	var t antlr.RuleContext
-	for _, ctx := range s.GetChildren() {
-		if _, ok := ctx.(IFunctionPrototypeContext); ok {
-			t = ctx.(antlr.RuleContext)
-			break
-		}
-	}
-
-	if t == nil {
-		return nil
-	}
-
-	return t.(IFunctionPrototypeContext)
-}
-
-func (s *AnnotationParameterContext) GetRuleContext() antlr.RuleContext {
-	return s
-}
-
-func (s *AnnotationParameterContext) ToStringTree(ruleNames []string, recog antlr.Recognizer) string {
-	return antlr.TreesStringTree(s, ruleNames, recog)
-}
-
-func (s *AnnotationParameterContext) EnterRule(listener antlr.ParseTreeListener) {
-	if listenerT, ok := listener.(dae_configListener); ok {
-		listenerT.EnterAnnotationParameter(s)
-	}
-}
-
-func (s *AnnotationParameterContext) ExitRule(listener antlr.ParseTreeListener) {
-	if listenerT, ok := listener.(dae_configListener); ok {
-		listenerT.ExitAnnotationParameter(s)
-	}
-}
-
-func (p *dae_configParser) AnnotationParameter() (localctx IAnnotationParameterContext) {
-	localctx = NewAnnotationParameterContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 10, dae_configParserRULE_annotationParameter)
-	p.SetState(91)
-	p.GetErrorHandler().Sync(p)
-	if p.HasError() {
-		goto errorExit
-	}
-
-	switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 9, p.GetParserRuleContext()) {
-	case 1:
-		p.EnterOuterAlt(localctx, 1)
-		{
-			p.SetState(87)
-			p.Parameter()
-		}
-
-	case 2:
-		p.EnterOuterAlt(localctx, 2)
-		{
-			p.SetState(88)
-			p.Match(dae_configParserID)
-			if p.HasError() {
-				// Recognition error - abort rule
-				goto errorExit
-			}
-		}
-		{
-			p.SetState(89)
-			p.Match(dae_configParserT__2)
-			if p.HasError() {
-				// Recognition error - abort rule
-				goto errorExit
-			}
-		}
-		{
-			p.SetState(90)
-			p.FunctionPrototype()
-		}
-
-	case antlr.ATNInvalidAltNumber:
 		goto errorExit
 	}
 
@@ -1681,11 +1515,11 @@ func (s *FunctionPrototypeContext) ExitRule(listener antlr.ParseTreeListener) {
 
 func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeContext) {
 	localctx = NewFunctionPrototypeContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 12, dae_configParserRULE_functionPrototype)
+	p.EnterRule(localctx, 10, dae_configParserRULE_functionPrototype)
 	var _la int
 
 	p.EnterOuterAlt(localctx, 1)
-	p.SetState(94)
+	p.SetState(86)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -1694,7 +1528,7 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 
 	if _la == dae_configParserT__7 {
 		{
-			p.SetState(93)
+			p.SetState(85)
 			p.Match(dae_configParserT__7)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1704,7 +1538,7 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 
 	}
 	{
-		p.SetState(96)
+		p.SetState(88)
 		_la = p.GetTokenStream().LA(1)
 
 		if !((int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&229376) != 0) {
@@ -1715,14 +1549,14 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 		}
 	}
 	{
-		p.SetState(97)
+		p.SetState(89)
 		p.Match(dae_configParserT__8)
 		if p.HasError() {
 			// Recognition error - abort rule
 			goto errorExit
 		}
 	}
-	p.SetState(106)
+	p.SetState(98)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -1731,10 +1565,10 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 
 	if (int64(_la) & ^0x3f) == 0 && ((int64(1)<<_la)&229376) != 0 {
 		{
-			p.SetState(98)
+			p.SetState(90)
 			p.Parameter()
 		}
-		p.SetState(103)
+		p.SetState(95)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -1743,7 +1577,7 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 
 		for _la == dae_configParserT__4 {
 			{
-				p.SetState(99)
+				p.SetState(91)
 				p.Match(dae_configParserT__4)
 				if p.HasError() {
 					// Recognition error - abort rule
@@ -1751,11 +1585,11 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 				}
 			}
 			{
-				p.SetState(100)
+				p.SetState(92)
 				p.Parameter()
 			}
 
-			p.SetState(105)
+			p.SetState(97)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -1765,7 +1599,7 @@ func (p *dae_configParser) FunctionPrototype() (localctx IFunctionPrototypeConte
 
 	}
 	{
-		p.SetState(108)
+		p.SetState(100)
 		p.Match(dae_configParserT__9)
 		if p.HasError() {
 			// Recognition error - abort rule
@@ -1875,18 +1709,18 @@ func (s *ParameterContext) ExitRule(listener antlr.ParseTreeListener) {
 
 func (p *dae_configParser) Parameter() (localctx IParameterContext) {
 	localctx = NewParameterContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 14, dae_configParserRULE_parameter)
-	p.SetState(114)
+	p.EnterRule(localctx, 12, dae_configParserRULE_parameter)
+	p.SetState(106)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
 	}
 
-	switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 13, p.GetParserRuleContext()) {
+	switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 12, p.GetParserRuleContext()) {
 	case 1:
 		p.EnterOuterAlt(localctx, 1)
 		{
-			p.SetState(110)
+			p.SetState(102)
 			p.Match(dae_configParserID)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1894,7 +1728,7 @@ func (p *dae_configParser) Parameter() (localctx IParameterContext) {
 			}
 		}
 		{
-			p.SetState(111)
+			p.SetState(103)
 			p.Match(dae_configParserT__2)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -1902,14 +1736,14 @@ func (p *dae_configParser) Parameter() (localctx IParameterContext) {
 			}
 		}
 		{
-			p.SetState(112)
+			p.SetState(104)
 			p.Literal()
 		}
 
 	case 2:
 		p.EnterOuterAlt(localctx, 2)
 		{
-			p.SetState(113)
+			p.SetState(105)
 			p.Literal()
 		}
 
@@ -2040,16 +1874,16 @@ func (s *ArrowExpressionContext) ExitRule(listener antlr.ParseTreeListener) {
 
 func (p *dae_configParser) ArrowExpression() (localctx IArrowExpressionContext) {
 	localctx = NewArrowExpressionContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 16, dae_configParserRULE_arrowExpression)
+	p.EnterRule(localctx, 14, dae_configParserRULE_arrowExpression)
 	var _la int
 
 	p.EnterOuterAlt(localctx, 1)
 	{
-		p.SetState(116)
+		p.SetState(108)
 		p.ArrowOperand()
 	}
 	{
-		p.SetState(117)
+		p.SetState(109)
 		p.Match(dae_configParserT__10)
 		if p.HasError() {
 			// Recognition error - abort rule
@@ -2057,10 +1891,10 @@ func (p *dae_configParser) ArrowExpression() (localctx IArrowExpressionContext) 
 		}
 	}
 	{
-		p.SetState(118)
+		p.SetState(110)
 		p.ArrowOperand()
 	}
-	p.SetState(123)
+	p.SetState(115)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
@@ -2069,7 +1903,7 @@ func (p *dae_configParser) ArrowExpression() (localctx IArrowExpressionContext) 
 
 	for _la == dae_configParserT__10 {
 		{
-			p.SetState(119)
+			p.SetState(111)
 			p.Match(dae_configParserT__10)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -2077,11 +1911,11 @@ func (p *dae_configParser) ArrowExpression() (localctx IArrowExpressionContext) 
 			}
 		}
 		{
-			p.SetState(120)
+			p.SetState(112)
 			p.ArrowOperand()
 		}
 
-		p.SetState(125)
+		p.SetState(117)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -2251,20 +2085,20 @@ func (s *ArrowOperandContext) ExitRule(listener antlr.ParseTreeListener) {
 
 func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 	localctx = NewArrowOperandContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 18, dae_configParserRULE_arrowOperand)
+	p.EnterRule(localctx, 16, dae_configParserRULE_arrowOperand)
 	var _la int
 
-	p.SetState(149)
+	p.SetState(141)
 	p.GetErrorHandler().Sync(p)
 	if p.HasError() {
 		goto errorExit
 	}
 
-	switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 17, p.GetParserRuleContext()) {
+	switch p.GetInterpreter().AdaptivePredict(p.BaseParser, p.GetTokenStream(), 16, p.GetParserRuleContext()) {
 	case 1:
 		p.EnterOuterAlt(localctx, 1)
 		{
-			p.SetState(126)
+			p.SetState(118)
 			p.Match(dae_configParserID)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -2272,7 +2106,7 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 			}
 		}
 		{
-			p.SetState(127)
+			p.SetState(119)
 			p.Match(dae_configParserT__2)
 			if p.HasError() {
 				// Recognition error - abort rule
@@ -2280,10 +2114,10 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 			}
 		}
 		{
-			p.SetState(128)
+			p.SetState(120)
 			p.FunctionPrototype()
 		}
-		p.SetState(133)
+		p.SetState(125)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -2292,7 +2126,7 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 
 		for _la == dae_configParserT__3 {
 			{
-				p.SetState(129)
+				p.SetState(121)
 				p.Match(dae_configParserT__3)
 				if p.HasError() {
 					// Recognition error - abort rule
@@ -2300,11 +2134,11 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 				}
 			}
 			{
-				p.SetState(130)
+				p.SetState(122)
 				p.FunctionPrototype()
 			}
 
-			p.SetState(135)
+			p.SetState(127)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -2312,17 +2146,17 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 			_la = p.GetTokenStream().LA(1)
 		}
 		{
-			p.SetState(136)
+			p.SetState(128)
 			p.OptAnnotation()
 		}
 
 	case 2:
 		p.EnterOuterAlt(localctx, 2)
 		{
-			p.SetState(138)
+			p.SetState(130)
 			p.FunctionPrototype()
 		}
-		p.SetState(143)
+		p.SetState(135)
 		p.GetErrorHandler().Sync(p)
 		if p.HasError() {
 			goto errorExit
@@ -2331,7 +2165,7 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 
 		for _la == dae_configParserT__3 {
 			{
-				p.SetState(139)
+				p.SetState(131)
 				p.Match(dae_configParserT__3)
 				if p.HasError() {
 					// Recognition error - abort rule
@@ -2339,11 +2173,11 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 				}
 			}
 			{
-				p.SetState(140)
+				p.SetState(132)
 				p.FunctionPrototype()
 			}
 
-			p.SetState(145)
+			p.SetState(137)
 			p.GetErrorHandler().Sync(p)
 			if p.HasError() {
 				goto errorExit
@@ -2351,14 +2185,14 @@ func (p *dae_configParser) ArrowOperand() (localctx IArrowOperandContext) {
 			_la = p.GetTokenStream().LA(1)
 		}
 		{
-			p.SetState(146)
+			p.SetState(138)
 			p.OptAnnotation()
 		}
 
 	case 3:
 		p.EnterOuterAlt(localctx, 3)
 		{
-			p.SetState(148)
+			p.SetState(140)
 			p.Literal()
 		}
 
@@ -2480,14 +2314,14 @@ func (s *StandaloneFunctionContext) ExitRule(listener antlr.ParseTreeListener) {
 
 func (p *dae_configParser) StandaloneFunction() (localctx IStandaloneFunctionContext) {
 	localctx = NewStandaloneFunctionContext(p, p.GetParserRuleContext(), p.GetState())
-	p.EnterRule(localctx, 20, dae_configParserRULE_standaloneFunction)
+	p.EnterRule(localctx, 18, dae_configParserRULE_standaloneFunction)
 	p.EnterOuterAlt(localctx, 1)
 	{
-		p.SetState(151)
+		p.SetState(143)
 		p.FunctionPrototype()
 	}
 	{
-		p.SetState(152)
+		p.SetState(144)
 		p.OptAnnotation()
 	}
 

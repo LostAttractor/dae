@@ -22,9 +22,6 @@ type dae_configListener interface {
 	// EnterOptAnnotation is called when entering the optAnnotation production.
 	EnterOptAnnotation(c *OptAnnotationContext)
 
-	// EnterAnnotationParameter is called when entering the annotationParameter production.
-	EnterAnnotationParameter(c *AnnotationParameterContext)
-
 	// EnterFunctionPrototype is called when entering the functionPrototype production.
 	EnterFunctionPrototype(c *FunctionPrototypeContext)
 
@@ -54,9 +51,6 @@ type dae_configListener interface {
 
 	// ExitOptAnnotation is called when exiting the optAnnotation production.
 	ExitOptAnnotation(c *OptAnnotationContext)
-
-	// ExitAnnotationParameter is called when exiting the annotationParameter production.
-	ExitAnnotationParameter(c *AnnotationParameterContext)
 
 	// ExitFunctionPrototype is called when exiting the functionPrototype production.
 	ExitFunctionPrototype(c *FunctionPrototypeContext)

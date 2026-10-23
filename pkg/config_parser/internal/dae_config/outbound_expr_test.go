@@ -89,12 +89,6 @@ func TestFallbackDeclarationSupportsOutboundParams(t *testing.T) {
 	}
 }
 
-func TestLegacyCallableAnnotationRemainsParseableForMigrationError(t *testing.T) {
-	parser, errors := newParser("group { target { filter: name(exit) [via: node(entry)] } }")
-	parser.Start_()
-	requireCompleteParse(t, parser, errors)
-}
-
 func TestProxyPathExpressions(t *testing.T) {
 	for _, source := range []string{
 		"group { target { filter: node(lightsail) -> filter: subtag(flowercloud) && name(keyword: '日本') policy: min_moving_avg } }",

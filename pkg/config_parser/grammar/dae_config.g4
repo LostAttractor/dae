@@ -34,13 +34,8 @@ declaration
     ;
 
 optAnnotation
-    : '[' (annotationParameter (',' annotationParameter)*)? ']'
+    : '[' (parameter (',' parameter)*)? ']'
     | // empty
-    ;
-
-annotationParameter
-    : parameter
-    | ID ':' functionPrototype
     ;
 
 functionPrototype

@@ -223,12 +223,7 @@ func TestParseRejectsInvalidContextualExpressions(t *testing.T) {
 		{
 			name:    "function-valued annotation",
 			config:  `group { target { filter: name(exit) [priority: node(entry)] } }`,
-			message: "function-valued annotations are not supported",
-		},
-		{
-			name:    "function among annotations",
-			config:  `group { target { filter: name(exit) [priority: 1, multiplex: node(entry)] } }`,
-			message: "function-valued annotations are not supported",
+			message: "invalid syntax",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

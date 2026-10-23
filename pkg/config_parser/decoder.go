@@ -65,14 +65,8 @@ func (d *decoder) parseOptAnnotation(ctx dae_config.IOptAnnotationContext) []*Pa
 	}
 	annotation := ctx.(*dae_config.OptAnnotationContext)
 	var params []*Param
-	for _, item := range annotation.AllAnnotationParameter() {
-		item := item.(*dae_config.AnnotationParameterContext)
-		if item.FunctionPrototype() != nil {
-			d.reportError(item, "function-valued annotations are not supported")
-			continue
-		}
-		param := parseParam(item.Parameter().(*dae_config.ParameterContext))
-		params = append(params, param)
+	for _, item := range annotation.AllParameter() {
+		params = append(params, parseParam(item.(*dae_config.ParameterContext)))
 	}
 	return params
 }

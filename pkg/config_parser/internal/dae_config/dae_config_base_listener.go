@@ -50,12 +50,6 @@ func (s *Basedae_configListener) EnterOptAnnotation(ctx *OptAnnotationContext) {
 // ExitOptAnnotation is called when production optAnnotation is exited.
 func (s *Basedae_configListener) ExitOptAnnotation(ctx *OptAnnotationContext) {}
 
-// EnterAnnotationParameter is called when production annotationParameter is entered.
-func (s *Basedae_configListener) EnterAnnotationParameter(ctx *AnnotationParameterContext) {}
-
-// ExitAnnotationParameter is called when production annotationParameter is exited.
-func (s *Basedae_configListener) ExitAnnotationParameter(ctx *AnnotationParameterContext) {}
-
 // EnterFunctionPrototype is called when production functionPrototype is entered.
 func (s *Basedae_configListener) EnterFunctionPrototype(ctx *FunctionPrototypeContext) {}
 
