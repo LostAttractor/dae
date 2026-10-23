@@ -53,7 +53,7 @@ body:
       label: Environment
       description: |
         examples:
-          - **Dae version (use `dae --version`)**: v0.2.4
+          - **Dae version (use `dae --version`)**: unstable-20261021.r1709.3d1f171b
           - **OS (e.g `cat /etc/os-release`)**: Debian 12
           - **Kernel (e.g. `uname -a`)**: 6.13.0-arch1-1
           - **Others**: NA

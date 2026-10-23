@@ -7,8 +7,7 @@
 ### Checklist
 
 - [ ] The Pull Request has been fully tested
-- [ ] There's an entry in the CHANGELOGS
-- [ ] There is a user-facing docs PR against https://github.com/daeuniverse/dae
+- [ ] User-facing docs under `docs/` are updated in this Pull Request
 
 ### Full Changelogs
 

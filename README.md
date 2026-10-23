@@ -1,13 +1,13 @@
 # dae
 
-<img src="https://github.com/daeuniverse/dae/blob/main/logo.png" border="0" width="25%">
+<img src="./logo.png" border="0" width="25%">
 
 <p align="left">
-    <img src="https://github.com/daeuniverse/dae/actions/workflows/build.yml/badge.svg" alt="Build"/>
-    <img src="https://custom-icon-badges.herokuapp.com/github/license/daeuniverse/dae?logo=law&color=orange" alt="License"/>
-    <img src="https://custom-icon-badges.herokuapp.com/github/v/release/daeuniverse/dae?logo=rocket" alt="version">
-    <img src="https://custom-icon-badges.herokuapp.com/github/issues-pr-closed/daeuniverse/dae?color=purple&logo=git-pull-request&logoColor=white"/>
-    <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/daeuniverse/dae?logo=history&logoColor=white" alt="lastcommit"/>
+    <img src="https://github.com/LostAttractor/dae/actions/workflows/build.yml/badge.svg" alt="Build"/>
+    <img src="https://custom-icon-badges.herokuapp.com/github/license/LostAttractor/dae?logo=law&color=orange" alt="License"/>
+    <img src="https://custom-icon-badges.herokuapp.com/github/v/release/LostAttractor/dae?logo=rocket" alt="version">
+    <img src="https://custom-icon-badges.herokuapp.com/github/issues-pr-closed/LostAttractor/dae?color=purple&logo=git-pull-request&logoColor=white"/>
+    <img src="https://custom-icon-badges.herokuapp.com/github/last-commit/LostAttractor/dae?logo=history&logoColor=white" alt="lastcommit"/>
 </p>
 
 **_dae_**, means goose, is a high-performance transparent proxy solution.
@@ -66,8 +66,4 @@ Special thanks goes to all [contributors](https://github.com/daeuniverse/dae/gra
 
 ## License
 
-[AGPL-3.0 (C) daeuniverse](https://github.com/daeuniverse/dae/blob/main/LICENSE)
-
-## Stargazers over time
-
-[![Stargazers over time](https://starchart.cc/daeuniverse/dae.svg)](https://starchart.cc/daeuniverse/dae)
+[AGPL-3.0 (C) daeuniverse](./LICENSE)
