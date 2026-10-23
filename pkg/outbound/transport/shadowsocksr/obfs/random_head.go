@@ -1,8 +1,9 @@
 package obfs
 
 import (
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
+	"crypto/rand"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/shadowsocksr/internal/crypto"
+	mathrand "math/rand/v2"
 )
 
 type randomHead struct {
@@ -44,7 +45,7 @@ func (r *randomHead) Encode(data []byte) (encodedData []byte, err error) {
 			r.rawTransSent = true
 		}
 	} else {
-		size := rand.Intn(96) + 8
+		size := mathrand.IntN(96) + 8
 		encodedData = make([]byte, size)
 		rand.Read(encodedData)
 		crypto.SetCRC32(encodedData, size)

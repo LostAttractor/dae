@@ -5,13 +5,13 @@ package simpleobfs
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"io"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -118,8 +118,8 @@ func NewTLSObfs(conn net.Conn, server string) net.Conn {
 func makeClientHelloMsg(buf *bytes.Buffer, data []byte, server string) {
 	random := make([]byte, 28)
 	sessionID := make([]byte, 32)
-	fastrand.Read(random)
-	fastrand.Read(sessionID)
+	rand.Read(random)
+	rand.Read(sessionID)
 
 	// handshake, TLS 1.0 version, length
 	buf.WriteByte(22)

@@ -1,7 +1,7 @@
 package protocol
 
 import (
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
+	mathrand "math/rand/v2"
 )
 
 const (
@@ -15,10 +15,10 @@ type padding struct {
 }
 
 func (p padding) String() string {
-	n := p.Min + rand.Intn(p.Max-p.Min)
+	n := p.Min + mathrand.IntN(p.Max-p.Min)
 	bs := make([]byte, n)
 	for i := range bs {
-		bs[i] = paddingChars[rand.Intn(len(paddingChars))]
+		bs[i] = paddingChars[mathrand.IntN(len(paddingChars))]
 	}
 	return string(bs)
 }

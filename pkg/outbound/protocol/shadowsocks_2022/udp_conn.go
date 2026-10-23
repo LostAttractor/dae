@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
@@ -74,7 +74,7 @@ func (s *serverSession) accept(packetID uint64) bool {
 
 func NewUdpConn(conn net.Conn, conf *ciphers.CipherConf2022, encrypt, decrypt cipher.Block, pskList [][]byte, uPSK []byte) *UdpConn {
 	c := &UdpConn{Conn: conn, cipherConf: conf, blockCipherEncrypt: encrypt, blockCipherDecrypt: decrypt, pskList: pskList, uPSK: uPSK}
-	fastrand.Read(c.sessionID[:])
+	rand.Read(c.sessionID[:])
 	return c
 }
 

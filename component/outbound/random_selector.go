@@ -2,10 +2,10 @@ package outbound
 
 import (
 	"math"
+	mathrand "math/rand/v2"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 func (g *DialerGroup) preferredRandomCandidates(networkType *common.NetworkType) []selectorCandidate {
@@ -35,5 +35,5 @@ func (g *DialerGroup) selectRandom(networkType *common.NetworkType) *dialer.Dial
 	if len(candidates) == 0 {
 		return nil
 	}
-	return candidates[fastrand.Intn(len(candidates))].dialer
+	return candidates[mathrand.IntN(len(candidates))].dialer
 }

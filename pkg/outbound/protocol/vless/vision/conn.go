@@ -2,16 +2,17 @@ package vision
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -136,9 +137,9 @@ func (c *Conn) write(p []byte) error {
 	return err
 }
 func (c *Conn) writeRecord(p []byte, command byte, isTLS bool) error {
-	padding := fastrand.Intn(256)
+	padding := mathrand.IntN(256)
 	if len(p) < 900 && isTLS {
-		padding = fastrand.Intn(500) + 900 - len(p)
+		padding = mathrand.IntN(500) + 900 - len(p)
 	}
 	prefix := 5
 	if !c.writeStarted {
@@ -155,7 +156,7 @@ func (c *Conn) writeRecord(p []byte, command byte, isTLS bool) error {
 	binary.BigEndian.PutUint16(data[offset+1:], uint16(len(p)))
 	binary.BigEndian.PutUint16(data[offset+3:], uint16(padding))
 	copy(data[prefix:], p)
-	fastrand.Read(data[prefix+len(p):])
+	rand.Read(data[prefix+len(p):])
 	if err := c.write(data); err != nil {
 		return err
 	}

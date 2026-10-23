@@ -1,7 +1,7 @@
 package shadowsocks
 
 import (
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
+	"crypto/rand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -12,6 +12,6 @@ type RandomSaltGenerator int
 
 func (size RandomSaltGenerator) Get() []byte {
 	salt := pool.GetBuffer(int(size))
-	fastrand.Read(salt)
+	rand.Read(salt)
 	return salt
 }

@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"sync"
 	"time"
@@ -17,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks"
@@ -241,12 +242,12 @@ func (c *TCPConn) Write(b []byte) (n int, err error) {
 		}
 		paddingLength := 0
 		if len(b) == 0 {
-			paddingLength = 1 + fastrand.Intn(MaxPaddingLength)
+			paddingLength = 1 + mathrand.IntN(MaxPaddingLength)
 		}
 		variable.Write(binary.BigEndian.AppendUint16(nil, uint16(paddingLength)))
 		if paddingLength > 0 {
 			padding := pool.GetBuffer(paddingLength)
-			fastrand.Read(padding)
+			rand.Read(padding)
 			variable.Write(padding)
 			pool.PutBuffer(padding)
 		}

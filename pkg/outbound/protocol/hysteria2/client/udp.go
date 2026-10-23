@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	tuiccommon "github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
 
@@ -159,7 +159,7 @@ func (u *udpConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	err = u.WritePacket(buf, msg)
 	if errTooLarge, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
 		// Message too large, try fragmentation
-		msg.PacketID = uint16(rand.Intn(0xFFFF)) + 1
+		msg.PacketID = uint16(mathrand.IntN(0xFFFF)) + 1
 		fMsgs := frag.FragUDPMessage(msg, int(errTooLarge.MaxDatagramPayloadSize))
 		if len(fMsgs) == 0 {
 			return 0, err

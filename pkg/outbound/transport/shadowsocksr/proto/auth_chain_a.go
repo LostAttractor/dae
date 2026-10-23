@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/rc4"
 	"encoding/base64"
 	"encoding/binary"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/common"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/shadowsocksr/internal/crypto"
 )

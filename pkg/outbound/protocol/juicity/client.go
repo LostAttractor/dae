@@ -2,6 +2,7 @@ package juicity
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
@@ -236,8 +236,8 @@ func (t *clientImpl) DialAuth(ctx context.Context, metadata *Metadata) (*Underla
 	if !auth.lease.Valid() {
 		return nil, auth.lease.Cause()
 	}
-	_, _ = fastrand.Read(auth.IV[2:])
-	_, _ = fastrand.Read(auth.Psk)
+	_, _ = rand.Read(auth.IV[2:])
+	_, _ = rand.Read(auth.Psk)
 	select {
 	case t.UnderlayAuth <- auth:
 		if !auth.lease.Valid() {

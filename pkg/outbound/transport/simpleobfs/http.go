@@ -5,15 +5,16 @@ package simpleobfs
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -114,14 +115,14 @@ func (c *HTTPObfs) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	request.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", fastrand.Intn(87), fastrand.Intn(2)))
+	request.Header.Set("User-Agent", fmt.Sprintf("curl/7.%d.%d", mathrand.IntN(87), mathrand.IntN(2)))
 	request.Header.Set("Upgrade", "websocket")
 	request.Header.Set("Connection", "Upgrade")
 	if c.port != "80" {
 		request.Host = net.JoinHostPort(c.host, c.port)
 	}
 	var key [16]byte
-	fastrand.Read(key[:])
+	rand.Read(key[:])
 	request.Header.Set("Sec-WebSocket-Key", base64.StdEncoding.EncodeToString(key[:]))
 	if err := request.Write(buf); err != nil {
 		return 0, err

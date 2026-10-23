@@ -2,11 +2,12 @@ package obfs
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	mathrand "math/rand/v2"
 	"strings"
 
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -52,7 +53,7 @@ func newHttpSimple() IObfs {
 	t := &httpSimplePost{
 		rawTransSent:     false,
 		rawTransReceived: false,
-		userAgentIndex:   rand.Intn(len(requestUserAgent)),
+		userAgentIndex:   mathrand.IntN(len(requestUserAgent)),
 		methodGet:        true,
 	}
 	return t
@@ -98,11 +99,11 @@ func (t *httpSimplePost) Encode(data []byte) (encodedData []byte, err error) {
 
 	var headData []byte
 	if headSize := t.IVLen + t.AddrLen; len(data)-headSize > 64 {
-		headData = data[:headSize+rand.Intn(64)]
+		headData = data[:headSize+mathrand.IntN(64)]
 	} else {
 		headData = data[:]
 	}
-	requestPathIndex := rand.Intn(len(requestPath)/2) * 2
+	requestPathIndex := mathrand.IntN(len(requestPath)/2) * 2
 	host := t.Host
 	var customHead string
 
@@ -118,7 +119,7 @@ func (t *httpSimplePost) Encode(data []byte) (encodedData []byte, err error) {
 		}
 		hosts := strings.Split(param, ",")
 		if len(hosts) > 0 {
-			host = strings.TrimSpace(hosts[rand.Intn(len(hosts))])
+			host = strings.TrimSpace(hosts[mathrand.IntN(len(hosts))])
 		}
 	}
 	method := "GET /"

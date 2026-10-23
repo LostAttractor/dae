@@ -1,12 +1,12 @@
 package juicity
 
 import (
+	"crypto/rand"
 	"net"
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks"
 )
@@ -39,7 +39,7 @@ func (c *TransportPacketConn) Write(b []byte) (int, error) {
 		defer pool.PutBuffer(salt)
 		salt[0] = 0
 		salt[1] = 0
-		fastrand.Read(salt[2:])
+		rand.Read(salt[2:])
 	}
 	toWrite, err := EncryptUDPFromPool(c.key, b, salt, ciphers.JuicityReusedInfo)
 	if err != nil {

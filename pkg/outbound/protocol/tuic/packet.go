@@ -3,6 +3,7 @@ package tuic
 import (
 	"encoding/binary"
 	"errors"
+	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"sync"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
@@ -207,7 +207,7 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 	if err != nil {
 		return 0, err
 	}
-	packet := &packetFrame{ASSOC_ID: q.connId, PKT_ID: uint16(fastrand.Uint32()), FRAG_TOTAL: 1, ADDR: addressFromMetadata(&metadata), DATA: p}
+	packet := &packetFrame{ASSOC_ID: q.connId, PKT_ID: uint16(mathrand.Uint32()), FRAG_TOTAL: 1, ADDR: addressFromMetadata(&metadata), DATA: p}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 	if err = packet.appendTo(buf); err != nil {

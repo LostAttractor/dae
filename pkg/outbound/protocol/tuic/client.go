@@ -6,12 +6,12 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
@@ -290,7 +290,7 @@ func (t *clientImpl) ListenPacket(ctx context.Context, metadata *protocol.Metada
 			pc.shutdown(common.ErrHoldOn)
 			return nil, netproxy.WrapFailure(common.ErrHoldOn, netproxy.Failure{Scope: netproxy.ScopeOperation, Layer: netproxy.LayerQUIC, Phase: netproxy.OpOpenStream, Reason: netproxy.ReasonCapacity})
 		}
-		pc.connId = uint16(fastrand.Uint32())
+		pc.connId = uint16(mathrand.Uint32())
 		pc.closeDeferFn = func() { t.udpIncomingPacketsMap.CompareAndDelete(pc.connId, pc) }
 		if _, loaded := t.udpIncomingPacketsMap.LoadOrStore(pc.connId, pc); !loaded {
 			break

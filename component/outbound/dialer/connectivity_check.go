@@ -8,12 +8,12 @@ package dialer
 import (
 	"context"
 	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
+	mathrand "math/rand/v2"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -76,7 +76,7 @@ type connectivityChecker struct {
 func newConnectivityChecker(d *pathRuntime, probe func(context.Context, *common.NetworkType) error) *connectivityChecker {
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
-	healthInterval := time.Duration(fastrand.Int63n(int64(d.CheckInterval)))
+	healthInterval := time.Duration(mathrand.Int64N(int64(d.CheckInterval)))
 	retryInterval := initialRetryInterval(d.CheckIntervalMax)
 	return &connectivityChecker{
 		d:              d,

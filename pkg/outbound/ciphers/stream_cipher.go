@@ -5,12 +5,12 @@ import (
 	"crypto/cipher"
 	"crypto/des"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/rc4"
 	"encoding/binary"
 	"errors"
 
 	"github.com/daeuniverse/dae/pkg/outbound/common"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/dgryski/go-camellia"
 	"github.com/dgryski/go-idea"

@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	mathrand "math/rand/v2"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/common"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 func NewAuthAES128MD5() IProtocol {
@@ -53,12 +54,12 @@ func (a *authAES128) packData(data []byte) (outData []byte) {
 
 	if dataLength <= 1200 {
 		if a.packID > 4 {
-			randLength += rand.Intn(32)
+			randLength += mathrand.IntN(32)
 		} else {
 			if dataLength > 900 {
-				randLength += rand.Intn(128)
+				randLength += mathrand.IntN(128)
 			} else {
-				randLength += rand.Intn(512)
+				randLength += mathrand.IntN(512)
 			}
 		}
 	}
@@ -113,9 +114,9 @@ func (a *authAES128) packAuthData(data []byte) (outData []byte) {
 	var randLength int
 
 	if dataLength > 400 {
-		randLength = rand.Intn(512)
+		randLength = mathrand.IntN(512)
 	} else {
-		randLength = rand.Intn(1024)
+		randLength = mathrand.IntN(1024)
 	}
 
 	dataOffset := randLength + 16 + 4 + 4 + 7

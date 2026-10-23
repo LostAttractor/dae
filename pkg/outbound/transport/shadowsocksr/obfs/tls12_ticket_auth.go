@@ -3,14 +3,15 @@ package obfs
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/common"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/shadowsocksr/proto"
 )
 
@@ -50,7 +51,7 @@ func (t *tls12TicketAuth) getHost() string {
 		hosts := strings.Split(t.Param, ",")
 		if len(hosts) > 0 {
 
-			host = hosts[rand.Intn(len(hosts))]
+			host = hosts[mathrand.IntN(len(hosts))]
 			host = strings.TrimSpace(host)
 		}
 	}
@@ -82,7 +83,7 @@ func (t *tls12TicketAuth) Encode(data []byte) ([]byte, error) {
 			start := 0
 			var l int
 			for len(data)-start > 2048 {
-				l = rand.Intn(4096) + 100
+				l = mathrand.IntN(4096) + 100
 				if l > len(data)-start {
 					l = len(data) - start
 				}
@@ -103,7 +104,7 @@ func (t *tls12TicketAuth) Encode(data []byte) ([]byte, error) {
 				start := 0
 				var l int
 				for len(data)-start > 2048 {
-					l = rand.Intn(4096) + 100
+					l = mathrand.IntN(4096) + 100
 					if l > len(data)-start {
 						l = len(data) - start
 					}
@@ -143,7 +144,7 @@ func (t *tls12TicketAuth) Encode(data []byte) ([]byte, error) {
 		tlsDataLen += len(sni)
 		copy(tlsData[tlsDataLen:], tlsData2)
 		tlsDataLen += len(tlsData2)
-		ticketLen := rand.Intn(164)*2 + 64
+		ticketLen := mathrand.IntN(164)*2 + 64
 		tlsData[tlsDataLen-1] = uint8(ticketLen & 0xff)
 		tlsData[tlsDataLen-2] = uint8(ticketLen >> 8)
 		//ticketLen := 208

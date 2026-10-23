@@ -1,12 +1,13 @@
 package proto
 
 import (
+	"crypto/rand"
 	"encoding/binary"
+	mathrand "math/rand/v2"
 	"time"
 
 	"bytes"
 	"github.com/daeuniverse/dae/pkg/outbound/common"
-	rand "github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/shadowsocksr/internal/crypto"
 )
 
@@ -32,9 +33,9 @@ func (a *authSHA1v4) packData(data []byte) (outData []byte) {
 
 	if dataLength <= 1300 {
 		if dataLength > 400 {
-			randLength += rand.Intn(128)
+			randLength += mathrand.IntN(128)
 		} else {
-			randLength += rand.Intn(1024)
+			randLength += mathrand.IntN(1024)
 		}
 	}
 
@@ -69,9 +70,9 @@ func (a *authSHA1v4) packAuthData(data []byte) (outData []byte) {
 	randLength := 1
 	if dataLength <= 1300 {
 		if dataLength > 400 {
-			randLength += rand.Intn(128)
+			randLength += mathrand.IntN(128)
 		} else {
-			randLength += rand.Intn(1024)
+			randLength += mathrand.IntN(1024)
 		}
 	}
 	dataOffset := randLength + 4 + 2

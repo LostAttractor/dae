@@ -3,6 +3,7 @@ package vmess
 import (
 	"bufio"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
@@ -98,7 +98,7 @@ func (c *Conn) writeChunk(p []byte) error {
 	c.writeSize.Encode(uint16(size), data)
 	c.writeCipher.Seal(data[2:2], chunkNonce(c.writeIV, c.writeCount, c.writeCipher.NonceSize()), p, nil)
 	c.writeCount++
-	fastrand.Read(data[len(data)-padding:])
+	rand.Read(data[len(data)-padding:])
 	n, err := c.Conn.Write(data)
 	if err == nil && n != len(data) {
 		err = io.ErrShortWrite
