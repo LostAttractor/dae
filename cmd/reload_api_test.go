@@ -30,7 +30,7 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 						if err := json.UnmarshalRead(r.Body, &request); err != nil {
 							t.Error(err)
 						}
-						if request.Kind != kind || !request.Abort || request.ExpectedPID != 123 {
+						if request.Kind != kind || !request.Abort {
 							t.Errorf("operation request = %+v", request)
 						}
 						w.WriteHeader(http.StatusAccepted)
@@ -44,7 +44,7 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 				}))
 				defer server.Close()
 				t.Setenv("DAE_API_ENDPOINT", server.URL)
-				args := []string{"123", "--abort"}
+				args := []string{"--abort"}
 				if explicit {
 					t.Setenv("DAE_API_ENDPOINT", "unix:///unused/dae.sock")
 					args = append(args, "--api", server.URL)

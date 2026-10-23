@@ -29,7 +29,6 @@ var (
 	logFileMaxSize    int
 	logFileMaxBackups int
 	disableTimestamp  bool
-	disablePidFile    bool
 	disableAuthSudo   bool
 )
 
@@ -79,7 +78,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 
 			log.WithField("files", includes).Debug("Loaded configuration files")
 			err = daemon.Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver, daemon.Options{
-				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp, DisablePidFile: disablePidFile,
+				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp,
 			})
 			if err != nil {
 				// Let Cobra report the error if the configured log level hides it.
@@ -95,7 +94,6 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
 	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
-	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
 	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
 	return runCmd
 }

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -29,7 +28,6 @@ import (
 )
 
 const (
-	PidFilePath      = "/var/run/dae.pid"
 	StatusSocketPath = "/var/run/dae.sock"
 	shutdownTimeout  = 15 * time.Second
 )
@@ -38,7 +36,6 @@ type Options struct {
 	ConfigFile       string
 	Version          string
 	DisableTimestamp bool
-	DisablePidFile   bool
 }
 
 // Run owns daemon startup, serialized configuration changes and shutdown.
@@ -166,9 +163,8 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}()
 	pruneSubscriptions(conf, filepath.Dir(options.ConfigFile))
 	logStartupNodeStatus(plane.GroupsStatus())
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
-	defer signal.Stop(sigs)
+	// A daemon survives the loss of its controlling terminal.
+	signal.Ignore(syscall.SIGHUP)
 	resolver.SetRoute(plane.DNSResolverDialer())
 	app.publishAPI()
 	if management != nil {
@@ -176,9 +172,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	sdnotify.Ready()
 	log.WithFields(log.Fields{"duration": time.Since(started), "targets": len(plane.GroupsStatus()), "plugins": len(plane.MITMStatus().Plugins)}).Info("Startup completed")
-	if !options.DisablePidFile {
-		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
-	}
 	refreshTimer := time.NewTimer(time.Hour)
 	defer refreshTimer.Stop()
 	var retryAfter time.Time
@@ -231,22 +224,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			} else if changed {
 				log.Info("Reloaded runtime-state.json")
 			}
-		case sig := <-sigs:
-			switch sig {
-			case syscall.SIGUSR1, syscall.SIGUSR2:
-				kind := "reload"
-				if sig == syscall.SIGUSR2 {
-					kind = "suspend"
-				}
-				if _, err := app.operations.submit(api.OperationRequest{Kind: kind}, "signal"); err != nil {
-					log.WithError(err).Warn("Could not enqueue signal operation")
-				}
-			case syscall.SIGHUP:
-				continue
-			default:
-				log.WithField("signal", sig).Info("Received signal")
-				return nil
-			}
 		}
 	}
 }
@@ -278,8 +255,5 @@ func exit(datapath *control.Runtime, servers ...*apiserver.Server) {
 	}
 	if err := datapath.Close(); err != nil {
 		log.WithError(err).Error("Could not stop control plane ingress")
-	}
-	if err := os.Remove(PidFilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.WithError(err).Warn("Could not remove PID file")
 	}
 }

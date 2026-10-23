@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -51,11 +50,8 @@ func (o *operations) submit(request api.OperationRequest, trigger string) (api.O
 	if o.closed {
 		return api.Operation{}, apiserver.ErrOperationsClosed
 	}
-	if request.Kind != "reload" && request.Kind != "suspend" && request.Kind != "refresh" || request.ExpectedPID < 0 || request.Kind == "refresh" && request.Abort {
+	if request.Kind != "reload" && request.Kind != "suspend" && request.Kind != "refresh" || request.Kind == "refresh" && request.Abort {
 		return api.Operation{}, apiserver.ErrOperationInvalid
-	}
-	if request.ExpectedPID != 0 && request.ExpectedPID != os.Getpid() {
-		return api.Operation{}, apiserver.ErrOperationPID
 	}
 	if len(o.requests) == cap(o.requests) || request.Kind == "refresh" && o.refresh != nil && o.refresh.status.FinishedAt.IsZero() {
 		return api.Operation{}, apiserver.ErrOperationsBusy

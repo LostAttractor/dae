@@ -563,7 +563,7 @@
           "id": { "type": "string" },
           "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
           "state": { "type": "string", "enum": ["queued", "running", "completed", "failed", "canceled"] },
-          "trigger": { "type": "string", "enum": ["api", "automatic", "signal"] },
+          "trigger": { "type": "string", "enum": ["api", "automatic"] },
           "queued_at": { "type": "string", "format": "date-time" },
           "started_at": { "type": "string", "format": "date-time" },
           "finished_at": { "type": "string", "format": "date-time" },
@@ -577,8 +577,7 @@
         "type": "object",
         "properties": {
           "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
-          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." },
-          "expected_pid": { "type": "integer", "minimum": 0, "description": "When nonzero, require the daemon PID to match." }
+          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." }
         },
         "required": ["kind"],
         "additionalProperties": false
@@ -1839,7 +1838,7 @@
       "post": {
         "operationId": "submitOperation",
         "summary": "Queue a daemon configuration operation",
-        "description": "Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. A nonzero expected_pid must match the daemon PID. Local Unix operation routes remain available throughout plane replacement.",
+        "description": "Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. Local Unix operation routes remain available throughout plane replacement.",
         "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationRequest" } } } },
         "responses": {

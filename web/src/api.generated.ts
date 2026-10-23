@@ -682,7 +682,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a daemon configuration operation
-         * @description Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. A nonzero expected_pid must match the daemon PID. Local Unix operation routes remain available throughout plane replacement.
+         * @description Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. Local Unix operation routes remain available throughout plane replacement.
          */
         post: operations["submitOperation"];
         delete?: never;
@@ -1497,13 +1497,11 @@ export interface components {
             /** @enum {string} */
             state: "queued" | "running" | "completed" | "failed" | "canceled";
             /** @enum {string} */
-            trigger: "api" | "automatic" | "signal";
+            trigger: "api" | "automatic";
         };
         OperationRequest: {
             /** @description Abort established connections during reload or suspend; invalid for refresh. */
             abort?: boolean;
-            /** @description When nonzero, require the daemon PID to match. */
-            expected_pid?: number;
             /** @enum {string} */
             kind: "reload" | "suspend" | "refresh";
         };

@@ -5,7 +5,6 @@ package daemon
 import (
 	"errors"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -63,9 +62,6 @@ func TestOperationAPIQueueAndStatus(t *testing.T) {
 	resources, err := remote.ResourceRefreshStatus(t.Context())
 	if err != nil || resources.Operation.ID != refresh.ID || resources.Operation.State != "failed" || !resources.NextCheck.Equal(next) {
 		t.Fatalf("refresh status: %+v %v", resources, err)
-	}
-	if _, err := remote.SubmitOperation(t.Context(), api.OperationRequest{Kind: "suspend", ExpectedPID: os.Getpid() + 1}); err == nil {
-		t.Fatal("mismatched PID accepted")
 	}
 }
 

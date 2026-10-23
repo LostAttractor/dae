@@ -60,22 +60,19 @@ _dae_honk() {
 _dae_reload() {
 	_arguments -C \
 		"-h[help for reload]" \
-		"--help[help for reload]" \
-		"::pid:($(ps -A | awk '{print $1}'))"
+		"--help[help for reload]"
 }
 
 _dae_suspend() {
 	_arguments -C \
 		"-h[help for suspend]" \
-		"--help[help for suspend]" \
-		"::pid:($(ps -A | awk '{print $1}'))"
+		"--help[help for suspend]"
 }
 
 _dae_run() {
 	_arguments -C \
 		"-c[Config file of dae]:filename:_files" \
 		"--config[Config file of dae]:filename:_files" \
-		"--disable-pidfile[Not generate /var/run/dae.pid]" \
 		"--disable-timestamp[Disable timestamp]" \
 		"--logfile[Log file to write]:filename:_files" \
 		"--logfile-maxbackups[The maximum number of old log files to retain]" \

@@ -192,7 +192,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、可选 `mitm_test_generation` 和 `mitm_test_origins`；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
-资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend，非零 `ExpectedPID` 要求 daemon PID 匹配。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
+资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
 设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。设备空闲且最近一分钟历史过期后回收；再次出现时累计值重新开始，`started_at` 表示本次观察周期起点，无观察记录时为零时间。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
 

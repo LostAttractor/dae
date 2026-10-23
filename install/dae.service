@@ -1,6 +1,6 @@
 [Unit]
 Description=dae Service
-Documentation=https://github.com/daeuniverse/dae
+Documentation=https://github.com/LostAttractor/dae
 After=network-online.target docker.service systemd-sysctl.service
 Wants=network-online.target
 
@@ -11,7 +11,7 @@ LimitNPROC=512
 LimitNOFILE=1048576
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
-ExecReload=/usr/bin/dae reload $MAINPID
+ExecReload=/usr/bin/dae reload
 Restart=on-failure
 TimeoutStartSec=120
 

@@ -20,7 +20,6 @@ type Operation struct {
 }
 
 type OperationRequest struct {
-	Kind        string `json:"kind"`
-	Abort       bool   `json:"abort,omitempty"`
-	ExpectedPID int    `json:"expected_pid,omitempty"`
+	Kind  string `json:"kind"`
+	Abort bool   `json:"abort,omitempty"`
 }

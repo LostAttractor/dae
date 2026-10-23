@@ -10,7 +10,7 @@ _dae() {
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	cmd="export help honk reload run suspend validate"
 	export_cmd="outline"
-	run_opts="-c --config --disable-pidfile --disable-timestamp --logfile \
+	run_opts="-c --config --disable-timestamp --logfile \
     --logfile-maxbackups --logfile-maxsize"
     validate_opts="-c --config"
 
@@ -42,7 +42,7 @@ _dae() {
 			;;
         
         # multiple option matching
-		--disable-pidfile|--disable-timestamp|--logfile|--logfile-maxbackup|\
+		--disable-timestamp|--logfile|--logfile-maxbackup|\
         --logfile-maxsize|-c|--config|*/*)
             
             case "${prev}" in

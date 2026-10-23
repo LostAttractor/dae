@@ -13,8 +13,7 @@ import (
 var (
 	ErrOperationsBusy   = errors.New("operation queue is full or a resource refresh is already pending")
 	ErrOperationsClosed = errors.New("daemon is stopping")
-	ErrOperationInvalid = errors.New("invalid operation kind, abort option, or expected PID")
-	ErrOperationPID     = errors.New("the API daemon does not match the requested PID")
+	ErrOperationInvalid = errors.New("invalid operation kind or abort option")
 )
 
 type OperationStore interface {
@@ -55,7 +54,7 @@ func (s *handler) submitOperation(w http.ResponseWriter, request api.OperationRe
 	if err != nil {
 		code := http.StatusInternalServerError
 		switch {
-		case errors.Is(err, ErrOperationsBusy), errors.Is(err, ErrOperationPID):
+		case errors.Is(err, ErrOperationsBusy):
 			code = http.StatusConflict
 		case errors.Is(err, ErrOperationsClosed):
 			code = http.StatusServiceUnavailable

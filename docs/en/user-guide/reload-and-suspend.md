@@ -47,13 +47,11 @@ it clears before the result or error is printed. Redirected stderr and
 The command submits an operation through the local Unix API and polls its unique
 ID. Reload, suspend and resource refresh share a serialized queue of up to 16
 pending requests. A full queue rejects new requests. A client timeout does not
-cancel accepted work. An optional PID argument requires the API daemon's PID to
-match; it does not select a different socket.
+cancel accepted work.
 
 The local operation API remains available while routing is replaced. The daemon
 retains the 64 most recently finished operations; unknown or expired IDs return
-an error. Raw `SIGUSR1` and `SIGUSR2` enqueue reload and suspend, respectively,
-without aborting established connections.
+an error.
 
 To abort established connections, including connections retained by earlier reloads:
 

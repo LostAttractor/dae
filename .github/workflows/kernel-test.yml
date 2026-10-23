@@ -242,15 +242,14 @@ jobs:
             !
 
             chmod 600 ./conf.dae
-            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              if docker exec dae /host/dae/dae status >/dev/null 2>&1; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+            if ! docker exec dae /host/dae/dae status >/dev/null 2>&1; then
               echo "dae did not become ready"
               cat dae.log
               exit 1
@@ -319,15 +318,14 @@ jobs:
 
             docker restart -t0 dae v2ray
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
-            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              if docker exec dae /host/dae/dae status >/dev/null 2>&1; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+            if ! docker exec dae /host/dae/dae status >/dev/null 2>&1; then
               echo "dae did not become ready"
               cat dae.log
               exit 1
@@ -434,15 +432,14 @@ jobs:
             !
 
             chmod 600 ./conf.dae
-            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              if docker exec dae /host/dae/dae status >/dev/null 2>&1; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+            if ! docker exec dae /host/dae/dae status >/dev/null 2>&1; then
               echo "dae did not become ready"
               cat dae.log
               exit 1
@@ -516,15 +513,14 @@ jobs:
             docker exec dae sysctl net.ipv6.conf.dae-veth-peer.forwarding=1
 
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
-            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              if docker exec dae /host/dae/dae status >/dev/null 2>&1; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+            if ! docker exec dae /host/dae/dae status >/dev/null 2>&1; then
               echo "dae did not become ready"
               cat dae.log
               exit 1

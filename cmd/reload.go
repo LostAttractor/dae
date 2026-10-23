@@ -97,9 +97,9 @@ func newReloadCommand(suspend bool) *cobra.Command {
 	var connection cli.Connection
 	var abort bool
 	command := &cobra.Command{
-		Use:   kind + " [pid]",
+		Use:   kind,
 		Short: description,
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReloadCommand(cmd, args, &connection, kind, abort)
 		},
@@ -112,13 +112,6 @@ func newReloadCommand(suspend bool) *cobra.Command {
 func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connection, kind string, abort bool) error {
 	cmd.SilenceUsage = true
 	request := api.OperationRequest{Kind: kind, Abort: abort}
-	if len(args) != 0 {
-		pid, err := parsePositivePID(args[0])
-		if err != nil {
-			return err
-		}
-		request.ExpectedPID = pid
-	}
 	remote, err := connection.Open()
 	if err != nil {
 		return err

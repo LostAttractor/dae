@@ -19,11 +19,9 @@ complete -c dae -n "not __fish_seen_subcommand_from $__dae_commands" -a help -d 
 complete -c dae -n "__fish_seen_subcommand_from export; and not __fish_seen_argument -a outline" -a "outline" -d "Export config structure"
 
 #reload suspend
-complete -c dae -n "__fish_seen_subcommand_from suspend reload" -a "(__fish_complete_pids)"
 complete -c dae -n "__fish_seen_subcommand_from suspend reload" -o a -l abort -d "Abort established connections"
 
 #run
-complete -c dae -n "__fish_seen_subcommand_from run" -l disable-pidfile -d "Not generate /var/run/dae.pid"
 complete -c dae -n "__fish_seen_subcommand_from run" -l disable-timestamp -d "Disable timestamp"
 complete -c dae -n "__fish_seen_subcommand_from run" -l logfile-maxbackups -x -d "The maximum number of old log files to retain"
 complete -c dae -n "__fish_seen_subcommand_from run" -o c -l config -d "Config file of dae"
