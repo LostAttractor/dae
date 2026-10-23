@@ -31,9 +31,9 @@ group selection and the decision to sleep a physical path remain above this laye
 HTTP proxies use CONNECT; HTTP transport mode uses PUT. VMess requires
 `alterId=0` and supports AES-GCM or ChaCha20-Poly1305 body encryption.
 VMess JSON share links accept numeric or string fields such as `port`, `aid`
-and `v`. Their legacy `allowInsecure` conversion is local to the parser: numeric
-zero, `null`, `false`, `""` and `"0"` are false; other strings (including
-`"false"`) are true. Parsing does not depend on daemon-wide JSON initialization.
+and `v`. `allowInsecure` accepts a boolean, a number (nonzero is true), `null`,
+`""` or a boolean string such as `"true"`, `"false"`, `"1"` or `"0"`; other
+strings are rejected. Parsing does not depend on daemon-wide JSON initialization.
 
 Tests use local wire peers and real TLS/HTTP2/gRPC/QUIC implementations. Run from
 the repository root with its pinned quic-go dependency:

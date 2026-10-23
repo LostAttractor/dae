@@ -50,7 +50,7 @@ func TestVMessJSONFuzzyBool(t *testing.T) {
 	}{
 		{"true", true}, {"false", false}, {"null", false},
 		{"0", false}, {"-0.0", false}, {"1", true}, {"-2.5", true}, {"1e2", true},
-		{`""`, false}, {`"0"`, false}, {`"1"`, true}, {`"false"`, true}, {`"anything"`, true},
+		{`""`, false}, {`"0"`, false}, {`"1"`, true}, {`"false"`, false}, {`"true"`, true},
 	} {
 		t.Run(tc.value, func(t *testing.T) {
 			got, err := ParseVmessURL(jsonVMessLink(fmt.Sprintf(`{"allowInsecure":%s}`, tc.value)))
@@ -61,7 +61,7 @@ func TestVMessJSONFuzzyBool(t *testing.T) {
 	}
 	for _, payload := range []string{
 		`{"port":true}`, `{"port":[]}`, `{"port":{}}`,
-		`{"allowInsecure":[]}`, `{"allowInsecure":{}}`, `{"allowInsecure":1e999}`,
+		`{"allowInsecure":[]}`, `{"allowInsecure":{}}`, `{"allowInsecure":1e999}`, `{"allowInsecure":"anything"}`,
 		`{"port":443} garbage`, `{"port":`,
 	} {
 		if _, err := ParseVmessURL(jsonVMessLink(payload)); err == nil {

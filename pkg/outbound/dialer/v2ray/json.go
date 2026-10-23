@@ -9,8 +9,8 @@ import (
 )
 
 // VMess subscriptions commonly encode port, aid and version as either numbers
-// or strings. Keep the daemon's historical fuzzy decoding local to this format,
-// rather than installing process-wide JSON decoders.
+// or strings, and booleans as booleans, numbers or strings. These decoders are
+// local to this format rather than installed process-wide.
 var vmessUnmarshalers = json.JoinUnmarshalers(
 	json.UnmarshalFunc(func(data []byte, value *string) error {
 		switch jsontext.Value(data).Kind() {
@@ -40,9 +40,15 @@ var vmessUnmarshalers = json.JoinUnmarshalers(
 			if err := json.Unmarshal(data, &text, jsonv1.DefaultOptionsV1()); err != nil {
 				return err
 			}
-			// Compatibility: historically even "false" is a nonempty,
-			// nonzero string and therefore true.
-			*value = text != "" && text != "0"
+			if text == "" {
+				*value = false
+				return nil
+			}
+			parsed, err := strconv.ParseBool(text)
+			if err != nil {
+				return fmt.Errorf("VMess boolean field %q is not a boolean", text)
+			}
+			*value = parsed
 			return nil
 		case 'n':
 			*value = false
