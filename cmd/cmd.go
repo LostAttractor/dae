@@ -37,7 +37,7 @@ func init() {
 		Version,
 		fmt.Sprintf("go runtime %v %v/%v", runtime.Version(), runtime.GOOS, runtime.GOARCH),
 		"Copyright (c) 2022-2025 @daeuniverse",
-		"License GNU AGPLv3 <https://github.com/daeuniverse/dae/blob/main/LICENSE>",
+		"License GNU AGPLv3 <https://github.com/LostAttractor/dae/blob/next/LICENSE>",
 	}, "\n")
 }
 
