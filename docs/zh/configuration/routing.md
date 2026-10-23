@@ -400,7 +400,7 @@ routing {
         pname(mosdns) -> must
         domain(full: api.example.com) && l4proto(tcp) -> bump
     }
-    ip(geoip:cn) -> direct
+    dip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
     fallback: my_group
 }

@@ -82,12 +82,12 @@ func (b *RulesBuilder) ApplyPredicate(functions []*config_parser.Function, outbo
 	if len(functions) == 0 {
 		return fmt.Errorf("empty predicate")
 	}
-	// rule is like: domain(domain:baidu.com) && port(443) -> proxy
+	// rule is like: domain(suffix: baidu.com) && dport(443) -> proxy
 	for iFunc, f := range functions {
 		if f == nil || len(f.Params) == 0 {
 			return fmt.Errorf("predicate functions require arguments")
 		}
-		// f is like: domain(domain:baidu.com)
+		// f is like: domain(suffix: baidu.com)
 		functionParser, ok := b.parsers[f.Name]
 		if !ok {
 			return fmt.Errorf("unknown function: %v", f.Name)

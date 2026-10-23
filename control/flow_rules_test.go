@@ -30,11 +30,11 @@ func prepareFlowRulesForTest(t testing.TB, controls, routes string) preparedRule
 }
 
 func TestFlowRulesPreserveOutboundAndDirect(t *testing.T) {
-	mustRule := "sip(192.0.2.0/24) && port(53, 443) -> must"
+	mustRule := "sip(192.0.2.0/24) && dport(53, 443) -> must"
 	bumpRule := "domain(full: api.example.com) && l4proto(tcp) && dport(443) -> bump"
 	for _, controls := range []string{mustRule + "\n" + bumpRule, bumpRule + "\n" + mustRule} {
 		prepared := prepareFlowRulesForTest(t, controls, `
-ip(10.0.0.0/8) -> direct
+dip(10.0.0.0/8) -> direct
 domain(full: api.example.com) -> proxy(mark: 37)
 dport(80) -> block`)
 		matcher, builder := routingMatcherForTest(t, prepared)

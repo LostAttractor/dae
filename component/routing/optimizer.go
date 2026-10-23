@@ -47,23 +47,13 @@ type AliasOptimizer struct {
 func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
 	for _, rule := range rules {
 		for _, function := range rule.AndFunctions {
-			switch function.Name {
-			case "port":
-				function.Name = consts.Function_DestPort
-			case "ip":
-				function.Name = consts.Function_DestIp
+			if function.Name != consts.Function_Domain {
+				continue
 			}
+			// A domain without a key matches its suffix.
 			for _, param := range function.Params {
-				switch function.Name {
-				case consts.Function_Domain:
-					// Rewrite to authoritative key name.
-					switch param.Key {
-					case "", "domain":
-						param.Key = string(consts.RoutingDomainKey_Suffix)
-					case "contains":
-						param.Key = string(consts.RoutingDomainKey_Keyword)
-					default:
-					}
+				if param.Key == "" {
+					param.Key = string(consts.RoutingDomainKey_Suffix)
 				}
 			}
 		}

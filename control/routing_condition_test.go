@@ -226,7 +226,7 @@ func TestConditionalUsePreparesGeodataAndAliases(t *testing.T) {
 		}
 	}
 	conf := parseStructuredTestConfig(t, `rule_set { office { l4proto(tcp) -> direct(mark:7) } }
- ip(geoip:office) && domain(geosite:office) && port(443) -> use(office)
+ dip(geoip:office) && domain(geosite:office) && dport(443) -> use(office)
  fallback: direct`)
 	p, err := prepareRoutingRules(t.Context(), &conf.Routing, []string{dir})
 	if err != nil {

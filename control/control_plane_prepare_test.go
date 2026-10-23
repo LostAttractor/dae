@@ -14,27 +14,20 @@ import (
 )
 
 func TestPrepareRoutingRulesPreparesEveryTreeWithoutMutatingConfig(t *testing.T) {
-	routingRule := ruleWithFunctionAlias("ip")
+	routingRule := &config_parser.RoutingRule{
+		AndFunctions: []*config_parser.Function{{Name: consts.Function_Domain, Params: []*config_parser.Param{{Val: "example.com"}}}},
+		Outbound:     config_parser.Function{Name: "direct"},
+	}
 	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{routingRule}, "direct")
 	prepared, err := prepareRoutingRules(context.Background(), routingConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := prepared.routing.Policies[0].Statements[0].Rule.AndFunctions[0].Name; got != consts.Function_DestIp {
-		t.Fatalf("prepared routing function = %q, want %q", got, consts.Function_DestIp)
+	if got := prepared.routing.Policies[0].Statements[0].Rule.AndFunctions[0].Params[0].Key; got != string(consts.RoutingDomainKey_Suffix) {
+		t.Fatalf("prepared domain key = %q, want %q", got, consts.RoutingDomainKey_Suffix)
 	}
-	if routingRule.AndFunctions[0].Name != "ip" {
+	if routingRule.AndFunctions[0].Params[0].Key != "" {
 		t.Fatal("rule preparation mutated the source configuration")
-	}
-}
-
-func ruleWithFunctionAlias(name string) *config_parser.RoutingRule {
-	return &config_parser.RoutingRule{
-		AndFunctions: []*config_parser.Function{{
-			Name:   name,
-			Params: []*config_parser.Param{{Val: "192.0.2.0/24"}},
-		}},
-		Outbound: config_parser.Function{Name: "direct"},
 	}
 }
 

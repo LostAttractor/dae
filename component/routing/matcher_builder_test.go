@@ -98,34 +98,16 @@ func TestParseOutboundSkipWhileNoalive(t *testing.T) {
 }
 
 func TestAliasOptimizer(t *testing.T) {
-	rule := func(name string) *config_parser.RoutingRule {
-		return &config_parser.RoutingRule{
-			AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "0.0.0.0"}}}},
-			Outbound:     config_parser.Function{Name: "direct"},
-		}
-	}
-	rules := []*config_parser.RoutingRule{
-		rule("ip"),
-		rule("dip"),
-		rule("port"),
-		rule("dport"),
-		rule("interface"),
-	}
-	optimized, err := (&AliasOptimizer{}).Optimize(rules)
-	if err != nil {
+	params := []*config_parser.Param{{Val: "example.com"}, {Key: "full", Val: "example.org"}}
+	rules := []*config_parser.RoutingRule{{
+		AndFunctions: []*config_parser.Function{{Name: consts.Function_Domain, Params: params}},
+		Outbound:     config_parser.Function{Name: "direct"},
+	}}
+	if _, err := (&AliasOptimizer{}).Optimize(rules); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
-	want := []string{
-		consts.Function_DestIp,
-		consts.Function_DestIp,
-		consts.Function_DestPort,
-		consts.Function_DestPort,
-		consts.Function_Interface,
-	}
-	for i, r := range optimized {
-		if got := r.AndFunctions[0].Name; got != want[i] {
-			t.Errorf("rule %d: function = %v, want %v", i, got, want[i])
-		}
+	if params[0].Key != string(consts.RoutingDomainKey_Suffix) || params[1].Key != "full" {
+		t.Fatalf("domain keys = %q, %q; want a bare domain to match its suffix", params[0].Key, params[1].Key)
 	}
 }
 
