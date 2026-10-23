@@ -338,8 +338,8 @@ func (c *GroupCompiler) expand(group *groupDefinition) ([]*PathSpec, error) {
 				return nil, fmt.Errorf("group %q: proxy path expansion exceeds limit %d", group.config.Name, MaxExpandedPaths)
 			}
 			next := make([]*PathSpec, 0, len(current)*len(fragments))
-			// Later stages are the major dimension, preserving the historical
-			// terminal-major ordering used by fixed(n).
+			// Later stages are the major dimension: fixed(n) indexes paths
+			// terminal-major.
 			for _, fragment := range fragments {
 				for _, prefix := range current {
 					nodes := make([]*NodeInfo, 0, len(prefix.Nodes)+len(fragment.Nodes))

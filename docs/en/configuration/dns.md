@@ -336,7 +336,7 @@ collects expired records and recomputes current-rule bitmaps before interface
 attachment. There is no snapshot entry/size cap; format, address/name, duplicate
 and trailing-data checks remain.
 
-Status schema **13** reports:
+`dae status` / `/api/status` reports:
 
 - `domain-registry`: `used` counts domain-IP pairs; `limit: 0` means unbounded.
   `breakdown.domains` counts names; `breakdown.ips` counts distinct addresses across

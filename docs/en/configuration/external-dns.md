@@ -34,16 +34,21 @@ You should configure dae as follows:
 
    And make sure domain `dns.google` will be proxied in routing rules.
 
-3. Add upstream and request to section "dns".
+3. Forward DNS requests to it with the optional `dns-router` plugin (see [DNS](dns.md#optional-plugins)).
 
    ```
-   dns {
-     upstream {
-       adguardhome: 'udp://127.0.0.1:53'
-     }
-     routing {
-       request {
-         fallback: adguardhome
+   plugins {
+     dns-router {
+       upstream {
+         adguardhome: 'udp://127.0.0.1:53'
+       }
+       routing {
+         request {
+           fallback: adguardhome
+         }
+         response {
+           fallback: accept
+         }
        }
      }
    }
@@ -87,16 +92,21 @@ You should configure dae as follows:
 
    And make sure domain `dns.google` will be proxied in routing rules.
 
-3. Add upstream and request to section "dns".
+3. Forward DNS requests to it with the optional `dns-router` plugin (see [DNS](dns.md#optional-plugins)).
 
    ```
-   dns {
-     upstream {
-       adguardhome: 'udp://192.168.30.3:53'
-     }
-     routing {
-       request {
-         fallback: adguardhome
+   plugins {
+     dns-router {
+       upstream {
+         adguardhome: 'udp://192.168.30.3:53'
+       }
+       routing {
+         request {
+           fallback: adguardhome
+         }
+         response {
+           fallback: accept
+         }
        }
      }
    }

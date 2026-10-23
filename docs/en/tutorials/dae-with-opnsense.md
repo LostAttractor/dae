@@ -66,9 +66,9 @@ dae enp1s0: 192.168.2.1 Gateway 192.168.2.2
 
 ## dae related configuration
 
-This section does not involve the content of the dae configuration file, but only gives how to configure DNS requests to pass through dae, and solutions to the common problem that the proxy is normal and the direct connection is not working. For the `domain` and `ip` modes mentioned below and how to configure dae's `dns` and `routing` rules, please refer to the dae documentation.
+This section does not involve the content of the dae configuration file, but only gives how to configure DNS requests to pass through dae, and solutions to the common problem that the proxy is normal and the direct connection is not working. For `routing` rules, please refer to the dae documentation.
 
-To use dae for transparent proxy, to make the domain name based traffic splitting rules work normally, DNS requests need to pass through dae in the `domain` and `domain+` modes (note that the DNS server is not set to the dae address, dae does not listen to port 53). If DNS requests do not pass through dae, you need to use dae's `domain++` mode (match the traffic splitting rules again based on the sniffed domain name, which is not as performant as the domain mode). If you use the `domain++` mode, or do not need to split traffic based on the domain name and use the `ip` mode, the following configuration can be ignored.
+dae learns domain-IP evidence from the DNS replies it relays (dae does not listen on port 53; DNS requests only need to be routed through it). Domain rules and the verification of sniffed domains rely on this evidence, so DNS requests should pass through dae when you split traffic by domain; see [DNS](../configuration/dns.md). Without domain rules, the following configuration can be ignored.
 
 1. DNS forwarding configuration
    > Set in `Services: Unbound DNS: Query Forwarding`, forward DNS requests to the specified server, such as configuring OpenDNS's 208.67.222.222. The next step requires setting a static route rule, setting the gateway of this address to dae, so do not use the DNS issued by your upstream, so that you can normally use dig or nslookup to query the DNS server issued by the upstream for testing when troubleshooting DNS problems.
@@ -76,15 +76,7 @@ To use dae for transparent proxy, to make the domain name based traffic splittin
 2. Static route configuration
    > Add a static route rule in `System: Routes: Configuration`, set the network to 208.67.222.222/32, and set the gateway to proxy.
 
-After the above configuration, DNS requests can pass through dae and be hijacked by dae for processing. The DNS server set here is not the final query server. The target server of the DNS query will be rewritten by dae according to the dns rules in the dae configuration, and then the DNS query request will be sent.
-
-It should be noted that Unbound will append EDNS related parameters when forwarding client's DNS requests, which may result in oversized (occasionally larger than 2000) DNS responses from the upstream server, causing dae's buffer for processing udp DNS to overflow (for performance considerations, dae does not use a larger buffer, tcp's DNS will not overflow), and the final result is that the client cannot get the DNS response, or even cause dae to crash. To solve this problem, you can switch to Dnsmasq or disable EDNSSEC support in `Services: Unbound DNS: General` and write the following Unbound configuration, which can effectively reduce the size of the returned DNS response.
-
-``` yaml
-# saved as /usr/local/etc/unbound.opnsense.d/disableedns.conf
-server:
-    disable-edns-do: yes 
-```
+After the above configuration, DNS requests pass through dae, which relays them to their original server; the optional `dns-router` plugin can send them to another upstream.
 
 In addition, since dae does not perform snat, if the proxy is normal and the direct connection is not working [here refers to the direct in dae's `routing`, not the traffic that OPN does not split to dae and directly goes out of the WAN port. For example, according to the traffic splitting rules configured in the previous section, OPN will split the steam's traffic to pass through dae, dae has configured domain(geosite:steam@cn) -> direct in `routing`, steam cannot log in or download normally], configure nat in the system where dae is installed.
 

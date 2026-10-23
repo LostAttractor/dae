@@ -14,7 +14,7 @@ Because dae will not hijack any DNS request if it was suspended.
 
 ### Troubleshoot local DNS service
 
-If you use `adguardhome`, `mosdns` in `dns` section, refer to [external-dns](configuration/external-dns.md).
+If you forward DNS to a local `adguardhome` or `mosdns`, refer to [external-dns](configuration/external-dns.md).
 
 ### Troubleshoot firewall
 
@@ -48,10 +48,6 @@ If you use firewalld, it is hard to add mark support. You have to execute follow
 ```bash
 sudo nft 'insert rule inet firewalld filter_INPUT mark 0x8000000 accept'
 ```
-
-### Troubleshoot PPPoE
-
-Old version of dae does not support PPPoE, Please use latest version.
 
 ## Binding to LAN but bad DNS in other machines
 

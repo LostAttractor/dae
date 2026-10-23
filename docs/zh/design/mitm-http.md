@@ -111,7 +111,7 @@ ServeConn / ServePacketConn
 
 普通转发在终端创建浅请求副本和独立 URL，将其 URL host 设为原接入主机/端口，
 保留请求 Host。标准 HTTP/H3 transport 用 URL 选择池、拨号和验证 TLS，用 Host 编码 HTTP authority。
-副本共享正文和 trailer；插件链的 `next` 边界统一将 `Response.Request` 恢复为插件的业务请求，终端不再重复赋值。
+副本共享正文和 trailer；插件链的 `next` 边界统一将 `Response.Request` 恢复为插件的业务请求，终端无需另行赋值。
 没有插件的响应在返回 ReverseProxy 时完成请求关联。
 插件主动请求使用独立的 `Exchange.Client`，按自己的 URL 正常解析、路由及验证，不继承 fronting 绑定。
 
