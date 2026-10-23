@@ -203,7 +203,7 @@ func (matcher *RoutingMatcher) dnsRoute(ctx context.Context, network, address, h
 		input := param.routingInput(hostname, target).targetInput(hostname, true, nil, nil)
 		decision.outbound, decision.mark, decision.must, err = matcher.match(input)
 	}
-	if err == nil && decision.outbound >= consts.OutboundMustRules {
+	if err == nil && decision.outbound > consts.OutboundUserDefinedMax {
 		err = fmt.Errorf("cannot resolve DNS routing for %s", target)
 	}
 	if err == nil && decision.outbound == consts.OutboundBlock {

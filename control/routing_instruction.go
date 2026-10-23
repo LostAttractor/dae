@@ -33,18 +33,14 @@ func ParsePortRange(b []byte) (portStart, portEnd uint16) {
 
 const (
 	matchFlagNot         uint8 = routingabi.MATCH_FLAG_NOT
-	matchFlagMust        uint8 = routingabi.MATCH_FLAG_MUST
 	matchFlagSkipNoalive uint8 = routingabi.MATCH_FLAG_SKIP_NOALIVE
 	matchCaptureShift          = routingabi.MATCH_CAPTURE_SHIFT
 	matchFlagBypass      uint8 = routingabi.MATCH_FLAG_BYPASS
 )
 
-func routingMatchFlags(not, must, skipNoalive bool) (flags uint8) {
+func routingMatchFlags(not, skipNoalive bool) (flags uint8) {
 	if not {
 		flags |= matchFlagNot
-	}
-	if must {
-		flags |= matchFlagMust
 	}
 	if skipNoalive {
 		flags |= matchFlagSkipNoalive
@@ -53,9 +49,9 @@ func routingMatchFlags(not, must, skipNoalive bool) (flags uint8) {
 }
 
 // Logical instructions carry no routing result. Only a rule tail may set a
-// packet mark, must flag or connectivity condition.
+// packet mark or connectivity condition.
 func (b *RoutingMatcherBuilder) matchSet(kind consts.MatchType, not bool, outbound *routing.Outbound) (bpfMatchSet, error) {
-	set := bpfMatchSet{Type: uint8(kind), Flags: routingMatchFlags(not, false, false)}
+	set := bpfMatchSet{Type: uint8(kind), Flags: routingMatchFlags(not, false)}
 	switch outbound.Name {
 	case consts.OutboundLogicalOr.String():
 		set.Action = uint8(consts.MatchActionOr)
@@ -75,7 +71,7 @@ func (b *RoutingMatcherBuilder) matchSet(kind consts.MatchType, not bool, outbou
 			}
 		}
 		set.Outbound, set.Mark = id, outbound.Mark
-		set.Flags = routingMatchFlags(not, outbound.Must, outbound.SkipWhileNoalive)
+		set.Flags = routingMatchFlags(not, outbound.SkipWhileNoalive)
 	}
 	return set, nil
 }
@@ -97,7 +93,7 @@ func (b *RoutingMatcherBuilder) addMatches[T any](f *config_parser.Function, kin
 		return err
 	}
 	for i, value := range values {
-		set := bpfMatchSet{Type: uint8(kind), Action: uint8(consts.MatchActionOr), Flags: routingMatchFlags(f.Not, false, false)}
+		set := bpfMatchSet{Type: uint8(kind), Action: uint8(consts.MatchActionOr), Flags: routingMatchFlags(f.Not, false)}
 		if i == len(values)-1 {
 			set = tail
 		}

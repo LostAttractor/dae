@@ -76,7 +76,7 @@ func TestCompiledRoutingJumpsSurviveFragmentReuseAndInterfaceUpdates(t *testing.
 
 // Evaluate the source expression independently of instruction traversal:
 // three AND clauses, each containing two OR atoms, with all truth values and
-// all NOT combinations. Unknown domains must never commit terminal mark/must.
+// all NOT combinations. Unknown domains must never commit a terminal mark.
 func TestRoutingThreeValuedExpressions(t *testing.T) {
 	rules := make([]bpfMatchSet, 7)
 	for i := range rules[:6] {
@@ -96,7 +96,7 @@ func TestRoutingThreeValuedExpressions(t *testing.T) {
 	input := routingInput{src: netip.MustParseAddrPort("192.0.2.1:12345"), dst: netip.MustParseAddrPort("198.51.100.1:443"), l4proto: consts.L4ProtoType_TCP, kernel: true}
 	for not := 0; not < 8; not++ {
 		for j := 0; j < 3; j++ {
-			rules[2*j+1].Flags = routingMatchFlags(not&(1<<j) != 0, j == 2, false)
+			rules[2*j+1].Flags = routingMatchFlags(not&(1<<j) != 0, false)
 		}
 		for values := 0; values < 729; values++ {
 			var atoms [6]int // 0=false, 1=unknown, 2=true.
@@ -134,7 +134,7 @@ func TestRoutingThreeValuedExpressions(t *testing.T) {
 			want := []routingEvaluation{
 				{outbound: consts.OutboundDirect, mark: 11},
 				{outbound: consts.OutboundControlPlaneRouting},
-				{outbound: consts.OutboundBlock, mark: 37, must: true},
+				{outbound: consts.OutboundBlock, mark: 37},
 			}[truth]
 			if err != nil || got != want {
 				t.Fatalf("NOT=%03b values=%d: %+v, %v; want %+v", not, values, got, err, want)

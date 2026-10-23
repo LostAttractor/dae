@@ -271,7 +271,7 @@ __noinline enum route_step_result route_apply(struct route_state *state,
 	/* An ambiguous terminal cannot commit its mark or must bit. */
 	if (state->rule_uncertain)
 		goto to_userspace;
-	bool must = state->must == MATCH_HIT || (match->flags & MATCH_FLAG_MUST);
+	bool must = state->must == MATCH_HIT;
 
 	if (!must && params->isdns && !(match->flags & MATCH_FLAG_BYPASS))
 		state->capture_flags |= CAPTURE_DNS;

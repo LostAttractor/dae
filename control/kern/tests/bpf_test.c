@@ -161,7 +161,7 @@ int testpktgen_parser_ipv6_udp(struct __sk_buff *skb)
 SEC("tc/setup/parser_ipv6_udp")
 int testsetup_parser_ipv6_udp(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -270,7 +270,7 @@ int testpktgen_ipv4_first_fragment(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_fragment")
 int testsetup_ipv4_first_fragment(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -292,7 +292,7 @@ int testpktgen_ipv4_first_fragment_direct(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_fragment_direct")
 int testsetup_ipv4_first_fragment_direct(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -314,7 +314,7 @@ int testpktgen_ipv4_first_fragment_premarked_direct(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_fragment_premarked_direct")
 int testsetup_ipv4_first_fragment_premarked_direct(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	skb->mark = 42;
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -375,7 +375,7 @@ int testsetup_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
 		.state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT,
 	};
 
-	set_routing_fallback(outbound, false, &zero_key);
+	set_routing_fallback(outbound, &zero_key);
 	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -409,7 +409,7 @@ int testsetup_ipv4_first_fragment_noalive_block(struct __sk_buff *skb)
 		.state = OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK,
 	};
 
-	set_routing_fallback(outbound, false, &zero_key);
+	set_routing_fallback(outbound, &zero_key);
 	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -485,7 +485,7 @@ int testpktgen_ipv4_first_fragment_proxy(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_fragment_proxy")
 int testsetup_ipv4_first_fragment_proxy(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -790,7 +790,7 @@ int testpktgen_ipv4_first_udp_fragment_routing(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_udp_fragment_routing")
 int testsetup_ipv4_first_udp_fragment_routing(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -813,7 +813,7 @@ int testpktgen_ipv4_first_udp_fragment_direct(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_udp_fragment_direct")
 int testsetup_ipv4_first_udp_fragment_direct(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -879,7 +879,7 @@ int testpktgen_ipv6_first_udp_fragment_routing(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_first_udp_fragment_routing")
 int testsetup_ipv6_first_udp_fragment_routing(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -900,7 +900,7 @@ int testpktgen_ipv6_first_udp_fragment_direct(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_first_udp_fragment_direct")
 int testsetup_ipv6_first_udp_fragment_direct(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -921,7 +921,7 @@ int testpktgen_ipv6_first_tcp_fragment_direct(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_first_tcp_fragment_direct")
 int testsetup_ipv6_first_tcp_fragment_direct(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -980,7 +980,7 @@ int testpktgen_ipv6_ah_udp_fragment(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_ah_udp_fragment")
 int testsetup_ipv6_ah_udp_fragment(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -1020,7 +1020,7 @@ int testpktgen_ipv6_ah_udp_unfragmented(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_ah_udp_unfragmented")
 int testsetup_ipv6_ah_udp_unfragmented(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -1060,7 +1060,7 @@ int testpktgen_ipv6_max_extensions(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_max_extensions")
 int testsetup_ipv6_max_extensions(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -1214,7 +1214,7 @@ int testpktgen_ipv6_atomic_udp_fragment(struct __sk_buff *skb)
 SEC("tc/setup/ipv6_atomic_udp_fragment")
 int testsetup_ipv6_atomic_udp_fragment(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -1283,8 +1283,8 @@ int testsetup_dport_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1317,8 +1317,8 @@ int testsetup_dport_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1342,7 +1342,7 @@ int testpktgen_profile_domain_shared_id(struct __sk_buff *skb)
 SEC("tc/setup/profile_domain_shared_id")
 int testsetup_profile_domain_shared_id(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, true, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.index = 7, /* Domain ID differs from physical slot 2 and profile step 0. */
@@ -1394,8 +1394,8 @@ int testsetup_profile_interface(struct __sk_buff *skb)
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &proxy, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &two_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &two_key);
 
 	/* Sparse stable IDs directly select a profile with one physical step. */
 	__u32 ifindex = skb->ifindex;
@@ -1451,7 +1451,7 @@ int testsetup_profile_udp_cache_switch(struct __sk_buff *skb)
 		value->result.profile_id = 70001;
 	set_outbound_connectivity(retained_outbound);
 	set_outbound_connectivity(selected_outbound);
-	set_routing_fallback(selected_outbound, false, &two_key);
+	set_routing_fallback(selected_outbound, &two_key);
 	bpf_map_update_elem(&routing_profile_map, &profile_id, &test_profile, BPF_ANY);
 	bpf_map_update_elem(&routing_interface_map, &ifindex, &profile_id, BPF_ANY);
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -1512,7 +1512,6 @@ int testsetup_profile_shared_capture(struct __sk_buff *skb)
 		.type = MatchType_Fallback,
 		.outbound = OUTBOUND_DIRECT,
 		.mark = 42,
-		.flags = MATCH_FLAG_MUST,
 	};
 	bpf_map_update_elem(&routing_map, &capture_index, &capture, BPF_ANY);
 	bpf_map_update_elem(&routing_map, &fallback_index, &fallback, BPF_ANY);
@@ -1585,7 +1584,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1626,7 +1625,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1667,7 +1666,7 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1708,7 +1707,7 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1741,8 +1740,8 @@ int testsetup_sport_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1775,8 +1774,8 @@ int testsetup_sport_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1809,8 +1808,8 @@ int testsetup_l4proto_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1843,8 +1842,8 @@ int testsetup_l4proto_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1877,8 +1876,8 @@ int testsetup_ipversion_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1911,8 +1910,8 @@ int testsetup_ipversion_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -1957,8 +1956,8 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2015,8 +2014,8 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	__u32 lpm_value = bpf_ntohl(0x01000000);
 	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2049,8 +2048,8 @@ int testsetup_dscp_match(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2083,8 +2082,8 @@ int testsetup_dscp_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2148,8 +2147,8 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &three_key, &ms4, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &four_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &four_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2213,8 +2212,8 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &three_key, &ms4, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &four_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &four_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2278,8 +2277,8 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &three_key, &ms4, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &four_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &four_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2312,8 +2311,8 @@ int testsetup_not_match(struct __sk_buff *skb)
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2347,8 +2346,8 @@ int testsetup_not_mismtach(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2382,8 +2381,8 @@ int testsetup_skip_while_noalive_alive(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2419,8 +2418,8 @@ int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity_dead_userspace(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2430,7 +2429,7 @@ SEC("tc/check/skip_while_noalive_dead")
 int testcheck_skip_while_noalive_dead(struct __sk_buff *skb)
 {
 	/* The rule-level annotation takes precedence over the userspace handoff,
-	 * so the rule is skipped and traffic falls through to must_direct. */
+	 * so the rule is skipped and traffic falls through to direct. */
 	return check_routing_ipv4_tcp(skb,
 				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
@@ -2456,8 +2455,8 @@ int testsetup_noalive_userspace(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity_dead_userspace(OUTBOUND_USER_DEFINED_MIN);
 
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	/* fallback: direct */
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2500,7 +2499,7 @@ int testsetup_domain_not_partial_and_port_match(struct __sk_buff *skb)
 
 	/* Rule 0 matches some, but not all, domains mapped to 4.4.4.1. */
 	set_domain_routing(IPV4(4,4,4,1), 1 << 0, 0);
-	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &two_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2541,7 +2540,7 @@ int testsetup_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	set_domain_routing(IPV4(4,4,4,2), 1 << 0, 0);
-	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &two_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2582,7 +2581,7 @@ int testsetup_domain_partial_resolved_by_or(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	set_domain_routing(IPV4(4,4,4,3), (1 << 0) | (1 << 1), 1 << 1);
-	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &two_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2596,17 +2595,17 @@ int testcheck_domain_partial_resolved_by_or(struct __sk_buff *skb)
 		IPV4(192,168,0,1), IPV4(4,4,4,3), 19233, 80);
 }
 
-SEC("tc/pktgen/domain_partial_must_rules")
-int testpktgen_domain_partial_must_rules(struct __sk_buff *skb)
+SEC("tc/pktgen/domain_partial_must")
+int testpktgen_domain_partial_must(struct __sk_buff *skb)
 {
 	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,4), 19233, 80);
 }
 
-SEC("tc/setup/domain_partial_must_rules")
-int testsetup_domain_partial_must_rules(struct __sk_buff *skb)
+SEC("tc/setup/domain_partial_must")
+int testsetup_domain_partial_must(struct __sk_buff *skb)
 {
-	/* An uncertain must_rules line cannot establish must. Exact routing has
-	 * to decide whether this domain actually matches the line. */
+	/* An uncertain must rule cannot establish must. Exact routing has to
+	 * decide whether this domain actually matches the rule. */
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.action = MatchAction_Must,
@@ -2614,53 +2613,19 @@ int testsetup_domain_partial_must_rules(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
 	set_flow_end(&one_key);
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &two_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &two_key);
 	set_domain_routing(IPV4(4,4,4,4), 1 << 0, 0);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/domain_partial_must_rules")
-int testcheck_domain_partial_must_rules(struct __sk_buff *skb)
+SEC("tc/check/domain_partial_must")
+int testcheck_domain_partial_must(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp_with_result(
 		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING, false,
 		IPV4(192,168,0,1), IPV4(4,4,4,4), 19233, 80);
-}
-
-SEC("tc/pktgen/domain_partial_terminal_must")
-int testpktgen_domain_partial_terminal_must(struct __sk_buff *skb)
-{
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,5), 19233, 80);
-}
-
-SEC("tc/setup/domain_partial_terminal_must")
-int testsetup_domain_partial_terminal_must(struct __sk_buff *skb)
-{
-	/* A terminal must belongs to the uncertain current rule and must not be
-	 * copied into the control-plane routing result. */
-	struct match_set domain = {
-		.type = MatchType_DomainSet,
-		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.flags = MATCH_FLAG_MUST,
-	};
-	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
-	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
-
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
-	set_domain_routing(IPV4(4,4,4,5), 1 << 0, 0);
-
-	bpf_tail_call(skb, &entry_call_map, 0);
-	return TC_ACT_OK;
-}
-
-SEC("tc/check/domain_partial_terminal_must")
-int testcheck_domain_partial_terminal_must(struct __sk_buff *skb)
-{
-	return check_routing_ipv4_tcp_with_result(
-		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING, false,
-		IPV4(192,168,0,1), IPV4(4,4,4,5), 19233, 80);
 }
 
 SEC("tc/pktgen/domain_partial_keeps_prior_must")
@@ -2672,8 +2637,8 @@ int testpktgen_domain_partial_keeps_prior_must(struct __sk_buff *skb)
 SEC("tc/setup/domain_partial_keeps_prior_must")
 int testsetup_domain_partial_keeps_prior_must(struct __sk_buff *skb)
 {
-	/* A definite earlier must_rules line remains valid when a later rule
-	 * requires an exact userspace domain match. */
+	/* A definite earlier must rule remains valid when a later rule requires
+	 * an exact userspace domain match. */
 	struct match_set must_port = {
 		.port_range = {80, 80},
 		.type = MatchType_Port,
@@ -2686,12 +2651,11 @@ int testsetup_domain_partial_keeps_prior_must(struct __sk_buff *skb)
 		.type = MatchType_DomainSet,
 		.index = 1,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.flags = MATCH_FLAG_MUST,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &domain, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	set_routing_fallback(OUTBOUND_DIRECT, true, &three_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &three_key);
 	set_domain_routing(IPV4(4,4,4,6), 1 << 1, 0);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -2736,7 +2700,7 @@ int testsetup_domain_bitmap_second_word(struct __sk_buff *skb)
 	set_domain_routing_word(IPV4(4,4,4,7), 1, 1 << 0, 1 << 0);
 
 	__u32 fallback_key = 33;
-	set_routing_fallback(OUTBOUND_DIRECT, true, &fallback_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &fallback_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2771,7 +2735,7 @@ int testsetup_domain_partial_skips_noalive(struct __sk_buff *skb)
 	};
 	bpf_map_delete_elem(&outbound_connectivity_map, &connectivity);
 	set_domain_routing(IPV4(4,4,4,8), 1 << 0, 0);
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -2795,7 +2759,7 @@ int testpktgen_udp_route_cache_miss(struct __sk_buff *skb)
 SEC("tc/setup/udp_route_cache_miss")
 int testsetup_udp_route_cache_miss(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 30, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 30, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2826,7 +2790,7 @@ int testsetup_udp_route_cache_hit(struct __sk_buff *skb)
 		20002, 443, cached_outbound,
 		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
 	set_outbound_connectivity(cached_outbound);
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 32, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 32, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2860,7 +2824,7 @@ int testsetup_udp_route_cache_target_change(struct __sk_buff *skb)
 		IPV4(192,168,1,9), IPV4(1,1,1,8), 20009, 443,
 		cached_outbound);
 	set_outbound_connectivity(cached_outbound);
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2903,7 +2867,7 @@ int testsetup_udp_route_cache_skip_noalive(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &cached_rule, BPF_ANY);
 	set_outbound_connectivity_state(
 		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
-	set_routing_fallback(fallback_outbound, false, &one_key);
+	set_routing_fallback(fallback_outbound, &one_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2937,7 +2901,7 @@ int testsetup_udp_route_cache_dns_change(struct __sk_buff *skb)
 		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443,
 		cached_outbound);
 	set_outbound_connectivity(cached_outbound);
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 45, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 45, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -2984,7 +2948,7 @@ int testsetup_udp_route_cache_expired(struct __sk_buff *skb)
 	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,3), IPV4(1,1,1,3),
 		20003, 443, OUTBOUND_USER_DEFINED_MIN + 33, 1);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN + 33);
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 34, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 34, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -3014,7 +2978,7 @@ int testsetup_udp_route_cache_connectivity_direct(struct __sk_buff *skb)
 	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,4), IPV4(1,1,1,4),
 		20004, 443, cached_outbound,
 		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
-	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_routing_fallback(cached_outbound, &zero_key);
 	set_outbound_connectivity_state(
 		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -3045,7 +3009,7 @@ int testsetup_udp_route_cache_connectivity_block(struct __sk_buff *skb)
 	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,5), IPV4(1,1,1,5),
 		20005, 443, cached_outbound,
 		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
-	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_routing_fallback(cached_outbound, &zero_key);
 	set_outbound_connectivity_state(
 		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK);
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -3076,7 +3040,7 @@ int testsetup_udp_route_cache_connectivity_userspace(struct __sk_buff *skb)
 	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,6), IPV4(1,1,1,6),
 		20006, 443, cached_outbound,
 		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
-	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_routing_fallback(cached_outbound, &zero_key);
 	set_outbound_connectivity_dead_userspace(cached_outbound);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -3102,7 +3066,7 @@ int testpktgen_udp_route_cache_direct_stored(struct __sk_buff *skb)
 SEC("tc/setup/udp_route_cache_direct_stored")
 int testsetup_udp_route_cache_direct_stored(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	set_routing_fallback(OUTBOUND_DIRECT, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -3126,7 +3090,7 @@ int testpktgen_udp_route_cache_block_not_stored(struct __sk_buff *skb)
 SEC("tc/setup/udp_route_cache_block_not_stored")
 int testsetup_udp_route_cache_block_not_stored(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -3155,7 +3119,7 @@ int testsetup_udp_bound_source_skips_routing(struct __sk_buff *skb)
 
 	make_ipv4_udp_cache_key(&key, IPV4(192,168,2,1), 0, 21001, 0, 0);
 	bpf_map_update_elem(&udp_bindings_map, &key, &bound, BPF_ANY);
-	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	set_routing_fallback(OUTBOUND_BLOCK, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
@@ -3181,7 +3145,7 @@ int testpktgen_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 SEC("tc/setup/udp_noalive_direct_forwards_in_kernel")
 int testsetup_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 {
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 50, false, &zero_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 50, &zero_key);
 	set_outbound_connectivity_state(OUTBOUND_USER_DEFINED_MIN + 50,
 		OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
 	bpf_tail_call(skb, &entry_call_map, 0);

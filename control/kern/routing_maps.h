@@ -93,7 +93,7 @@ struct match_set {
 	 */
 	__u32 mark;
 	enum MatchType type;
-	__u8 outbound; // User-defined value range is [0, 252].
+	__u8 outbound; // enum outbound_index
 	__u8 flags;
 	enum MatchAction action;
 };

@@ -36,7 +36,6 @@ const (
 	MatchType_Dscp        MatchType = routingabi.MatchTypeDscp
 	MatchType_Fallback    MatchType = routingabi.MatchTypeFallback
 	MatchType_HTTPClient  MatchType = routingabi.MatchTypeHTTPClient
-	MatchType_MustRules   MatchType = routingabi.MatchTypeHTTPClient + 1
 	MatchType_Upstream    MatchType = routingabi.MatchTypeHTTPClient + 2
 	MatchType_QType       MatchType = routingabi.MatchTypeHTTPClient + 3
 )
@@ -63,18 +62,15 @@ const (
 	OutboundDirect              OutboundIndex = routingabi.OUTBOUND_DIRECT
 	OutboundBlock               OutboundIndex = routingabi.OUTBOUND_BLOCK
 	OutboundUserDefinedMin      OutboundIndex = routingabi.OUTBOUND_USER_DEFINED_MIN
-	OutboundMustRules           OutboundIndex = routingabi.OUTBOUND_MUST_RULES
+	OutboundUserDefinedMax      OutboundIndex = routingabi.OUTBOUND_USER_DEFINED_MAX
 	OutboundControlPlaneRouting OutboundIndex = routingabi.OUTBOUND_CONTROL_PLANE_ROUTING
 	OutboundLogicalOr           OutboundIndex = routingabi.OUTBOUND_LOGICAL_OR
 	OutboundLogicalAnd          OutboundIndex = routingabi.OUTBOUND_LOGICAL_AND
 	OutboundLogicalMask         OutboundIndex = routingabi.OUTBOUND_LOGICAL_OR
-	OutboundUserDefinedMax                    = OutboundMustRules - 1
 )
 
 func (i OutboundIndex) String() string {
 	switch i {
-	case OutboundMustRules:
-		return "must_rules"
 	case OutboundDirect:
 		return "direct"
 	case OutboundBlock:

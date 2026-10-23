@@ -531,7 +531,7 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 		result.Steps = append(result.Steps, steps...)
 		decision.RuleID, decision.Mark, decision.Must = selected, evaluation.mark, evaluation.must
 		decision.Outbound = s.names[uint8(evaluation.outbound)]
-		if len(needs) != 0 || evaluation.outbound >= consts.OutboundMustRules {
+		if len(needs) != 0 || evaluation.outbound > consts.OutboundUserDefinedMax {
 			decision.Complete, decision.Outbound = false, ""
 			decision.Missing = append(needs, "trusted_hostname")
 			return result, nil

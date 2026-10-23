@@ -74,7 +74,7 @@ func TestDomainCapturePreservesEBPFDirect(t *testing.T) {
 								{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, Action: uint8(consts.MatchActionAnd), Mark: 3},
 								{Type: uint8(consts.MatchType_DomainSet), Value: [16]byte{1}, Action: uint8(consts.MatchActionAnd), Mark: 2},
 								portRule,
-								{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect), Mark: mark, Flags: 1 << 1},
+								{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect), Mark: mark},
 							}
 							for i, rule := range rules {
 								if err := obj.RoutingMap.Update(uint32(i), rule, ebpf.UpdateAny); err != nil {
@@ -107,14 +107,14 @@ func TestDomainCapturePreservesEBPFDirect(t *testing.T) {
 									continue
 								}
 								var wantCapture uint8
-								outbound, wantMark, must := uint8(0), mark, uint8(1)
+								outbound, wantMark := uint8(0), mark
 								if captured {
 									wantCapture = capture
 									if capture == 2 {
-										outbound, wantMark, must = uint8(consts.OutboundControlPlaneRouting), 0, 0
+										outbound, wantMark = uint8(consts.OutboundControlPlaneRouting), 0
 									}
 								}
-								if err != nil || route.Outbound != outbound || route.Mark != wantMark || route.Must != must || route.CaptureFlags != wantCapture {
+								if err != nil || route.Outbound != outbound || route.Mark != wantMark || route.Must != 0 || route.CaptureFlags != wantCapture {
 									t.Fatalf("capture changed original route: %+v, %v", route, err)
 								}
 							}

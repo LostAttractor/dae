@@ -58,7 +58,7 @@ domain(full: one.example, full: two.example) && dip(192.0.2.0/24) -> dnat(198.51
 		if rule.Type == uint8(consts.MatchType_DomainSet) && binary.LittleEndian.Uint32(rule.Value[:]) != 0 {
 			t.Fatal("domain ID depends on the instruction position")
 		}
-		if rule.Outbound >= uint8(consts.OutboundMustRules) {
+		if rule.Outbound > uint8(consts.OutboundUserDefinedMax) {
 			t.Fatal("instruction/control action leaked into outbound ID")
 		}
 	}

@@ -23,7 +23,6 @@ type DomainSet struct {
 type Outbound struct {
 	Name string
 	Mark uint32
-	Must bool
 	// SkipWhileNoalive makes the rule conditional on the target outbound
 	// group's connectivity: if the group is unavailable, the rule is treated
 	// as not hit and routing falls through to the next rule.
@@ -103,7 +102,6 @@ func (b *RulesBuilder) ApplyPredicate(functions []*config_parser.Function, outbo
 			overrideOutbound := &Outbound{
 				Name:             consts.OutboundLogicalOr.String(),
 				Mark:             outbound.Mark,
-				Must:             outbound.Must,
 				SkipWhileNoalive: outbound.SkipWhileNoalive,
 			}
 			if jMatchSet == len(keyOrder)-1 {
@@ -142,11 +140,7 @@ func groupParamValuesByKey(params []*config_parser.Param) (keyToValues map[strin
 }
 
 func ParseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err error) {
-	outbound = &Outbound{
-		Name: rawOutbound.Name,
-		Mark: 0,
-		Must: false,
-	}
+	outbound = &Outbound{Name: rawOutbound.Name}
 	for _, p := range rawOutbound.Params {
 		switch p.Key {
 		case consts.OutboundParam_Mark:
@@ -163,13 +157,10 @@ func ParseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err
 			}
 			outbound.SkipWhileNoalive = skip
 		case "":
-			if p.Val == "must" {
-				outbound.Must = true
-			} else if p.Val == consts.OutboundParam_SkipWhileNoalive {
-				outbound.SkipWhileNoalive = true
-			} else {
+			if p.Val != consts.OutboundParam_SkipWhileNoalive {
 				return nil, fmt.Errorf("unknown outbound param: %v", p.Val)
 			}
+			outbound.SkipWhileNoalive = true
 		default:
 			return nil, fmt.Errorf("unknown outbound param key: %v", p.Key)
 		}

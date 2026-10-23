@@ -107,7 +107,7 @@ group {
 
 每个 node 只能包含一个分享链接；代理链使用 group path expression 组合。
 
-如果真实节点或 group 名称为 `must` 或以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。流量控制配置在所属 policy 的 `rules {}` 中。
+如果真实节点或 group 名称为 `must`、`dnat` 或 `bump`，请使用引号（例如 `'must'`）按字面名称引用。流量控制配置在所属 policy 的 `rules {}` 中。
 
 为限制连通性检查和 runtime 的资源增长，每条路径最多包含 16 跳；单个路由目标最多展开 4096 条路径；一份配置最多物化 16384 条路径。
 

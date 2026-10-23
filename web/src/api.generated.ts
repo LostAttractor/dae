@@ -1306,7 +1306,6 @@ export interface components {
             id: string;
             mark?: number;
             match: string;
-            must?: boolean;
             outbound?: string;
             parent?: string;
             /** @description Routing policy for this occurrence; absent for a global system or plugin membership reference. */

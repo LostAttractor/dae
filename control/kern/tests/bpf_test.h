@@ -1172,12 +1172,11 @@ set_outbound_connectivity(__u8 outbound)
 }
 
 static __always_inline void
-set_routing_fallback(__u8 outbound, bool must, const void *key)
+set_routing_fallback(__u8 outbound, const void *key)
 {
 	struct match_set ms = {
 		.type = MatchType_Fallback,
 		.outbound = outbound,
-		.flags = must ? MATCH_FLAG_MUST : 0,
 	};
 	bpf_map_update_elem(&routing_map, key, &ms, BPF_ANY);
 	set_outbound_connectivity(outbound);

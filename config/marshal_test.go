@@ -148,12 +148,12 @@ routing {
 	}
 }
 
-func TestMarshalPreservesQuotedMustPrefixTargets(t *testing.T) {
+func TestMarshalPreservesQuotedControlNameTargets(t *testing.T) {
 	conf1 := parseConfig(t, `
 global {}
 routing {
-	domain(full: example.com) -> 'must_edge'
-	fallback: 'must_fallback'
+	domain(full: example.com) -> 'must'
+	fallback: 'dnat'
 }
 `)
 	raw, err := conf1.Marshal(2)
@@ -161,8 +161,8 @@ routing {
 		t.Fatal(err)
 	}
 	marshaled := string(raw)
-	if !strings.Contains(marshaled, `->"must_edge"`) || !strings.Contains(marshaled, `fallback:"must_fallback"`) {
-		t.Fatalf("quoted must targets were not preserved:\n%s", marshaled)
+	if !strings.Contains(marshaled, `->"must"`) || !strings.Contains(marshaled, `fallback:"dnat"`) {
+		t.Fatalf("quoted control-name targets were not preserved:\n%s", marshaled)
 	}
 	sections, err := config_parser.Parse(marshaled)
 	if err != nil {
@@ -183,10 +183,10 @@ global {}
 routing {
 	rule_set {
 		base { dport(80) -> direct }
-		proxy { dport(443) -> "must_my group" }
+		proxy { dport(443) -> "my group" }
 	}
 	use: base, proxy
-	fallback: "must_my group"
+	fallback: "my group"
 	policy {
 		lan {
 			use: base
@@ -285,8 +285,8 @@ routing {
 
 }
 
-func TestMarshalLegacyLiteralFallbackRoundTrip(t *testing.T) {
-	for _, fallback := range []string{`"my group"`, `"must_my group"`, `"/*group*/"`, `""`} {
+func TestMarshalLiteralFallbackRoundTrip(t *testing.T) {
+	for _, fallback := range []string{`"my group"`, `"must"`, `"/*group*/"`, `""`} {
 		t.Run(fallback, func(t *testing.T) {
 			conf := parseConfig(t, "global {}\nrouting { fallback: "+fallback+" }\n")
 			b, err := conf.Marshal(2)
@@ -295,7 +295,7 @@ func TestMarshalLegacyLiteralFallbackRoundTrip(t *testing.T) {
 			}
 			reparsed := parseConfig(t, string(b))
 			if !sameConfiguration(conf.Routing, reparsed.Routing) {
-				t.Fatalf("legacy literal fallback changed after round trip:\n%s", b)
+				t.Fatalf("literal fallback changed after round trip:\n%s", b)
 			}
 		})
 	}

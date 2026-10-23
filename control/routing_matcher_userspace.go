@@ -259,7 +259,7 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 			if ruleUnknown {
 				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
 			}
-			forced := must == predicateMatch || match.Flags&matchFlagMust != 0
+			forced := must == predicateMatch
 			if simulateKernel && !forced && p.dst.Port() == 53 && match.Flags&matchFlagBypass == 0 {
 				captureFlags |= captureDNS
 			}

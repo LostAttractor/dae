@@ -69,8 +69,7 @@ type GroupCompiler struct {
 
 func IsReservedTargetName(name string) bool {
 	switch name {
-	case consts.OutboundDirect.String(), consts.OutboundBlock.String(),
-		consts.OutboundMustRules.String(), consts.OutboundControlPlaneRouting.String():
+	case consts.OutboundDirect.String(), consts.OutboundBlock.String(), consts.OutboundControlPlaneRouting.String():
 		return true
 	default:
 		return false

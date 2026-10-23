@@ -107,7 +107,7 @@ Groups and directly routed nodes are instantiated only when referenced by the de
 
 Each node entry contains exactly one share link; compose links with group path expressions.
 
-Quote a real node or group name that is `must` or begins with `must_` (for example, `'must_edge'`) to reference it literally. Flow controls belong in the selected policy’s `rules {}`.
+Quote a real node or group name that is `must`, `dnat` or `bump` (for example, `'must'`) to reference it literally. Flow controls belong in the selected policy’s `rules {}`.
 
 To bound health-check and runtime growth, a path may contain at most 16 hops, one routed target may expand to at most 4096 paths, and one configuration may materialize at most 16384 paths.
 

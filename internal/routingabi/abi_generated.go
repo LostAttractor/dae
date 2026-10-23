@@ -39,7 +39,6 @@ const (
 	MatchActionMatch                        = 8
 	MatchActionMiss                         = 9
 	MATCH_FLAG_NOT                          = 1
-	MATCH_FLAG_MUST                         = 2
 	MATCH_FLAG_SKIP_NOALIVE                 = 4
 	MATCH_CAPTURE_SHIFT                     = 3
 	MATCH_FLAG_BYPASS                       = 64
@@ -63,7 +62,7 @@ const (
 	OUTBOUND_DIRECT                         = 0
 	OUTBOUND_BLOCK                          = 1
 	OUTBOUND_USER_DEFINED_MIN               = 2
-	OUTBOUND_MUST_RULES                     = 252
+	OUTBOUND_USER_DEFINED_MAX               = 252
 	OUTBOUND_CONTROL_PLANE_ROUTING          = 253
 	OUTBOUND_LOGICAL_OR                     = 254
 	OUTBOUND_LOGICAL_AND                    = 255

@@ -87,7 +87,7 @@ func (e *routeBlocked) Error() string {
 // connectivity the groups publish to the kernel, which diagnostics and
 // skip_while_noalive share. A name target can use either address family.
 func servingOutbound(outbound consts.OutboundIndex, network common.NetworkType, name bool, behavior consts.OutboundIndex, usable func(uint8, consts.L4ProtoType, consts.IpVersionType) bool) consts.OutboundIndex {
-	if outbound < consts.OutboundUserDefinedMin || outbound >= consts.OutboundMustRules {
+	if outbound < consts.OutboundUserDefinedMin || outbound > consts.OutboundUserDefinedMax {
 		return outbound
 	}
 	proto, family := network.L4Proto.ToL4ProtoType(), network.IpVersion.ToIpVersionType()

@@ -300,7 +300,7 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 				step.Parent += "/" + metadata.owner
 			}
 			if tail.Action == uint8(consts.MatchActionRoute) {
-				step.Outbound, step.Mark, step.Must = names[tail.Outbound], tail.Mark, tail.Flags&matchFlagMust != 0
+				step.Outbound, step.Mark = names[tail.Outbound], tail.Mark
 			}
 			if step.Expression == "" {
 				step.Expression = step.Action

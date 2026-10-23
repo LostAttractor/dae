@@ -91,7 +91,6 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`mitm { x { type: surge type: surge } }`,
 		`mitm {} surge {}`,
 		`rules { dip(192.0.2.1) -> direct }`,
-		`rules { dip(192.0.2.1) -> must_rules }`,
 		`rules { dip(192.0.2.1) -> must(mark: 37) }`,
 		`rules { dip(192.0.2.1) -> bump(must) }`,
 		`rules { dip(192.0.2.1) -> 'must' }`,

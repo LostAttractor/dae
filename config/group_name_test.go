@@ -14,10 +14,8 @@ import (
 
 func TestRejectReservedGroupNames(t *testing.T) {
 	for _, name := range []string{
-		"rules",
 		"direct",
 		"block",
-		"must_rules",
 		"bump",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -40,28 +38,11 @@ func TestRejectInternalLogicalGroupNames(t *testing.T) {
 	}
 }
 
-func TestAllowUnambiguousGroupName(t *testing.T) {
-	sections, err := config_parser.Parse("global {}\ngroup { rules_proxy { policy: fixed(0) } }\nrouting { fallback: direct }")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(sections); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestMarshalRejectsAmbiguousGroupName(t *testing.T) {
-	_, err := (&Config{Group: []Group{{Name: "rules"}}}).Marshal(2)
-	if err == nil || !strings.Contains(err.Error(), `group name "rules"`) {
-		t.Fatalf("error = %v, want ambiguous group name error", err)
-	}
-}
-
 func TestAllowQuotedMustGroupName(t *testing.T) {
 	conf := parseConfig(t, `global {}
- group {must_edge {policy:fixed(0)}}
- routing {fallback:"must_edge"}`)
-	if conf.Routing.Policies[0].Fallback.Name != "must_edge" {
+ group {must {policy:fixed(0)}}
+ routing {fallback:"must"}`)
+	if conf.Routing.Policies[0].Fallback.Name != "must" {
 		t.Fatal("literal group name changed")
 	}
 }

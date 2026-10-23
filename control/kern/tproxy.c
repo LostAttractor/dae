@@ -922,7 +922,7 @@ static __always_inline int degrade_unavailable(struct routing_result *result,
 					       __u16 protocol, __u8 l4proto, __u32 *fallback)
 {
 	if (result->outbound < OUTBOUND_USER_DEFINED_MIN ||
-	    result->outbound >= OUTBOUND_MUST_RULES)
+	    result->outbound > OUTBOUND_USER_DEFINED_MAX)
 		return 0;
 	struct outbound_connectivity_query q = {
 		.outbound = result->outbound,

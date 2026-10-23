@@ -71,7 +71,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		if err != nil {
 			return nil, err
 		}
-		if decision.outbound >= consts.OutboundMustRules {
+		if decision.outbound > consts.OutboundUserDefinedMax {
 			return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", p.Dest.Addr())
 		}
 	}
@@ -95,7 +95,7 @@ func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, doma
 	if err != nil {
 		return nil, err
 	}
-	if outbound >= consts.OutboundMustRules {
+	if outbound > consts.OutboundUserDefinedMax {
 		return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", input.dst)
 	}
 	if p.outboundOverride != nil {
@@ -132,7 +132,7 @@ func (d routeDecision) apply(result *routingResult) {
 func kernelRoute(result *routingResult) (routeDecision, bool) {
 	d := routeDecision{outbound: consts.OutboundIndex(result.Outbound), mark: result.Mark, must: result.Must != 0}
 	// Reserved outbound IDs are handoff instructions, never a usable decision.
-	return d, d.outbound < consts.OutboundMustRules
+	return d, d.outbound <= consts.OutboundUserDefinedMax
 }
 
 // verified 返回 domain 是不是 dst 的域名

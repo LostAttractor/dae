@@ -23,7 +23,7 @@ func TestRoutingBuilderEmitsTypedInstructions(t *testing.T) {
 			{Name: "dscp", Params: []*config_parser.Param{{Val: "1"}, {Val: "2"}}},
 		},
 		Outbound: config_parser.Function{Name: "proxy", Params: []*config_parser.Param{
-			{Key: "mark", Val: "0x1234"}, {Val: "must"}, {Val: "skip_while_noalive"},
+			{Key: "mark", Val: "0x1234"}, {Val: "skip_while_noalive"},
 		}},
 	}}); err != nil {
 		t.Fatal(err)
@@ -64,12 +64,11 @@ func TestRoutingBuilderEmitsTypedInstructions(t *testing.T) {
 		usable   bool
 		outbound consts.OutboundIndex
 		mark     uint32
-		must     bool
 	}{
-		{"match", 445, consts.L4ProtoType_TCP, true, 2, 0x1234, true},
-		{"negated OR", 443, consts.L4ProtoType_TCP, true, 0, 11, false},
-		{"AND failure", 445, consts.L4ProtoType_UDP, true, 0, 11, false},
-		{"unavailable tail", 445, consts.L4ProtoType_TCP, false, 0, 11, false},
+		{"match", 445, consts.L4ProtoType_TCP, true, 2, 0x1234},
+		{"negated OR", 443, consts.L4ProtoType_TCP, true, 0, 11},
+		{"AND failure", 445, consts.L4ProtoType_UDP, true, 0, 11},
+		{"unavailable tail", 445, consts.L4ProtoType_TCP, false, 0, 11},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m.outboundUsable = func(uint8, consts.L4ProtoType, consts.IpVersionType) bool { return tc.usable }
@@ -78,8 +77,8 @@ func TestRoutingBuilderEmitsTypedInstructions(t *testing.T) {
 				dst:     netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), tc.port),
 				l4proto: tc.proto, dscp: 2,
 			})
-			if err != nil || outbound != tc.outbound || mark != tc.mark || must != tc.must {
-				t.Fatalf("got %v/%d/%t, %v; want %v/%d/%t", outbound, mark, must, err, tc.outbound, tc.mark, tc.must)
+			if err != nil || outbound != tc.outbound || mark != tc.mark || must {
+				t.Fatalf("got %v/%d/%t, %v; want %v/%d without must", outbound, mark, must, err, tc.outbound, tc.mark)
 			}
 		})
 	}

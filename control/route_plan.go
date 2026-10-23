@@ -40,7 +40,7 @@ func routingTruth(value bool) predicateResult {
 
 func planRoute(f routeFacts) routePlan {
 	p := routePlan{target: f.destination || f.capture&(captureDestination|captureHTTPRequest) != 0}
-	valid := f.outbound < consts.OutboundMustRules
+	valid := f.outbound <= consts.OutboundUserDefinedMax
 	if !p.target && f.capture != 0 && valid && (f.outbound == consts.OutboundDirect || f.outbound == consts.OutboundBlock) {
 		p.preserve = true
 		return p

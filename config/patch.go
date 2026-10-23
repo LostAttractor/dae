@@ -11,12 +11,12 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -34,11 +34,8 @@ var patches = []patch{
 func validateGroupNames(params *Config) error {
 	for _, group := range params.Group {
 		switch group.Name {
-		case "rules":
-			return fmt.Errorf("group name %q is reserved because it conflicts with outbound %q", group.Name, consts.OutboundMustRules.String())
 		case consts.OutboundDirect.String(),
 			consts.OutboundBlock.String(),
-			consts.OutboundMustRules.String(),
 			consts.OutboundControlPlaneRouting.String(),
 			consts.OutboundLogicalOr.String(),
 			consts.OutboundLogicalAnd.String():
@@ -135,16 +132,9 @@ func validateFallbacks(params *Config) error {
 }
 
 func validateRoutingAction(f *config_parser.Function) error {
-	if !f.Quoted && (f.Name == "must" || strings.HasPrefix(f.Name, "must_")) {
-		return fmt.Errorf("routing target %q is reserved for must control; flow controls belong in rules {}", f.Name)
-	}
-	if f.Name == consts.OutboundControlPlaneRouting.String() || !f.Quoted && f.Name == "dnat" {
+	if f.Name == consts.OutboundControlPlaneRouting.String() || !f.Quoted && (f.Name == "must" || f.Name == "dnat") {
 		return fmt.Errorf("routing target %q is a flow control; flow controls belong in rules {}", f.Name)
 	}
-	for _, p := range f.Params {
-		if p != nil && p.Key == "" && p.Val == "must" {
-			return fmt.Errorf("must is not a routing outbound parameter; flow controls belong in rules {}")
-		}
-	}
-	return nil
+	_, err := routing.ParseOutbound(f)
+	return err
 }

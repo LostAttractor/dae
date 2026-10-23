@@ -73,8 +73,8 @@ func TestParseOutboundSkipWhileNoalive(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:   "combined with must and mark",
-			params: []*config_parser.Param{{Key: "", Val: "must"}, {Key: "mark", Val: "0x80"}, {Key: "", Val: "skip_while_noalive"}},
+			name:   "combined with mark",
+			params: []*config_parser.Param{{Key: "mark", Val: "0x80"}, {Key: "", Val: "skip_while_noalive"}},
 			want:   true,
 		},
 	}

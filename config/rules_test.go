@@ -36,7 +36,7 @@ func TestDNATPortRoundTrip(t *testing.T) {
 }
 
 func TestRoutingControlsRequireRulesSection(t *testing.T) {
-	for _, action := range []string{"must", "must_rules", "must_direct", "must_my_group", "direct(must)", "my_group(mark: 37, must)", "bump"} {
+	for _, action := range []string{"must", "bump"} {
 		for _, fallback := range []bool{false, true} {
 			body := "dip(192.0.2.1) -> " + action + "\nfallback: direct"
 			if fallback {
@@ -67,4 +67,17 @@ func inlineFlowRules(t *testing.T, c *Config) Rules {
 		rules.Rules = append(rules.Rules, statement.Rule)
 	}
 	return rules
+}
+
+// Routing actions share the outbound parameter parser at validation.
+func TestRoutingRejectsUnknownOutboundParams(t *testing.T) {
+	for _, body := range []string{"dip(192.0.2.1) -> direct(must)\nfallback: direct", "fallback: direct(must)"} {
+		sections, err := config_parser.Parse("global {}\nrouting {\n" + body + "\n}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New(sections); err == nil || !strings.Contains(err.Error(), "unknown outbound param: must") {
+			t.Fatalf("%s: error = %v, want unknown parameter", body, err)
+		}
+	}
 }

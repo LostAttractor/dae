@@ -164,7 +164,7 @@ func TestBridgePhysinif(t *testing.T) {
 						intf.Flags = 1 // MATCH_FLAG_NOT
 					}
 					portRule := routingPortRule(443, consts.MatchActionRoute, consts.OutboundDirect)
-					portRule.Mark, portRule.Flags = mark, 2 // MATCH_FLAG_MUST
+					portRule.Mark = mark
 					if tc.capture {
 						portRule.Action, portRule.Flags, portRule.Mark = uint8(consts.MatchActionCapture), 2<<3, 0
 					}
@@ -206,18 +206,18 @@ func TestBridgePhysinif(t *testing.T) {
 						if proto == unix.IPPROTO_UDP && !tc.capture {
 							var cached bpftestUdpRoutingCacheValue
 							must(obj.UdpRoutingCacheMap.Lookup(bpftestUdpRoutingCacheKey{Sip: key.Sip, Sport: key.Sport}, &cached))
-							if cached.Result.Physinif != member || cached.Result.Ifindex != uint32(bridge.Index) || cached.Result.Must != 1 || cached.Result.Mark != mark || cached.Result.Outbound != 0 || cached.Result.CaptureFlags != 0 {
+							if cached.Result.Physinif != member || cached.Result.Ifindex != uint32(bridge.Index) || cached.Result.Must != 0 || cached.Result.Mark != mark || cached.Result.Outbound != 0 || cached.Result.CaptureFlags != 0 {
 								t.Fatalf("%s: lost cached identity: %+v", name, cached.Result)
 							}
 						} else if !tc.capture {
 							assertDirectTCPFlow(t, obj, key, mark)
 						} else {
 							must(lookupHandoff(obj.RoutingTuplesMap, key, &result))
-							wantOutbound, wantMust, wantCapture := uint8(consts.OutboundDirect), uint8(1), uint8(0)
+							wantOutbound, wantCapture := uint8(consts.OutboundDirect), uint8(0)
 							if tc.capture {
-								wantOutbound, wantMust, wantCapture = uint8(consts.OutboundControlPlaneRouting), 0, 2
+								wantOutbound, wantCapture = uint8(consts.OutboundControlPlaneRouting), 2
 							}
-							if result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.Mark != wantMark || result.Outbound != wantOutbound || result.Must != wantMust || result.CaptureFlags != wantCapture {
+							if result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.Mark != wantMark || result.Outbound != wantOutbound || result.Must != 0 || result.CaptureFlags != wantCapture {
 								t.Fatalf("%s: lost handoff identity: %+v", name, result)
 							}
 						}

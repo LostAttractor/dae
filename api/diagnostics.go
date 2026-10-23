@@ -125,7 +125,6 @@ type ExplainStep struct {
 	Action      string             `json:"action,omitempty"`
 	Outbound    string             `json:"outbound,omitempty"`
 	Mark        uint32             `json:"mark,omitzero"`
-	Must        bool               `json:"must,omitzero"`
 	Targets     []string           `json:"targets,omitempty"`
 }
 

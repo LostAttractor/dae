@@ -13,7 +13,7 @@ import (
 // The classifier applies the published connectivity state only to ordinary
 // non-DNS, uncaptured proxy handoffs. Reuse the publisher's state encoding.
 func (c *ControlPlane) diagnosticHandoffState(input routingInput, evaluation routingEvaluation, s *diagnosticState) uint32 {
-	if !input.kernel || input.dst.Port() == 53 || evaluation.captureFlags != 0 || evaluation.outbound < consts.OutboundUserDefinedMin || evaluation.outbound >= consts.OutboundMustRules {
+	if !input.kernel || input.dst.Port() == 53 || evaluation.captureFlags != 0 || evaluation.outbound < consts.OutboundUserDefinedMin || evaluation.outbound > consts.OutboundUserDefinedMax {
 		return outboundConnectivityAlive
 	}
 	id := uint8(evaluation.outbound)

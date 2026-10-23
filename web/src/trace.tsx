@@ -79,7 +79,7 @@ export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
       {step.policy && <p className={note}>{policyStates[step.policy_match || "unknown"].description}</p>}
       <p className={note}>Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
       <p className={code}>{step.expression}</p>
-      {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0} · must {String(Boolean(step.must))}</p>}
+      {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0}</p>}
       {!!step.targets?.length && <p>Targets: {step.targets.join(", ")}</p>}
       {(step.sources || []).map((source, index) => <p key={index} className={code}>{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
       {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition mt-1 grid gap-1.5 border-t border-kumo-hairline pt-3">

@@ -632,23 +632,23 @@ routing { fallback: target }
 	}
 }
 
-func TestNew_QuotedMustPrefixIsLiteralTargetName(t *testing.T) {
+func TestNew_QuotedControlNameIsLiteralTargetName(t *testing.T) {
 	conf := parseConfig(t, `
 global {}
 routing {
-	dip(geoip:cn) -> 'must_edge'
-	domain(full: example.com) -> 'must_callable'(mark: 0x800)
-	fallback: 'must_fallback'
+	dip(geoip:cn) -> 'must'
+	domain(full: example.com) -> 'dnat'(mark: 0x800)
+	fallback: 'must'
 }
 `)
-	if outbound := conf.Routing.Policies[0].Statements[0].Rule.Outbound; outbound.Name != "must_edge" || !outbound.Quoted || len(outbound.Params) != 0 {
+	if outbound := conf.Routing.Policies[0].Statements[0].Rule.Outbound; outbound.Name != "must" || !outbound.Quoted || len(outbound.Params) != 0 {
 		t.Fatalf("quoted must target was rewritten: %+v", outbound)
 	}
-	if outbound := conf.Routing.Policies[0].Statements[1].Rule.Outbound; outbound.Name != "must_callable" || !outbound.Quoted || len(outbound.Params) != 1 {
-		t.Fatalf("quoted callable must target was rewritten: %+v", outbound)
+	if outbound := conf.Routing.Policies[0].Statements[1].Rule.Outbound; outbound.Name != "dnat" || !outbound.Quoted || len(outbound.Params) != 1 {
+		t.Fatalf("quoted callable dnat target was rewritten: %+v", outbound)
 	}
 	fallback := conf.Routing.Policies[0].Fallback
-	if fallback.Name != "must_fallback" || !fallback.Quoted || len(fallback.Params) != 0 {
+	if fallback.Name != "must" || !fallback.Quoted || len(fallback.Params) != 0 {
 		t.Fatalf("quoted must fallback was rewritten: %+v", fallback)
 	}
 }
@@ -731,7 +731,7 @@ func TestNewRoutingValidation(t *testing.T) {
 }
 
 func TestRoutingRejectsControlsInPoliciesAndFragments(t *testing.T) {
-	for _, action := range []string{"must_rules", "must_direct", "must_proxy", "direct(must)", "bump"} {
+	for _, action := range []string{"must", "bump"} {
 		for _, body := range []string{
 			"rule_set { base { dport(53) -> " + action + " } } use: base\nfallback: direct",
 			"policy { main {dport(53) -> " + action + "\nfallback:direct} } default:main",

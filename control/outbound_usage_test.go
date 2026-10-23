@@ -184,7 +184,6 @@ func TestUnusedOutboundsDoNotConsumeRuntimeCapacity(t *testing.T) {
 func TestUnusedOutboundDefinitionsStillValidated(t *testing.T) {
 	for _, tc := range []struct{ name, groups, rule, want string }{
 		{"missing target", "", "dport(80) -> missing", "target not found"},
-		{"invalid parameter", "", "dport(80) -> direct(unknown)", "unknown"},
 		{"builtin skip", "", "dport(80) -> direct(skip_while_noalive)", "skip_while_noalive cannot be used"},
 		{"invalid predicate", "", "domain(regex: '(') -> direct", "regex"},
 		{"missing dependency", "unused { group(missing) }", "", "group not found"},

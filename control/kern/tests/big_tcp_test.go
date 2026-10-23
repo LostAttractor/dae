@@ -169,10 +169,14 @@ func TestBigTCPRouting(t *testing.T) {
 				}
 				capture := routingPortRule(443, consts.MatchActionCapture, 0)
 				capture.Flags = 1 << 3
-				installRoutingFlow(t, obj, []bpftestMatchSet{
+				var rules []bpftestMatchSet
+				if tc.must != 0 {
+					rules = mustFlow()
+				}
+				installRoutingFlow(t, obj, append(rules,
 					routingDomainRule(0, consts.MatchActionAnd, 0), capture,
-					{Type: uint8(consts.MatchType_Fallback), Outbound: tc.outbound, Mark: tc.mark, Flags: tc.must << 1},
-				})
+					bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: tc.outbound, Mark: tc.mark},
+				))
 				if err := obj.ApiPort.Set(nativeUint16(9080)); err != nil {
 					t.Fatal(err)
 				}

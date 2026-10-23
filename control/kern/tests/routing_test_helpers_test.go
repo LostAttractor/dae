@@ -26,6 +26,14 @@ func routingPortRule(port uint16, action consts.MatchAction, outbound consts.Out
 	return rule
 }
 
+// mustFlow is a compiled definite must control, ended before routing rules.
+func mustFlow() []bpftestMatchSet {
+	return []bpftestMatchSet{
+		{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMust)},
+		{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)},
+	}
+}
+
 func installRoutingFlow(t testing.TB, obj *bpftestObjects, rules []bpftestMatchSet) {
 	t.Helper()
 	profile := bpftestRoutingProfile{Length: uint32(len(rules))}
