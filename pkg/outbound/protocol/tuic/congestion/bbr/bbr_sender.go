@@ -130,12 +130,6 @@ func NewBBRv3Sender(clock Clock, initialMaxDatagramSize congestion.ByteCount) *b
 		congestion.MaxCongestionWindowPackets*initialMaxDatagramSize)
 }
 
-// NewBbrSender is retained for callers using the original BBR constructor.
-// It now constructs BBRv3.
-func NewBbrSender(clock Clock, initialMaxDatagramSize congestion.ByteCount) *bbrSender {
-	return NewBBRv3Sender(clock, initialMaxDatagramSize)
-}
-
 func newBbrSender(clock Clock, size, initialWindow, maxWindow congestion.ByteCount) *bbrSender {
 	now := clock.Now()
 	b := &bbrSender{

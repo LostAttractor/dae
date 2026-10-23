@@ -1,9 +1,8 @@
 # QUIC BBRv3
 
-The existing `bbr` selection and `UseBBR` now use BBRv3. This covers TUIC,
-Juicity, and Hysteria2 when it selects BBR (including its automatic BBR
-fallback). Existing configuration and peer protocol negotiation need no change.
-`NewBbrSender` is a compatibility wrapper for `NewBBRv3Sender`.
+The `bbr` selection and `UseBBR` use BBRv3. This covers TUIC, Juicity, and
+Hysteria2 when it selects BBR (including its automatic BBR fallback). Peer
+protocol negotiation is unaffected.
 
 ## Algorithm reference
 
@@ -63,7 +62,7 @@ instant of path migration. The model adapts through subsequent feedback.
 
 ## Verification
 
-From the dae repository root (which pins the local outbound and quic-go modules):
+From the dae repository root (which pins the quic-go fork):
 
 ```sh
 go test github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/congestion/...
