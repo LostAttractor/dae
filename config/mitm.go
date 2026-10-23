@@ -26,7 +26,7 @@ type PluginSpec struct {
 	Name    string                 `mapstructure:"_"`
 	Type    string                 `mapstructure:"type"`
 	Enabled bool                   `mapstructure:"enabled" default:"true"`
-	Config  *config_parser.Section `mapstructure:"_" outline:"-"`
+	Config  *config_parser.Section `mapstructure:"_"`
 }
 
 var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)

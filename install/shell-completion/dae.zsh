@@ -8,13 +8,10 @@ _dae() {
 		"--help[help for dae]" \
 		"-v[version for dae]" \
 		"--version[version for dae]" \
-		"1: :(export help honk reload run suspend validate)" \
+		"1: :(help honk reload run suspend validate)" \
 		"*::arg:->args"
 
 	case $line[1] in
-	export)
-		_dae_export
-		;;
 	help)
 		_dae_help
 		;;
@@ -37,18 +34,11 @@ _dae() {
 
 }
 
-_dae_export() {
-	_arguments -C \
-		"-h[help for export]" \
-		"--help[help for export]" \
-		"1: :(outline)"
-}
-
 _dae_help() {
 	_arguments -C \
 		"-h[help for help]" \
 		"--help[help for help]" \
-		"1: :(export help honk reload run suspend validate)"
+		"1: :(help honk reload run suspend validate)"
 }
 
 _dae_honk() {

@@ -349,9 +349,9 @@ loaded. The ELF, BTF and relocations are restored byte for byte. Decompressed
 objects are not kept in a package-global cache. `make clean-ebpf` removes both
 the raw and compressed generated objects.
 
-Configuration outlines and VMess share links use the standard library JSON
-implementation. VMess parsing decodes numeric/string subscription fields
-locally, without global JSON decoder registration.
+VMess share links use the standard library JSON implementation. VMess parsing
+decodes numeric/string subscription fields locally, without global JSON decoder
+registration.
 
 To inspect a build, use `go version -m dae`, `readelf -SW dae` and `size -A dae`.
 Sections of type `NOBITS`, including `.bss` and `.noptrbss`, do not contribute

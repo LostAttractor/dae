@@ -3,13 +3,12 @@
 # To be installed in "/usr/share/bash-completion/completions/dae"
 
 _dae() {
-	local prev cur cmd export_cmd run_opts validate_opts
+	local prev cur cmd run_opts validate_opts
 	COMPREPLY=()
 
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 	cur="${COMP_WORDS[COMP_CWORD]}"
-	cmd="export help honk reload run suspend validate"
-	export_cmd="outline"
+	cmd="help honk reload run suspend validate"
 	run_opts="-c --config --disable-timestamp --logfile \
     --logfile-maxbackups --logfile-maxsize"
     validate_opts="-c --config"
@@ -19,15 +18,11 @@ _dae() {
 			return 0
 			;;
 
-        honk|reload|suspend|outline)
+        honk|reload|suspend)
 			COMPREPLY=( $(compgen -W "-h --help" -- "${cur}") )
             return 0
             ;;
             
-		export)
-			COMPREPLY=( $(compgen -W "$export_cmd -h --help" -- "${cur}") )
-			return 0
-			;;
             
 		run)
 			COMPREPLY=( $(compgen -W "$run_opts -h --help" -- \

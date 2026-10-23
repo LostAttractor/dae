@@ -125,7 +125,7 @@ type Group struct {
 	Name string `mapstructure:"_"`
 	// Present records explicitly configured fields whose zero values would
 	// otherwise be indistinguishable from omission.
-	Present map[string]bool `mapstructure:"_" json:"-" outline:"-"`
+	Present map[string]bool `mapstructure:"_" json:"-"`
 
 	Paths  []*config_parser.ProxyPath `mapstructure:"path"`
 	Policy FunctionListOrString       `mapstructure:"policy"`
@@ -157,12 +157,11 @@ type KeyableString string
 
 // Routing separates reusable rule sets, complete policies, and their bindings.
 // An empty Default selects the anonymous policy written directly in routing.
-// Routing is an opaque outline leaf because its statements are ordered.
 type Routing struct {
-	Default    string             `mapstructure:"default" outline:"-"`
-	RuleSets   []RoutingRuleSet   `mapstructure:"rule_set" outline:"-"`
-	Policies   []RoutingPolicy    `mapstructure:"policy" outline:"-"`
-	Interfaces []RoutingInterface `mapstructure:"interface" outline:"-"`
+	Default    string             `mapstructure:"default"`
+	RuleSets   []RoutingRuleSet   `mapstructure:"rule_set"`
+	Policies   []RoutingPolicy    `mapstructure:"policy"`
+	Interfaces []RoutingInterface `mapstructure:"interface"`
 }
 
 type RoutingStatementKind uint8
@@ -198,14 +197,14 @@ type RoutingInterface struct {
 }
 
 type Config struct {
-	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
-	Certificate  Certificate    `mapstructure:"certificate" desc:"CertificateDesc"`
-	MITM         MITM           `mapstructure:"mitm" desc:"MITMDesc"`
+	Global       Global         `mapstructure:"global" required:""`
+	Certificate  Certificate    `mapstructure:"certificate"`
+	MITM         MITM           `mapstructure:"mitm"`
 	Plugins      Plugins        `mapstructure:"plugins"`
 	Subscription []Subscription `mapstructure:"subscription"`
 	Node         []Node         `mapstructure:"node"`
-	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`
-	Client       []Client       `mapstructure:"client" desc:"ClientDesc"`
+	Group        []Group        `mapstructure:"group"`
+	Client       []Client       `mapstructure:"client"`
 	Routing      Routing        `mapstructure:"routing" required:""`
 }
 
