@@ -133,24 +133,3 @@ jobs:
           archive: false
           if-no-files-found: error
           overwrite: true
-
-  report:
-    name: Report preview result
-    if: always() && inputs.build-type == 'pr-build' && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
-    needs: [prepare, build]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check phase results
-        env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          for result in $RESULTS; do
-            [[ "$result" == success ]] || exit 1
-          done
-      - name: Report result
-        if: always()
-        uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
-        with:
-          app_id: ${{ secrets.GH_APP_ID }}
-          private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          id: "dae-bot[bot]/build"
