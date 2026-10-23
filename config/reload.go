@@ -5,15 +5,12 @@ package config
 import (
 	"fmt"
 	"reflect"
-
-	"github.com/daeuniverse/dae/common"
 )
 
 // ControlPlaneConfig projects fields owned by the control plane. Services can
 // be reconfigured in place; startup preferences affect only the next startup.
 // Protocol-specific invariants remain with the runtime that owns the resource.
 func (g Global) ControlPlaneConfig() Global {
-	g.SoMarkFromDae = common.EffectiveSoMarkFromDae(g.SoMarkFromDae)
 	v := reflect.ValueOf(&g).Elem()
 	for i := range v.NumField() {
 		switch v.Type().Field(i).Tag.Get("reload") {

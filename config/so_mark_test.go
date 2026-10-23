@@ -9,13 +9,13 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func TestSoMarkFromDaePreservesExplicitZero(t *testing.T) {
-	conf := parseConfig(t, `
-global { so_mark_from_dae: 0 }
-routing { fallback: direct }
-`)
-	if conf.Global.SoMarkFromDae != 0 {
-		t.Fatal("explicit zero was not preserved")
+func TestSoMarkFromDaeRejectsZero(t *testing.T) {
+	sections, err := config_parser.Parse("global { so_mark_from_dae: 0 }\nrouting { fallback: direct }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(sections); err == nil || !strings.Contains(err.Error(), "so_mark_from_dae must be nonzero") {
+		t.Fatalf("zero socket mark: %v", err)
 	}
 }
 

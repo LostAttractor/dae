@@ -82,7 +82,6 @@ func NewBootstrapResolver(server string, dial func(context.Context, string, stri
 // NewInternalResolver constructs marked application and bootstrap resolvers.
 // The process startup owner installs their global pointers explicitly.
 func NewInternalResolver(mark uint32, server string) (*InternalResolver, error) {
-	mark = common.EffectiveSoMarkFromDae(mark)
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
 	}

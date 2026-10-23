@@ -32,18 +32,6 @@ func Ntohs(i uint16) uint16 {
 	return Htons(i)
 }
 
-const InternalSoMarkFromDae uint32 = 0x100
-
-// EffectiveSoMarkFromDae returns the mark used for dae's own sockets. A
-// reserved default lets policy-routing rules identify dae's own sockets when
-// so_mark_from_dae is left at zero.
-func EffectiveSoMarkFromDae(mark uint32) uint32 {
-	if mark != 0 {
-		return mark
-	}
-	return InternalSoMarkFromDae
-}
-
 func ValidateSoMarkFromDae(mark uint32) error {
 	if mark&consts.TproxyMark != 0 {
 		return fmt.Errorf("so_mark_from_dae %#x contains reserved tproxy mark %#x", mark, consts.TproxyMark)

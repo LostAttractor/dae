@@ -175,7 +175,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 // Startup can prepare kernel resources while external inputs are loading.
 // Reload retains its input-first order so unchanged resources skip rebuilding.
 func loadStartupInputs(ctx context.Context, datapath *control.Runtime, conf *config.Config, dirs []string, configFile string) (*controlInputs, *control.ControlPlanePreparation, error) {
-	mark := common.EffectiveSoMarkFromDae(conf.Global.SoMarkFromDae)
+	mark := conf.Global.SoMarkFromDae
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, nil, err
 	}
@@ -206,7 +206,7 @@ func newControlPlane(ctx context.Context, datapath *control.Runtime, preparation
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	mark := common.EffectiveSoMarkFromDae(conf.Global.SoMarkFromDae)
+	mark := conf.Global.SoMarkFromDae
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
 	}
@@ -403,7 +403,7 @@ func pruneSubscriptions(conf *config.Config, configDir string) {
 }
 
 func bootstrapDialer(global config.Global) (netproxy.Dialer, error) {
-	option := direct.Option{Mptcp: global.Mptcp, Mark: int(common.EffectiveSoMarkFromDae(global.SoMarkFromDae)), Resolver: &net.Resolver{PreferGo: true}}
+	option := direct.Option{Mptcp: global.Mptcp, Mark: int(global.SoMarkFromDae), Resolver: &net.Resolver{PreferGo: true}}
 	physical := direct.NewDirectDialer(option)
 	resolver, err := netutils.NewBootstrapResolver(global.DNSResolver, physical.DialContext)
 	if err != nil {

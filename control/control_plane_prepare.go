@@ -16,7 +16,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/internal/kernel"
 	log "github.com/sirupsen/logrus"
@@ -46,7 +45,6 @@ func PrepareControlPlane(
 }
 
 func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ *BPFState, err error) {
-	soMarkFromDae = common.EffectiveSoMarkFromDae(soMarkFromDae)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

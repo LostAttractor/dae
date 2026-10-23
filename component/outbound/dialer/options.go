@@ -8,7 +8,6 @@ package dialer
 import (
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 )
@@ -28,7 +27,7 @@ type GlobalOption struct {
 
 func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
-		SoMarkFromDae:       common.EffectiveSoMarkFromDae(global.SoMarkFromDae),
+		SoMarkFromDae:       global.SoMarkFromDae,
 		Mptcp:               global.Mptcp,
 		DNSResolver:         global.DNSResolver,
 		AllowInsecure:       global.AllowInsecure,

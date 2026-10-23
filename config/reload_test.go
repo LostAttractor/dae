@@ -25,7 +25,6 @@ func TestReloadSeparatesServicesFromControlPlane(t *testing.T) {
 	after.APIKey, after.LogLevel, after.PprofPort, after.MetricsPort = "new", "debug", 8081, 8082
 	after.DisableWaitingNetwork, after.ResourceCache = true, true
 	after.ResourceUpdateInterval = 123
-	after.SoMarkFromDae = 0x100
 	if !reflect.DeepEqual(before.ControlPlaneConfig(), after.ControlPlaneConfig()) || before.CheckReload(after) != nil {
 		t.Fatal("service-only changes rebuilt routing or required restart")
 	}

@@ -17,7 +17,6 @@ func (r *Runtime) CheckSocketMark(mark uint32) error {
 }
 
 func (r *Runtime) checkSocketMark(mark uint32) error {
-	mark = common.EffectiveSoMarkFromDae(mark)
 	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return err
 	}

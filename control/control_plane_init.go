@@ -29,7 +29,6 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 	if runtimeSettings == nil {
 		return nil, fmt.Errorf("runtime settings are required")
 	}
-	global.SoMarkFromDae = common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
 	if err = common.ValidateSoMarkFromDae(global.SoMarkFromDae); err != nil {
 		return nil, err
 	}

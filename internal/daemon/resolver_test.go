@@ -6,7 +6,6 @@ import (
 	"net"
 	"testing"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	outbound "github.com/daeuniverse/dae/pkg/outbound/common"
 )
@@ -26,7 +25,7 @@ func TestInstallDefaultResolver(t *testing.T) {
 		t.Fatal("invalid resolver mark changed global resolver state")
 	}
 
-	r, err := InstallDefaultResolver(common.InternalSoMarkFromDae, "192.0.2.53")
+	r, err := InstallDefaultResolver(0x100, "192.0.2.53")
 	if err != nil {
 		t.Fatal(err)
 	}

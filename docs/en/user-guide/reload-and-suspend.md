@@ -59,7 +59,7 @@ To abort established connections, including connections retained by earlier relo
 dae reload --abort
 ```
 
-`--abort` takes effect even when configuration and resource contents are unchanged. Aborting reload and normal daemon shutdown reset captured TCP sockets before releasing their kernel return paths. Uncaptured kernel-direct connections are not owned by the daemon. Forced process termination does not run this cleanup. Changes to `tproxy_port` or the effective `so_mark_from_dae` require a restart.
+`--abort` takes effect even when configuration and resource contents are unchanged. Aborting reload and normal daemon shutdown reset captured TCP sockets before releasing their kernel return paths. Uncaptured kernel-direct connections are not owned by the daemon. Forced process termination does not run this cleanup. Changes to `tproxy_port` or `so_mark_from_dae` require a restart.
 
 ## Suspend
 

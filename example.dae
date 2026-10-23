@@ -37,12 +37,11 @@ global {
     # When set, administration requires this key. Device settings always require direct LAN identification.
     #api_key: 'replace-with-a-private-key'
 
-    # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Zero uses
-    # the reserved internal mark 0x100. Set a non-zero value only when policy-routing rules require it, ensure no unrelated
-    # fwmark rule matches the value, and restart
-    # dae after changing it. Values containing dae's reserved tproxy bit 0x08000000 are rejected. Marked lookups use
-    # Go's resolver, so hostname sources provided only by libc NSS modules are not supported.
-    so_mark_from_dae: 0
+    # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Defaults to
+    # 0x100 and must be nonzero. Change it only when policy-routing rules require it, ensure no unrelated fwmark rule
+    # matches the value, and restart dae after changing it. Values containing dae's reserved tproxy bit 0x08000000 are
+    # rejected. Marked lookups use Go's resolver, so hostname sources provided only by libc NSS modules are not supported.
+    #so_mark_from_dae: 0x100
 
     # Log level: error (feature failure), warn (degradation), info (lifecycle and availability),
     # debug (connections and requests), trace (packets and processing steps).

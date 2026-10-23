@@ -45,7 +45,11 @@ func validateGroupNames(params *Config) error {
 	return nil
 }
 
+// dae always marks its own sockets.
 func validateSoMarkFromDae(params *Config) error {
+	if params.Global.SoMarkFromDae == 0 {
+		return fmt.Errorf("so_mark_from_dae must be nonzero")
+	}
 	return common.ValidateSoMarkFromDae(params.Global.SoMarkFromDae)
 }
 
