@@ -4,9 +4,30 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestListenDeclaresTCP(t *testing.T) {
+	t.Setenv("GODEBUG", "multipathtcp=1")
+	server, err := Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	raw, err := server.listener.(*protocolListener).Listener.(*net.TCPListener).SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	protocol := -1
+	_ = raw.Control(func(fd uintptr) {
+		protocol, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PROTOCOL)
+	})
+	if protocol != syscall.IPPROTO_TCP {
+		t.Fatalf("API listener protocol %d", protocol)
+	}
+}
 
 func waitClassifierCount(t *testing.T, listener *protocolListener, want int) {
 	t.Helper()

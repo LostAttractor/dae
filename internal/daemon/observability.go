@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -106,7 +107,10 @@ func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabil
 			continue
 		}
 		address := fmt.Sprintf("localhost:%d", port)
-		listener, err := net.Listen("tcp", address)
+		// Declare TCP; Go listeners otherwise default to MPTCP.
+		var config net.ListenConfig
+		config.SetMultipathTCP(false)
+		listener, err := config.Listen(context.Background(), "tcp", address)
 		if err != nil {
 			update.Close()
 			return nil, fmt.Errorf("listen for %s: %w", current[i].name, err)

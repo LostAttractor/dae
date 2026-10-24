@@ -44,7 +44,10 @@ func Listen(network, address string) (*Server, error) {
 	if network == "unix" {
 		listener, err = listenUnix(address)
 	} else {
-		listener, err = net.Listen(network, address)
+		// Declare TCP; Go listeners otherwise default to MPTCP.
+		var config net.ListenConfig
+		config.SetMultipathTCP(false)
+		listener, err = config.Listen(context.Background(), network, address)
 	}
 	if err != nil {
 		return nil, err

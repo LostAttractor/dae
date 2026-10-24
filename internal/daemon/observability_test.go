@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,6 +51,28 @@ func closedLocalListener(t *testing.T) net.Listener {
 		t.Fatal(err)
 	}
 	return listener
+}
+
+func TestObservabilityListenersDeclareTCP(t *testing.T) {
+	t.Setenv("GODEBUG", "multipathtcp=1")
+	update, err := prepareObservabilityServers(freeLocalPort(t), freeLocalPort(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Close()
+	for _, listener := range update.opened {
+		raw, err := listener.(*net.TCPListener).SyscallConn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		protocol := -1
+		_ = raw.Control(func(fd uintptr) {
+			protocol, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PROTOCOL)
+		})
+		if protocol != syscall.IPPROTO_TCP {
+			t.Fatalf("observability listener protocol %d", protocol)
+		}
+	}
 }
 
 func TestPprofServerKeepsListenerWhenPortIsUnchanged(t *testing.T) {

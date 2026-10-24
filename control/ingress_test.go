@@ -166,6 +166,29 @@ func TestServeReportsIngressFailure(t *testing.T) {
 	}
 }
 
+func TestTransparentListenerNeverTriesMPTCP(t *testing.T) {
+	t.Setenv("GODEBUG", "multipathtcp=1")
+	config := tproxyListenConfig()
+	control := config.Control
+	var protocols []int
+	config.Control = func(network, address string, c syscall.RawConn) error {
+		if err := c.Control(func(fd uintptr) {
+			protocol, _ := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PROTOCOL)
+			protocols = append(protocols, protocol)
+		}); err != nil {
+			return err
+		}
+		return control(network, address, c)
+	}
+	// Without privileges tproxyControl fails, after the protocol was chosen.
+	if listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0"); err == nil {
+		_ = listener.Close()
+	}
+	if len(protocols) != 1 || protocols[0] != unix.IPPROTO_TCP {
+		t.Fatalf("tproxyControl saw socket protocols %v", protocols)
+	}
+}
+
 func TestRuntimeListenerUsesSockmapCompatibleTCP(t *testing.T) {
 	t.Setenv("GODEBUG", "multipathtcp=1")
 	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.SockMap, KeySize: 4, ValueSize: 8, MaxEntries: 2})

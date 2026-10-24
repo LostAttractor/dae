@@ -225,12 +225,14 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	}
 }
 
-// tproxyListenConfig creates the transparent listeners. An accepted TCP socket
+// tproxyListenConfig creates the transparent listeners. It declares TCP:
+// Go listeners default to MPTCP since Go 1.24, but SOCKMAP and
+// bpf_sk_assign accept only IPPROTO_TCP sockets. An accepted TCP socket
 // that dae closes before the client has closed its side resets the client
 // once dae's FIN is acknowledged (TCP_LINGER2 < 0), instead of leaving it open.
 // Its later segments would find the flow state gone and go to the origin.
 func tproxyListenConfig() net.ListenConfig {
-	return net.ListenConfig{Control: func(network, _ string, c syscall.RawConn) error {
+	config := net.ListenConfig{Control: func(network, _ string, c syscall.RawConn) error {
 		if err := tproxyControl(c); err != nil || !strings.HasPrefix(network, "tcp") {
 			return err
 		}
@@ -242,6 +244,8 @@ func tproxyListenConfig() net.ListenConfig {
 		}
 		return err
 	}}
+	config.SetMultipathTCP(false)
+	return config
 }
 
 func (r *Runtime) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
