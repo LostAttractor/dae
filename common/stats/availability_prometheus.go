@@ -51,7 +51,7 @@ func (s *availabilityStore) RecordRelayFailure(key, scope, layer, reason string)
 		return
 	}
 	scope = boundedFailureLabel(scope, "operation", "stream", "shared_resource")
-	layer = boundedFailureLabel(layer, "tcp", "udp", "tls", "quic", "h2", "h3", "grpc", "proxy", "smux", "anytls")
+	layer = boundedFailureLabel(layer, "tcp", "udp", "tls", "quic", "h2", "h3", "grpc", "proxy", "smux", "yamux", "anytls")
 	reason = boundedFailureLabel(reason, "reset", "rejected", "capacity", "protocol", "deadline", "auth", "closed", "canceled")
 	s.metrics.relayFailures.WithLabelValues(append(labels, scope, layer, reason)...).Inc()
 }

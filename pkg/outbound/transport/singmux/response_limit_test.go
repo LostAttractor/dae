@@ -1,4 +1,4 @@
-package smux
+package singmux
 
 import (
 	"io"
@@ -20,7 +20,7 @@ func TestRejectionMessageBound(t *testing.T) {
 			n, _ := io.WriteString(server, "\x01"+strings.Repeat("x", size))
 			done <- n
 		}()
-		err := ReadResponse(client)
+		err := readResponse(client, netproxy.LayerSMUX)
 		_ = client.Close()
 		written := <-done
 		if err == nil || netproxy.ClassifyFailure(err).Reason != netproxy.ReasonRejected {
@@ -44,7 +44,7 @@ func TestSuccessfulResponseDoesNotConsumePayload(t *testing.T) {
 		defer server.Close()
 		_, _ = io.WriteString(server, "\x00payload")
 	}()
-	if err := ReadResponse(client); err != nil {
+	if err := readResponse(client, netproxy.LayerSMUX); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := io.ReadAll(client)

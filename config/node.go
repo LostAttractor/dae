@@ -17,10 +17,12 @@ import (
 type MultiplexMode string
 
 const (
-	MultiplexModeSmux               MultiplexMode = "smux"
-	MultiplexModeSmuxUDPPassthrough MultiplexMode = "smux-udp-passthrough"
-	MultiplexModeOff                MultiplexMode = "off"
-	maxMultiplexConnections                       = 16
+	MultiplexModeSmux                MultiplexMode = "smux"
+	MultiplexModeSmuxUDPPassthrough  MultiplexMode = "smux-udp-passthrough"
+	MultiplexModeYAMux               MultiplexMode = "yamux"
+	MultiplexModeYAMuxUDPPassthrough MultiplexMode = "yamux-udp-passthrough"
+	MultiplexModeOff                 MultiplexMode = "off"
+	maxMultiplexConnections                        = 16
 )
 
 type NodeOptions struct {
@@ -51,7 +53,7 @@ func (o NodeOptions) validate(requireMultiplex bool) error {
 		return nil
 	}
 	if o.Multiplex == MultiplexModeOff || requireMultiplex && o.Multiplex == "" {
-		return fmt.Errorf("multiplex_max_connections requires multiplex: smux or smux-udp-passthrough")
+		return fmt.Errorf("multiplex_max_connections requires an enabled multiplex mode")
 	}
 	return nil
 }
@@ -98,10 +100,10 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 		case "multiplex":
 			mode := MultiplexMode(strings.ToLower(strings.TrimSpace(param.Val)))
 			switch mode {
-			case MultiplexModeSmux, MultiplexModeSmuxUDPPassthrough, MultiplexModeOff:
+			case MultiplexModeSmux, MultiplexModeSmuxUDPPassthrough, MultiplexModeYAMux, MultiplexModeYAMuxUDPPassthrough, MultiplexModeOff:
 				o.Multiplex = mode
 			default:
-				return fmt.Errorf("unsupported multiplex mode %q; expected smux, smux-udp-passthrough or off", param.Val)
+				return fmt.Errorf("unsupported multiplex mode %q; expected smux, smux-udp-passthrough, yamux, yamux-udp-passthrough or off", param.Val)
 			}
 		case "multiplex_max_connections":
 			value, err := strconv.ParseUint(strings.TrimSpace(param.Val), 10, 16)

@@ -40,6 +40,7 @@ const (
 	LayerGRPC              FailureLayer     = "grpc"
 	LayerProxy             FailureLayer     = "proxy"
 	LayerSMUX              FailureLayer     = "smux"
+	LayerYAMUX             FailureLayer     = "yamux"
 	LayerAnyTLS            FailureLayer     = "anytls"
 	OpDial                 Operation        = "dial"
 	OpHandshake            Operation        = "handshake"

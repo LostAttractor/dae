@@ -1,4 +1,7 @@
-package smux
+// Package singmux implements the sing-box multiplex (sing-mux) client over
+// smux v1 or yamux sessions. Both share the session pool, the per-stream
+// request/response and the UDP packet framing.
+package singmux
 
 import (
 	"context"
@@ -15,22 +18,38 @@ import (
 	"github.com/xtaci/smux"
 )
 
+// Protocol is the sing-mux session protocol byte.
+type Protocol byte
+
 const (
-	ProtocolSmux = iota
+	ProtocolSmux Protocol = iota
 	ProtocolYAMux
-	ProtocolH2Mux
 )
 
-const (
-	Version0 = iota
-	Version1
-)
+func (p Protocol) String() string {
+	switch p {
+	case ProtocolSmux:
+		return "smux"
+	case ProtocolYAMux:
+		return "yamux"
+	default:
+		return fmt.Sprintf("protocol(%d)", byte(p))
+	}
+}
+
+func (p Protocol) layer() netproxy.FailureLayer {
+	if p == ProtocolYAMux {
+		return netproxy.LayerYAMUX
+	}
+	return netproxy.LayerSMUX
+}
+
+const Version0 = 0
 
 const (
-	flagUDP       = 0b01
-	flagAddr      = 0b10
-	statusSuccess = 0
-	statusError   = 1
+	flagUDP     = 0b01
+	flagAddr    = 0b10
+	statusError = 1
 )
 
 const (
@@ -45,27 +64,46 @@ const (
 	MaxConnectionsLimit   = 16
 )
 
-type Smux struct {
+type Mux struct {
 	Dialer         netproxy.Dialer
+	Protocol       Protocol
 	PassthroughUdp bool
 	MaxConnections int
 
 	initOnce  sync.Once
-	lifecycle *smuxPool
+	lifecycle *sessionPool
 }
 
-type smuxResource struct {
-	session *smux.Session
+type sessionResource struct {
+	session session
 	monitor *monitoredConn
+}
+
+func (r *sessionResource) connected() bool {
+	return !r.monitor.broken.Load() && !r.session.IsClosed()
+}
+
+// cause is the failure that ended the session, if any. The library's own
+// reason is more specific than the carrier error its close then induces.
+func (r *sessionResource) cause() error {
+	if err := r.session.closeErr(); err != nil {
+		return err
+	}
+	return r.monitor.cause()
 }
 
 type monitoredConn struct {
 	net.Conn
-	reportOnce       sync.Once
-	failureMu        sync.Mutex
-	failureCause     error
-	failed           chan error
-	broken           atomic.Bool
+	reportOnce   sync.Once
+	failureMu    sync.Mutex
+	failureCause error
+	failed       chan error
+	broken       atomic.Bool
+	// readFailed is set once a read from the carrier failed.
+	readFailed atomic.Bool
+	// smux v1 ignores frames it cannot parse instead of closing the session,
+	// so its frames are checked here.
+	inspectSmux      bool
 	expectedVersion  byte
 	header           [smuxFrameHeaderSize]byte
 	headerRead       int
@@ -107,7 +145,7 @@ func (c *monitoredConn) inspectRead(p []byte) {
 		length := int(binary.LittleEndian.Uint16(c.header[2:4]))
 		c.headerRead = 0
 		if version != c.expectedVersion || command > smuxCommandUPD {
-			c.report(smux.ErrInvalidProtocol)
+			c.report(netproxy.WrapFailure(smux.ErrInvalidProtocol, netproxy.Failure{Reason: netproxy.ReasonProtocol}))
 			return
 		}
 		switch command {
@@ -121,7 +159,12 @@ func (c *monitoredConn) inspectRead(p []byte) {
 
 func (c *monitoredConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	c.inspectRead(p[:n])
+	if c.inspectSmux {
+		c.inspectRead(p[:n])
+	}
+	if err != nil {
+		c.readFailed.Store(true)
+	}
 	c.report(err)
 	return n, err
 }
@@ -132,61 +175,74 @@ func (c *monitoredConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
-type SmuxConfig struct {
+func (c *monitoredConn) cause() error {
+	c.failureMu.Lock()
+	defer c.failureMu.Unlock()
+	return c.failureCause
+}
+
+func (c *monitoredConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
+
+type Config struct {
+	Protocol       Protocol
 	PassThroughUDP bool
 	MaxConnections int
 }
 
-func (s *SmuxConfig) Build(_ *dialer.ExtraOption, upstream dialer.Upstream) (netproxy.Layer, error) {
+func (s *Config) Build(_ *dialer.ExtraOption, upstream dialer.Upstream) (netproxy.Layer, error) {
 	if s.MaxConnections < 0 || s.MaxConnections > MaxConnectionsLimit {
-		return netproxy.Layer{}, fmt.Errorf("smux max connections must be between 1 and %d", MaxConnectionsLimit)
+		return netproxy.Layer{}, fmt.Errorf("%s max connections must be between 1 and %d", s.Protocol, MaxConnectionsLimit)
 	}
-	smux := &Smux{
+	if s.Protocol != ProtocolSmux && s.Protocol != ProtocolYAMux {
+		return netproxy.Layer{}, fmt.Errorf("unsupported multiplex %s", s.Protocol)
+	}
+	mux := &Mux{
 		Dialer:         upstream,
+		Protocol:       s.Protocol,
 		PassthroughUdp: s.PassThroughUDP,
 		MaxConnections: s.MaxConnections,
 	}
 	return netproxy.Layer{
-		Data:      smux,
-		Sessions:  []netproxy.Session{smux},
-		Resources: []io.Closer{smux},
+		Data:      mux,
+		Sessions:  []netproxy.Session{mux},
+		Resources: []io.Closer{mux},
 	}, nil
 }
 
-func (s *Smux) pool() *smuxPool {
+func (s *Mux) pool() *sessionPool {
 	s.initOnce.Do(func() {
 		maxConnections := s.MaxConnections
 		if maxConnections == 0 {
 			maxConnections = DefaultMaxConnections
 		}
 		if maxConnections < 1 || maxConnections > MaxConnectionsLimit {
-			panic(fmt.Sprintf("smux max connections must be between 1 and %d", MaxConnectionsLimit))
+			panic(fmt.Sprintf("%s max connections must be between 1 and %d", s.Protocol, MaxConnectionsLimit))
 		}
-		s.lifecycle = newSmuxPool(s, maxConnections)
+		s.lifecycle = newSessionPool(s, maxConnections)
 	})
 	return s.lifecycle
 }
 
-func (s *Smux) Snapshot() netproxy.StateEvent {
+func (s *Mux) Snapshot() netproxy.StateEvent {
 	return s.pool().Snapshot()
 }
 
-func (s *Smux) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
+func (s *Mux) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
 	return s.pool().WatchState(ctx)
 }
 
-func (s *Smux) Connect(ctx context.Context) error {
+func (s *Mux) Connect(ctx context.Context) error {
 	return s.pool().Connect(ctx)
 }
 
-func (s *Smux) establish(ctx context.Context) (*smuxResource, error) {
+func (s *Mux) establish(ctx context.Context) (*sessionResource, error) {
 	conn, err := s.Dialer.DialContext(ctx, "tcp", "sp.mux.sing-box.arpa:444")
 	if err != nil {
 		return nil, err
 	}
 	netproxy.CaptureDependency(ctx, conn)
 	_, err = common.Invoke(ctx, func() (any, error) {
-		return conn.Write([]byte{Version0, ProtocolSmux})
+		return conn.Write([]byte{Version0, byte(s.Protocol)})
 	}, func() {
 		_ = conn.Close()
 	})
@@ -194,54 +250,16 @@ func (s *Smux) establish(ctx context.Context) (*smuxResource, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	config := smux.DefaultConfig()
-	// sing-box peers disable SMUX heartbeats; receive-idle timeouts would
-	// close otherwise usable sessions between connectivity checks.
-	config.KeepAliveDisabled = true
-	monitored := &monitoredConn{
-		Conn:            conn,
-		failed:          make(chan error, 1),
-		expectedVersion: byte(config.Version),
-	}
-	session, err := smux.Client(monitored, config)
+	monitored := &monitoredConn{Conn: conn, failed: make(chan error, 1)}
+	session, err := newSession(s.Protocol, monitored)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	return &smuxResource{session: session, monitor: monitored}, nil
+	return &sessionResource{session: session, monitor: monitored}, nil
 }
 
-func openStream(ctx context.Context, session *smux.Session) (*smux.Stream, error) {
-	type result struct {
-		stream *smux.Stream
-		err    error
-	}
-	results := make(chan result)
-	go func() {
-		stream, err := session.OpenStream()
-		select {
-		case results <- result{stream: stream, err: err}:
-		case <-ctx.Done():
-			if stream != nil {
-				_ = stream.Close()
-			}
-		}
-	}()
-	select {
-	case result := <-results:
-		if err := ctx.Err(); err != nil {
-			if result.stream != nil {
-				_ = result.stream.Close()
-			}
-			return nil, err
-		}
-		return result.stream, result.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (s *Smux) DialContext(ctx context.Context, network, addr string) (c net.Conn, err error) {
+func (s *Mux) DialContext(ctx context.Context, network, addr string) (c net.Conn, err error) {
 	if network == "udp" && s.PassthroughUdp {
 		return s.Dialer.DialContext(ctx, network, addr)
 	}
@@ -251,7 +269,7 @@ func (s *Smux) DialContext(ctx context.Context, network, addr string) (c net.Con
 		if err != nil {
 			return nil, err
 		}
-		return &Conn{Conn: stream, addr: addr}, nil
+		return &Conn{Conn: stream, layer: s.Protocol.layer(), addr: addr}, nil
 	case "udp":
 		conn, err := s.ListenPacket(ctx, addr)
 		if err != nil {
@@ -266,7 +284,7 @@ func (s *Smux) DialContext(ctx context.Context, network, addr string) (c net.Con
 	}
 }
 
-func (s *Smux) ListenPacket(ctx context.Context, addr string) (net.PacketConn, error) {
+func (s *Mux) ListenPacket(ctx context.Context, addr string) (net.PacketConn, error) {
 	if s.PassthroughUdp {
 		return s.Dialer.ListenPacket(ctx, addr)
 	}
@@ -274,40 +292,29 @@ func (s *Smux) ListenPacket(ctx context.Context, addr string) (net.PacketConn, e
 	if err != nil {
 		return nil, err
 	}
-	return &UDPConn{Conn: Conn{Conn: stream, addr: addr, udp: true, packetAddr: true}}, nil
+	return &UDPConn{Conn: Conn{Conn: stream, layer: s.Protocol.layer(), addr: addr, udp: true, packetAddr: true}}, nil
 }
 
-func (s *Smux) observe(ctx context.Context, handle *netproxy.SingleSessionHandle[*smuxResource]) {
+func (s *Mux) observe(ctx context.Context, handle *netproxy.SingleSessionHandle[*sessionResource]) {
 	resource := handle.Resource()
-	var cause error
 	select {
 	case <-ctx.Done():
 		return
 	case <-resource.session.CloseChan():
-		cause = net.ErrClosed
-	case cause = <-resource.monitor.failed:
+	case <-resource.monitor.failed:
 	}
-	if reported := resource.monitor.cause(); reported != nil {
-		cause = reported
+	cause := resource.cause()
+	if cause == nil {
+		cause = net.ErrClosed
 	}
 	fact := netproxy.ClassifyFailure(cause)
 	fact.Resource, fact.Scope = handle.Ref(), netproxy.ScopeSharedResource
 	if fact.Layer == netproxy.LayerUnknown {
-		fact.Layer = netproxy.LayerSMUX
-	}
-	if cause == smux.ErrInvalidProtocol {
-		fact.Reason = netproxy.ReasonProtocol
+		fact.Layer = s.Protocol.layer()
 	}
 	handle.Abort(netproxy.WrapFailure(cause, fact))
 }
 
-func (s *Smux) Close() error {
+func (s *Mux) Close() error {
 	return s.pool().Close()
 }
-
-func (c *monitoredConn) cause() error {
-	c.failureMu.Lock()
-	defer c.failureMu.Unlock()
-	return c.failureCause
-}
-func (c *monitoredConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }

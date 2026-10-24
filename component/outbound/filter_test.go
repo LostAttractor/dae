@@ -24,7 +24,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -505,15 +505,15 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	if len(node.Dialers) != 2 {
 		t.Fatalf("dialer layers = %d, want 2", len(node.Dialers))
 	}
-	smuxConfig, ok := node.Dialers[1].(*smux.SmuxConfig)
+	smuxConfig, ok := node.Dialers[1].(*singmux.Config)
 	if !ok {
-		t.Fatalf("second dialer layer = %T, want *smux.SmuxConfig", node.Dialers[1])
+		t.Fatalf("second dialer layer = %T, want *singmux.Config", node.Dialers[1])
 	}
 	if !smuxConfig.PassThroughUDP {
 		t.Fatal("smux UDP passthrough is disabled")
 	}
-	if smuxConfig.MaxConnections != smux.DefaultMaxConnections {
-		t.Fatalf("smux max connections = %d, want default %d", smuxConfig.MaxConnections, smux.DefaultMaxConnections)
+	if smuxConfig.MaxConnections != singmux.DefaultMaxConnections {
+		t.Fatalf("smux max connections = %d, want default %d", smuxConfig.MaxConnections, singmux.DefaultMaxConnections)
 	}
 	d, err := set.BuildPath(NodePath(node), new(dialer.GlobalOption), t.Name())
 	if err != nil {
@@ -579,16 +579,43 @@ func TestNodeIdentityIncludesMultiplexConnections(t *testing.T) {
 	if set.nodeInfos[0].Property.Link == set.nodeInfos[1].Property.Link {
 		t.Fatal("different smux connection limits share a node identity")
 	}
-	config, ok := set.nodeInfos[1].Dialers[1].(*smux.SmuxConfig)
+	config, ok := set.nodeInfos[1].Dialers[1].(*singmux.Config)
 	if !ok {
-		t.Fatalf("second dialer layer = %T, want *smux.SmuxConfig", set.nodeInfos[1].Dialers[1])
+		t.Fatalf("second dialer layer = %T, want *singmux.Config", set.nodeInfos[1].Dialers[1])
 	}
 	if config.MaxConnections != 10 {
 		t.Fatalf("smux max connections = %d, want 10", config.MaxConnections)
 	}
 }
 
-func TestMultiplexConnectionsRequireSmux(t *testing.T) {
+func TestMultiplexModesSelectProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		mode        config.MultiplexMode
+		protocol    singmux.Protocol
+		passthrough bool
+		display     string
+	}{
+		{config.MultiplexModeSmux, singmux.ProtocolSmux, false, "shadowsocks(smux)"},
+		{config.MultiplexModeSmuxUDPPassthrough, singmux.ProtocolSmux, true, "shadowsocks(smux/udp-pass)"},
+		{config.MultiplexModeYAMux, singmux.ProtocolYAMux, false, "shadowsocks(yamux)"},
+		{config.MultiplexModeYAMuxUDPPassthrough, singmux.ProtocolYAMux, true, "shadowsocks(yamux/udp-pass)"},
+	} {
+		set, err := NewDialerSet([]NodeDescriptor{{Link: testShadowsocksLink, Options: config.NodeOptions{Multiplex: tc.mode}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := set.nodeInfos[0]
+		mux, ok := node.Dialers[1].(*singmux.Config)
+		if !ok || mux.Protocol != tc.protocol || mux.PassThroughUDP != tc.passthrough {
+			t.Fatalf("%s: multiplex layer = %#v", tc.mode, node.Dialers[1])
+		}
+		if got := nodeDisplayProtocol(node); got != tc.display {
+			t.Fatalf("%s: display protocol = %q, want %q", tc.mode, got, tc.display)
+		}
+	}
+}
+
+func TestMultiplexConnectionsRequireMultiplex(t *testing.T) {
 	_, err := NewDialerSet([]NodeDescriptor{{
 		Link: testShadowsocksLink,
 		Options: config.NodeOptions{
@@ -602,7 +629,7 @@ func TestMultiplexConnectionsRequireSmux(t *testing.T) {
 }
 
 func TestMultiplexConnectionsRejectInvalidProgrammaticValues(t *testing.T) {
-	for _, connections := range []uint16{0, smux.MaxConnectionsLimit + 1} {
+	for _, connections := range []uint16{0, singmux.MaxConnectionsLimit + 1} {
 		_, err := NewDialerSet([]NodeDescriptor{{
 			Link: testShadowsocksLink,
 			Options: config.NodeOptions{

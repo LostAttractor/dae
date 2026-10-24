@@ -21,6 +21,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/itchyny/gojq v0.12.19
 	github.com/jedib0t/go-pretty/v6 v6.8.3
+	github.com/libp2p/go-yamux/v5 v5.1.0
 	github.com/miekg/dns v1.1.73
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826
 	github.com/okzk/sdnotify v0.0.0-20240725214427-1c1fdd37c5ac
@@ -65,6 +66,7 @@ require (
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/libp2p/go-buffer-pool v0.0.2 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.7.0 // indirect

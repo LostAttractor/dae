@@ -1,9 +1,8 @@
-package smux
+package singmux
 
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,12 +10,12 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
-	"github.com/xtaci/smux"
 )
 
 type Conn struct {
 	net.Conn
 
+	layer      netproxy.FailureLayer
 	addr       string
 	udp        bool
 	packetAddr bool
@@ -27,7 +26,7 @@ type Conn struct {
 
 const maxRejectionMessageBytes = 1024
 
-func ReadResponse(conn net.Conn) (err error) {
+func readResponse(conn net.Conn, layer netproxy.FailureLayer) (err error) {
 	var status uint8
 	err = binary.Read(conn, binary.BigEndian, &status)
 	if err != nil {
@@ -44,14 +43,14 @@ func ReadResponse(conn net.Conn) (err error) {
 			message = message[:maxRejectionMessageBytes]
 			suffix = " (truncated)"
 		}
-		return netproxy.WrapFailure(fmt.Errorf("smux target rejected connection: %s%s", message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: netproxy.LayerSMUX, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
+		return netproxy.WrapFailure(fmt.Errorf("%s target rejected connection: %s%s", layer, message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: layer, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
 	}
 	return
 }
 
 func (c *Conn) Read(b []byte) (n int, err error) {
 	if !c.onceRead {
-		err = ReadResponse(c.Conn)
+		err = readResponse(c.Conn, c.layer)
 		if err != nil {
 			return
 		}
@@ -101,8 +100,9 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 func (c *Conn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 
 type leasedStream struct {
-	*smux.Stream
-	handle *netproxy.SingleSessionHandle[*smuxResource]
+	net.Conn
+	layer  netproxy.FailureLayer
+	handle *netproxy.SingleSessionHandle[*sessionResource]
 	lease  *netproxy.Lease
 	// release returns the stream's pool reservation once.
 	release func()
@@ -114,24 +114,24 @@ func (c *leasedStream) failure(err error, phase netproxy.Operation) error {
 		return nil
 	}
 	fact := netproxy.ClassifyFailure(err)
-	cause := c.handle.Resource().monitor.cause()
+	cause := c.handle.Resource().cause()
 	if cause != nil {
 		err = cause
 		fact = netproxy.ClassifyFailure(cause)
 		fact.Scope = netproxy.ScopeSharedResource
 	} else if err == io.EOF && phase == netproxy.OpRead {
 		return io.EOF
+	} else if netproxy.ClassifyFailure(c.lease.Cause()).Origin == netproxy.OriginLocalCleanup {
+		// Close records cleanup before unblocking I/O, so whatever the stream
+		// returns then, a yamux read deadline included, is that closure. A
+		// carrier failure above still takes precedence.
+		fact = netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginLocalCleanup}
 	} else if fact.Scope == netproxy.ScopeUnknown {
 		fact.Scope = netproxy.ScopeStream
-		// Close records cleanup before unblocking I/O. A carrier failure
-		// above still takes precedence over this stream-local closure.
-		if errors.Is(err, io.ErrClosedPipe) && netproxy.ClassifyFailure(c.lease.Cause()).Origin == netproxy.OriginLocalCleanup {
-			fact.Origin = netproxy.OriginLocalCleanup
-		}
 	}
 	fact.Resource, fact.Stream, fact.Phase = c.handle.Ref(), c.lease.Stream(), phase
 	if fact.Layer == netproxy.LayerUnknown {
-		fact.Layer = netproxy.LayerSMUX
+		fact.Layer = c.layer
 	}
 	wrapped := netproxy.WrapFailure(err, fact)
 	if fact.Scope == netproxy.ScopeSharedResource {
@@ -142,15 +142,15 @@ func (c *leasedStream) failure(err error, phase netproxy.Operation) error {
 	return wrapped
 }
 func (c *leasedStream) Read(p []byte) (int, error) {
-	n, err := c.Stream.Read(p)
+	n, err := c.Conn.Read(p)
 	return n, c.failure(err, netproxy.OpRead)
 }
 func (c *leasedStream) Write(p []byte) (int, error) {
-	n, err := c.Stream.Write(p)
+	n, err := c.Conn.Write(p)
 	return n, c.failure(err, netproxy.OpWrite)
 }
 func (c *leasedStream) Close() error {
 	defer c.release()
-	c.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: c.handle.Ref(), Stream: c.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerSMUX, Origin: netproxy.OriginLocalCleanup}))
-	return c.Stream.Close()
+	c.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: c.handle.Ref(), Stream: c.lease.Stream(), Scope: netproxy.ScopeStream, Layer: c.layer, Origin: netproxy.OriginLocalCleanup}))
+	return c.Conn.Close()
 }

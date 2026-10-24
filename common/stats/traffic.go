@@ -50,7 +50,7 @@ type pathCounters struct {
 	lastActivity uint64
 }
 
-// Connection accounts for one logical TCP, smux, or UDP connection. Payload
+// Connection accounts for one logical TCP, multiplexed, or UDP connection. Payload
 // records update exact cumulative totals immediately; the sampler is
 // responsible only for rates. Connection owners publish external counter samples.
 type Connection struct {

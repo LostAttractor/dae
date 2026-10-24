@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	outboundsmux "github.com/daeuniverse/dae/pkg/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
 	"github.com/xtaci/smux"
 )
 
-func relaySmuxOutbound(t *testing.T) (*outboundsmux.Smux, net.Conn, *smux.Stream) {
+func relaySmuxOutbound(t *testing.T) (*singmux.Mux, net.Conn, *smux.Stream) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -22,7 +22,7 @@ func relaySmuxOutbound(t *testing.T) (*outboundsmux.Smux, net.Conn, *smux.Stream
 		_, err := io.ReadFull(server, make([]byte, 2))
 		headerRead <- err
 	}()
-	outbound := &outboundsmux.Smux{Dialer: tcpTestDialer{conn: client}, MaxConnections: 1}
+	outbound := &singmux.Mux{Dialer: tcpTestDialer{conn: client}, MaxConnections: 1}
 	t.Cleanup(func() { _ = outbound.Close() })
 	if err := outbound.Connect(t.Context()); err != nil {
 		t.Fatal(err)

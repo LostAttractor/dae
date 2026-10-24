@@ -13,7 +13,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	_ "github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks"
-	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
 	"github.com/gorilla/websocket"
 )
 
@@ -117,7 +117,7 @@ func TestNonSIP002MultiplexQueryIsIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer built.Close()
-	if _, ok := built.Data.(*smux.Smux); ok {
+	if _, ok := built.Data.(*singmux.Mux); ok {
 		t.Fatal("non-SIP002 multiplex query enabled smux")
 	}
 }

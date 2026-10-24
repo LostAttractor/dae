@@ -1,4 +1,4 @@
-package smux
+package singmux
 
 import (
 	"errors"
@@ -11,11 +11,11 @@ import (
 	xtacismux "github.com/xtaci/smux"
 )
 
-func testLeasedStream(t *testing.T) (*Smux, *leasedStream, *xtacismux.Session) {
+func testLeasedStream(t *testing.T) (*Mux, *leasedStream, *xtacismux.Session) {
 	t.Helper()
 	parent := &pipeDialer{server: make(chan net.Conn)}
 	accepted := acceptSmuxSessions(parent, 1)
-	dialer := &Smux{Dialer: parent, MaxConnections: 1}
+	dialer := &Mux{Dialer: parent, MaxConnections: 1}
 	t.Cleanup(func() { _ = dialer.Close() })
 	if err := dialer.Connect(t.Context()); err != nil {
 		t.Fatal(err)

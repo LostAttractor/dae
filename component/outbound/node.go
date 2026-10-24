@@ -15,7 +15,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
 	log "github.com/sirupsen/logrus"
 	"strconv"
 	"strings"
@@ -48,29 +48,32 @@ type DialerSet struct {
 }
 
 func applyNodeOptions(builder D.Builder, options config.NodeOptions) ([]D.Builder, error) {
-	if options.MultiplexMaxConnections != nil && (*options.MultiplexMaxConnections < 1 || *options.MultiplexMaxConnections > smux.MaxConnectionsLimit) {
-		return nil, fmt.Errorf("multiplex_max_connections must be between 1 and %d", smux.MaxConnectionsLimit)
+	if options.MultiplexMaxConnections != nil && (*options.MultiplexMaxConnections < 1 || *options.MultiplexMaxConnections > singmux.MaxConnectionsLimit) {
+		return nil, fmt.Errorf("multiplex_max_connections must be between 1 and %d", singmux.MaxConnectionsLimit)
 	}
+	mux := &singmux.Config{MaxConnections: multiplexMaxConnections(options)}
 	switch options.Multiplex {
 	case "", config.MultiplexModeOff:
 		if options.MultiplexMaxConnections != nil {
-			return nil, fmt.Errorf("multiplex_max_connections requires multiplex: smux or smux-udp-passthrough")
+			return nil, fmt.Errorf("multiplex_max_connections requires an enabled multiplex mode")
 		}
 		return []D.Builder{builder}, nil
-	case config.MultiplexModeSmux, config.MultiplexModeSmuxUDPPassthrough:
-		configured := []D.Builder{builder, &smux.SmuxConfig{
-			PassThroughUDP: options.Multiplex == config.MultiplexModeSmuxUDPPassthrough,
-			MaxConnections: multiplexMaxConnections(options),
-		}}
-		return configured, nil
+	case config.MultiplexModeSmux:
+	case config.MultiplexModeSmuxUDPPassthrough:
+		mux.PassThroughUDP = true
+	case config.MultiplexModeYAMux:
+		mux.Protocol = singmux.ProtocolYAMux
+	case config.MultiplexModeYAMuxUDPPassthrough:
+		mux.Protocol, mux.PassThroughUDP = singmux.ProtocolYAMux, true
 	default:
 		return nil, fmt.Errorf("unsupported multiplex mode %q", options.Multiplex)
 	}
+	return []D.Builder{builder, mux}, nil
 }
 
 func multiplexMaxConnections(options config.NodeOptions) int {
 	if options.MultiplexMaxConnections == nil {
-		return smux.DefaultMaxConnections
+		return singmux.DefaultMaxConnections
 	}
 	return int(*options.MultiplexMaxConnections)
 }
@@ -88,13 +91,13 @@ func nodeIdentity(link string, options config.NodeOptions) string {
 
 func nodeDisplayProtocol(node *NodeInfo) string {
 	for _, builder := range node.Dialers {
-		mux, ok := builder.(*smux.SmuxConfig)
+		mux, ok := builder.(*singmux.Config)
 		if !ok {
 			continue
 		}
-		mode := "smux"
+		mode := mux.Protocol.String()
 		if mux.PassThroughUDP {
-			mode = "smux/udp-pass"
+			mode += "/udp-pass"
 		}
 		return node.Property.Protocol + "(" + mode + ")"
 	}

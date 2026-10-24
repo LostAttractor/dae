@@ -1,4 +1,4 @@
-package smux
+package singmux
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 // isolatedSynctest runs f in a synctest bubble in its own process. smux pools
 // result channels globally, so channels must never cross bubble boundaries.
 func isolatedSynctest(t *testing.T, f func(*testing.T)) {
-	const child = "DAE_SMUX_SYNCTEST_CHILD"
+	const child = "DAE_SINGMUX_SYNCTEST_CHILD"
 	if os.Getenv(child) != t.Name() {
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+t.Name()+"$", "-test.timeout=30s")
 		cmd.Env = append(os.Environ(), child+"="+t.Name())
@@ -35,7 +35,7 @@ func isolatedSynctest(t *testing.T, f func(*testing.T)) {
 type poolHarness struct {
 	t        *testing.T
 	parent   *pipeDialer
-	dialer   *Smux
+	dialer   *Mux
 	accepted chan *xtacismux.Session
 	servers  []*xtacismux.Session
 }
@@ -46,7 +46,7 @@ func newPoolHarness(t *testing.T, maxConnections int, wrapClient func(int, net.C
 		parent:   &pipeDialer{server: make(chan net.Conn), wrapClient: wrapClient},
 		accepted: make(chan *xtacismux.Session, 4*MaxConnectionsLimit),
 	}
-	h.dialer = &Smux{Dialer: h.parent, MaxConnections: maxConnections}
+	h.dialer = &Mux{Dialer: h.parent, MaxConnections: maxConnections}
 	served := make(chan struct{})
 	go func() {
 		defer close(served)

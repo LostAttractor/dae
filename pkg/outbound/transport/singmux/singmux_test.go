@@ -1,4 +1,4 @@
-package smux
+package singmux
 
 import (
 	"context"
@@ -143,7 +143,7 @@ func (d *udpPassthroughDialer) ListenPacket(_ context.Context, address string) (
 
 func TestUDPPassthroughUsesParentDialer(t *testing.T) {
 	parent := new(udpPassthroughDialer)
-	dialer := &Smux{Dialer: parent, PassthroughUdp: true}
+	dialer := &Mux{Dialer: parent, PassthroughUdp: true}
 
 	if _, err := dialer.DialContext(context.Background(), "udp", "dns.example:53"); !errors.Is(err, errDialUDP) {
 		t.Fatalf("DialContext error = %v, want %v", err, errDialUDP)
@@ -164,7 +164,7 @@ func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
 	isolatedSynctest(t, func(t *testing.T) {
 		parent := &pipeDialer{server: make(chan net.Conn)}
 		accepted := acceptSmuxSessions(parent, 1)
-		dialer := &Smux{Dialer: parent, MaxConnections: 1}
+		dialer := &Mux{Dialer: parent, MaxConnections: 1}
 		defer dialer.Close()
 
 		if err := dialer.Connect(t.Context()); err != nil {
@@ -254,7 +254,7 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 		return conn
 	}
 	accepted := acceptSmuxSessions(parent, 2)
-	dialer := &Smux{Dialer: parent, MaxConnections: 3}
+	dialer := &Mux{Dialer: parent, MaxConnections: 3}
 	t.Cleanup(func() { _ = dialer.Close() })
 
 	if err := dialer.Connect(context.Background()); err != nil {
@@ -307,7 +307,7 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 func TestConnectReplacesKnownUnusableSession(t *testing.T) {
 	parent := &pipeDialer{server: make(chan net.Conn)}
 	accepted := acceptSmuxSessions(parent, 2)
-	dialer := &Smux{Dialer: parent, MaxConnections: 2}
+	dialer := &Mux{Dialer: parent, MaxConnections: 2}
 	t.Cleanup(func() { _ = dialer.Close() })
 
 	if err := dialer.Connect(context.Background()); err != nil {
@@ -337,7 +337,7 @@ func TestConnectReplacesKnownUnusableSession(t *testing.T) {
 
 func TestFastConnectFailurePublishesTransitions(t *testing.T) {
 	establishErr := errors.New("establish failed")
-	dialer := &Smux{Dialer: &errorDialer{err: establishErr}, MaxConnections: 1}
+	dialer := &Mux{Dialer: &errorDialer{err: establishErr}, MaxConnections: 1}
 	t.Cleanup(func() { _ = dialer.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -385,7 +385,7 @@ func TestFastConnectFailurePublishesTransitions(t *testing.T) {
 
 func TestUnderlyingDisconnectPublishesState(t *testing.T) {
 	parent := &pipeDialer{server: make(chan net.Conn, 1)}
-	dialer := &Smux{Dialer: parent}
+	dialer := &Mux{Dialer: parent}
 	accept := func() <-chan net.Conn {
 		serverReady := make(chan net.Conn, 1)
 		go func() {
@@ -435,7 +435,7 @@ func TestUnderlyingDisconnectPublishesState(t *testing.T) {
 
 func TestProtocolErrorPublishesState(t *testing.T) {
 	parent := &pipeDialer{server: make(chan net.Conn, 1)}
-	dialer := &Smux{Dialer: parent}
+	dialer := &Mux{Dialer: parent}
 	serverReady := make(chan net.Conn, 1)
 	go func() {
 		server := <-parent.server
@@ -454,11 +454,11 @@ func TestProtocolErrorPublishesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for dialer.Snapshot().State != netproxy.SessionDisconnected && time.Now().Before(deadline) {
+	for dialer.Snapshot().Cause == nil && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if state := dialer.Snapshot().State; state != netproxy.SessionDisconnected {
-		t.Fatalf("state after protocol error = %s, want disconnected", state)
+	if state := dialer.Snapshot(); state.State != netproxy.SessionDisconnected || netproxy.ClassifyFailure(state.Cause).Reason != netproxy.ReasonProtocol {
+		t.Fatalf("state after protocol error = %+v, want disconnected by a protocol failure", state)
 	}
 	if err := dialer.Close(); err != nil {
 		t.Fatal(err)
@@ -466,7 +466,7 @@ func TestProtocolErrorPublishesState(t *testing.T) {
 }
 
 func TestPoolEpisodeUsesBoundedSlotGenerationWatermarks(t *testing.T) {
-	p := newSmuxPool(&Smux{}, 2)
+	p := newSessionPool(&Mux{}, 2)
 	defer p.Close()
 	initial := p.Snapshot()
 	first, second := netproxy.NewResourceRef(), netproxy.NewResourceRef()

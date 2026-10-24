@@ -200,6 +200,8 @@ subscription {
             # Apply an option to every node from this subscription.
             #multiplex: smux
             #multiplex_max_connections: 10
+            # yamux streams do not block each other; uploads get 256 KiB per RTT per stream.
+            #multiplex: yamux
             # Use smux for TCP while keeping UDP on the underlying protocol.
             #multiplex: smux-udp-passthrough
 

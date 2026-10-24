@@ -31,7 +31,7 @@ subscription {
 }
 
 node {
-	hk: 'ss://example' [multiplex: smux-udp-passthrough, multiplex_max_connections: 10]
+	hk: 'ss://example' [multiplex: yamux-udp-passthrough, multiplex_max_connections: 10]
 	'socks5://localhost:1080'
 }
 routing { fallback: direct }
@@ -56,7 +56,7 @@ routing { fallback: direct }
 	if got := subscription.Option.Rules[0].Options.Multiplex; got != MultiplexModeSmux {
 		t.Fatalf("first rule multiplex = %q, want smux", got)
 	}
-	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough ||
+	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeYAMuxUDPPassthrough ||
 		conf.Node[0].Options.MultiplexMaxConnections == nil || *conf.Node[0].Options.MultiplexMaxConnections != 10 {
 		t.Fatalf("unexpected nodes: %+v", conf.Node)
 	}
