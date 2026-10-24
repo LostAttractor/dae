@@ -1,8 +1,10 @@
 package control
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,6 +27,67 @@ func TestUDPOriginalDestinationRejectsShortControlMessage(t *testing.T) {
 		header.SetLen(unix.CmsgLen(4))
 		if RetrieveOriginalDest(buffer).IsValid() {
 			t.Fatal("accepted truncated destination")
+		}
+	}
+}
+
+// appendControlMessage appends one control message as the kernel lays it out.
+func appendControlMessage(oob []byte, level, kind int32, data []byte) []byte {
+	message := make([]byte, unix.CmsgSpace(len(data)))
+	header := (*unix.Cmsghdr)(unsafe.Pointer(&message[0]))
+	header.Level, header.Type = level, kind
+	header.SetLen(unix.CmsgLen(len(data)))
+	copy(message[unix.CmsgLen(0):], data)
+	return append(oob, message...)
+}
+
+func originalDestControlMessage(destination netip.AddrPort) []byte {
+	if destination.Addr().Is4() {
+		var sockaddr [unix.SizeofSockaddrInet4]byte
+		binary.BigEndian.PutUint16(sockaddr[2:], destination.Port())
+		address := destination.Addr().As4()
+		copy(sockaddr[4:], address[:])
+		return appendControlMessage(nil, unix.SOL_IP, unix.IP_RECVORIGDSTADDR, sockaddr[:])
+	}
+	var sockaddr [unix.SizeofSockaddrInet6]byte
+	binary.BigEndian.PutUint16(sockaddr[2:], destination.Port())
+	address := destination.Addr().As16()
+	copy(sockaddr[8:], address[:])
+	return appendControlMessage(nil, unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, sockaddr[:])
+}
+
+func TestUDPOriginalDestinationParsesControlMessages(t *testing.T) {
+	for _, destination := range []netip.AddrPort{
+		netip.MustParseAddrPort("192.0.2.1:443"),
+		netip.MustParseAddrPort("[2001:db8::1]:53"),
+	} {
+		// Unrelated messages before the destination are skipped.
+		oob := appendControlMessage(nil, unix.SOL_SOCKET, unix.SCM_TIMESTAMP, make([]byte, 5))
+		oob = append(oob, originalDestControlMessage(destination)...)
+		if got := RetrieveOriginalDest(oob); got != destination {
+			t.Fatalf("destination = %v, want %v", got, destination)
+		}
+		if allocs := testing.AllocsPerRun(100, func() { RetrieveOriginalDest(oob) }); allocs != 0 {
+			t.Fatalf("parsing allocated %v times", allocs)
+		}
+		// A header claiming more bytes than were received is truncated.
+		header := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
+		header.SetLen(len(oob) + 1)
+		if RetrieveOriginalDest(oob).IsValid() {
+			t.Fatal("accepted a control message beyond the received bytes")
+		}
+	}
+	if RetrieveOriginalDest(nil).IsValid() {
+		t.Fatal("accepted missing control messages")
+	}
+}
+
+func BenchmarkRetrieveOriginalDest(b *testing.B) {
+	oob := originalDestControlMessage(netip.MustParseAddrPort("192.0.2.1:443"))
+	b.ReportAllocs()
+	for b.Loop() {
+		if !RetrieveOriginalDest(oob).IsValid() {
+			b.Fatal("missing destination")
 		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
@@ -22,23 +23,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func RetrieveOriginalDest(oob []byte) netip.AddrPort {
-	msgs, err := syscall.ParseSocketControlMessage(oob)
-	if err != nil {
-		return netip.AddrPort{}
-	}
-	for _, msg := range msgs {
-		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR && len(msg.Data) >= unix.SizeofSockaddrInet4 {
-			ip := msg.Data[4:8]
-			port := binary.BigEndian.Uint16(msg.Data[2:4])
-			return netip.AddrPortFrom(netip.AddrFrom4([4]byte(ip)), port)
-		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == unix.IPV6_RECVORIGDSTADDR && len(msg.Data) >= unix.SizeofSockaddrInet6 {
-			ip := msg.Data[8:24]
-			port := binary.BigEndian.Uint16(msg.Data[2:4])
-			return netip.AddrPortFrom(netip.AddrFrom16([16]byte(ip)), port)
+// RetrieveOriginalDest reads IP(V6)_ORIGDSTADDR in place: every ingress
+// datagram passes here, and the control messages need no copy. Like
+// syscall.ParseSocketControlMessage, a header beyond the received bytes
+// rejects the whole buffer.
+func RetrieveOriginalDest(oob []byte) (destination netip.AddrPort) {
+	for len(oob) >= unix.CmsgLen(0) {
+		header := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
+		if header.Len < unix.SizeofCmsghdr || uint64(header.Len) > uint64(len(oob)) {
+			return netip.AddrPort{}
 		}
+		data := oob[unix.CmsgLen(0):header.Len]
+		if !destination.IsValid() {
+			if header.Level == unix.SOL_IP && header.Type == unix.IP_RECVORIGDSTADDR && len(data) >= unix.SizeofSockaddrInet4 {
+				destination = netip.AddrPortFrom(netip.AddrFrom4([4]byte(data[4:8])), binary.BigEndian.Uint16(data[2:4]))
+			} else if header.Level == unix.SOL_IPV6 && header.Type == unix.IPV6_RECVORIGDSTADDR && len(data) >= unix.SizeofSockaddrInet6 {
+				destination = netip.AddrPortFrom(netip.AddrFrom16([16]byte(data[8:24])), binary.BigEndian.Uint16(data[2:4]))
+			}
+		}
+		oob = oob[min(unix.CmsgSpace(len(data)), len(oob)):]
 	}
-	return netip.AddrPort{}
+	return destination
 }
 
 type Listener struct {
