@@ -4,9 +4,13 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -15,6 +19,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
+	dns "github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )
 
@@ -136,5 +142,56 @@ func TestRoutingHandoffProcessNameReachesUserspaceRules(t *testing.T) {
 	outbound, _, _, err := matcher.match(result.routingInput(src, dst, "verified.example", consts.L4ProtoType_TCP))
 	if err != nil || outbound != consts.OutboundUserDefinedMin {
 		t.Fatalf("re-evaluated outbound = %d, %v; want the pname() route", outbound, err)
+	}
+}
+
+// Every response delivered while a reload forks reaches the successor, either
+// in the copied evidence or through the fanout after admission.
+func TestRuntimeDNSFanoutReachesForkedGeneration(t *testing.T) {
+	r := NewRuntime()
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "domain(suffix:example) -> proxy"))
+	plane := func(generation uint32) *ControlPlane {
+		g, _ := newTestRegistry(4096, time.Hour)
+		t.Cleanup(func() { _ = g.Close() })
+		return &ControlPlane{core: &controlPlaneCore{bpf: &BPFState{Runtime: r}, domainRegistry: g}, routingMatcher: matcher, routingGeneration: generation}
+	}
+	old, next := plane(1), plane(2)
+	r.current, r.planes[1] = old, old
+	type delivery struct {
+		name     string
+		ip       netip.Addr
+		request  *plugin.DNSExchange
+		response *plugin.DNSResponse
+	}
+	deliveries := make([]delivery, 2048)
+	for i := range deliveries {
+		name, ip := fmt.Sprintf("n%d.example.", i), netip.AddrFrom4([4]byte{192, 0, byte(i >> 8), byte(i)})
+		request := dnsTestRequest(t, name, uint16(i))
+		m := new(dns.Msg).SetReply(request.MessageCopy())
+		m.Answer = []dns.RR{testARecord(name, ip.String())}
+		deliveries[i] = delivery{name, ip, request, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}}
+	}
+	var workers sync.WaitGroup
+	var observed atomic.Int32
+	for worker := range 4 {
+		workers.Go(func() {
+			for i := worker; i < len(deliveries); i += 4 {
+				old.observeDNS(deliveries[i].request, deliveries[i].response, time.Now())
+				observed.Add(1)
+			}
+		})
+	}
+	// Fork while deliveries are in flight on every worker.
+	for observed.Load() < int32(len(deliveries)/4) {
+		runtime.Gosched()
+	}
+	if _, err := r.forkGeneration(next); err != nil {
+		t.Fatal(err)
+	}
+	workers.Wait()
+	for _, d := range deliveries {
+		if !next.core.domainRegistry.Verify(d.name, d.ip).Paired {
+			t.Fatalf("reload missed evidence for %s", d.name)
+		}
 	}
 }

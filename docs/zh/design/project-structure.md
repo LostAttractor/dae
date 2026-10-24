@@ -104,6 +104,8 @@ MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins
 
 冷恢复和重载的记录安装都只用于尚未发布的新 Registry，使用构造时分配的空索引。磁盘恢复在完整校验 gzip 和 JSON 流后发布记录，调用方持有控制面生命周期锁以排除并发关闭。重载由控制面的单一所有者调用 `ForkFrom`：先停止前驱的周期写入，再复制证据和待处理活动，安装候选内核投影，成功后交接共享活动队列。前驱可继续服务已有连接，无需预先完全关闭；安装失败时保留前驱队列并恢复其周期任务。
 
+Runtime 用一把专用读写锁排序 DNS 证据扇出与 reload：`ForkFrom` 及随后把新代加入服务代集合时持有写锁，扇出持有读锁，因此每个已交付的应答要么先于证据复制写入前驱，要么同时到达新代。扇出只在 Runtime 锁内复制代列表，复制证据也不持有 Runtime 锁，Registry 停顿不会传导到 UDP 入口和 TCP 接入。应答只解析一次，各代按自身规则生成 bitmap。
+
 ### 内部解析
 
 `common/netutils/resolver.go` 封装 dae 内部解析：稳定的标准库解析器指针、可原子替换的服务器/路由策略，以及独立的节点引导解析器。`global.dns_resolver` 可覆盖内部服务器；未配置则使用系统 DNS。`internal/daemon` 在监听器就绪和重载提交时切换策略，`control/daemon_dial.go` 提供 dae 进程身份及路由 DNS 拨号，复用 `route_dial.go` 的地址选择和 `dns_upstream.go` 的传输生命周期。代理链和订阅加载使用各自注入的 bootstrap direct dialer，候选准备不替换活动全局拨号器。

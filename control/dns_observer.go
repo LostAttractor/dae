@@ -12,19 +12,39 @@ import (
 )
 
 func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) {
-	if registry == nil || match == nil || request == nil || response == nil {
+	if registry != nil && match != nil {
+		registry.observeEvidence(match, dnsEvidence(request, response, at), at)
+	}
+}
+
+// observeEvidence attaches this generation's rule bitmaps to evidence parsed
+// once per response. ObserveDNS copies every bitmap it retains.
+func (g *DomainRegistry) observeEvidence(match func(string) []uint32, observations []domainObservation, at time.Time) {
+	if g == nil || len(observations) == 0 {
 		return
+	}
+	for i := range observations {
+		observations[i].bitmap = match(observations[i].name)
+	}
+	g.ObserveDNS(observations, at)
+}
+
+// dnsEvidence validates the entire chain of one delivered response before
+// returning any terminal or alias evidence. Bitmaps are left to each generation.
+func dnsEvidence(request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) []domainObservation {
+	if request == nil || response == nil {
+		return nil
 	}
 	m := response.MessageCopy()
 	if !dnsResponseMatches(request.MessageCopy(), m) {
-		return
+		return nil
 	}
 	if m.Opcode != dns.OpcodeQuery || m.Truncated || m.Rcode != dns.RcodeSuccess || len(m.Question) != 1 {
-		return
+		return nil
 	}
 	q := m.Question[0]
 	if q.Qclass != dns.ClassINET || q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
-		return
+		return nil
 	}
 	type link struct {
 		target string
@@ -41,7 +61,7 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 			target := dns.CanonicalName(cname.Target)
 			if old, exists := links[name]; exists {
 				if old.target != target {
-					return
+					return nil
 				}
 				links[name] = link{target, min(old.ttl, observedDNSTTL(cname.Hdr.Ttl))}
 			} else {
@@ -60,18 +80,18 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 			break
 		}
 		if len(addresses[name]) != 0 || seen[l.target] {
-			return
+			return nil
 		}
 		seen[l.target] = true
 		names = append(names, l.target)
 	}
 	if len(names) > 16 {
-		return
+		return nil
 	}
 	terminal := names[len(names)-1]
 	rrs := addresses[terminal]
 	if len(rrs) == 0 {
-		return
+		return nil
 	}
 	ttl := uint32(1<<31 - 1)
 	var ips []netip.Addr
@@ -90,7 +110,7 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 		}
 	}
 	if len(ips) == 0 {
-		return
+		return nil
 	}
 	// Validate signature times at delivery. Retaining accepted historical
 	// evidence does not claim that a signature remains valid afterwards.
@@ -113,15 +133,11 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 			validSignature = validSignature || valid && remaining > 0
 		}
 		if hasSignature && !validSignature {
-			return
+			return nil
 		}
 		observations = append(observations, domainObservation{name: name, ips: ips, ttl: int(ttl)})
 	}
-	// Validate the entire chain before publishing any terminal or alias evidence.
-	for i := range observations {
-		observations[i].bitmap = match(observations[i].name)
-	}
-	registry.ObserveDNS(observations, at)
+	return observations
 }
 
 // RFC 2181 section 8: high-bit TTLs mean zero. Normalize only the evidence

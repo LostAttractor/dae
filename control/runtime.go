@@ -34,11 +34,22 @@ func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.
 		observeDNSRegistryAt(c.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, request, response, at)
 		return
 	}
+	observations := dnsEvidence(request, response, at)
+	if len(observations) == 0 {
+		return
+	}
 	r := c.core.bpf.Runtime
+	// A delivered observation either precedes a reload's evidence copy or
+	// reaches the new generation too: forks and plane insertion hold the
+	// write lock. Registry work stays outside r.mu, which UDP ingress and TCP
+	// admission take per packet and connection.
+	r.dnsFanout.RLock()
+	defer r.dnsFanout.RUnlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, plane := range r.planes {
-		observeDNSRegistryAt(plane.core.domainRegistry, plane.routingMatcher.domainMatcher.MatchDomainBitmap, request, response, at)
+	planes := slices.Collect(maps.Values(r.planes))
+	r.mu.Unlock()
+	for _, plane := range planes {
+		plane.core.domainRegistry.observeEvidence(plane.routingMatcher.domainMatcher.MatchDomainBitmap, observations, at)
 	}
 }
 
@@ -46,7 +57,8 @@ func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.
 // Generations own private programs/projections and references to shared services.
 type Runtime struct {
 	lifecycle      sync.Mutex
-	mu             sync.Mutex // generation admission and retirement
+	mu             sync.Mutex   // generation admission and retirement
+	dnsFanout      sync.RWMutex // orders DNS evidence fanout with reload forks
 	current        *ControlPlane
 	planes         map[uint32]*ControlPlane
 	shared         map[string]*ebpf.Map
@@ -174,16 +186,10 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 			log.WithError(cleanup).Warn("Remove client export backups after activation")
 		}
 	}()
-	r.mu.Lock()
-	old := r.current
-	if old != nil {
-		if err := c.core.domainRegistry.ForkFrom(old.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
-			r.mu.Unlock()
-			return fmt.Errorf("%w: %w", ErrPublicationRejected, err)
-		}
+	old, err := r.forkGeneration(c)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPublicationRejected, err)
 	}
-	r.planes[c.routingGeneration] = c
-	r.mu.Unlock()
 	if old != nil {
 		if err := old.core.quiesce(); err != nil {
 			return err
@@ -246,6 +252,27 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 		}()
 	}
 	return nil
+}
+
+// forkGeneration copies the current generation's evidence into c and admits
+// it. The caller holds lifecycle, which excludes other publications; c is not
+// admitted before it joins planes, so the copy and its kernel writes need not
+// stall ingress under r.mu.
+func (r *Runtime) forkGeneration(c *ControlPlane) (*ControlPlane, error) {
+	r.mu.Lock()
+	old := r.current
+	r.mu.Unlock()
+	r.dnsFanout.Lock()
+	defer r.dnsFanout.Unlock()
+	if old != nil {
+		if err := c.core.domainRegistry.ForkFrom(old.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+			return nil, err
+		}
+	}
+	r.mu.Lock()
+	r.planes[c.routingGeneration] = c
+	r.mu.Unlock()
+	return old, nil
 }
 
 func (r *Runtime) reportError(err error) {
