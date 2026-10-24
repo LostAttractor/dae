@@ -1528,13 +1528,22 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		// Established TCP Connection.
-		struct tcp_flow_state *routing_result =
-			bpf_map_lookup_elem(&tcp_flow_map,
-					    &routing_tuples_key);
+		struct tcp_flow_state *saved =
+			bpf_map_lookup_elem(&tcp_flow_map, &routing_tuples_key);
+		struct tcp_flow_state flow = {};
 
-		if ((route_epoch &&
-		     (!routing_result || routing_result->route_epoch != route_epoch)) ||
-		    (routing_result && !tcp_flow_live(routing_result))) {
+		if (saved) {
+			flow = *saved;
+			/* The sender's RST ends a kernel-forwarded connection, so the
+			 * tuple's later packets start a new one. Forward this RST by the
+			 * copied state. A relayed flow keeps its state until the relay
+			 * ends: the sender answers the relay's segments in flight with
+			 * more RSTs, which must not reach the origin. */
+			if (l4h->tcph.rst && flow.owner != TCP_FLOW_PROXY)
+				bpf_map_delete_elem(&tcp_flow_map, &routing_tuples_key);
+		}
+		if ((route_epoch && (!saved || flow.route_epoch != route_epoch)) ||
+		    (saved && !tcp_flow_live(&flow))) {
 			/* Never re-route established TCP. The transparent listener rejects
 			 * an ACK without a connection with RST; existing relays also receive
 			 * the userspace Abort. A recovered group interrupts its direct
@@ -1544,11 +1553,11 @@ static __always_inline int do_tproxy_unfragmented(
 			goto control_plane;
 		}
 
-		if (routing_result) {
-			if (routing_result->owner != TCP_FLOW_PROXY) {
+		if (saved) {
+			if (flow.owner != TCP_FLOW_PROXY) {
 				// Restore the policy-routing mark for the rest of a
 				// direct(mark:N) TCP flow.
-				skb->mark = routing_result->mark;
+				skb->mark = flow.mark;
 				return TCX_NEXT;
 			}
 			goto control_plane;

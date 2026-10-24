@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
-	"syscall"
 	"testing"
 	"time"
 
@@ -204,14 +203,10 @@ func configureDatapathTestNamespace(t *testing.T) {
 	}
 }
 
-func internalLinkListenerConfig() net.ListenConfig {
-	return net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error { return tproxyControl(raw) }}
-}
-
 func testInternalLinkTCP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family string, target netip.AddrPort) {
 	t.Helper()
 	listener, err := ns.With(func() (net.Listener, error) {
-		lc := internalLinkListenerConfig()
+		lc := tproxyListenConfig()
 		return lc.Listen(t.Context(), "tcp"+family, ":0")
 	})
 	if err != nil {
@@ -261,13 +256,31 @@ func testInternalLinkTCP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	if err := <-response; err != nil {
 		t.Fatal(err)
 	}
+	// dae closed its side first. Once the client acknowledges dae's FIN, it is
+	// reset: it cannot send after the relay, when its flow state is gone.
+	raw, err := client.(*net.TCPConn).SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for state := uint8(0); state != unix.BPF_TCP_CLOSE; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("client left in TCP state %d after dae closed", state)
+		}
+		if err := raw.Control(func(fd uintptr) {
+			if info, err := unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO); err == nil {
+				state = info.State
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertInternalLinkRoute(t, objects, client.LocalAddr().(*net.TCPAddr).AddrPort(), target, unix.IPPROTO_TCP)
 }
 
 func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family string, target netip.AddrPort) {
 	t.Helper()
 	listener, err := ns.With(func() (net.PacketConn, error) {
-		lc := internalLinkListenerConfig()
+		lc := tproxyListenConfig()
 		return lc.ListenPacket(t.Context(), "udp"+family, ":0")
 	})
 	if err != nil {
@@ -309,7 +322,7 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 		t.Fatalf("UDP flow state: %v", err)
 	}
 	reply, err := ns.With(func() (net.PacketConn, error) {
-		lc := internalLinkListenerConfig()
+		lc := tproxyListenConfig()
 		return lc.ListenPacket(t.Context(), "udp"+family, target.String())
 	})
 	if err != nil {

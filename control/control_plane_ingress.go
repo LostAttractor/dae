@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -134,11 +135,17 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 				reportIngressError(fmt.Errorf("accept TCP connection: %w", err))
 				return
 			}
+			flow := acceptedTuple(lconn)
+			r.tcpFlows.accept(flow)
 			c, result := r.admitTCP(lconn)
 			if c == nil {
+				r.tcpFlows.release(flow)
 				continue
 			}
-			go serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections, result)
+			go func() {
+				serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections, result)
+				r.tcpFlows.release(flow)
+			}()
 		}
 	}()
 	go func() {
@@ -213,13 +220,27 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	}
 }
 
+// tproxyListenConfig creates the transparent listeners. An accepted TCP socket
+// that dae closes before the client has closed its side resets the client
+// once dae's FIN is acknowledged (TCP_LINGER2 < 0), instead of leaving it open.
+// Its later segments would find the flow state gone and go to the origin.
+func tproxyListenConfig() net.ListenConfig {
+	return net.ListenConfig{Control: func(network, _ string, c syscall.RawConn) error {
+		if err := tproxyControl(c); err != nil || !strings.HasPrefix(network, "tcp") {
+			return err
+		}
+		var err error
+		if controlErr := c.Control(func(fd uintptr) {
+			err = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_LINGER2, -1)
+		}); controlErr != nil {
+			return controlErr
+		}
+		return err
+	}}
+}
+
 func (r *Runtime) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
-	// Listen.
-	var listenConfig = net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			return tproxyControl(c)
-		},
-	}
+	listenConfig := tproxyListenConfig()
 	listenAddr := net.JoinHostPort("", strconv.Itoa(int(port)))
 	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {

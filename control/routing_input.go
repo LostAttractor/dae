@@ -22,7 +22,7 @@ type routingResult struct {
 	Pname [16]byte
 }
 
-func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) (*routingResult, error) {
+func tuplesKey(src, dst netip.AddrPort, l4proto uint8) bpfTuplesKey {
 	tuples := bpfTuplesKey{
 		Sport:   common.Htons(src.Port()),
 		Dport:   common.Htons(dst.Port()),
@@ -30,7 +30,19 @@ func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) 
 	}
 	tuples.Sip.U6Addr8 = src.Addr().As16()
 	tuples.Dip.U6Addr8 = dst.Addr().As16()
+	return tuples
+}
 
+func handoffLive(handoff *bpfRoutingHandoff) (bool, error) {
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+		return false, err
+	}
+	return int32(handoff.Expires-uint32(now.Sec)) > 0, nil
+}
+
+func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) (*routingResult, error) {
+	tuples := tuplesKey(src, dst, l4proto)
 	var handoff bpfRoutingHandoff
 	var err error
 	if l4proto == unix.IPPROTO_TCP {
@@ -41,11 +53,9 @@ func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) 
 	if err != nil {
 		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
 	}
-	var now unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+	if live, err := handoffLive(&handoff); err != nil {
 		return nil, err
-	}
-	if int32(handoff.Expires-uint32(now.Sec)) <= 0 {
+	} else if !live {
 		return nil, fmt.Errorf("routing handoff expired")
 	}
 	return &routingResult{bpfRoutingResult: handoff.Result, Pname: handoff.Pname}, nil
