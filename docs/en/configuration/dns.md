@@ -213,7 +213,9 @@ do not refresh. Observed client attempts count even if upstream dialing fails.
 
 Connection entry, the first activity for a new UDP destination, and DNS evidence
 registration are synchronous. The initial route decision still precedes any
-capacity promotion caused by that first activity. Continued I/O is coalesced by
+capacity promotion caused by that first activity. Continued I/O is queued at
+most once per second per connection (per destination for UDP), so renewal can
+trail the latest I/O by up to one second. Queued observations are coalesced by
 `(original IP, canonical domain or empty string)`, retaining the latest
 `observed_at` for each key in a single queue. Enqueue briefly holds the queue
 lock. The existing Registry worker attempts to apply a batch

@@ -88,7 +88,7 @@ go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryFootprint$' -benchtime=1x -count=5
 ```
 
-`BenchmarkDomainActivityBatch` 使用同一夹具数据，模拟 64 个连接对共享 IP 的重复 I/O；每 1,024 次观察应用一次批次，计时包含应用成本。`BenchmarkDomainActivityIOContention` 运行真实后台循环，并在计时结束前通过关闭应用最后一批；`p95-ns` / `p99-ns` 衡量前台观察回调耗时，状态实际可见时间还取决于批次应用。它是饱和负载，吞吐更高的实现也会产生更多排队竞争，不能直接把尾延迟当作固定流量下的网络延迟：
+`BenchmarkDomainActivityBatch` 使用同一夹具数据，模拟 64 个连接对共享 IP 的重复 I/O；每 1,024 次观察应用一次批次，计时包含应用成本。每个连接的回调每秒最多入队一次，因此以下活动基准中的大多数调用只经过无锁的节流判断。`BenchmarkDomainActivityIOContention` 运行真实后台循环，并在计时结束前通过关闭应用最后一批；`p95-ns` / `p99-ns` 衡量前台观察回调耗时，状态实际可见时间还取决于批次应用。它是饱和负载，吞吐更高的实现也会产生更多排队竞争，不能直接把尾延迟当作固定流量下的网络延迟：
 
 ```sh
 go test -tags=netgo,osusergo,trace ./control \

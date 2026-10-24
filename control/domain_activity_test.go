@@ -6,6 +6,8 @@ import (
 	"context"
 	"io"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,11 +114,25 @@ func TestUDPContinuedActivityUsesEachOriginalDestination(t *testing.T) {
 	}
 	firstDeadline := g.retention(a, first.Addr())
 	otherDeadline := g.retention(b, other.Addr())
-	if err := c.writeUDP(context.Background(), ue, src, first, []byte("continued")); err != nil {
-		t.Fatal(err)
+	continued := func() {
+		if err := c.writeUDP(context.Background(), ue, src, first, []byte("continued")); err != nil {
+			t.Fatal(err)
+		}
+		// Receive-side accounting uses the same per-destination observation path.
+		ue.observeDomain(other)
 	}
-	// Receive-side accounting uses the same per-destination observation path.
-	ue.observeDomain(other)
+	continued()
+	g.flushActivity()
+	if !g.retention(a, first.Addr()).Equal(firstDeadline) || !g.retention(b, other.Addr()).Equal(otherDeadline) {
+		t.Fatal("continued UDP traffic was queued within the throttle interval")
+	}
+	ue.mu.Lock()
+	for dst, target := range ue.activityTargets {
+		target.queuedAt = target.queuedAt.Add(-domainActivityInterval)
+		ue.activityTargets[dst] = target
+	}
+	ue.mu.Unlock()
+	continued()
 	if !g.retention(a, first.Addr()).Equal(firstDeadline) || !g.retention(b, other.Addr()).Equal(otherDeadline) {
 		t.Fatal("continued UDP traffic applied synchronously")
 	}
@@ -141,5 +157,35 @@ func TestUnfinishedUDPSniffRetainsObservedActivity(t *testing.T) {
 	ue.retire()
 	if !g.retention(name, ip).Equal(now.Add(90 * time.Second)) {
 		t.Fatal("unfinished sniff lost client activity")
+	}
+}
+
+func TestDomainActivityThrottle(t *testing.T) {
+	var throttle domainActivityThrottle
+	base := domainActivityEpoch.Add(time.Hour)
+	for i, step := range []struct {
+		after time.Duration
+		admit bool
+	}{
+		{0, true}, {0, false}, {domainActivityInterval - 1, false},
+		{domainActivityInterval, true}, {domainActivityInterval + 1, false}, {3 * domainActivityInterval, true},
+	} {
+		if throttle.admit(base.Add(step.after)) != step.admit {
+			t.Fatalf("step %d: admitted=%v", i, !step.admit)
+		}
+	}
+	var concurrent domainActivityThrottle
+	var admitted atomic.Int32
+	var callers sync.WaitGroup
+	for range 8 {
+		callers.Go(func() {
+			if concurrent.admit(base) {
+				admitted.Add(1)
+			}
+		})
+	}
+	callers.Wait()
+	if admitted.Load() != 1 {
+		t.Fatalf("concurrent callers admitted %d times in one interval", admitted.Load())
 	}
 }

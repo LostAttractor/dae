@@ -6,6 +6,7 @@ import (
 	"hash/maphash"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
@@ -60,10 +61,34 @@ func (c *activitySniffer) CloseWrite() error {
 	return c.ConnSnifferInterface.(netproxy.CloseWriter).CloseWrite()
 }
 
+// domainActivityInterval bounds how often one connection or UDP destination
+// queues continued I/O. Renewal may trail the latest I/O by at most this much.
+const domainActivityInterval = time.Second
+
+// domainActivityEpoch is a monotonic base for lock-free throttling.
+var domainActivityEpoch = time.Now()
+
+// domainActivityThrottle admits its first call, then at most one per interval
+// across concurrent callers.
+type domainActivityThrottle struct{ next atomic.Int64 } // offset from domainActivityEpoch
+
+func (t *domainActivityThrottle) admit(now time.Time) bool {
+	at := int64(now.Sub(domainActivityEpoch))
+	due := t.next.Load()
+	return at >= due && t.next.CompareAndSwap(due, at+int64(domainActivityInterval))
+}
+
+// Setup observes synchronously before creating this handle; continued I/O of
+// the connection, in either direction or through splice sampling, is throttled.
 func (a *domainActivity) connection(ip netip.Addr, domain string) func() {
 	key := newDomainActivityKey(ip, domain)
 	shard := maphash.Comparable(domainActivitySeed, key) % domainActivityShards
-	return func() { a.enqueueShard(key, shard, time.Now()) }
+	var throttle domainActivityThrottle
+	return func() {
+		if now := time.Now(); throttle.admit(now) {
+			a.enqueueShard(key, shard, now)
+		}
+	}
 }
 
 // A UDP source can address several destinations. Only the first sniffed
@@ -96,8 +121,15 @@ func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
 		target.key = newDomainActivityKey(dst.Addr(), domain)
 	}
 	target.lastUsed = at
+	queue := !seen || at.Sub(target.queuedAt) >= domainActivityInterval
+	if queue {
+		target.queuedAt = at
+	}
 	ue.activityTargets[dst] = target
 	ue.mu.Unlock()
+	if !queue {
+		return
+	}
 	if g := ue.activity.enqueue(target.key, at); g != nil && !seen {
 		g.flushActivity()
 	}

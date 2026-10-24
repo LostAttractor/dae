@@ -48,6 +48,7 @@ type udpDestination struct {
 type udpActivityTarget struct {
 	key      domainActivityKey
 	lastUsed time.Time
+	queuedAt time.Time // latest enqueue, throttled by domainActivityInterval
 }
 
 // addrPortOf converts a net.Addr returned by a PacketConn into a netip.AddrPort.
