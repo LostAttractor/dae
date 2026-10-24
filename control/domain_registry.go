@@ -3,6 +3,7 @@
 package control
 
 import (
+	"container/heap"
 	"net/netip"
 	"slices"
 	"sync"
@@ -16,8 +17,13 @@ type domainPair struct {
 }
 
 type domainRecord struct {
+	name      string
 	bitmap    []uint32
 	addresses map[netip.Addr]*domainPair
+	// expiry never exceeds an address deadline. Extensions leave it behind;
+	// GC rescans the record once it passes.
+	expiry time.Time
+	slot   int // 1 + index in DomainRegistry.due; zero when not queued
 }
 
 type ipRecord struct {
@@ -37,7 +43,7 @@ type DomainRegistry struct {
 	window        time.Duration
 	activityLag   time.Duration // longest delay before connection activity is observed
 	evaluatedAt   time.Time
-	nextGC        time.Time // lower bound on pair deadlines; zero when empty
+	due           domainExpiry // every record, ordered by expiry
 	gcCount       uint64
 	generation    uint64
 	activity      *domainActivity
@@ -103,7 +109,7 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 			ip = ip.Unmap()
 			r := g.byName[observation.name]
 			if r == nil {
-				r = &domainRecord{bitmap: slices.Clone(observation.bitmap), addresses: make(map[netip.Addr]*domainPair)}
+				r = &domainRecord{name: observation.name, bitmap: slices.Clone(observation.bitmap), addresses: make(map[netip.Addr]*domainPair)}
 				g.byName[observation.name] = r
 			}
 			if pair := r.addresses[ip]; pair != nil {
@@ -130,7 +136,6 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 func (g *DomainRegistry) extend(r *domainRecord, s *ipRecord, pair *domainPair, deadline time.Time) bool {
 	if deadline.After(pair.retainUntil) {
 		pair.retainUntil = deadline
-		g.trackDeadline(deadline)
 		g.generation++
 		if !domainBitmapAllZero(r.bitmap) && deadline.After(s.priority) {
 			s.priority = deadline
@@ -140,14 +145,25 @@ func (g *DomainRegistry) extend(r *domainRecord, s *ipRecord, pair *domainPair, 
 	return false
 }
 
+// Insertions lower the record's expiry immediately so no deadline is missed.
 func (g *DomainRegistry) addPair(r *domainRecord, ip netip.Addr, pair *domainPair) {
+	g.indexPair(r, ip, pair)
+	if r.slot == 0 {
+		r.expiry = pair.retainUntil
+		heap.Push(&g.due, r)
+	} else if pair.retainUntil.Before(r.expiry) {
+		r.expiry = pair.retainUntil
+		heap.Fix(&g.due, r.slot-1)
+	}
+}
+
+func (g *DomainRegistry) indexPair(r *domainRecord, ip netip.Addr, pair *domainPair) {
 	s := g.byIP[ip]
 	if s == nil {
 		s = &ipRecord{domains: make(map[*domainRecord]*domainPair), bump: make([]uint32, domainBitmapWords()), routing: make([]uint32, domainBitmapWords())}
 		g.byIP[ip] = s
 	}
 	r.addresses[ip], s.domains[r] = pair, pair
-	g.trackDeadline(pair.retainUntil)
 }
 
 func (g *DomainRegistry) removePair(r *domainRecord, ip netip.Addr) {
@@ -156,14 +172,6 @@ func (g *DomainRegistry) removePair(r *domainRecord, ip netip.Addr) {
 	delete(s.domains, r)
 	if len(s.domains) == 0 {
 		delete(g.byIP, ip)
-	}
-}
-
-// Extensions may leave an earlier bound behind. The next scan recomputes it;
-// insertions must lower it immediately so no deadline can be missed.
-func (g *DomainRegistry) trackDeadline(deadline time.Time) {
-	if g.nextGC.IsZero() || deadline.Before(g.nextGC) {
-		g.nextGC = deadline
 	}
 }
 
@@ -197,15 +205,14 @@ func (g *DomainRegistry) verifyLocked(name string, ip netip.Addr) (result Domain
 }
 
 // gc keeps a pair for activityLag past its deadline, so activity that happened
-// before the deadline but is observed late can still renew it.
+// before the deadline but is observed late can still renew it. Only records
+// whose expiry has passed are visited; each visit recomputes the exact bound.
 func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 	cutoff := now.Add(-g.activityLag)
-	if g.nextGC.IsZero() || cutoff.Before(g.nextGC) {
-		return nil
-	}
 	var changed map[netip.Addr]struct{}
-	g.nextGC = time.Time{}
-	for name, r := range g.byName {
+	for len(g.due) != 0 && !g.due[0].expiry.After(cutoff) {
+		r := g.due[0]
+		first := true
 		for ip, pair := range r.addresses {
 			deadline := pair.retainUntil
 			if !deadline.After(cutoff) {
@@ -216,12 +223,15 @@ func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 					changed = make(map[netip.Addr]struct{})
 				}
 				changed[ip] = struct{}{}
-			} else {
-				g.trackDeadline(deadline)
+			} else if first || deadline.Before(r.expiry) {
+				r.expiry, first = deadline, false
 			}
 		}
 		if len(r.addresses) == 0 {
-			delete(g.byName, name)
+			heap.Pop(&g.due)
+			delete(g.byName, r.name)
+		} else {
+			heap.Fix(&g.due, 0)
 		}
 	}
 	return changed
@@ -274,4 +284,28 @@ func (g *DomainRegistry) Usage() RegistryUsage {
 		}
 	}
 	return usage
+}
+
+// domainExpiry is a container/heap of records keyed by expiry. A record's slot
+// is one past its index, so a zero record is safely outside the heap.
+type domainExpiry []*domainRecord
+
+func (h domainExpiry) Len() int           { return len(h) }
+func (h domainExpiry) Less(i, j int) bool { return h[i].expiry.Before(h[j].expiry) }
+func (h domainExpiry) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].slot, h[j].slot = i+1, j+1
+}
+func (h *domainExpiry) Push(x any) {
+	r := x.(*domainRecord)
+	*h = append(*h, r)
+	r.slot = len(*h)
+}
+func (h *domainExpiry) Pop() any {
+	old := *h
+	r := old[len(old)-1]
+	old[len(old)-1] = nil
+	*h = old[:len(old)-1]
+	r.slot = 0
+	return r
 }

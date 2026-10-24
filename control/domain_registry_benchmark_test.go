@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json/v2"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -139,6 +140,61 @@ func benchmarkActivityRegistry(b *testing.B) (*DomainRegistry, []domainActivityK
 		b.Fatalf("unexpected workload shape: %+v", usage)
 	}
 	return g, keys, now
+}
+
+// BenchmarkDomainRegistryGC replays one hour of per-second collection over
+// 8,191 domains with 12 addresses and one with 4,096, about 102k pairs on 16k
+// shared IPs. Deadlines are spread across the window in groups of four, and
+// ten random pairs are renewed each second. The slowest call holds the lock
+// that connection setup and DNS delivery wait on.
+func BenchmarkDomainRegistryGC(b *testing.B) {
+	const window = 168 * time.Hour
+	now := time.Now()
+	var worst time.Duration
+	for b.Loop() {
+		b.StopTimer()
+		rng := rand.New(rand.NewPCG(1, 2))
+		g := newDomainRegistry(65536, window, func(netip.Addr, []uint32, []uint32) error { return nil }, func(netip.Addr) error { return nil })
+		records := make(map[string]*domainRecord, 8192)
+		bitmaps := make(map[string][]uint32, 8192)
+		var keys []domainActivityKey
+		for d := range 8192 {
+			name := fmt.Sprintf("d%d.example.", d)
+			bitmaps[name] = testBitmap()
+			if d%4 == 0 {
+				bitmaps[name] = testBitmap(0)
+			}
+			r := &domainRecord{addresses: make(map[netip.Addr]*domainPair)}
+			records[name] = r
+			var deadline time.Time
+			for i := 0; len(r.addresses) < 12 || d == 0 && len(r.addresses) < 4096; i++ {
+				if i%4 == 0 {
+					deadline = now.Add(rng.N(window))
+				}
+				n := rng.IntN(16384)
+				ip := netip.AddrFrom4([4]byte{10, 0, byte(n >> 8), byte(n)})
+				if r.addresses[ip] == nil {
+					r.addresses[ip] = &domainPair{retainUntil: deadline}
+					keys = append(keys, domainActivityKey{ip: ip, domain: name})
+				}
+			}
+		}
+		g.installRecords(records, func(name string) []uint32 { return bitmaps[name] })
+		g.rebuildProjection(g.clock(now))
+		b.StartTimer()
+		for second := range 3600 {
+			at := now.Add(time.Duration(second) * time.Second)
+			g.mu.Lock()
+			for range 10 {
+				g.touch(keys[rng.IntN(len(keys))], at)
+			}
+			start := time.Now()
+			g.syncProjection(g.gc(at), false, at)
+			worst = max(worst, time.Since(start))
+			g.mu.Unlock()
+		}
+	}
+	b.ReportMetric(float64(worst), "max-call-ns")
 }
 
 // Include snapshot allocation, deterministic JSON encoding, gzip and atomic

@@ -3,6 +3,7 @@
 package control
 
 import (
+	"container/heap"
 	"maps"
 	"net/netip"
 	"slices"
@@ -105,12 +106,20 @@ func (g *DomainRegistry) Close() error {
 // fresh registry and owns the supplied records; attach current-rule bitmaps and
 // index their shared pairs using the maps allocated by the constructor.
 func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchBitmap func(string) []uint32) {
+	g.due = slices.Grow(g.due[:0], len(records))
 	for name, r := range records {
-		r.bitmap = slices.Clone(matchBitmap(name))
+		r.name, r.bitmap = name, slices.Clone(matchBitmap(name))
+		first := true
 		for ip, pair := range r.addresses {
-			g.addPair(r, ip, pair)
+			g.indexPair(r, ip, pair)
+			if first || pair.retainUntil.Before(r.expiry) {
+				r.expiry, first = pair.retainUntil, false
+			}
 		}
+		g.due = append(g.due, r)
+		r.slot = len(g.due)
 	}
+	heap.Init(&g.due)
 	g.byName = records
 }
 

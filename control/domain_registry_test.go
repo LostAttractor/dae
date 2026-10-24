@@ -70,14 +70,25 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	names := make(map[*domainRecord]bool)
-	for _, r := range g.byName {
+	if len(g.due) != len(g.byName) {
+		t.Fatal("expiry heap and name index disagree")
+	}
+	for i, r := range g.due {
+		if r.slot != i+1 || i > 0 && r.expiry.Before(g.due[(i-1)/2].expiry) {
+			t.Fatal("expiry heap order or slot is stale")
+		}
+	}
+	for name, r := range g.byName {
 		names[r] = true
 		if len(r.addresses) == 0 {
 			t.Fatal("empty name bucket")
 		}
+		if r.name != name || r.slot == 0 || g.due[r.slot-1] != r {
+			t.Fatal("record is missing from the expiry heap")
+		}
 		for ip, pair := range r.addresses {
-			if g.nextGC.IsZero() || g.nextGC.After(pair.retainUntil) {
-				t.Fatal("GC bound can miss a retained deadline")
+			if r.expiry.After(pair.retainUntil) {
+				t.Fatal("record expiry can miss a retained deadline")
 			}
 			if s := g.byIP[ip]; s == nil || s.domains[r] != pair {
 				t.Fatal("domain and IP indexes disagree on pair identity")
@@ -97,7 +108,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	if len(g.kernel.resident) > g.kernel.max || len(fake.bump) != len(g.kernel.resident) || len(fake.routing) != len(g.kernel.resident) {
 		t.Fatal("kernel occupancy mismatch")
 	}
-	if len(g.byName) == 0 && (!g.nextGC.IsZero() || len(g.byIP) != 0) {
+	if len(g.byName) == 0 && len(g.byIP) != 0 {
 		t.Fatal("empty registry retained index state")
 	}
 	// Compare every cached IP, including omitted candidates, against a full
@@ -464,6 +475,36 @@ func TestDomainGCDeadlineAfterExtensionAndInsertion(t *testing.T) {
 	g.Sweep(now.Add(410 * time.Second))
 	if g.Size() != 0 || len(fake.bump) != 0 || g.Usage().GC != 4 {
 		t.Fatal("repopulated registry did not resume collection")
+	}
+	checkInvariants(t, g, fake)
+}
+
+// Extensions leave a record's expiry behind. Passing it rescans that record,
+// collecting only expired members and requeuing the earliest retained deadline.
+func TestDomainGCRescansRecordAtStaleExpiry(t *testing.T) {
+	g, fake := newTestRegistry(4, time.Second)
+	now := time.Now()
+	name := "multi.example."
+	a, b, c := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("192.0.2.3")
+	g.ObserveDNS([]domainObservation{{name: name, ips: []netip.Addr{a, b}, bitmap: testBitmap(0), ttl: 60}}, now)
+	g.Upsert(name, c, testBitmap(0), 90, now)
+	g.Upsert(name, a, testBitmap(0), 300, now.Add(30*time.Second))
+	g.Sweep(now.Add(60 * time.Second))
+	if g.Verify(name, b).Paired || !g.Verify(name, a).Paired || !g.Verify(name, c).Paired || g.Usage().GC != 1 {
+		t.Fatal("stale record expiry collected the wrong members")
+	}
+	checkInvariants(t, g, fake)
+	g.Sweep(now.Add(90*time.Second - time.Nanosecond))
+	if !g.Verify(name, c).Paired {
+		t.Fatal("requeued expiry collected evidence early")
+	}
+	g.Sweep(now.Add(90 * time.Second))
+	if g.Verify(name, c).Paired || !g.Verify(name, a).Paired || g.Usage().GC != 2 {
+		t.Fatal("requeued expiry missed the next deadline")
+	}
+	g.Sweep(now.Add(330 * time.Second))
+	if g.Size() != 0 || len(g.due) != 0 || len(fake.bump) != 0 {
+		t.Fatal("emptied record stayed queued")
 	}
 	checkInvariants(t, g, fake)
 }

@@ -168,8 +168,8 @@ Use the final delivered TTL; a CNAME alias uses the shortest TTL along its path
 to the address RRset. A TTL with its high bit set means zero (RFC 2181), only for
 the retention calculation; forwarded bytes are unchanged. Updates never shorten an existing deadline. GC runs on
 updates and on a one-minute check, so quiet entries may be collected up to one
-sweep later. The Registry tracks the earliest possible expiry and skips full
-collection scans before that time. The first implementation has **no userspace entry or memory limit**.
+sweep later. Each domain keeps a lower bound on its address deadlines in a
+min-heap, so collection visits only domains whose bound has passed. The first implementation has **no userspace entry or memory limit**.
 Kernel capacity eviction leaves userspace evidence intact; time GC removes both
 verification evidence and kernel contributions. `Verify` itself never refreshes
 retention. Once collected, a pair needs a new valid DNS observation to return.

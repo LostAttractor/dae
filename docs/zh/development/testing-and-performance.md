@@ -72,6 +72,13 @@ go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryContention$' -benchmem -benchtime=1024x -cpu=1,8,32 -count=3
 ```
 
+`BenchmarkDomainRegistryGC` 按 worker 的节奏重放一小时：每秒执行一次回收，并随机续期十个 pair。夹具约有 10.2 万个 pair，分布在 1.6 万个共享 IP 上，其中一个域名有 4,096 个地址，截止时间分散在整个窗口内。`max-call-ns` 是最慢一次回收的耗时，回收期间持有连接建立和 DNS 交付都要等待的 Registry 锁：
+
+```sh
+go test -tags=netgo,osusergo,trace ./control \
+  -run '^$' -bench '^BenchmarkDomainRegistryGC$' -benchmem -count=3
+```
+
 `BenchmarkDomainRegistryCapacity` 使用一个内核槽位，分别测量已驻留 IP 续期和两个 IP 交替竞争槽位；固定操作数便于比较同一换入换出序列。`BenchmarkDomainRegistryFootprint` 测量上述夹具数据在临时构造对象回收后的常驻 Go 堆，单独以 `-benchtime=1x` 运行，读取 `retained-bytes`、`retained-objects`：
 
 ```sh
