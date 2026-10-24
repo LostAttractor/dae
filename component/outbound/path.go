@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,17 +32,21 @@ type PathSpec struct {
 
 // PathPool reuses complete physical paths across groups and reloads. The pool
 // indexes runtimes; their existing member ownership controls actual retirement.
-// Its paths' entry dialers share node addresses, which outlive dormant
-// runtimes and rebuilt configurations until Relearn.
+// Its paths' entry dialers share node addresses and MPTCP support, which
+// outlive dormant runtimes and rebuilt configurations until Relearn.
 type PathPool struct {
 	mu        sync.Mutex
 	paths     map[string]*dialer.Dialer
 	addresses netutils.AddressCache
+	multipath direct.MultipathMemory
 }
 
-// Relearn makes every path resolve its nodes again, including the paths in
-// use; lookups in flight cannot refill what it drops.
-func (p *PathPool) Relearn() { p.addresses.Reset() }
+// Relearn makes every path resolve and probe its nodes again, including the
+// paths in use; lookups and dials in flight cannot refill what it drops.
+func (p *PathPool) Relearn() {
+	p.addresses.Reset()
+	p.multipath.Reset()
+}
 
 func (p *PathPool) prune() {
 	p.mu.Lock()

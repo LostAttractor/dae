@@ -149,8 +149,9 @@ global {
     # TLS fragment packet length, in milliseconds. Each fragment interval is randomly generated from this range.
     tls_fragment_interval: '10-20'
 
-    # Multipath TCP (MPTCP) support. If is true, dae will try to use MPTCP to connect all nodes, but it will only take
-    # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
+    # Multipath TCP (MPTCP) support. If true, dae probes each node address with MPTCP and keeps using it only for
+    # addresses that negotiate MPTCP; other addresses are dialed as plain TCP until the next reload. Direct connections
+    # always try MPTCP. It can be used for load balancing and failover across multiple interfaces and IPs.
     mptcp: false
 
     # The UDP port hopping interval for protocols that support it (e.g., Hysteria2 with a port range).

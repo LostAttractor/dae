@@ -52,6 +52,7 @@ func (p *PathSpec) entryDialer(option *dialer.GlobalOption, pool *PathPool) (net
 	if pool != nil {
 		// entryResolver's DNS transport depends on exactly these inputs.
 		entry.Lookup = pool.addresses.Lookup(resolver.LookupNetIP, fmt.Sprintf("%s\x00%d\x00%s", option.DNSResolver, entry.Mark, entry.Interface))
+		entry.Multipath = &pool.multipath
 	}
 	return direct.NewDirectDialer(entry), nil
 }

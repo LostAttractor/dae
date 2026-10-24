@@ -21,15 +21,22 @@ type Option struct {
 	Resolver *net.Resolver
 	// Lookup, if set, answers the dialer's address lookups in front of
 	// Resolver, for example from a cache. net.Dialer keeps Resolver.
-	Lookup    happyeyeballs.Lookup
-	Mptcp     bool
+	Lookup happyeyeballs.Lookup
+	Mptcp  bool
+	// Multipath, with Mptcp, chooses MPTCP per destination by whether it
+	// negotiated MPTCP before; nil dials every TCP connection with MPTCP.
+	Multipath *MultipathMemory
 	Mark      int
 	Interface string
 	IPVersion int // 0, 4 or 6; applies to data sockets, not Resolver's DNS transport.
 }
 
 type directDialer struct {
-	dialer    net.Dialer
+	dialer    net.Dialer  // UDP, and TCP unless memory chooses multipath
+	multipath *net.Dialer // MPTCP; set with memory
+	memory    *MultipathMemory
+	mark      int
+	iface     string
 	lookup    happyeyeballs.Lookup
 	ipVersion string
 }
@@ -39,28 +46,62 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, lookup: option.Lookup}
+	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup}
 	if d.lookup == nil {
 		d.lookup = resolver.LookupNetIP
 	}
 	if option.IPVersion != 0 {
 		d.ipVersion = strconv.Itoa(option.IPVersion)
 	}
-	d.dialer.SetMultipathTCP(option.Mptcp)
-	if option.Mark != 0 || option.Interface != "" {
-		d.dialer.Control = func(_, _ string, c syscall.RawConn) error {
-			if option.Mark != 0 {
-				if err := netproxy.SoMarkControl(c, option.Mark); err != nil {
-					return err
-				}
-			}
-			if option.Interface != "" {
-				return netproxy.BindToDeviceControl(c, option.Interface)
-			}
-			return nil
+	d.dialer.ControlContext = func(ctx context.Context, _, _ string, c syscall.RawConn) error {
+		// Go retries any failed MPTCP dial as TCP, even one whose ctx has
+		// ended; never start a connection for a dial that is already over.
+		if err := ctx.Err(); err != nil {
+			return err
 		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
+		if option.Mark != 0 {
+			if err := netproxy.SoMarkControl(c, option.Mark); err != nil {
+				return err
+			}
+		}
+		if option.Interface != "" {
+			return netproxy.BindToDeviceControl(c, option.Interface)
+		}
+		return nil
+	}
+	d.dialer.SetMultipathTCP(option.Mptcp && option.Multipath == nil)
+	if option.Mptcp && option.Multipath != nil {
+		multipath := d.dialer
+		multipath.SetMultipathTCP(true)
+		d.multipath, d.memory = &multipath, option.Multipath
 	}
 	return d
+}
+
+func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Addr, port string) (net.Conn, error) {
+	address := net.JoinHostPort(ip.String(), port)
+	number, err := strconv.ParseUint(port, 10, 16)
+	if d.memory == nil || err != nil {
+		return d.dialer.DialContext(ctx, network, address)
+	}
+	key := multipathKey{d.mark, d.iface, netip.AddrPortFrom(ip.Unmap(), uint16(number))}
+	table, multipath := d.memory.choose(key)
+	if !multipath {
+		return d.dialer.DialContext(ctx, network, address)
+	}
+	conn, err := d.multipath.DialContext(ctx, network, address)
+	result := multipathUnknown
+	if err == nil {
+		result = multipathIncapable
+		if negotiated, _ := conn.(*net.TCPConn).MultipathTCP(); negotiated {
+			result = multipathCapable
+		}
+	}
+	d.memory.settle(table, key, result)
+	return conn, err
 }
 
 func (d *directDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -82,15 +123,19 @@ func (d *directDialer) DialContext(ctx context.Context, network, addr string) (n
 	if err != nil {
 		return nil, err
 	}
-	if _, err := netip.ParseAddr(host); err == nil {
-		return d.dialer.DialContext(ctx, network, addr)
-	}
+	ip, err := netip.ParseAddr(host)
 	if network[:3] == "tcp" {
+		if err == nil {
+			return d.dialTCP(ctx, network, ip, port)
+		}
 		return happyeyeballs.Race(ctx, func(ctx context.Context) iter.Seq2[netip.Addr, error] {
 			return happyeyeballs.ResolveWith(ctx, d.lookup, "ip"+network[3:], host)
 		}, func(ctx context.Context, ip netip.Addr) (net.Conn, error) {
-			return d.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			return d.dialTCP(ctx, network, ip, port)
 		}, func(conn net.Conn) { _ = conn.Close() })
+	}
+	if err == nil {
+		return d.dialer.DialContext(ctx, network, addr)
 	}
 	ips, err := d.lookup(ctx, "ip"+network[3:], host)
 	if err != nil {
@@ -121,7 +166,9 @@ func (d *directDialer) ResolveUDPAddr(ctx context.Context, address string) (*net
 }
 
 func (d *directDialer) ListenPacket(ctx context.Context, _ string) (net.PacketConn, error) {
-	config := net.ListenConfig{Control: d.dialer.Control}
+	config := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
+		return d.dialer.ControlContext(ctx, network, address, c)
+	}}
 	c, err := config.ListenPacket(ctx, "udp"+d.ipVersion, "")
 	if err != nil {
 		return nil, err

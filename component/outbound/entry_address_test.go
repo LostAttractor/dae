@@ -46,9 +46,12 @@ func entryAddressDNS(t testing.TB, records int, ttl uint32) (string, *atomic.Int
 	return udp.LocalAddr().String(), queries
 }
 
+// entryAddressListener accepts plain TCP only, unlike Go's default listener.
 func entryAddressListener(t testing.TB) string {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	var config net.ListenConfig
+	config.SetMultipathTCP(false)
+	listener, err := config.Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

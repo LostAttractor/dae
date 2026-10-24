@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +45,33 @@ func relearnListener(t *testing.T, address string) (*atomic.Int64, int) {
 	}()
 	t.Cleanup(func() { _ = listener.Close(); <-done })
 	return accepted, listener.Addr().(*net.TCPAddr).Port
+}
+
+// mptcpSYNs counts SYNs with MP_CAPABLE the network namespace sent, or
+// returns -1 without MPTCP.
+func mptcpSYNs(t *testing.T) int64 {
+	t.Helper()
+	netstat, err := os.ReadFile("/proc/net/netstat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(netstat), "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		if !strings.HasPrefix(lines[i], "MPTcpExt:") {
+			continue
+		}
+		keys, values := strings.Fields(lines[i]), strings.Fields(lines[i+1])
+		for j, key := range keys {
+			if key == "MPCapableSYNTX" && j < len(values) {
+				count, err := strconv.ParseInt(values[j], 10, 64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+		}
+	}
+	return -1
 }
 
 // Run alone in a fresh process and in fresh network and private mount
@@ -85,7 +114,7 @@ func TestDaemonReloadRelearnsNodesKernel(t *testing.T) {
 	resolved, port := relearnListener(t, "127.0.0.1:0")
 	edited, _ := relearnListener(t, fmt.Sprintf("127.0.0.2:%d", port))
 	path := filepath.Join(dir, "config.dae")
-	text := fmt.Sprintf(`global { disable_waiting_network:true dns_resolver:'%s' check_interval_max:1s }
+	text := fmt.Sprintf(`global { disable_waiting_network:true dns_resolver:'%s' check_interval_max:1s mptcp:true }
 node { n: 'http://node.test:%d' }
 group { proxy { policy: fixed(0) } }
 routing { fallback: proxy }`, udp.LocalAddr(), port)
@@ -127,6 +156,25 @@ routing { fallback: proxy }`, udp.LocalAddr(), port)
 		}
 	}
 	dialed(resolved, 0)
+	// The node does not negotiate MPTCP: after one probe, its dials use plain
+	// TCP until the user reloads.
+	dialed(resolved, resolved.Load()+1)
+	if probes := mptcpSYNs(t); probes < 1 {
+		t.Logf("MPTCP unavailable: %d SYNs", probes)
+	} else {
+		dialed(resolved, resolved.Load()+1)
+		if again := mptcpSYNs(t); again != probes {
+			t.Fatalf("node without MPTCP probed again: %d SYNs, then %d", probes, again)
+		}
+		if result, err := app.reload(t.Context(), false, false); err != nil || result != "No changes" {
+			t.Fatalf("unchanged reload: %s, %v", result, err)
+		}
+		for deadline := time.Now().Add(20 * time.Second); mptcpSYNs(t) == probes; time.Sleep(50 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("reload did not probe MPTCP again")
+			}
+		}
+	}
 	// Edit hosts right after Go read it and reload at once: the first node
 	// lookups after the reload may still miss the edit, yet it applies.
 	if _, err := (&net.Resolver{PreferGo: true}).LookupNetIP(t.Context(), "ip4", "other.test"); err != nil {
