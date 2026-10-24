@@ -189,6 +189,58 @@ int test_socket_owner_probe(struct __sk_buff *skb)
 	return 1;
 }
 
+/* A UDP flow keeps its first direction while either direction is active, and
+ * its state is removed only after a full timeout without packets. Returns the
+ * failed step, or 0. */
+SEC("tc/test_expire_udp_conn_state")
+int test_expire_udp_conn_state(struct __sk_buff *skb)
+{
+	struct tuples_key key = { .sport = bpf_htons(20100), .l4proto = IPPROTO_UDP };
+	struct udp_conn_state *state = track_udp_conn_state(&key, true);
+
+	if (!state)
+		return 1;
+	expire_udp_conn_state(&udp_conn_state_map, &key, state);
+	state = track_udp_conn_state(&key, false);
+	if (!state || !state->is_wan_ingress_direction)
+		return 2;
+	/* A concurrent first packet adopts the winner's direction. */
+	state = new_udp_conn_state(&key, false);
+	if (!state || !state->is_wan_ingress_direction)
+		return 3;
+	state->last_seen -= UDP_CONN_STATE_TIMEOUT_S;
+	expire_udp_conn_state(&udp_conn_state_map, &key, state);
+	state = bpf_map_lookup_elem(&udp_conn_state_map, &key);
+	if (!state)
+		return 4;
+	state->last_seen -= 1;
+	expire_udp_conn_state(&udp_conn_state_map, &key, state);
+	if (bpf_map_lookup_elem(&udp_conn_state_map, &key))
+		return 5;
+	/* Packets refresh the second they were seen in, nothing else. */
+	state = track_udp_conn_state(&key, false);
+	if (!state || state->is_wan_ingress_direction)
+		return 6;
+	state->last_seen -= UDP_CONN_STATE_TIMEOUT_S + 1;
+	if (touch_udp_conn_state(&key) != state || state->last_seen != udp_conn_now())
+		return 7;
+	expire_udp_conn_state(&udp_conn_state_map, &key, state);
+	if (!bpf_map_lookup_elem(&udp_conn_state_map, &key))
+		return 8;
+	/* A packet of another generation takes over only an initialized timer;
+	 * a creator still setting it up leaves the handover to later packets. */
+	struct udp_conn_state pending = { .generation = (__u16)routing_generation + 1 };
+
+	key.sport = bpf_htons(20101);
+	if (bpf_map_update_elem(&udp_conn_state_map, &key, &pending, BPF_NOEXIST))
+		return 9;
+	state = touch_udp_conn_state(&key);
+	if (!state || state->generation == (__u16)routing_generation)
+		return 10;
+	bpf_map_delete_elem(&udp_conn_state_map, &key);
+	return 0;
+}
+
 SEC("tc/benchmark/parser")
 int test_parser_benchmark(struct __sk_buff *skb)
 {

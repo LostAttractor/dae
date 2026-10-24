@@ -94,7 +94,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
  * how fast a flood can cycle them. */
 #define UDP_INBOUND_PENDING_NUM 16384
 #define NSEC_PER_SEC 1000000000ULL
-#define TIMEOUT_UDP_CONN_STATE (UDP_CONN_STATE_TIMEOUT_S * NSEC_PER_SEC)
 #define UDP_ROUTING_CACHE_TTL_NS (60ULL * 1000 * 1000 * 1000)
 
 #define NDP_REDIRECT 137
@@ -424,6 +423,11 @@ struct {
 } cookie_pid_map SEC(".maps");
 
 struct udp_conn_state {
+	/* Coarse monotonic second of the latest packet in either direction. The
+	 * timer reclaims the state once it has been idle for the timeout. */
+	__u32 last_seen;
+	/* Low bits of the routing generation whose program runs the timer. */
+	__u16 generation;
 	// For each flow (echo symmetric path), note the original flow direction.
 	// Mark as true if traffic go through wan ingress.
 	// For traffic from lan that go through wan ingress, dae parse them in lan egress
@@ -431,6 +435,8 @@ struct udp_conn_state {
 
 	struct bpf_timer timer;
 };
+
+_Static_assert(sizeof(struct udp_conn_state) == 24, "UDP conn state size");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -1092,11 +1098,23 @@ static __always_inline __u32 udp_conn_now(void)
 	return bpf_ktime_get_coarse_ns() / NSEC_PER_SEC;
 }
 
-static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
-					   struct tuples_key *key,
-					   struct udp_conn_state *val)
+/* last_seen truncates to whole seconds, so only an idle count above the
+ * timeout guarantees a full timeout without packets. */
+static __always_inline __u64 udp_conn_state_wait(__s32 idle)
 {
-	bpf_map_delete_elem(&udp_conn_state_map, key);
+	return (UDP_CONN_STATE_TIMEOUT_S + 1 - (idle > 0 ? idle : 0)) * NSEC_PER_SEC;
+}
+
+static int expire_udp_conn_state(void *map, struct tuples_key *key,
+				 struct udp_conn_state *state)
+{
+	/* Signed: a packet on another CPU may store a later second than now. */
+	__s32 idle = udp_conn_now() - *(volatile __u32 *)&state->last_seen;
+
+	if (idle > UDP_CONN_STATE_TIMEOUT_S)
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+	else
+		bpf_timer_start(&state->timer, udp_conn_state_wait(idle), 0);
 	return 0;
 }
 
@@ -1111,32 +1129,55 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
+/* Packets only note the second they were seen in; the timer itself checks
+ * idleness when it expires. */
 static __always_inline struct udp_conn_state *touch_udp_conn_state(struct tuples_key *key)
 {
 	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
+	__u32 now;
 
-	if (state)
-		bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	if (!state)
+		return NULL;
+	now = udp_conn_now();
+	if (*(volatile __u32 *)&state->last_seen != now)
+		*(volatile __u32 *)&state->last_seen = now;
+	/* The timer holds the program that set its callback. Hand it to the
+	 * current generation, so long-lived flows do not keep retired ones. The
+	 * creator may not have initialized the timer yet: retry on later packets. */
+	if (state->generation != (__u16)routing_generation &&
+	    !bpf_timer_set_callback(&state->timer, expire_udp_conn_state))
+		state->generation = routing_generation;
 	return state;
 }
 
 static __always_inline struct udp_conn_state *
 new_udp_conn_state(struct tuples_key *key, bool is_wan_ingress_direction)
 {
-	struct udp_conn_state new_state = {};
+	struct udp_conn_state new_state = {
+		.last_seen = udp_conn_now(),
+		.generation = routing_generation,
+		.is_wan_ingress_direction = is_wan_ingress_direction,
+	};
 	struct udp_conn_state *state;
+	int ret = bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_NOEXIST);
 
-	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
-	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_NOEXIST)))
+	/* A concurrent first packet won and owns the direction. Its element can be
+	 * reused for another key meanwhile, like that of any lookup. */
+	if (ret == -EEXIST)
+		return touch_udp_conn_state(key);
+	if (unlikely(ret))
 		return NULL;
 
 	state = bpf_map_lookup_elem(&udp_conn_state_map, key);
 	if (unlikely(!state))
 		return NULL;
-
-	bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
-	bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
-	bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	/* A state without a running timer would never be reclaimed. */
+	if (bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC) ||
+	    bpf_timer_set_callback(&state->timer, expire_udp_conn_state) ||
+	    bpf_timer_start(&state->timer, udp_conn_state_wait(0), 0)) {
+		bpf_map_delete_elem(&udp_conn_state_map, key);
+		return NULL;
+	}
 	return state;
 }
 

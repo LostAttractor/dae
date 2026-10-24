@@ -203,3 +203,13 @@ func TestUDPLANEgressInboundState(t *testing.T) {
 		t.Fatalf("relayed reply state = %+v, %v", state, ok)
 	}
 }
+
+func TestUDPConnStateExpiry(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _, err := runBpfProgram(obj.TestExpireUdpConnState, make([]byte, 64), make([]byte, 256)); err != nil || status != 0 {
+		t.Fatalf("UDP conn state expiry failed at step %d: %v", status, err)
+	}
+}
