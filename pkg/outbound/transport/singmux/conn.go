@@ -38,14 +38,20 @@ func readResponse(conn net.Conn, layer netproxy.FailureLayer) (err error) {
 		if err != nil {
 			return
 		}
-		suffix := ""
-		if len(message) > maxRejectionMessageBytes {
-			message = message[:maxRejectionMessageBytes]
-			suffix = " (truncated)"
-		}
-		return netproxy.WrapFailure(fmt.Errorf("%s target rejected connection: %s%s", layer, message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: layer, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
+		return rejection(layer, message)
 	}
 	return
+}
+
+// rejection is the failure of a stream whose response carried message, read
+// up to maxRejectionMessageBytes+1 bytes.
+func rejection(layer netproxy.FailureLayer, message []byte) error {
+	suffix := ""
+	if len(message) > maxRejectionMessageBytes {
+		message = message[:maxRejectionMessageBytes]
+		suffix = " (truncated)"
+	}
+	return netproxy.WrapFailure(fmt.Errorf("%s target rejected connection: %s%s", layer, message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: layer, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
 }
 
 func (c *Conn) Read(b []byte) (n int, err error) {

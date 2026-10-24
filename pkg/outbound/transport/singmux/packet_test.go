@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,4 +291,255 @@ func TestSmuxDatagramWriteDoesNotAllocate(t *testing.T) {
 		t.Fatalf("%v allocations per datagram", allocs)
 	}
 	var _ netproxy.NonBlockingWriter = conn
+}
+
+type pushedDatagram struct {
+	from    netip.AddrPort
+	payload string
+}
+
+// datagramWire encodes a response and datagrams as a server sends them.
+func datagramWire(t *testing.T, status byte, datagrams ...pushedDatagram) []byte {
+	t.Helper()
+	wire := []byte{status}
+	for _, d := range datagrams {
+		var err error
+		if wire, err = socks5.AppendNetAddr(wire, net.UDPAddrFromAddrPort(d.from)); err != nil {
+			t.Fatal(err)
+		}
+		wire = binary.BigEndian.AppendUint16(wire, uint16(len(d.payload)))
+		wire = append(wire, d.payload...)
+	}
+	return wire
+}
+
+// The parser delivers every datagram whole and in order, however the stream
+// splits them, several to a payload or one across many.
+func TestDatagramReaderSplits(t *testing.T) {
+	want := []pushedDatagram{
+		{netip.MustParseAddrPort("192.0.2.1:53"), "first"},
+		{netip.MustParseAddrPort("[2001:db8::1]:443"), ""},
+		{netip.MustParseAddrPort("192.0.2.2:53"), string(bytes.Repeat([]byte{'x'}, 40000))},
+		{netip.MustParseAddrPort("[2001:db8::2]:53"), "last"},
+	}
+	wire := datagramWire(t, 0, want...)
+	for _, step := range []int{1, 2, 7, 13, 1024, 32 << 10, len(wire)} {
+		var got []pushedDatagram
+		r := &datagramReader{onPacket: func(payload []byte, from netip.AddrPort) {
+			got = append(got, pushedDatagram{from, string(payload)})
+		}}
+		for rest := wire; len(rest) > 0; {
+			n := min(step, len(rest))
+			if err := r.feed(rest[:n]); err != nil {
+				t.Fatalf("step %d: %v", step, err)
+			}
+			rest = rest[n:]
+		}
+		if len(got) != len(want) {
+			t.Fatalf("step %d: %d datagrams, want %d", step, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("step %d: datagram %d from %v with %d bytes, want %v with %d", step, i, got[i].from, len(got[i].payload), want[i].from, len(want[i].payload))
+			}
+		}
+	}
+}
+
+func TestDatagramReaderRejectsInvalidAddresses(t *testing.T) {
+	for name, wire := range map[string][]byte{
+		"address type": {0, 9, 1, 2, 3},
+		"empty name":   {0, 3, 0, 0, 53, 0, 0},
+		"name":         append([]byte{0, 3, 7}, "example\x00\x35\x00\x01x"...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &datagramReader{onPacket: func([]byte, netip.AddrPort) { t.Fatal("delivered a datagram from an invalid address") }}
+			if err := r.feed(wire); err == nil || err != r.failed {
+				t.Fatalf("feed = %v", err)
+			}
+			if name == "name" && !strings.Contains(r.failed.Error(), "example:53") {
+				t.Fatalf("error %v does not name the address", r.failed)
+			}
+		})
+	}
+}
+
+// pushConn opens a pushing datagram stream to a test server.
+func pushConn(t *testing.T) (*smuxSession, *smuxtest.Session, <-chan pushedDatagram, <-chan error, *smuxPacketConn) {
+	t.Helper()
+	local, remote := net.Pipe()
+	s := newTestSmuxSession(local)
+	t.Cleanup(func() { _ = s.Close() })
+	server := smuxtest.Server(remote)
+	t.Cleanup(func() { _ = server.Close() })
+	conn := testSmuxPacketConn(t, s)
+	packets := make(chan pushedDatagram, 16)
+	closed := make(chan error, 2)
+	var ended atomic.Bool
+	if !conn.SetPacketHandler(func(payload []byte, from netip.AddrPort) {
+		if ended.Load() {
+			t.Error("datagram pushed after onClose")
+		}
+		packets <- pushedDatagram{from, string(payload)}
+	}, func(err error) {
+		ended.Store(true)
+		closed <- err
+	}) {
+		t.Fatal("smux datagram stream cannot push")
+	}
+	return s, server, packets, closed, conn
+}
+
+func waitClosed(t *testing.T, closed <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-closed:
+		select {
+		case <-closed:
+			t.Fatal("onClose called twice")
+		case <-time.After(10 * time.Millisecond):
+		}
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("onClose not called")
+	}
+	return nil
+}
+
+// Pushed datagrams arrive in order from the receive loop; FIN ends delivery
+// with io.EOF after them.
+func TestSmuxDatagramPushAndFIN(t *testing.T) {
+	_, server, packets, closed, conn := pushConn(t)
+	from := netip.MustParseAddrPort("192.0.2.1:53")
+	if _, err := conn.WriteTo([]byte("query"), net.UDPAddrFromAddrPort(from)); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := server.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := datagramWire(t, 0, pushedDatagram{from, "one"}, pushedDatagram{from, "two"})
+	// Split inside the second header.
+	for _, part := range [][]byte{wire[:12], wire[12:]} {
+		if err := server.WriteFrame(smuxVersion, smuxCmdPSH, peer.ID(), part); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = peer.Close()
+	for _, payload := range []string{"one", "two"} {
+		select {
+		case got := <-packets:
+			if got.from != from || got.payload != payload {
+				t.Fatalf("pushed %+v, want %q from %v", got, payload, from)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("datagram not pushed")
+		}
+	}
+	if err := waitClosed(t, closed); err != io.EOF {
+		t.Fatalf("FIN ended delivery with %v", err)
+	}
+}
+
+// A rejection ends delivery with the target's message, as a read would.
+func TestSmuxDatagramPushRejection(t *testing.T) {
+	_, server, packets, closed, conn := pushConn(t)
+	if _, err := conn.WriteTo([]byte("query"), &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := server.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Write([]byte("\x01no route")); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.Close()
+	err = waitClosed(t, closed)
+	if failure := netproxy.ClassifyFailure(err); failure.Reason != netproxy.ReasonRejected || !strings.Contains(err.Error(), "no route") {
+		t.Fatalf("rejection ended delivery with %v (%+v)", err, failure)
+	}
+	if len(packets) != 0 {
+		t.Fatal("rejection pushed a datagram")
+	}
+}
+
+// Closing the stream or losing the session ends delivery with the error a
+// read would see, and no datagram follows.
+func TestSmuxDatagramPushEnds(t *testing.T) {
+	t.Run("close", func(t *testing.T) {
+		_, _, _, closed, conn := pushConn(t)
+		_ = conn.Close()
+		if err := waitClosed(t, closed); !errors.Is(err, io.ErrClosedPipe) || netproxy.ClassifyFailure(err).Origin != netproxy.OriginLocalCleanup {
+			t.Fatalf("Close ended delivery with %v", err)
+		}
+	})
+	t.Run("session", func(t *testing.T) {
+		_, server, _, closed, _ := pushConn(t)
+		_ = server.Close()
+		if err := waitClosed(t, closed); netproxy.ClassifyFailure(err).Scope != netproxy.ScopeSharedResource {
+			t.Fatalf("session loss ended delivery with %v (%+v)", err, netproxy.ClassifyFailure(err))
+		}
+	})
+}
+
+// onClose may close the connection, also on the receive loop, which goes on
+// serving the other streams of the session.
+func TestSmuxDatagramPushOnCloseMayClose(t *testing.T) {
+	local, remote := net.Pipe()
+	s := newTestSmuxSession(local)
+	t.Cleanup(func() { _ = s.Close() })
+	server := smuxtest.Server(remote)
+	t.Cleanup(func() { _ = server.Close() })
+	conn := testSmuxPacketConn(t, s)
+	closed := make(chan error, 1)
+	conn.SetPacketHandler(func([]byte, netip.AddrPort) {}, func(error) { closed <- conn.Close() })
+	if _, err := conn.WriteTo([]byte("query"), &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := server.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.Close() // FIN: onClose runs on the receive loop
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close from onClose = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("onClose did not return")
+	}
+	other, err := s.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peer, err = server.Accept(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Write([]byte("pong")); err != nil {
+		t.Fatal(err)
+	}
+	_ = other.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(other, make([]byte, 4)); err != nil {
+		t.Fatalf("receive loop stopped: %v", err)
+	}
+}
+
+func TestSmuxPacketHandlerAfterFirstWritePanics(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	go io.Copy(io.Discard, remote)
+	s := newTestSmuxSession(local)
+	defer s.Close()
+	conn := testSmuxPacketConn(t, s)
+	if _, err := conn.WriteTo([]byte("x"), &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("handler set after the first write")
+		}
+	}()
+	conn.SetPacketHandler(func([]byte, netip.AddrPort) {}, func(error) {})
 }

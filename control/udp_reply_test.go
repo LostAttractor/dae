@@ -43,10 +43,10 @@ func TestUDPDomainReplyReturnsError(t *testing.T) {
 				conn := &destinationPacketConn{PacketConn: packet, target: target, original: target}
 				_, _, err = conn.ReadFrom(make([]byte, 100))
 			} else {
-				endpoint := &UdpEndpoint{conn: packet, NatTimeout: time.Minute, handler: func([]byte, netip.AddrPort) error {
+				endpoint := &UdpEndpoint{conn: packet, NatTimeout: time.Minute, replies: UdpHandler(func([]byte, netip.AddrPort) error {
 					t.Error("forwarded a reply without an IP address")
 					return nil
-				}}
+				})}
 				defer endpoint.Close()
 				err = endpoint.run(new(UdpEndpointPool), source, target, packet, nil)
 			}
@@ -144,4 +144,54 @@ func TestUDPReplyCacheRefreshAndReplacement(t *testing.T) {
 	if sender.cached.Load().socket != next {
 		t.Fatal("cached expired socket survived replacement")
 	}
+}
+
+// trySend sends from an existing socket of the reply address, cached or
+// pooled, and caches the first; it never creates a socket, falls back to raw
+// sends or waits for the pool.
+func TestUDPReplyTrySendUsesOnlyExistingSockets(t *testing.T) {
+	listen := func() *net.UDPConn {
+		t.Helper()
+		socket, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = socket.Close() })
+		return socket
+	}
+	receiver, first, second := listen(), listen(), listen()
+	from := first.LocalAddr().(*net.UDPAddr).AddrPort()
+	other := second.LocalAddr().(*net.UDPAddr).AddrPort()
+	pool := NewAnyfromPool()
+	sender := &udpReplySender{pool: pool, to: receiver.LocalAddr().(*net.UDPAddr).AddrPort()}
+	if sender.trySend([]byte("reply"), netip.MustParseAddrPort("192.0.2.1:443")) || len(pool.pool) != 0 {
+		t.Fatal("trySend sent without a socket")
+	}
+	pool.pool[from] = &Anyfrom{conn: first, idleTTL: time.Hour}
+	pool.pool[other] = &Anyfrom{conn: second, idleTTL: time.Hour}
+	read := func(want netip.AddrPort) {
+		t.Helper()
+		var buffer [16]byte
+		_ = receiver.SetReadDeadline(time.Now().Add(time.Second))
+		if n, source, err := receiver.ReadFromUDPAddrPort(buffer[:]); err != nil || source != want || string(buffer[:n]) != "reply" {
+			t.Fatalf("reply from %s: %q, %v; want from %s", source, buffer[:n], err, want)
+		}
+	}
+	for _, address := range []netip.AddrPort{from, other} {
+		if !sender.trySend([]byte("reply"), address) {
+			t.Fatalf("trySend did not use the pooled socket of %s", address)
+		}
+		read(address)
+	}
+	if cached := sender.cached.Load(); cached == nil || cached.from != from {
+		t.Fatal("trySend did not cache only the first reply address")
+	}
+	// A locked pool, as while a socket is created, is not waited for.
+	pool.mu.Lock()
+	pooled, cached := sender.trySend([]byte("reply"), other), sender.trySend([]byte("reply"), from)
+	pool.mu.Unlock()
+	if pooled || !cached {
+		t.Fatalf("with the pool locked, trySend sent from the pool %v, from the cache %v", pooled, cached)
+	}
+	read(from)
 }

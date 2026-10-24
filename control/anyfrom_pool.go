@@ -84,7 +84,7 @@ func (a *Anyfrom) writeWithDeadline(b []byte, addr netip.AddrPort, deadline time
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
 	pool map[netip.AddrPort]*Anyfrom
-	mu   sync.Mutex
+	mu   sync.RWMutex
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
@@ -99,6 +99,19 @@ func NewAnyfromPool() *AnyfromPool {
 	return &AnyfromPool{
 		pool: make(map[netip.AddrPort]*Anyfrom, 64),
 	}
+}
+
+// TryGet returns the live pooled socket bound to lAddr and refreshes its idle
+// time, or nil, without waiting, if there is none or the pool is locked.
+func (p *AnyfromPool) TryGet(lAddr netip.AddrPort) *Anyfrom {
+	if !p.mu.TryRLock() {
+		return nil
+	}
+	defer p.mu.RUnlock()
+	if af := p.pool[lAddr]; af != nil && af.refreshIdleDeadline() {
+		return af
+	}
+	return nil
 }
 
 // GetOrCreate returns a pooled UDP socket bound to lAddr. ttl is the idle time before eviction;

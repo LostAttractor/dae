@@ -33,10 +33,10 @@ func TestUdpEndpointPreservesLargeDatagrams(t *testing.T) {
 	}
 	defer sender.Close()
 	received := make(chan []byte, 1)
-	ue := &UdpEndpoint{conn: conn, traffic: stats.DefaultStore.OpenConnection(stats.Path{}, false), NatTimeout: time.Minute, handler: func(data []byte, _ netip.AddrPort) error {
+	ue := &UdpEndpoint{conn: conn, traffic: stats.DefaultStore.OpenConnection(stats.Path{}, false), NatTimeout: time.Minute, replies: UdpHandler(func(data []byte, _ netip.AddrPort) error {
 		received <- bytes.Clone(data)
 		return nil
-	}}
+	})}
 	p := new(UdpEndpointPool)
 	src, dst := conn.LocalAddr().(*net.UDPAddr).AddrPort(), sender.LocalAddr().(*net.UDPAddr).AddrPort()
 	p.add(src, ue)
@@ -434,7 +434,7 @@ func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
 func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
 	return &UdpEndpoint{
 		conn:       createOption.PacketConn,
-		handler:    createOption.Handler,
+		replies:    createOption.Handler,
 		NatTimeout: createOption.NatTimeout,
 		dialer:     createOption.Dialer,
 		statsPath:  createOption.Path,

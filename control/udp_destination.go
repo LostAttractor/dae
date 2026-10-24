@@ -4,16 +4,17 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"hash/maphash"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	log "github.com/sirupsen/logrus"
 )
 
 // Each rewritten UDP association owns a socket and a fixed destination. This
@@ -41,6 +42,17 @@ func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 			return n, net.UDPAddrFromAddrPort(c.original), nil
 		}
 	}
+}
+
+// SetPacketHandler pushes replies as ReadFrom returns them: only those from
+// target, as from original.
+func (c *destinationPacketConn) SetPacketHandler(onPacket func([]byte, netip.AddrPort), onClose func(error)) bool {
+	pusher, ok := netproxy.PacketConnAs[netproxy.PacketPusher](c.PacketConn)
+	return ok && pusher.SetPacketHandler(func(payload []byte, from netip.AddrPort) {
+		if common.ConvergeAddrPort(from) == c.target {
+			onPacket(payload, c.original)
+		}
+	}, onClose)
 }
 
 func (c *destinationPacketConn) DependencyLease() *netproxy.Lease {
@@ -193,21 +205,129 @@ func (ue *UdpEndpoint) startSocket(p *UdpEndpointPool, src, dst, key netip.AddrP
 		ue.stopWatching = append(ue.stopWatching, stop)
 	}
 	ue.mu.Unlock()
+	// Before the first write, so that no reply waits unseen.
+	if pusher, ok := netproxy.PacketConnAs[netproxy.PacketPusher](conn); ok && !(ue.mitm && conn == ue.conn) {
+		r := &udpPushReceiver{ue: ue, p: p, src: src, dst: dst, conn: conn, child: child}
+		if pusher.SetPacketHandler(r.onPacket, r.onClose) {
+			return
+		}
+	}
 	go func() {
-		err := ue.run(p, src, dst, conn, child)
-		lock, _ := p.UdpEndpointKeyLocker.Lock(src)
-		retired := child != nil && child.retired.Load()
-		if !retired {
-			p.removeInBackgroundLocked(src, ue)
-		}
-		p.UdpEndpointKeyLocker.Unlock(src, lock)
-		if !retired && !(ue.mitm && conn == ue.conn) && recordDataPlaneError(ue.dialer, ue.statsPath, err) {
-			log.WithFields(log.Fields{
-				"source": src, "destination": dst,
-				"outbound": ue.statsPath.Outbound, "dialer": ue.statsPath.Dialer,
-			}).WithError(err).Debug("UDP association failed")
-		}
+		ue.endSocket(p, src, dst, conn, child, ue.run(p, src, dst, conn, child))
 	}()
+}
+
+// udpPushReceiver delivers the replies a transport pushes for one socket. The
+// transport's receive loop serves other streams too and must never block:
+// replies it cannot forward without waiting go, followed by the later ones, to
+// a goroutine started on demand, which also ends delivery.
+type udpPushReceiver struct {
+	ue       *UdpEndpoint
+	p        *UdpEndpointPool
+	src, dst netip.AddrPort
+	conn     net.PacketConn
+	child    *udpSocket
+	mu       sync.Mutex
+	backlog  []udpPushedReply // at most udpTaskQueueLength
+	draining bool             // a goroutine works off backlog
+	closed   bool             // the transport ended delivery with closeErr
+	closeErr error
+	done     bool // delivery ended; later callbacks do nothing
+}
+
+type udpPushedReply struct {
+	packet udpPacket
+	from   netip.AddrPort
+}
+
+func (r *udpPushReceiver) onPacket(payload []byte, from netip.AddrPort) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done || r.closed {
+		return
+	}
+	if !r.draining {
+		// Nothing is queued for this reply to overtake.
+		r.mu.Unlock()
+		done, err := r.ue.deliver(r.p, r.src, r.conn, r.child, payload, from, false)
+		r.mu.Lock()
+		if done && !r.done {
+			r.endLocked(err)
+		}
+		if err != errReplyWouldBlock || r.done || r.closed {
+			return
+		}
+	}
+	if len(r.backlog) == udpTaskQueueLength {
+		r.p.drops.report("reply_queue_full")
+		return
+	}
+	packet, ok := copyUDPPacket(payload, udpPacketMemory)
+	if !ok {
+		r.p.drops.report("packet_memory_limit")
+		return
+	}
+	r.backlog = append(r.backlog, udpPushedReply{packet, from})
+	r.drainLocked()
+}
+
+// onClose may run on the transport's receive loop or on a closer holding the
+// source lock, which ending delivery takes.
+func (r *udpPushReceiver) onClose(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done || r.closed {
+		return
+	}
+	r.closed, r.closeErr = true, err
+	r.drainLocked()
+}
+
+func (r *udpPushReceiver) drainLocked() {
+	if !r.draining {
+		r.draining = true
+		go r.drain()
+	}
+}
+
+// endLocked ends delivery in the background and drops queued replies.
+func (r *udpPushReceiver) endLocked(err error) {
+	r.done = true
+	for _, reply := range r.backlog {
+		reply.packet.release()
+	}
+	r.backlog = nil
+	go r.ue.endSocket(r.p, r.src, r.dst, r.conn, r.child, err)
+}
+
+// drain delivers queued replies in order, then ends delivery once the
+// transport has.
+func (r *udpPushReceiver) drain() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for !r.done {
+		if len(r.backlog) == 0 {
+			if r.closed {
+				failure, retry := r.ue.receiveFailure(r.conn, r.child, r.closeErr)
+				if retry {
+					// A reader could read on; delivery has ended anyway.
+					failure = fmt.Errorf("receive UDP packet: %w", failure)
+				}
+				r.endLocked(failure)
+			}
+			break
+		}
+		reply := r.backlog[0]
+		r.backlog = r.backlog[1:]
+		r.mu.Unlock()
+		done, err := r.ue.deliver(r.p, r.src, r.conn, r.child, reply.packet.data, reply.from, true)
+		reply.packet.release()
+		r.mu.Lock()
+		if done && !r.done {
+			r.endLocked(err)
+		}
+	}
+	r.draining = false
 }
 
 // Caller holds the source key and endpoint.mu. A write owns that key until it

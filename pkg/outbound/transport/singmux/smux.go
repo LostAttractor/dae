@@ -279,9 +279,19 @@ func (s *smuxSession) shutdown(err error) bool {
 			st.queued, st.scheduled = 0, false
 		}
 		s.blocked, s.datagrams = fifo[*smuxStream]{}, 0
+		streams := make([]*smuxStream, 0, len(s.streams))
+		for _, st := range s.streams {
+			streams = append(streams, st)
+		}
 		s.mu.Unlock()
 		close(s.die)
 		s.carrierCloseErr = s.conn.Close()
+		// Streams that push have no reader to see the session end.
+		for _, st := range streams {
+			st.rmu.Lock()
+			st.endPushLocked(err)
+			st.unlockReceive()
+		}
 	})
 	return first
 }
@@ -489,6 +499,14 @@ type smuxStream struct {
 	finished bool // the peer sent FIN
 	released bool // Close returned the buffered payload
 	readable chan struct{}
+	// In push mode payloads go to push instead of in; pushEnd reports once
+	// why delivery ended, after which push and pushEnd are nil. ended holds
+	// it, with endErr, until rmu is unlocked.
+	pushing bool
+	push    func([]byte) error
+	pushEnd func(error)
+	ended   func(error)
+	endErr  error
 
 	readDeadline, writeDeadline protocol.Deadline
 }
@@ -667,9 +685,14 @@ func (st *smuxStream) writeDatagram(data []byte, force bool) error {
 	return err
 }
 
-// deliver buffers a payload unless the stream is closed.
+// deliver buffers a payload unless the stream is closed or pushes it.
 func (st *smuxStream) deliver(data []byte) bool {
 	st.rmu.Lock()
+	if st.pushing {
+		st.pushLocked(data)
+		st.unlockReceive()
+		return false
+	}
 	if st.released {
 		st.rmu.Unlock()
 		return false
@@ -684,8 +707,62 @@ func (st *smuxStream) deliver(data []byte) bool {
 func (st *smuxStream) finish() {
 	st.rmu.Lock()
 	st.finished = true
-	st.rmu.Unlock()
+	st.endPushLocked(io.EOF)
+	st.unlockReceive()
 	signal(st.readable)
+}
+
+// setPush hands every later payload to push, on recvLoop, and the reason
+// delivery ends to end, once. Payloads that arrived before are pushed first.
+func (st *smuxStream) setPush(push func([]byte) error, end func(error)) {
+	st.rmu.Lock()
+	defer st.unlockReceive()
+	st.pushing, st.push, st.pushEnd = true, push, end
+	n := 0
+	for st.in.len() > 0 {
+		data := st.in.pop()
+		n += len(data) - st.inOff
+		st.pushLocked(data[st.inOff:])
+		st.inOff = 0
+		pool.PutBuffer(data)
+	}
+	st.session.release(n)
+	switch {
+	case st.released:
+		st.endPushLocked(io.ErrClosedPipe)
+	case st.finished:
+		st.endPushLocked(io.EOF)
+	case st.session.IsClosed():
+		st.endPushLocked(st.session.err)
+	}
+}
+
+func (st *smuxStream) pushLocked(data []byte) {
+	if st.push != nil {
+		if err := st.push(data); err != nil {
+			st.endPushLocked(err)
+		}
+	}
+}
+
+// endPushLocked ends delivery with err, which unlockReceive reports.
+func (st *smuxStream) endPushLocked(err error) {
+	if end := st.pushEnd; end != nil {
+		st.push, st.pushEnd = nil, nil
+		st.ended, st.endErr = end, err
+	}
+}
+
+// unlockReceive unlocks rmu, then reports the end of delivery recorded
+// meanwhile: unlocked, so that the callback may use the stream, even close
+// it.
+func (st *smuxStream) unlockReceive() {
+	end, err := st.ended, st.endErr
+	st.ended, st.endErr = nil, nil
+	st.rmu.Unlock()
+	if end != nil {
+		end(err)
+	}
 }
 
 func (st *smuxStream) Read(b []byte) (int, error) {
@@ -755,7 +832,8 @@ func (st *smuxStream) Close() error {
 		st.inOff = 0
 		pool.PutBuffer(data)
 	}
-	st.rmu.Unlock()
+	st.endPushLocked(io.ErrClosedPipe)
+	st.unlockReceive()
 	s.release(n)
 	return nil
 }

@@ -261,7 +261,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 			firstIfindex:    routingResult.Ifindex,
 			NatTimeout:      udpSniffingTimeout,
 			unbind:          unbind,
-			handler:         replies.send,
+			replies:         replies,
 		}
 		ue.setupOwner.Store(c)
 		if !p.addLocked(src, ue) {

@@ -12,9 +12,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Shared by ingress tasks and both directions of every MITM QUIC bridge,
-// including overlapping control planes during reload. Accounts for checked-out
-// buffer capacity; idle sync.Pool storage and QUIC's own buffers are separate.
+// Shared by ingress tasks, both directions of every MITM QUIC bridge and the
+// reply backlogs of pushing UDP sockets, including overlapping control planes
+// during reload. Accounts for checked-out buffer capacity; idle sync.Pool
+// storage and QUIC's own buffers are separate.
 var udpPacketMemory = membuffer.NewBudget(8 << 20)
 
 type udpPacket struct {
@@ -58,7 +59,8 @@ func (d *udpPacketDrops) report(reason string) {
 			return
 		}
 		if d.lastLog.CompareAndSwap(last, now) {
-			log.WithFields(log.Fields{"reason": reason, "dropped_total": total}).Warn("UDP capacity exhausted; dropping packet")
+			// Off the caller, which may be a receive loop that must not block.
+			go log.WithFields(log.Fields{"reason": reason, "dropped_total": total}).Warn("UDP capacity exhausted; dropping packet")
 			return
 		}
 	}

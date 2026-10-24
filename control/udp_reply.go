@@ -49,3 +49,20 @@ func (s *udpReplySender) send(data []byte, from netip.AddrPort) error {
 	}
 	return err
 }
+
+// trySend sends without waiting from an existing socket of from, the cached
+// one or one the pool holds; a reply without one, or one the socket cannot
+// take at once, needs send.
+func (s *udpReplySender) trySend(data []byte, from netip.AddrPort) bool {
+	cached := s.cached.Load()
+	var socket *Anyfrom
+	if cached != nil && cached.from == from && cached.socket.refreshIdleDeadline() {
+		socket = cached.socket
+	} else if socket = s.pool.TryGet(from); socket == nil {
+		return false
+	} else if cached == nil || cached.from == from {
+		s.cached.CompareAndSwap(cached, &udpReplySocket{from, socket})
+	}
+	_, err, attempted := socket.tryWrite(data, s.to, time.Time{})
+	return attempted && err == nil
+}

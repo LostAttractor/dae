@@ -71,6 +71,11 @@ func TestAnyfromBackpressureDeadlineAndClose(t *testing.T) {
 	if !blocked {
 		t.Fatal("fixture failed to fill send buffer")
 	}
+	sender := &udpReplySender{to: dst}
+	sender.cached.Store(&udpReplySocket{from: socket.LocalAddr().(*net.UDPAddr).AddrPort(), socket: a})
+	if sender.trySend(data, sender.cached.Load().from) {
+		t.Fatal("trySend reported a reply the full socket did not take")
+	}
 	if _, err := a.WriteToUDPAddrPortWithDeadline(data, dst, time.Now().Add(30*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("congested deadline: %v", err)
 	}

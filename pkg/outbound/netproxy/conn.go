@@ -3,6 +3,7 @@ package netproxy
 import (
 	"errors"
 	"net"
+	"net/netip"
 )
 
 var UnsupportedTunnelTypeError = net.UnknownNetworkError("unsupported tunnel type")
@@ -40,6 +41,22 @@ var ErrPacketDropped = errors.New("datagram dropped: transport queue full")
 // link would. Write deadlines have nothing to bound.
 type NonBlockingWriter interface {
 	TryWriteTo(b []byte, addr net.Addr) (int, error)
+}
+
+// PacketPusher is implemented by packet connections that can push received
+// datagrams instead of returning them from ReadFrom.
+type PacketPusher interface {
+	// SetPacketHandler hands every datagram received from now on to
+	// onPacket, in order and never concurrently, on the transport's receive
+	// goroutine, which onPacket must not block; payload is valid only during
+	// the call, and from is the IP address it came from. onPacket must not
+	// call methods of the connection. onClose then reports once why delivery
+	// ended, with the error ReadFrom would return (also for a datagram from a
+	// name), and is not followed by onPacket. It may run on any goroutine,
+	// including one that closes the connection, so it must not block either;
+	// it may close the connection. Set the handler before the first write. It
+	// reports false, leaving ReadFrom, if the connection cannot push.
+	SetPacketHandler(onPacket func(payload []byte, from netip.AddrPort), onClose func(error)) bool
 }
 
 // PacketConnAs finds T in conn or in the connections it wraps, following

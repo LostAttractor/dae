@@ -204,7 +204,7 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 		NatTimeout: time.Hour, packetDialer: destinationTestDialer{},
 		routeLease: policy, sockets: make(map[netip.AddrPort]*udpSocket),
 		traffic: stats.DefaultStore.OpenConnection(stats.Path{Outbound: t.Name()}, false),
-		handler: func(data []byte, from netip.AddrPort) error { replies <- reply{string(data), from}; return nil },
+		replies: UdpHandler(func(data []byte, from netip.AddrPort) error { replies <- reply{string(data), from}; return nil }),
 	}
 	matcher, _ := destinationTestMatcher(t, "dip(91.108.56.100, 91.108.56.101) -> dnat("+target.Addr().String()+")")
 	endpoint.destinationMatcher = matcher.snapshotDestinations()

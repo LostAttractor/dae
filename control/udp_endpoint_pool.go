@@ -21,9 +21,21 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	log "github.com/sirupsen/logrus"
 )
 
+// udpReplies sends an endpoint's replies to its client. trySend sends a reply
+// only if that cannot block, reporting whether it did.
+type udpReplies interface {
+	send(data []byte, from netip.AddrPort) error
+	trySend(data []byte, from netip.AddrPort) bool
+}
+
+// UdpHandler sends replies that may block.
 type UdpHandler func(data []byte, from netip.AddrPort) error
+
+func (h UdpHandler) send(data []byte, from netip.AddrPort) error { return h(data, from) }
+func (UdpHandler) trySend([]byte, netip.AddrPort) bool           { return false }
 
 const (
 	maxUDPSources               = 4096
@@ -78,7 +90,7 @@ type UdpEndpoint struct {
 	activityTargets map[netip.AddrPort]udpActivityTarget
 	deadlineTimer   *time.Timer
 	timerDeadline   time.Time
-	handler         UdpHandler
+	replies         udpReplies
 	NatTimeout      time.Duration
 	closed          atomic.Bool
 
@@ -117,47 +129,96 @@ type udpSetup struct {
 	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
 }
 
+// run reads replies from conn until its delivery ends.
 func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn, child *udpSocket) error {
 	buf := pool.GetBuffer(udpReceiveBufferSize)
 	defer pool.PutBuffer(buf)
 	for {
 		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
-			if child != nil && child.retired.Load() {
-				return nil
-			}
-			if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
-				return cause
-			}
-			if (ue.IsClosed() || ue.mitm && conn == ue.conn) && plainClosedError(err) {
-				break
-			}
-			err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
-			if temporaryUDPError(err) {
+			failure, retry := ue.receiveFailure(conn, child, err)
+			if retry {
 				_ = conn.SetReadDeadline(time.Time{})
 				continue
 			}
-			return fmt.Errorf("receive UDP packet: %w", err)
-		}
-		if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
-			return cause
-		}
-		if !endpointPool.refreshSocket(src, ue, child, time.Now()) {
-			break
+			return failure
 		}
 		address, err := addrPortOf(from)
 		if err != nil {
 			return netproxy.WrapFailure(fmt.Errorf("receive UDP reply address: %w", err), netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
 		}
-		ue.observeDomain(address)
-		if err = ue.handler(buf[:n], address); err != nil {
-			return netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
-		}
-		if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
-			ue.traffic.RecordDownload(uint64(n))
+		if done, err := ue.deliver(endpointPool, src, conn, child, buf[:n], address, true); done {
+			return err
 		}
 	}
-	return nil
+}
+
+// receiveFailure is the failure a receive error ends conn's delivery with, nil
+// for a quiet end. A retry failure is one a reader may read past.
+func (ue *UdpEndpoint) receiveFailure(conn net.PacketConn, child *udpSocket, err error) (failure error, retry bool) {
+	if child != nil && child.retired.Load() {
+		return nil, false
+	}
+	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+		return cause, false
+	}
+	if (ue.IsClosed() || ue.mitm && conn == ue.conn) && plainClosedError(err) {
+		return nil, false
+	}
+	err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
+	if temporaryUDPError(err) {
+		return err, true
+	}
+	return fmt.Errorf("receive UDP packet: %w", err), false
+}
+
+// errReplyWouldBlock reports a reply deliver could not forward without
+// waiting.
+var errReplyWouldBlock = errors.New("UDP reply would block")
+
+// deliver forwards a reply received on conn to the client. done reports that
+// conn's delivery ended, with err as the failure to report or nil. Without
+// wait it does nothing that may block and returns errReplyWouldBlock instead,
+// having at most refreshed the socket and observed a known target, which a
+// repeat does again harmlessly.
+func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.PacketConn, child *udpSocket, payload []byte, from netip.AddrPort, wait bool) (done bool, err error) {
+	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+		return true, cause
+	}
+	if !p.refreshSocket(src, ue, child, time.Now()) {
+		return true, nil
+	}
+	if !ue.observeTarget(from, wait) {
+		return false, errReplyWouldBlock
+	}
+	if !wait {
+		if !ue.replies.trySend(payload, from) {
+			return false, errReplyWouldBlock
+		}
+	} else if err := ue.replies.send(payload, from); err != nil {
+		return true, netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
+	}
+	if !(ue.mitm && conn == ue.conn) && len(payload) > 0 && ue.traffic != nil {
+		ue.traffic.RecordDownload(uint64(len(payload)))
+	}
+	return false, nil
+}
+
+// endSocket ends conn's delivery: unless conn's socket was retired, the
+// source loses its endpoint and err is reported.
+func (ue *UdpEndpoint) endSocket(p *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn, child *udpSocket, err error) {
+	lock, _ := p.UdpEndpointKeyLocker.Lock(src)
+	retired := child != nil && child.retired.Load()
+	if !retired {
+		p.removeInBackgroundLocked(src, ue)
+	}
+	p.UdpEndpointKeyLocker.Unlock(src, lock)
+	if !retired && !(ue.mitm && conn == ue.conn) && recordDataPlaneError(ue.dialer, ue.statsPath, err) {
+		log.WithFields(log.Fields{
+			"source": src, "destination": dst,
+			"outbound": ue.statsPath.Outbound, "dialer": ue.statsPath.Dialer,
+		}).WithError(err).Debug("UDP association failed")
+	}
 }
 
 func (ue *UdpEndpoint) IsClosed() bool {

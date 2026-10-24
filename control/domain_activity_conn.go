@@ -93,9 +93,14 @@ func (a *domainActivity) connection(ip netip.Addr, domain string) func() {
 
 // A UDP source can address several destinations. Only the first sniffed
 // destination owns the name; other targets refresh their IP evidence only.
-func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
+func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) { ue.observeTarget(dst, true) }
+
+// observeTarget observes dst. A target new to the endpoint is observed
+// synchronously, which may wait for the registry; without flush it is left
+// unobserved and observeTarget reports false.
+func (ue *UdpEndpoint) observeTarget(dst netip.AddrPort, flush bool) bool {
 	if ue.activity == nil {
-		return
+		return true
 	}
 	domain := ""
 	if dst == ue.firstDst {
@@ -104,6 +109,10 @@ func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
 	at := time.Now()
 	ue.mu.Lock()
 	target, seen := ue.activityTargets[dst]
+	if !seen && !flush {
+		ue.mu.Unlock()
+		return false
+	}
 	if !seen {
 		if ue.activityTargets == nil {
 			ue.activityTargets = make(map[netip.AddrPort]udpActivityTarget)
@@ -128,9 +137,10 @@ func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
 	ue.activityTargets[dst] = target
 	ue.mu.Unlock()
 	if !queue {
-		return
+		return true
 	}
 	if g := ue.activity.enqueue(target.key, at); g != nil && !seen {
 		g.flushActivity()
 	}
+	return true
 }

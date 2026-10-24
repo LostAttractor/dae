@@ -140,12 +140,12 @@ func newUDPRoundTripTargets(t testing.TB, flows, size, targets int) *udpRoundTri
 		endpoint := &UdpEndpoint{conn: conn, firstDst: destination, domain: "bench.test.", activity: registry.activity,
 			NatTimeout: time.Hour, lease: netproxy.NewLease(netproxy.NewResourceRef()),
 			traffic: stats.DefaultStore.OpenDeviceConnection(stats.Path{Outbound: "benchmark", Dialer: "loopback"}, false, [6]byte{}),
-			handler: func(data []byte, from netip.AddrPort) error {
+			replies: UdpHandler(func(data []byte, from netip.AddrPort) error {
 				if from != destination {
 					return fmt.Errorf("unexpected reply source %s", from)
 				}
 				return replySender.send(data, replySource)
-			},
+			}),
 		}
 		runtime.udpEndpoints.add(source, endpoint)
 		readers.Go(func() { _ = endpoint.run(runtime.udpEndpoints, source, destination, conn, nil) })
