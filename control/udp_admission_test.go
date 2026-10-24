@@ -48,7 +48,7 @@ func TestFailedUDPFallbackIsNotEstablished(t *testing.T) {
 	before := stats.DefaultStore.DirectFallbackConnections()
 	lock, _ := pool.UdpEndpointKeyLocker.Lock(src)
 	pool.addLocked(src, endpoint)
-	err := c.initializeUDP(t.Context(), endpoint, src, dst, []byte("packet"))
+	err := c.initializeUDP(t.Context(), nil, endpoint, src, dst, []byte("packet"))
 	pool.UdpEndpointKeyLocker.Unlock(src, lock)
 	if data.calls != 1 || endpoint.conn != nil {
 		t.Fatalf("fixture missed failed association: calls=%d conn=%v err=%v", data.calls, endpoint.conn, err)

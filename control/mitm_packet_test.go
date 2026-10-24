@@ -63,7 +63,7 @@ func TestMITMPacketPairDatagrams(t *testing.T) {
 func TestUDPPacketMemorySharedByIngressAndMITM(t *testing.T) {
 	budget := membuffer.NewBudget(16)
 	started, unblock := make(chan struct{}), make(chan struct{})
-	p := newUdpTaskPool(func(udpPacketWork, []byte) { close(started); <-unblock })
+	p := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) { close(started); <-unblock })
 	p.memory = budget
 	t.Cleanup(p.close)
 	var once sync.Once

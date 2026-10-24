@@ -4,8 +4,10 @@ package control
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
@@ -34,6 +36,48 @@ type udpTaskQueue struct {
 	next       *udpTaskQueue
 }
 
+// udpWriteSlot publishes a worker's in-flight transport write, so cancelling
+// the generation interrupts it without the source lock or per-packet timers.
+type udpWriteSlot struct {
+	mu   sync.Mutex
+	conn net.PacketConn
+}
+
+// begin publishes conn before rechecking ctx. Paired with interrupt's
+// cancel-then-scan, either the scan sees this write or ctx is already done.
+// A nil slot (outside a pool worker) only checks ctx.
+func (s *udpWriteSlot) begin(ctx context.Context, conn net.PacketConn) error {
+	if s != nil {
+		s.mu.Lock()
+		s.conn = conn
+		s.mu.Unlock()
+	}
+	if err := ctx.Err(); err != nil {
+		s.end()
+		return err
+	}
+	return nil
+}
+
+func (s *udpWriteSlot) end() {
+	if s != nil {
+		s.mu.Lock()
+		s.conn = nil
+		s.mu.Unlock()
+	}
+}
+
+// interrupt wakes a deadline-aware write at once and closes the socket without
+// waiting for Close. The writer's deadline reset is ordered after it by mu.
+func (s *udpWriteSlot) interrupt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn != nil {
+		_ = s.conn.SetWriteDeadline(time.Now())
+		closeInBackground(s.conn)
+	}
+}
+
 type udpTaskPool struct {
 	// Cancel packet work independently of ingress, which still delivers QUIC
 	// packets during MITM's graceful shutdown.
@@ -43,8 +87,9 @@ type udpTaskPool struct {
 	ready                            *sync.Cond
 	queues                           map[netip.AddrPort]*udpTaskQueue
 	head, tail                       *udpTaskQueue
-	execute                          func(udpPacketWork, []byte)
+	execute                          func(udpPacketWork, *udpWriteSlot, []byte)
 	workers                          int
+	slots                            []*udpWriteSlot // One per worker, appended with mu held.
 	workersDone                      sync.WaitGroup
 	closed                           bool
 	tasks                            int // Accepted tasks, including those currently running.
@@ -53,7 +98,7 @@ type udpTaskPool struct {
 	maxWorkers, maxSources, maxTasks int
 }
 
-func newUdpTaskPool(execute func(udpPacketWork, []byte)) *udpTaskPool {
+func newUdpTaskPool(execute func(udpPacketWork, *udpWriteSlot, []byte)) *udpTaskPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &udpTaskPool{
 		ctx: ctx, cancel: cancel,
@@ -115,7 +160,9 @@ func (p *udpTaskPool) emit(data []byte, work udpPacketWork) bool {
 	// Workers wait on one shared condition; idle sources retain no workers.
 	if p.workers < min(p.maxWorkers, len(p.queues)) {
 		p.workers++
-		p.workersDone.Go(p.run)
+		slot := new(udpWriteSlot)
+		p.slots = append(p.slots, slot)
+		p.workersDone.Go(func() { p.run(slot) })
 	}
 	p.ready.Signal()
 	p.mu.Unlock()
@@ -132,7 +179,7 @@ func (p *udpTaskPool) enqueue(q *udpTaskQueue) {
 	p.tail = q
 }
 
-func (p *udpTaskPool) run() {
+func (p *udpTaskPool) run(slot *udpWriteSlot) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for {
@@ -155,7 +202,7 @@ func (p *udpTaskPool) run() {
 		q.pending--
 		p.mu.Unlock()
 		if p.ctx.Err() == nil {
-			p.execute(task.work, task.packet.data)
+			p.execute(task.work, slot, task.packet.data)
 		}
 		task.packet.release()
 		*task = queuedUDPTask{}
@@ -169,6 +216,18 @@ func (p *udpTaskPool) run() {
 			p.enqueue(q)
 			p.ready.Signal()
 		}
+	}
+}
+
+// interrupt cancels the pool's work, then interrupts writes already in flight:
+// lifecycle callers next take the source locks those writes hold.
+func (p *udpTaskPool) interrupt() {
+	p.cancel()
+	p.mu.Lock()
+	slots := p.slots
+	p.mu.Unlock()
+	for _, slot := range slots {
+		slot.interrupt()
 	}
 }
 

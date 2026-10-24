@@ -597,7 +597,7 @@ func TestControlPlaneRetireClosesAdmissionBeforeWaitAndDrainsUDPWithLiveContext(
 	t.Cleanup(finishSetup)
 	taskContextErrors := make(chan error, 2)
 	plane.udpTaskPool.close()
-	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
+	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) {
 		taskContextErrors <- plane.ctx.Err()
 		close(taskStarted)
 		<-releaseTask
@@ -696,7 +696,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	t.Cleanup(release)
 	replacementPublished := make(chan *testPacketConn, 1)
 	plane.udpTaskPool.close()
-	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
+	plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) {
 		close(taskStarted)
 		<-releaseTask
 		if err := plane.ctx.Err(); err != nil {

@@ -93,8 +93,9 @@ func (ue *UdpEndpoint) socketTarget(dst netip.AddrPort) (netip.AddrPort, error) 
 	return target, nil
 }
 
-// The caller holds the source lock throughout socket creation and use.
-func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst netip.AddrPort) (net.PacketConn, error) {
+// The caller holds the source lock throughout socket creation and use. ctx
+// carries cancellation only; deadline bounds creating a socket.
+func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEndpointPool, src, dst netip.AddrPort) (net.PacketConn, error) {
 	if ue.sockets == nil || ue.mitm && dst == ue.firstDst {
 		return ue.conn, nil
 	}
@@ -123,6 +124,11 @@ func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst 
 	}
 	if full {
 		return nil, netproxy.PacketCapacityError()
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
 	upstream := upstreamDial{dialer: ue.dialer, path: ue.statsPath, origin: ue.origin,
 		resource: ue.lease, policy: ue.policyLease, route: ue.routeLease}

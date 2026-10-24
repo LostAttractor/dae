@@ -218,7 +218,7 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 	var previousPeer string
 	for _, original := range destinations {
 		lock, _ := pool.UdpEndpointKeyLocker.Lock(source)
-		conn, err := endpoint.socket(ctx, &pool, source, original)
+		conn, err := endpoint.socket(ctx, time.Time{}, &pool, source, original)
 		if err == nil {
 			_, err = writePacket(ctx, conn, []byte(original.String()), net.UDPAddrFromAddrPort(original))
 		}

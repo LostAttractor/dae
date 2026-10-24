@@ -97,47 +97,58 @@ func sendPktWithMark(data []byte, from, to netip.AddrPort, mark uint32) (err err
 
 func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
 	deadline, _ := ctx.Deadline()
-	return writePacketUntil(ctx, deadline, conn, data, dst)
+	return writePacketUntil(ctx, deadline, nil, conn, data, dst)
 }
 
-// Established associations can use the packet connection's deadline directly.
-// Only transports without deadline support need another context timer.
-func writePacketUntil(ctx context.Context, deadline time.Time, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
+// writePacketUntil bounds a write with the socket's own deadline and leaves no
+// deadline behind. Cancellation reaches the write only through a worker slot,
+// so a packet arms no timer or context. Only transports without deadline
+// support need a timer.
+func writePacketUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	deadlineSet := false
 	if !deadline.IsZero() {
 		if !time.Now().Before(deadline) {
 			return 0, context.DeadlineExceeded
 		}
-		deadlineSet = conn.SetWriteDeadline(deadline) == nil
-		if !deadlineSet {
-			inherited, exists := ctx.Deadline()
-			if !exists || deadline.Before(inherited) {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithDeadline(ctx, deadline)
-				defer cancel()
-			}
+		if conn.SetWriteDeadline(deadline) != nil {
+			return writePacketWithTimer(ctx, deadline, conn, data, dst)
 		}
+		defer conn.SetWriteDeadline(time.Time{})
+	}
+	if err := slot.begin(ctx, conn); err != nil {
+		return 0, err
+	}
+	n, err = conn.WriteTo(data, dst)
+	slot.end()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else if errors.Is(err, os.ErrDeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+	}
+	return n, err
+}
+
+// The timer closes the socket: the transport offers no other way to stop a
+// write at its deadline or on cancellation.
+func writePacketWithTimer(ctx context.Context, deadline time.Time, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
+	if inherited, exists := ctx.Deadline(); !exists || deadline.Before(inherited) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
 	interrupted := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
-		_ = conn.SetWriteDeadline(time.Now())
-		if !deadlineSet || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			closeInBackground(conn)
-		}
+		closeInBackground(conn)
 		close(interrupted)
 	})
 	n, err = conn.WriteTo(data, dst)
 	if !stopInterrupt() {
 		<-interrupted
 		err = ctx.Err()
-	} else if errors.Is(err, os.ErrDeadlineExceeded) && !deadline.IsZero() && !time.Now().Before(deadline) {
-		err = context.DeadlineExceeded
-	}
-	if deadlineSet {
-		_ = conn.SetWriteDeadline(time.Time{})
 	}
 	return n, err
 }
@@ -149,20 +160,20 @@ type udpPacketWork struct {
 	deadline      time.Time
 }
 
-func (w udpPacketWork) execute(data []byte) {
+func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
 	c := w.plane
 	if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(w.deadline) {
 		return
 	}
 	ctx := c.udpTaskPool.ctx
-	if err := c.handlePktUntil(ctx, w.deadline, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil && time.Now().Before(w.deadline) {
+	if err := c.handlePktUntil(ctx, w.deadline, slot, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil && time.Now().Before(w.deadline) {
 		log.WithError(err).WithFields(log.Fields{"source": w.src, "destination": w.dst}).Debug("UDP packet handling failed")
 	}
 }
 
 // enqueueUDPPacket copies borrowed data into a pooled typed task. Deadlines
-// include queue time; context timers are needed only for setup and transports
-// that cannot enforce socket deadlines.
+// include queue time; context timers are needed only for setup, MITM, new
+// destination sockets and transports that cannot enforce socket deadlines.
 func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *routingResult) {
 	c.udpTaskPool.emit(data, udpPacketWork{
 		plane: c, src: src, dst: dst, routingResult: routingResult,
@@ -174,10 +185,11 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 // setup. An endpoint's first routing result never changes while it is in the pool.
 func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	deadline, _ := ctx.Deadline()
-	return c.handlePktUntil(ctx, deadline, data, src, dst, routingResult)
+	return c.handlePktUntil(ctx, deadline, nil, data, src, dst, routingResult)
 }
 
-func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
+// ctx is the generation's work context; slot is the pool worker's write slot.
+func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -199,8 +211,8 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, d
 		return context.DeadlineExceeded
 	}
 	ue, exists := p.Get(src)
-	if !deadline.IsZero() && (!exists || ue.conn == nil || ue.sockets != nil || ue.mitm) {
-		// Setup, target socket creation and MITM may wait on non-socket work.
+	if !deadline.IsZero() && (!exists || ue.conn == nil || ue.mitm) {
+		// Setup and MITM may wait on non-socket work.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
@@ -264,15 +276,15 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, d
 	}
 	if ue.conn != nil {
 		ue.setupOwner.Store(nil)
-		return c.writeUDPUntil(ctx, deadline, ue, src, dst, data)
+		return c.writeUDPUntil(ctx, deadline, slot, ue, src, dst, data)
 	}
 
-	return c.initializeUDP(ctx, ue, src, dst, data)
+	return c.initializeUDP(ctx, slot, ue, src, dst, data)
 }
 
 // initializeUDP runs under the source lock until the first route is installed.
 // Later packets enter writeUDP directly, without routing or sniffing again.
-func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
+func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
 	defer func() {
 		if ue.conn != nil {
 			ue.setupOwner.Store(nil)
@@ -433,13 +445,14 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	sniffer := pending.sniffer
 	ue.pending = nil
 	defer sniffer.Close()
+	deadline, _ := ctx.Deadline()
 	for _, packet := range sniffer.Data()[1:] {
-		if err := c.writeUDP(ctx, ue, src, ue.firstDst, packet); err != nil || ue.IsClosed() {
+		if err := c.writeUDPUntil(ctx, deadline, slot, ue, src, ue.firstDst, packet); err != nil || ue.IsClosed() {
 			return err
 		}
 	}
 	if dst != ue.firstDst {
-		if err := c.writeUDP(ctx, ue, src, dst, data); err != nil || ue.IsClosed() {
+		if err := c.writeUDPUntil(ctx, deadline, slot, ue, src, dst, data); err != nil || ue.IsClosed() {
 			return err
 		}
 	}
@@ -449,10 +462,10 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 
 func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
 	deadline, _ := ctx.Deadline()
-	return c.writeUDPUntil(ctx, deadline, ue, src, dst, data)
+	return c.writeUDPUntil(ctx, deadline, nil, ue, src, dst, data)
 }
 
-func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
+func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
 	ue.observeDomain(dst)
 	// Request-routing HTTP/3 has no connection-wide outbound. Its source
 	// lifetime is scoped to the admitted destination; it cannot migrate.
@@ -463,8 +476,8 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, ue
 		c.udpEndpoints.removeInBackgroundLocked(src, ue)
 		return cause
 	}
-	// Both the explicit deadline and setup contexts include the packet's queue time.
-	conn, err := ue.socket(ctx, c.udpEndpoints, src, dst)
+	// The deadline includes the packet's queue time and bounds any new socket.
+	conn, err := ue.socket(ctx, deadline, c.udpEndpoints, src, dst)
 	var n int
 	if err == nil {
 		// Writes are serialized by the source key lock. Cache the common
@@ -472,7 +485,7 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, ue
 		if ue.writeAddr == nil || ue.writeDst != dst {
 			ue.writeDst, ue.writeAddr = dst, net.UDPAddrFromAddrPort(dst)
 		}
-		n, err = writePacketUntil(ctx, deadline, conn, data, ue.writeAddr)
+		n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))

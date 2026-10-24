@@ -20,7 +20,7 @@ func (c *planeTraffic) interruptSetups() {
 	// Stop this generation's admission before aborting Runtime-owned sockets.
 	c.tcpConnections.abort()
 	c.cancelTCPSetups()
-	c.udpTaskPool.cancel()
+	c.udpTaskPool.interrupt()
 }
 
 func (c *planeTraffic) stopSetups() {

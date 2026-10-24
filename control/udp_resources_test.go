@@ -40,7 +40,7 @@ func TestUDPResourcesBoundedWithoutChangingSource(t *testing.T) {
 		endpoint.firstDst = first
 		lock, _ := p.UdpEndpointKeyLocker.Lock(source)
 		for n := range maxUDPSocketsPerSource {
-			conn, err := endpoint.socket(t.Context(), &p, source, destination(n+1))
+			conn, err := endpoint.socket(t.Context(), time.Time{}, &p, source, destination(n+1))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +49,7 @@ func TestUDPResourcesBoundedWithoutChangingSource(t *testing.T) {
 			}
 		}
 		originalTarget := endpoint.destinations[first].target
-		if _, err := endpoint.socket(t.Context(), &p, source, destination(1000)); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
+		if _, err := endpoint.socket(t.Context(), time.Time{}, &p, source, destination(1000)); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
 			t.Fatalf("socket admission: %v", err)
 		}
 		for n := range maxUDPDestinationsPerSource * 2 {
@@ -93,7 +93,7 @@ func TestUDPResourcesBoundedWithoutChangingSource(t *testing.T) {
 			t.Fatal("retired child watcher ended source lifetime")
 		}
 		lock, _ = p.UdpEndpointKeyLocker.Lock(source)
-		_, err := endpoint.socket(t.Context(), &p, source, first)
+		_, err := endpoint.socket(t.Context(), time.Time{}, &p, source, first)
 		p.UdpEndpointKeyLocker.Unlock(source, lock)
 		if err != nil || recorder.targets[len(recorder.targets)-1] != originalTarget.String() {
 			t.Fatalf("reopened target changed: %v", err)
@@ -114,19 +114,19 @@ func TestUDPPacketCapacitySharedAcrossSources(t *testing.T) {
 		p.add(first, a)
 		p.add(second, b)
 		dst := netip.MustParseAddrPort("192.0.2.1:443")
-		if _, err := a.socket(t.Context(), p, first, dst); err != nil {
+		if _, err := a.socket(t.Context(), time.Time{}, p, first, dst); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := b.socket(t.Context(), p, second, dst); err != nil {
+		if _, err := b.socket(t.Context(), time.Time{}, p, second, dst); err != nil {
 			t.Fatal(err)
 		}
 		other := netip.MustParseAddrPort("192.0.2.2:443")
-		if _, err := b.socket(t.Context(), p, second, other); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
+		if _, err := b.socket(t.Context(), time.Time{}, p, second, other); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
 			t.Fatalf("global admission: %v", err)
 		}
 		p.remove(first, a)
 		synctest.Wait()
-		if _, err := b.socket(t.Context(), p, second, other); err != nil {
+		if _, err := b.socket(t.Context(), time.Time{}, p, second, other); err != nil {
 			t.Fatal(err)
 		}
 	})

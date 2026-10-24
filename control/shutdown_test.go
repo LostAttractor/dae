@@ -215,7 +215,7 @@ func TestRuntimeShutdownCancelsAllUDPGenerationsBeforeSweeping(t *testing.T) {
 		r.udpEndpoints.pool.Store(src, new(UdpEndpoint))
 		locked := make(chan struct{})
 		plane.udpTaskPool.close()
-		plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, []byte) {
+		plane.udpTaskPool = newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) {
 			lock, _ := r.udpEndpoints.UdpEndpointKeyLocker.Lock(src)
 			defer r.udpEndpoints.UdpEndpointKeyLocker.Unlock(src, lock)
 			close(locked)

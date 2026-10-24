@@ -171,54 +171,6 @@ func (c *deadlineInterruptPacketConn) SetWriteDeadline(deadline time.Time) error
 	return nil
 }
 
-func TestWritePacketCancellationInterruptsWrite(t *testing.T) {
-	conn := newTestPacketConn(true)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := writePacket(ctx, conn, []byte("packet"), nil)
-		done <- err
-	}()
-	<-conn.writeStarted
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("writePacket returned %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cancellation did not interrupt WriteTo")
-	}
-}
-
-func TestWritePacketCancellationDoesNotWaitForBlockingClose(t *testing.T) {
-	conn := newDeadlineInterruptPacketConn()
-	t.Cleanup(func() { close(conn.releaseClose) })
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-	done := make(chan error, 1)
-	go func() {
-		_, err := writePacket(ctx, conn, []byte("packet"), nil)
-		done <- err
-	}()
-	<-conn.writeStarted
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("writePacket returned %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("writePacket waited for blocking Close")
-	}
-	select {
-	case <-conn.closeStarted:
-	case <-time.After(time.Second):
-		t.Fatal("cancellation did not start connection cleanup")
-	}
-}
-
 func TestUdpEndpointPoolCloseAllDoesNotWaitForBlockingClose(t *testing.T) {
 	endpointPool := new(UdpEndpointPool)
 	conn := newDeadlineInterruptPacketConn()

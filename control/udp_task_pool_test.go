@@ -26,7 +26,7 @@ func testUdpKey(port uint16) netip.AddrPort {
 
 func TestUdpTaskPool_TaskExecution(t *testing.T) {
 	done := make(chan struct{})
-	pool := newUdpTaskPool(func(udpPacketWork, []byte) { close(done) })
+	pool := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) { close(done) })
 	t.Cleanup(pool.close)
 	require.True(t, pool.emit(nil, udpPacketWork{src: testUdpKey(10001)}))
 	select {
@@ -41,7 +41,7 @@ func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
 	var mu sync.Mutex
 	var executed []byte
 	done := make(chan struct{})
-	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+	pool := newUdpTaskPool(func(_ udpPacketWork, _ *udpWriteSlot, data []byte) {
 		mu.Lock()
 		defer mu.Unlock()
 		executed = append(executed, data[0])
@@ -65,7 +65,7 @@ func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
 
 func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 	started, unblock := make(chan struct{}), make(chan struct{})
-	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+	pool := newUdpTaskPool(func(_ udpPacketWork, _ *udpWriteSlot, data []byte) {
 		if string(data) == "hold" {
 			close(started)
 			<-unblock
@@ -101,7 +101,7 @@ func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 
 func TestUdpTaskPool_ReleasesIdleSources(t *testing.T) {
 	done := make(chan struct{})
-	pool := newUdpTaskPool(func(udpPacketWork, []byte) { done <- struct{}{} })
+	pool := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) { done <- struct{}{} })
 	t.Cleanup(pool.close)
 	pool.memory = membuffer.NewBudget(4096)
 	for i := range 100 {
@@ -120,7 +120,7 @@ func TestUdpTaskPool_ReleasesIdleSources(t *testing.T) {
 
 func TestUdpTaskPool_CloseDrainsAcceptedTasks(t *testing.T) {
 	started, unblock, secondDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	pool := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+	pool := newUdpTaskPool(func(_ udpPacketWork, _ *udpWriteSlot, data []byte) {
 		if string(data) == "hold" {
 			close(started)
 			<-unblock
@@ -163,7 +163,7 @@ func TestUdpTaskPool_CloseDrainsAcceptedTasks(t *testing.T) {
 
 func TestUdpTaskPool_ConcurrentEmitAndClose(t *testing.T) {
 	var executed atomic.Int64
-	pool := newUdpTaskPool(func(udpPacketWork, []byte) { executed.Add(1) })
+	pool := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) { executed.Add(1) })
 	work := udpPacketWork{src: testUdpKey(10006)}
 	start := make(chan struct{})
 	var producers sync.WaitGroup
@@ -190,7 +190,7 @@ func TestUdpTaskPool_ConcurrentEmitAndClose(t *testing.T) {
 func TestUdpTaskPool_RoundRobin(t *testing.T) {
 	started, unblock := make(chan struct{}), make(chan struct{})
 	var order []netip.AddrPort
-	p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+	p := newUdpTaskPool(func(work udpPacketWork, slot *udpWriteSlot, data []byte) {
 		if string(data) == "hold" {
 			close(started)
 			<-unblock
@@ -221,7 +221,7 @@ func TestUdpTaskPool_AdmissionBeforeCopying(t *testing.T) {
 			started, unblock := make(chan struct{}), make(chan struct{})
 			var received string
 			var executed atomic.Int32
-			p := newUdpTaskPool(func(work udpPacketWork, owned []byte) {
+			p := newUdpTaskPool(func(work udpPacketWork, _ *udpWriteSlot, owned []byte) {
 				executed.Add(1)
 				if work.src == testUdpKey(1) {
 					close(started)
@@ -269,7 +269,7 @@ func TestUdpTaskPool_AdmissionBeforeCopying(t *testing.T) {
 func TestUdpTaskPool_BoundedWorkers(t *testing.T) {
 	started, unblock := make(chan struct{}, 20), make(chan struct{})
 	var executed atomic.Int32
-	p := newUdpTaskPool(func(udpPacketWork, []byte) {
+	p := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) {
 		started <- struct{}{}
 		<-unblock
 		executed.Add(1)
@@ -304,7 +304,7 @@ func TestUdpTaskPool_BoundedWorkers(t *testing.T) {
 
 func BenchmarkUdpTaskPoolRejectedPacket(b *testing.B) {
 	unblock := make(chan struct{})
-	p := newUdpTaskPool(func(udpPacketWork, []byte) { <-unblock })
+	p := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) { <-unblock })
 	p.maxTasks = 1
 	source := testUdpKey(12345)
 	p.emit(nil, udpPacketWork{src: source})
@@ -321,12 +321,12 @@ func BenchmarkUdpTaskPoolRejectedPacket(b *testing.B) {
 
 func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 	started, unblock := make(chan struct{}), make(chan struct{})
-	p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+	p := newUdpTaskPool(func(work udpPacketWork, slot *udpWriteSlot, data []byte) {
 		if string(data) == "hold" {
 			close(started)
 			<-unblock
 		} else {
-			work.execute(data)
+			work.execute(slot, data)
 		}
 	})
 	p.memory = membuffer.NewBudget(4096)
@@ -351,7 +351,7 @@ func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 func TestUdpTaskPoolAbortDiscardsQueuedWork(t *testing.T) {
 	started, unblock := make(chan struct{}), make(chan struct{})
 	queuedRan := false
-	p := newUdpTaskPool(func(_ udpPacketWork, data []byte) {
+	p := newUdpTaskPool(func(_ udpPacketWork, _ *udpWriteSlot, data []byte) {
 		if string(data) == "hold" {
 			close(started)
 			<-unblock
@@ -378,11 +378,11 @@ func TestUdpTaskPoolAbortDiscardsQueuedWork(t *testing.T) {
 func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		unblock := make(chan struct{})
-		p := newUdpTaskPool(func(work udpPacketWork, data []byte) {
+		p := newUdpTaskPool(func(work udpPacketWork, slot *udpWriteSlot, data []byte) {
 			if string(data) == "hold" {
 				<-unblock
 			} else {
-				work.execute(data)
+				work.execute(slot, data)
 			}
 		})
 		defer p.close()
