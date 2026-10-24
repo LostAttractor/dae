@@ -13,7 +13,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	yamux "github.com/libp2p/go-yamux/v5"
-	"github.com/xtaci/smux"
 )
 
 // session is one multiplexed session over an outer connection.
@@ -32,16 +31,7 @@ type session interface {
 func newSession(protocol Protocol, conn *monitoredConn) (session, error) {
 	switch protocol {
 	case ProtocolSmux:
-		config := smux.DefaultConfig()
-		// sing-box peers disable SMUX heartbeats; receive-idle timeouts would
-		// close otherwise usable sessions between connectivity checks.
-		config.KeepAliveDisabled = true
-		conn.inspectSmux, conn.expectedVersion = true, byte(config.Version)
-		session, err := smux.Client(conn, config)
-		if err != nil {
-			return nil, err
-		}
-		return smuxSession{session}, nil
+		return newSmuxSession(conn), nil
 	case ProtocolYAMux:
 		// sing-box peers keep yamux keepalives, so both ends detect a dead peer.
 		config := yamux.DefaultConfig()
@@ -62,47 +52,6 @@ func newSession(protocol Protocol, conn *monitoredConn) (session, error) {
 		return nil, fmt.Errorf("unsupported multiplex %s", protocol)
 	}
 }
-
-type smuxSession struct{ *smux.Session }
-
-// OpenStream bounds smux's context-free open by ctx.
-func (s smuxSession) OpenStream(ctx context.Context) (net.Conn, error) {
-	type result struct {
-		stream *smux.Stream
-		err    error
-	}
-	results := make(chan result)
-	go func() {
-		stream, err := s.Session.OpenStream()
-		select {
-		case results <- result{stream: stream, err: err}:
-		case <-ctx.Done():
-			if stream != nil {
-				_ = stream.Close()
-			}
-		}
-	}()
-	select {
-	case result := <-results:
-		if err := ctx.Err(); err != nil {
-			if result.stream != nil {
-				_ = result.stream.Close()
-			}
-			return nil, err
-		}
-		if result.err != nil {
-			return nil, result.err
-		}
-		return result.stream, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (smuxSession) closeErr() error { return nil }
-
-// smux v1 has no per-stream window to grow.
-func (smuxSession) saturated() bool { return false }
 
 type yamuxSession struct {
 	*yamux.Session
@@ -161,7 +110,7 @@ func (s yamuxStream) Close() error {
 // idsExhausted reports an open that failed because the session ran out of
 // stream IDs; the session stays open but cannot open another stream.
 func idsExhausted(err error) bool {
-	return errors.Is(err, yamux.ErrStreamsExhausted) || errors.Is(err, smux.ErrGoAway)
+	return errors.Is(err, yamux.ErrStreamsExhausted) || errors.Is(err, errSmuxStreamIDs)
 }
 
 // yamux grows a stream's receive window from 256 KiB, doubling it while the

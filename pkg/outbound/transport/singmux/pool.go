@@ -475,9 +475,14 @@ func (p *sessionPool) Close() error {
 			}
 		}
 		p.mu.Unlock()
-		for i := len(lifecycles) - 1; i >= 0; i-- {
-			p.closeErr = errors.Join(p.closeErr, lifecycles[i].Close())
+		// In parallel: a session may write its queued frames for a while.
+		errs := make([]error, len(lifecycles))
+		var closing sync.WaitGroup
+		for i, lifecycle := range lifecycles {
+			closing.Go(func() { errs[i] = lifecycle.Close() })
 		}
+		closing.Wait()
+		p.closeErr = errors.Join(errs...)
 		p.watchers.Wait()
 	})
 	return p.closeErr

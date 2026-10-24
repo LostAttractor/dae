@@ -13,8 +13,8 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 	yamux "github.com/libp2p/go-yamux/v5"
-	xtacismux "github.com/xtaci/smux"
 )
 
 // muxRequest is what a sing-mux server reads before serving a stream.
@@ -63,15 +63,9 @@ func serveStreams(t *testing.T, protocol Protocol, conn net.Conn, handle func(mu
 		defer session.Close()
 		accept = session.Accept
 	case ProtocolSmux:
-		config := xtacismux.DefaultConfig()
-		config.KeepAliveDisabled = true
-		session, err := xtacismux.Server(conn, config)
-		if err != nil {
-			t.Error(err)
-			return
-		}
+		session := smuxtest.Server(conn)
 		defer session.Close()
-		accept = func() (net.Conn, error) { return session.AcceptStream() }
+		accept = func() (net.Conn, error) { return session.Accept() }
 	}
 	for {
 		stream, err := accept()
@@ -244,7 +238,7 @@ func TestStalledStreamDoesNotBlockSession(t *testing.T) {
 // A closed stream must not leave a server blocked writing into it until the
 // session ends: it is reset unless the peer has closed by yamuxCloseTimeout.
 func TestYamuxClosedStreamReleasesServerWriter(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		released := make(chan struct{})
 		mux := newTestMux(t, ProtocolYAMux, func(_ muxRequest, stream net.Conn) {
 			defer close(released)
@@ -280,7 +274,7 @@ func TestYamuxClosedStreamReleasesServerWriter(t *testing.T) {
 
 // Close wakes a blocked reader at once and reports it as local cleanup.
 func TestYamuxCloseWakesReader(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		mux := newTestMux(t, ProtocolYAMux, func(_ muxRequest, stream net.Conn) {
 			_, _ = io.Copy(io.Discard, stream)
 		})
@@ -401,7 +395,7 @@ func TestYamuxWindowGrowthIsBoundedPerSession(t *testing.T) {
 }
 
 func TestYamuxKeepaliveDetectsSilentPeer(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		parent := &pipeDialer{server: make(chan net.Conn)}
 		silent := make(chan net.Conn, 1)
 		go func() {
@@ -491,7 +485,7 @@ func delayedPipe(delay time.Duration) (net.Conn, net.Conn) {
 // such as kept-alive HTTP/2 connections, must leave a session the budget to
 // grow a new stream's window as far as the first stream's.
 func TestYamuxIdleStreamsLeaveWindowForNewStreams(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		client, server := delayedPipe(50 * time.Millisecond)
 		config := yamux.DefaultConfig()
 		config.LogOutput = io.Discard
@@ -547,7 +541,7 @@ func TestYamuxIdleStreamsLeaveWindowForNewStreams(t *testing.T) {
 // session without budget for another full window must count as loaded and
 // lose new streams to other sessions, or they stay at the initial window.
 func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		parent := serveSingMux(t, ProtocolYAMux, func(_ muxRequest, stream net.Conn) {
 			chunk := make([]byte, 64<<10)
 			for {

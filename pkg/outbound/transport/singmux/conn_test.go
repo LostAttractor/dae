@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	xtacismux "github.com/xtaci/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
-func testLeasedStream(t *testing.T) (*Mux, *leasedStream, *xtacismux.Session) {
+func testLeasedStream(t *testing.T) (*Mux, *leasedStream, *smuxtest.Session) {
 	t.Helper()
 	parent := &pipeDialer{server: make(chan net.Conn)}
 	accepted := acceptSmuxSessions(parent, 1)

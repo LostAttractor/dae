@@ -27,7 +27,7 @@ func TestUDPReadPreservesDatagramBoundaries(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, stream, server := testLeasedStream(t)
-			peer, err := server.AcceptStream()
+			peer, err := server.Accept()
 			if err != nil {
 				t.Fatal(err)
 			}

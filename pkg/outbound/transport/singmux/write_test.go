@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
-	xtacismux "github.com/xtaci/smux"
 )
 
 type streamWriteFunc struct {
@@ -56,25 +55,7 @@ func BenchmarkConnWrite(b *testing.B) {
 			b.Run(fmt.Sprintf("%s/bytes=%d", transport, size), func(b *testing.B) {
 				var carrier net.Conn = streamWriteFunc{write: func(p []byte) (int, error) { return len(p), nil }}
 				if transport == "smux" {
-					local, remote := net.Pipe()
-					client, err := xtacismux.Client(local, nil)
-					if err != nil {
-						b.Fatal(err)
-					}
-					b.Cleanup(func() { client.Close() })
-					server, err := xtacismux.Server(remote, nil)
-					if err != nil {
-						b.Fatal(err)
-					}
-					b.Cleanup(func() { server.Close() })
-					stream, err := client.OpenStream()
-					if err != nil {
-						b.Fatal(err)
-					}
-					peer, err := server.AcceptStream()
-					if err != nil {
-						b.Fatal(err)
-					}
+					stream, peer := smuxStreamPair(b)
 					carrier = stream
 					done := make(chan struct{})
 					go func() {

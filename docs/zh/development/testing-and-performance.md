@@ -111,6 +111,14 @@ go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainActivityQueue$' -benchmem -benchtime=1s -cpu=1,8,32 -count=3
 ```
 
+sing-mux 的 smux 测试使用 `pkg/outbound/transport/singmux/smuxtest` 中的最小 v1 服务端：它像 sing-box 服务端一样拒绝版本错误或命令未知的帧，还拒绝带载荷的控制帧和偶数流 ID 以暴露客户端的编码错误（sing-box 服务端不检查这两项），并无限缓冲各流数据，因此会话共享接收缓冲造成的阻塞只可能来自客户端。`BenchmarkConnWrite`、`BenchmarkUDPSmuxRoundTrip` 和 control 的 `BenchmarkSmuxReceive` 经 `net.Pipe` 运行，计入客户端会话与服务端夹具双方的调度和分配；`BenchmarkTCPWriteFrames` 比较 Shadowsocks 2022 把一批两个帧（各自帧头与载荷连续）合并后写入和向量写入的开销：
+
+```sh
+go test ./pkg/outbound/transport/singmux -run '^$' -bench '^Benchmark(ConnWrite|UDPSmuxRoundTrip)$' -benchmem -count=5
+go test ./control -run '^$' -bench '^BenchmarkSmuxReceive$' -benchmem -count=5
+go test ./pkg/outbound/protocol/shadowsocks_2022 -run '^$' -bench '^BenchmarkTCPWriteFrames$' -benchmem -count=5
+```
+
 `BenchmarkExchangeTCP` 通过 `net.Pipe` 完成一次 router 请求/响应，包括每查询 socket 和 worker 建立，衡量单次查询的管理成本。在包含 router 的工作区运行：
 
 ```sh

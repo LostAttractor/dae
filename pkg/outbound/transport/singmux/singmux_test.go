@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	xtacismux "github.com/xtaci/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
 type pipeDialer struct {
@@ -46,8 +46,8 @@ func (d *pipeDialer) ListenPacket(context.Context, string) (net.PacketConn, erro
 	return nil, errors.New("unexpected ListenPacket")
 }
 
-func acceptSmuxSessions(parent *pipeDialer, count int) <-chan *xtacismux.Session {
-	accepted := make(chan *xtacismux.Session, count)
+func acceptSmuxSessions(parent *pipeDialer, count int) <-chan *smuxtest.Session {
+	accepted := make(chan *smuxtest.Session, count)
 	go func() {
 		defer close(accepted)
 		for range count {
@@ -57,23 +57,15 @@ func acceptSmuxSessions(parent *pipeDialer, count int) <-chan *xtacismux.Session
 				accepted <- nil
 				return
 			}
-			config := xtacismux.DefaultConfig()
-			config.KeepAliveDisabled = true
-			session, err := xtacismux.Server(server, config)
-			if err != nil {
-				_ = server.Close()
-				accepted <- nil
-				return
-			}
-			accepted <- session
+			accepted <- smuxtest.Server(server)
 		}
 	}()
 	return accepted
 }
 
-func waitForSmuxSessions(t *testing.T, accepted <-chan *xtacismux.Session, count int) []*xtacismux.Session {
+func waitForSmuxSessions(t *testing.T, accepted <-chan *smuxtest.Session, count int) []*smuxtest.Session {
 	t.Helper()
-	sessions := make([]*xtacismux.Session, 0, count)
+	sessions := make([]*smuxtest.Session, 0, count)
 	for range count {
 		select {
 		case session := <-accepted:
@@ -161,7 +153,7 @@ func TestUDPPassthroughUsesParentDialer(t *testing.T) {
 }
 
 func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		parent := &pipeDialer{server: make(chan net.Conn)}
 		accepted := acceptSmuxSessions(parent, 1)
 		dialer := &Mux{Dialer: parent, MaxConnections: 1}
@@ -185,7 +177,7 @@ func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer stream.Close()
-		peer, err := server.AcceptStream()
+		peer, err := server.Accept()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +197,10 @@ func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
 	})
 }
 
-func TestOpenStreamFailureUsesAnotherSession(t *testing.T) {
+// Opening a stream only queues it. A stream on a session whose carrier then
+// fails reports that shared failure; the session is closed and later streams
+// use another one.
+func TestCarrierWriteFailureMovesStreamsToAnotherSession(t *testing.T) {
 	var failing *failingWriteConn
 	h := newPoolHarness(t, 2, func(index int, conn net.Conn) net.Conn {
 		if index != 0 {
@@ -218,16 +213,31 @@ func TestOpenStreamFailureUsesAnotherSession(t *testing.T) {
 	base := h.openN(ctx, expandStreams+1)
 	h.replenish()
 	h.openN(ctx, expandStreams)
-	// The emptied base session is now preferred and fails to open.
+	// The emptied base session is now preferred; its carrier fails once
+	// the FINs of its streams are out.
 	closeAll(base)
+	resource, err := h.dialer.pool().slots[0].lifecycle.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, resource.session.(*smuxSession))
 	failing.fail.Store(true)
-	h.open(ctx)
+	doomed := h.open(ctx)
+	_ = doomed.SetDeadline(time.Now().Add(time.Second))
+	_, err = doomed.Read(make([]byte, 1))
+	if failure := netproxy.ClassifyFailure(err); !errors.Is(err, errOpenStreamWrite) || failure.Scope != netproxy.ScopeSharedResource {
+		t.Fatalf("stream on the failed carrier: %v (%+v)", err, failure)
+	}
 	deadline := time.Now().Add(time.Second)
 	for !failing.closed.Load() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	if !failing.closed.Load() {
-		t.Fatal("session with failed OpenStream was not closed")
+		t.Fatal("session with a failed carrier was not closed")
+	}
+	h.open(ctx)
+	if loads := h.loads(); loads[1] != expandStreams+1 {
+		t.Fatalf("stream did not move to the other session: loads=%v", loads)
 	}
 	if dials := h.dials(); dials != 2 {
 		t.Fatalf("outer connection count = %d, want 2", dials)
@@ -261,8 +271,18 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	failing.fail.Store(true)
-	if _, err := dialer.DialContext(context.Background(), "tcp", "failover.example:443"); err == nil {
+	// Opening only queues the stream; its first read sees the failure.
+	conn, err := dialer.DialContext(context.Background(), "tcp", "failover.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Fatal("failed stream unexpectedly succeeded")
+	}
+	_ = conn.Close()
+	deadline := time.Now().Add(time.Second)
+	for dialer.Snapshot().Accepting && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
 	parent.mu.Lock()
 	attempts := parent.dialCount
@@ -285,7 +305,7 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 	if err := dialer.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := dialer.DialContext(context.Background(), "tcp", "failover.example:443")
+	conn, err = dialer.DialContext(context.Background(), "tcp", "failover.example:443")
 	if err != nil {
 		t.Fatal(err)
 	}

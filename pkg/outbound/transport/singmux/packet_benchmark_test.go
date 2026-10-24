@@ -10,7 +10,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
-	xtacismux "github.com/xtaci/smux"
 )
 
 type packetBenchmarkConn struct {
@@ -62,25 +61,7 @@ func BenchmarkUDPReadFrom(b *testing.B) {
 // Include a real smux session and both endpoints' allocations, using net.Pipe
 // to avoid external network latency. One request/response is one operation.
 func BenchmarkUDPSmuxRoundTrip(b *testing.B) {
-	local, remote := net.Pipe()
-	client, err := xtacismux.Client(local, nil)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = client.Close() })
-	server, err := xtacismux.Server(remote, nil)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { _ = server.Close() })
-	stream, err := client.OpenStream()
-	if err != nil {
-		b.Fatal(err)
-	}
-	peer, err := server.AcceptStream()
-	if err != nil {
-		b.Fatal(err)
-	}
+	stream, peer := smuxStreamPair(b)
 	const size = 64
 	frame := packetBenchmarkFrame(b, "192.0.2.1:53", size)
 	done := make(chan error, 1)

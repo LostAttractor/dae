@@ -5,7 +5,6 @@ package singmux
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +14,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/xtaci/smux"
 )
 
 // Protocol is the sing-mux session protocol byte.
@@ -50,13 +48,6 @@ const (
 	flagUDP     = 0b01
 	flagAddr    = 0b10
 	statusError = 1
-)
-
-const (
-	smuxFrameHeaderSize   = 8
-	smuxCommandPSH        = 2
-	smuxCommandUPD        = 4
-	smuxUpdatePayloadSize = 8
 )
 
 const (
@@ -101,13 +92,6 @@ type monitoredConn struct {
 	broken       atomic.Bool
 	// readFailed is set once a read from the carrier failed.
 	readFailed atomic.Bool
-	// smux v1 ignores frames it cannot parse instead of closing the session,
-	// so its frames are checked here.
-	inspectSmux      bool
-	expectedVersion  byte
-	header           [smuxFrameHeaderSize]byte
-	headerRead       int
-	payloadRemaining int
 }
 
 func (c *monitoredConn) report(err error) {
@@ -125,43 +109,8 @@ func (c *monitoredConn) report(err error) {
 	}
 }
 
-func (c *monitoredConn) inspectRead(p []byte) {
-	for len(p) > 0 && !c.broken.Load() {
-		if c.payloadRemaining > 0 {
-			n := min(len(p), c.payloadRemaining)
-			c.payloadRemaining -= n
-			p = p[n:]
-			continue
-		}
-		n := copy(c.header[c.headerRead:], p)
-		c.headerRead += n
-		p = p[n:]
-		if c.headerRead < len(c.header) {
-			continue
-		}
-
-		version := c.header[0]
-		command := c.header[1]
-		length := int(binary.LittleEndian.Uint16(c.header[2:4]))
-		c.headerRead = 0
-		if version != c.expectedVersion || command > smuxCommandUPD {
-			c.report(netproxy.WrapFailure(smux.ErrInvalidProtocol, netproxy.Failure{Reason: netproxy.ReasonProtocol}))
-			return
-		}
-		switch command {
-		case smuxCommandPSH:
-			c.payloadRemaining = length
-		case smuxCommandUPD:
-			c.payloadRemaining = smuxUpdatePayloadSize
-		}
-	}
-}
-
 func (c *monitoredConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	if c.inspectSmux {
-		c.inspectRead(p[:n])
-	}
 	if err != nil {
 		c.readFailed.Store(true)
 	}

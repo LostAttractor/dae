@@ -39,7 +39,6 @@ require (
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
-	github.com/xtaci/smux v1.5.57
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37
 	golang.org/x/crypto v0.57.0
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba

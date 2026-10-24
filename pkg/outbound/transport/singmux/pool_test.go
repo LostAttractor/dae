@@ -4,31 +4,14 @@ import (
 	"context"
 	"io"
 	"net"
-	"os"
-	"os/exec"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	xtacismux "github.com/xtaci/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
-
-// isolatedSynctest runs f in a synctest bubble in its own process. smux pools
-// result channels globally, so channels must never cross bubble boundaries.
-func isolatedSynctest(t *testing.T, f func(*testing.T)) {
-	const child = "DAE_SINGMUX_SYNCTEST_CHILD"
-	if os.Getenv(child) != t.Name() {
-		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+t.Name()+"$", "-test.timeout=30s")
-		cmd.Env = append(os.Environ(), child+"="+t.Name())
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("isolated %s: %v\n%s", t.Name(), err, output)
-		}
-		return
-	}
-	synctest.Test(t, f)
-}
 
 // poolHarness serves every dialed session and drives the pool only through
 // its public operations; Connect stands in for the recovery coordinator.
@@ -36,33 +19,26 @@ type poolHarness struct {
 	t        *testing.T
 	parent   *pipeDialer
 	dialer   *Mux
-	accepted chan *xtacismux.Session
-	servers  []*xtacismux.Session
+	accepted chan *smuxtest.Session
+	servers  []*smuxtest.Session
 }
 
 func newPoolHarness(t *testing.T, maxConnections int, wrapClient func(int, net.Conn) net.Conn) *poolHarness {
 	h := &poolHarness{
 		t:        t,
 		parent:   &pipeDialer{server: make(chan net.Conn), wrapClient: wrapClient},
-		accepted: make(chan *xtacismux.Session, 4*MaxConnectionsLimit),
+		accepted: make(chan *smuxtest.Session, 4*MaxConnectionsLimit),
 	}
 	h.dialer = &Mux{Dialer: h.parent, MaxConnections: maxConnections}
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		for server := range h.parent.server {
-			config := xtacismux.DefaultConfig()
-			config.KeepAliveDisabled = true
 			if _, err := io.ReadFull(server, make([]byte, 2)); err != nil {
 				_ = server.Close()
 				continue
 			}
-			session, err := xtacismux.Server(server, config)
-			if err != nil {
-				_ = server.Close()
-				continue
-			}
-			h.accepted <- session
+			h.accepted <- smuxtest.Server(server)
 		}
 	}()
 	t.Cleanup(func() {
@@ -84,7 +60,7 @@ func newPoolHarness(t *testing.T, maxConnections int, wrapClient func(int, net.C
 }
 
 // server returns the peer of the index-th dialed session.
-func (h *poolHarness) server(index int) *xtacismux.Session {
+func (h *poolHarness) server(index int) *smuxtest.Session {
 	h.t.Helper()
 	for len(h.servers) <= index {
 		select {
@@ -240,7 +216,7 @@ func TestPoolConnectivityChecksDoNotExpand(t *testing.T) {
 }
 
 func TestPoolRetiresIdleExtraSessions(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		h := newPoolHarness(t, 4, nil)
 		ctx := t.Context()
 		base := h.openN(ctx, expandStreams+1)
@@ -258,16 +234,10 @@ func TestPoolRetiresIdleExtraSessions(t *testing.T) {
 		if loads := h.loads(); len(loads) != 1 || state.UsableCapacity != 1 || state.RecoveryRequired {
 			t.Fatalf("idle extra session was kept: loads=%v state=%+v", loads, state)
 		}
-		peer := h.server(1)
-		_ = peer.SetDeadline(time.Now().Add(time.Second))
-		for {
-			_, err := peer.AcceptStream()
-			if err == xtacismux.ErrTimeout {
-				t.Fatal("retired session is still open at the peer")
-			}
-			if err != nil {
-				break
-			}
+		select {
+		case <-h.server(1).Done():
+		case <-time.After(time.Second):
+			t.Fatal("retired session is still open at the peer")
 		}
 		// The base session is kept, and retirement is not an outage.
 		closeAll(base)
@@ -324,7 +294,7 @@ func TestPoolRefillsOnlyBusyFailedSessions(t *testing.T) {
 }
 
 func TestPoolKeepsSoleUsableIdleSession(t *testing.T) {
-	isolatedSynctest(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 		h := newPoolHarness(t, 2, nil)
 		closeAll(h.openN(t.Context(), expandStreams+1))
 		h.replenish()

@@ -10,10 +10,10 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
-	"github.com/xtaci/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
-func relaySmuxOutbound(t *testing.T) (*singmux.Mux, net.Conn, *smux.Stream) {
+func relaySmuxOutbound(t testing.TB) (*singmux.Mux, net.Conn, *smuxtest.Stream) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -30,19 +30,14 @@ func relaySmuxOutbound(t *testing.T) (*singmux.Mux, net.Conn, *smux.Stream) {
 	if err := <-headerRead; err != nil {
 		t.Fatal(err)
 	}
-	config := smux.DefaultConfig()
-	config.KeepAliveDisabled = true
-	session, err := smux.Server(server, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	session := smuxtest.Server(server)
 	t.Cleanup(func() { _ = session.Close() })
 	conn, err := outbound.DialContext(t.Context(), "tcp", "target.example:443")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	peer, err := session.AcceptStream()
+	peer, err := session.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
