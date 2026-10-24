@@ -90,7 +90,8 @@ order, and a raw hit never bypasses response policies.
 
 ## Prometheus metrics
 
-Enable dae's `global.metrics_port` and scrape `/metrics` on that localhost port.
+Scrape `/metrics` on dae's shared `api.listen` endpoint using user authorization,
+or use the local Unix API. Metrics have no separate port or switch.
 This plugin registers through `plugin.Services.Metrics`. All metrics carry the
 host's `plugin_type` and `plugin_instance` labels and the `dae_plugin_` prefix:
 

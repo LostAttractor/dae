@@ -2,16 +2,19 @@
 
 `dae explain`、`dae-client explain` 和 Web 的 **Explain Decisions** 使用当前配置和运行时证据解释一个假设的新连接。它们不建立目标连接、不发送 DNS 查询、不执行脚本，也不更新缓存、节点检查或运行时设置。现有连接及 UDP 源关联可能保留先前决定。
 
-所有规则解释和路由影响预览都要求管理员权限，包括 `--self` 和 `/api/device/...` 下的诊断接口。配置 `global.api_key` 时，TCP 请求需要密钥或有效登录会话；未配置时，已验证的 LAN 连接自动具有管理员权限。普通 LAN 设备仍可读取自身状态、流量与连接上下文，并修改自身集合和 MITM 设置。
+所有规则解释和路由影响预览都要求管理员权限，包括 `--self` 与 `/api/device/...` 下的诊断接口。TCP 使用 HTTPS `api.admin_key`，Unix 使用文件系统权限。普通权限可读取全局状态和 metrics，以及已识别设备的自身状态、上下文与设置。
 
 ## 命令行
 
-两种程序共用命令和连接参数；以下示例也可将 `dae` 换成 `dae-client`：
+两种程序共用命令和[连接参数](api-client.md)；以下示例也可将 `dae` 换成 `dae-client`。执行 HTTPS 直连示例前，通过可信渠道取得 daemon CA，并准备包含 `api.admin_key` 的文件：
 
 ```sh
-dae explain route 198.51.100.10:443 --self --api http://192.168.1.1:9080
+export DAE_API_CA=/etc/dae/dae-ca.pem
+export DAE_API_KEY_FILE=/etc/dae/admin.key
+
+dae explain route 198.51.100.10:443 --self --api https://192.168.1.1:9080
 dae explain route 198.51.100.10:443 --self --sni example.com --join work \
-  --api http://192.168.1.1:9080 --json
+  --api https://192.168.1.1:9080 --json
 dae explain route 198.51.100.10:443 --mac 02:00:00:00:00:10 \
   --source-ip 192.168.1.10 --source-port 40000 --interface br-lan --dscp 0
 dae explain domain example.com
@@ -48,7 +51,7 @@ dae client list
 dae client show work
 dae client device --mac 02:00:00:00:00:10
 dae client join work --mac 02:00:00:00:00:10
-dae client leave work --self --api http://192.168.1.1:9080
+dae client leave work --self --api https://192.168.1.1:9080
 dae client impact work --mac 02:00:00:00:00:10 --joined=false \
   --target 198.51.100.10:443 --source-ip 192.168.1.10
 dae client mitm enable --mac 02:00:00:00:00:10

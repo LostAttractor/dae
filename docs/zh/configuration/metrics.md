@@ -1,19 +1,23 @@
-# 插件 Prometheus 指标
+# Prometheus 指标
 
-通过现有进程级监听端口开启指标：
+`/metrics` 始终在 Unix API 与启用的 `api.listen` 上提供，属于普通用户权限；没有独立监听端口或开关。使用 HTTPS Bearer `user_key`，或开启 LAN 免 key。管理员 key 也可用。核心与活动插件共享指标入口及底层统计，CLI 的 status 与 recent 使用相同数据源。
 
-```text
-global {
-    metrics_port: 9091
-}
+Prometheus 继续使用显式原始 key，不需要浏览器 Cookie；无 Origin 的采集请求不受 `web_origins` 限制。浏览器读取 metrics 与 API 共用精确来源白名单、credentialed CORS 和 Fetch Metadata 检查：同源默认允许，同站跨源仍需白名单，`cross-site` 管理请求被拒绝。HTTPS 反代监控也必须验证 dae CA、重写 Host、保留 Origin 并无条件设置 `X-Dae-Proxy: 1`，只能使用 key/Cookie 权限，不能借用代理的 LAN 匿名身份；禁止 HTTP/Unix 上游，见[反代部署](api-client.md#同源-https-反向代理)。
+
+```yaml
+scrape_configs:
+  - job_name: dae
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/dae-user.key
+    tls_config:
+      ca_file: /etc/prometheus/dae-ca.pem
+    static_configs:
+      - targets: ['192.168.1.1:9080']
 ```
 
-采集地址为 `http://localhost:9091/metrics`，同时包含核心和活动插件指标。插件需已编译并启用。
-所有插件指标都有 `plugin_type`、`plugin_instance` 标签，Prometheus 的 `instance` 标签仍表示采集目标。
-
-插件准备期间指标不对外发布；准备失败保留当前实例指标。重载复用配置和资源未变的实例及其统计；重建实例时计数器及 Histogram 观测值从零开始。
-关闭实例后移除其序列，`dae_plugin_instance_start_time_seconds` 表示实例激活时间。关闭或更改指标监听端口不会重置运行中插件的统计。
-累计指标使用 `rate`、`increase` 查询以处理重置。
+Unix 示例：`curl --unix-socket /var/run/dae.sock http://unix/metrics`。插件指标带 `plugin_type`、`plugin_instance` 标签，Prometheus 的 `instance` 仍表示采集目标。未变化的实例在重载中保留计数，重建实例时从零开始；关闭实例移除序列。`dae_plugin_instance_start_time_seconds` 标记激活时间。使用 `rate` 或 `increase` 处理重置。
 
 ## 核心流量统计
 

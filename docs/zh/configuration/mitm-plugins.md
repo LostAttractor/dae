@@ -27,7 +27,7 @@ Surge 的 `store` 默认为 `true`，按实例 ID 自动保存在 `DAE_LOCATION_
 
 每个启用插件都必须实现 `Definition.Resources` 并返回非 nil 的 `Resources.Plan`，没有效果也须显式返回空 Plan。缺少声明会给出带实例名的配置错误，外部插件同样适用；host 不会构造实例来调用 `Plugin.Plan()` 兜底。插件作者应让静态声明与正式实例的 `Plan()` 共用纯逻辑，不能为求声明创建临时引擎或 VM。`LoadResources` 与 `BuildInstances` 分开资源读取和实例构造，后者取得正式生命周期 ctx 与 Storage/Metrics/SharedStates；资源产物不保留加载 ctx。普通 reload 继续按原输入相等性复用实例，并只在接受候选后通过 `CommitResources` 发布资源状态。进程替换会在 Block 前取得静态声明，跨 exec 只传原始输入 bytes，不序列化 `Config`/`Value` 或实例；正式实例、`Warm` 和后台 worker 仍遵循各自后置阶段。缺失快照或录制超限等 fatal 错误不能当作空声明或缓存 fallback，详见[插件 API（英文）](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
-`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。开启 MITM 时 daemon 自动准备持久化 CA；指定已有证书使用顶层 `certificate`，见[本地 CA](certificate.md)。仅使用 DNS、IP Host 或路由插件且未开启 API、MITM 时不创建 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
+`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。daemon 准备共享持久化 CA，Unix API 可导出公开证书，不依赖 TCP API 或 MITM 开关；指定已有证书使用顶层 `certificate`，见[本地 CA](certificate.md)。DNS、IP Host 和路由插件本身不依赖 CA，也不负责创建 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
 
 `buffer_memory_limit` 放在宿主，默认 `268435456`（256 MiB），按进程共享受管理的正文缓冲额度。它覆盖正文快照、Surge 解压和改写输出，以及脚本 HTTP 响应和待交付的回调数据；转发未完成、只读借用或请求重试仍需保留的数据继续计入额度。分配前申请，扩容同时计算新旧两份容量；额度不足立即返回，不持有部分额度等待其他请求。Surge 跳过当前处理并转发原文，已成功应用的前序规则保留；脚本 HTTP 请求通过回调报告失败。
 
@@ -61,9 +61,9 @@ HTTP/3 使用同一 CA、客户端开关与插件 scope，没有单独开关。�
 
 `--verbose`（`-v`）聚合各插件的完整 status 输出。整次命令只查询 daemon 一次，`--instance ID` 也能筛选关闭实例，筛选不会移除进程级编入清单和内存预算。没有自定义 status 的插件展示完整 JSON 报告；Surge 跳过关闭实例的空 `details`；其他渲染失败保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 输出 `compiled_plugins`、`buffer_memory` 和 `plugins`，优先于 `-v`。状态只反映成功接受的配置；失败重载保持旧状态，仅修改 disabled 配置也会刷新状态而不替换协议宿主或 API handler。普通 `dae status` 的文本展示不扩展插件详情。
 
-`dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令为 `dae ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
+`dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api.listen`。证书命令为 `dae ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
 
-插件也可以通过 `Services.Metrics` 注册 Prometheus 指标，与核心指标一起由 `global.metrics_port` 暴露。内置 Surge 和独立的 dns-cache、dns-router 已提供指标；宿主统一添加 `plugin_type`、`plugin_instance` 标签。指标随实例重建而重置，详见[指标与 PromQL 示例](metrics.md)。
+插件也可以通过 `Services.Metrics` 注册 Prometheus 指标，与核心指标一起由统一 API 的 `/metrics` 暴露。内置 Surge 和独立的 dns-cache、dns-router 已提供指标；宿主统一添加 `plugin_type`、`plugin_instance` 标签。指标随实例重建而重置，详见[指标与 PromQL 示例](metrics.md)。
 
 Go 插件可以通过 `Services.Storage` 保存实例状态，提供 `Get`、`Put`、`Delete`；单值上限 8 MiB，原子替换并同步磁盘。文件位于 `DAE_LOCATION_CACHE/plugins/state/`（默认基目录 `/var/lib/dae`），新目录权限 `0700`、文件 `0600`。默认实例（实例名等于类型名）直接使用 `<类型>/`，命名实例使用 `<类型>@<实例名>/`：例如 `plugins/state/bilijump/` 和 `plugins/state/bilijump@personal/`。类型和实例名分别做路径转义，名称中的 `@` 也转义，避免不同实例或类型混用状态。路径不随实例数量变化，增加实例不会移动已有状态。相同类型与实例名在重载、重启后复用数据，改名或禁用不会自动删除文件。具体格式、有效期与开关由插件定义。bilijump 默认使用此 API 保存捕获的登录 Cookie，`persist_cookie: false` 可改为仅内存；重载恢复时保留原有效期。开发约定见[持久化 API](../../../component/plugin/README.md#persistent-storage)。
 

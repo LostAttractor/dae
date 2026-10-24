@@ -867,7 +867,7 @@ if services.Metrics != nil {
 }
 ```
 
-`Configuration.Load` supplies a non-nil registerer even when `metrics_port` is zero.
+`Configuration.Load` supplies a non-nil registerer independently of the TCP API listener.
 Direct factory callers may leave it nil. Each host generation owns a private
 registry: preparation registers collectors, `Start` publishes them, and `Close`
 removes them and joins in-flight collection before closing plugin resources.
@@ -907,7 +907,7 @@ preserving its Cobra lifecycle, context and instance selection. Status commands
 must be read-only. Types without a status renderer fall back to full JSON reports;
 a renderer failure also shows its raw reports and does not hide other types.
 `--json` prints the complete snapshot directly, including when combined with `-v`.
-These commands use the local Unix status socket and do not require `api_port`.
+These commands use the local Unix status socket and do not require `api.listen`.
 See Surge's [command implementation](../../plugins/surge/command_configure.go).
 
 `services.TriggerScript(ctx, instance, request)` requests an existing task through

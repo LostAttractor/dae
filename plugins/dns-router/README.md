@@ -75,7 +75,8 @@ transaction-signed messages pass to the next handler unchanged.
 
 ## Prometheus metrics
 
-Enable dae's `global.metrics_port` and scrape `/metrics` on that localhost port.
+Scrape `/metrics` on dae's shared `api.listen` endpoint using user authorization,
+or use the local Unix API. Metrics have no separate port or switch.
 Collectors register through `plugin.Services.Metrics`. All metrics have the
 `dae_plugin_` prefix and `plugin_type` / `plugin_instance` labels:
 

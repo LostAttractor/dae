@@ -1,25 +1,23 @@
-# Plugin Prometheus metrics
+# Prometheus metrics
 
-Enable the existing process metrics listener:
+`/metrics` is always available on Unix and the configured `api.listen`, with user authorization and no separate port or switch. Use HTTPS Bearer `user_key`, or explicitly enable anonymous LAN access. Administrator keys also work. Core and active plugins share this endpoint; CLI status and recent views share the underlying statistics.
 
-```text
-global {
-    metrics_port: 9091
-}
+Prometheus continues using an explicit raw key, not browser cookies; scrapes without Origin are unaffected by `web_origins`. Browser monitoring shares the API's exact origin allowlist, credentialed CORS and Fetch Metadata checks: same-origin is allowed by default, same-site cross-origin still needs an entry, and `cross-site` management requests are rejected. An HTTPS monitoring proxy must verify dae's CA, rewrite Host, preserve Origin and unconditionally set `X-Dae-Proxy: 1`. It uses only key/cookie privileges, never the proxy's anonymous LAN identity; HTTP/Unix upstreams are prohibited. See [proxy deployment](api-client.md#same-origin-https-reverse-proxy).
+
+```yaml
+scrape_configs:
+  - job_name: dae
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/dae-user.key
+    tls_config:
+      ca_file: /etc/prometheus/dae-ca.pem
+    static_configs:
+      - targets: ['192.168.1.1:9080']
 ```
 
-Scrape `http://localhost:9091/metrics`. Core and active plugin metrics share this
-listener. Plugin metrics carry `plugin_type` and `plugin_instance`; Prometheus's
-own `instance` label continues to identify the scrape target. Plugins must be
-compiled in and enabled to produce metrics.
-
-Plugin collectors are prepared privately and published on activation. Failed
-preparation preserves the current metrics. Reload preserves unchanged instances
-and their statistics; rebuilt instances reset counters and histogram observations.
-Closing an instance removes
-its series from subsequent scrapes. `dae_plugin_instance_start_time_seconds`
-records activation time. Changing or disabling the listener does not reset
-running plugin state. Use `rate` or `increase` for counters across resets.
+For Unix use `curl --unix-socket /var/run/dae.sock http://unix/metrics`. Plugin labels include `plugin_type` and `plugin_instance`; `instance` identifies the scrape target. Unchanged instances preserve counters across reload, replaced instances start at zero, and closed instances remove their series. `dae_plugin_instance_start_time_seconds` records activation. Use `rate` or `increase` across resets.
 
 ## Core traffic statistics
 

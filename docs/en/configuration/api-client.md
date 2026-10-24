@@ -9,10 +9,10 @@ With Go 1.27.2+ (or inside `nix-shell`):
 ```sh
 make client
 sudo ./dae-client status
-./dae-client status --api http://192.168.1.1:9080 --recent
-./dae-client plugins status --api http://192.168.1.1:9080 --json
-./dae-client plugins status --api http://192.168.1.1:9080 --verbose
-./dae-client plugins surge status --api http://192.168.1.1:9080 --instance personal
+./dae-client status --api https://192.168.1.1:9080 --recent
+./dae-client plugins status --api https://192.168.1.1:9080 --json
+./dae-client plugins status --api https://192.168.1.1:9080 --verbose
+./dae-client plugins surge status --api https://192.168.1.1:9080 --instance personal
 ./dae-client status --api unix:///var/run/dae.sock --json
 ```
 
@@ -22,7 +22,9 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | Defaults to `DAE_API_ENDPOINT`, then `unix:///var/run/dae.sock` |
 | `--timeout` | Request timeout, default `10s` |
-| `DAE_API_KEY` | Configured API key for TCP administration, sent as a Bearer credential; unnecessary for clients with verified LAN ingress when the daemon has no key |
+| `DAE_API_KEY` | User or administrator key, sent as Bearer over HTTPS only |
+| `--api-key-file` / `DAE_API_KEY_FILE` | Read a key file, taking precedence over `DAE_API_KEY` |
+| `--api-ca` / `DAE_API_CA` | Pin client TLS trust exclusively to the PEM CA file |
 | `--json` | `status`: full snapshot, mutually exclusive with `--verbose` and `--recent`; MITM report commands: filtered instance array |
 | `--color` | `status` text colors: `auto` (default), `always`, or `never` |
 
@@ -61,11 +63,13 @@ dae selector proxy --json
 
 Duplicate names require an ID rather than guessing by list order. Connection flags and environment variables are the same as for status. The daemon applies and persists changes; the CLI never edits the state file directly. Missing or ambiguous preferences remain visible alongside the temporary actual choice and can be restored on a later reload. Reset requires a configured default.
 
-The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing file system permission for the local socket.
+The Unix socket remains mode `0600` and is available regardless of `api.listen`. Neither command entry point elevates privileges automatically; use `sudo` or existing file system permission for the local socket.
 
-Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a client with verified LAN ingress can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP and HTTPS directly on the same API port. Before using HTTPS, configure the client to trust the daemon CA. Reverse proxies are unsupported.
+On Unix the CLI ignores remote key and CA files, and the SDK sends no Bearer key.
 
-The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
+Enable the [TCP API](api.md) and supply `user_key` or `admin_key` over HTTPS through `DAE_API_KEY` or `--api-key-file`. Credentialless status requests require both explicitly enabled `allow_lan_anonymous` and verified LAN ingress. Clients bypass environment proxies and reject redirects. Native direct endpoints use the actual API IP:port and trust the daemon CA. Alternatively, target an HTTPS reverse-proxy domain and trust its frontend certificate; self/device routes and CA/MITM verification still require direct access. CLI, SDK and Prometheus use explicit keys rather than browser cookies; raw-key requests without Origin are unaffected by `web_origins`.
+
+The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. With `client.Options.Timeout` unset, ordinary requests default to ten seconds; `Profile` uses the sampling duration plus ten seconds of transfer allowance, so the default 30-second CPU capture gets a 40-second request timeout. Explicit Timeout values and caller contexts remain effective, and profiling does not mutate the concurrently shared client's timeout. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
 
 Status tables use composite titles for `UP/24H` and the traffic
 `AVG/MAX` pairs. These titles share field widths with their data: each title
@@ -191,7 +195,7 @@ make -C web
 
 `web/` owns the TypeScript frontend source, build configuration and tests. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both require Make, Node.js 22.13+ and pnpm, without Go. Make installs the pinned frontend dependencies as needed and runs strict type checks before building. `dae-client` contains only terminal commands and does not include Web assets.
 
-The bundle contains `index.html`, JavaScript and CSS under `assets/`, and dependency license notices. The React interface uses Cloudflare's Kumo components with light and dark palettes that follow the system preference, and responsive Recharts traffic charts. Overview shows quick selectors, this device's settings and status; Setting separates device management, shared outbound choices and diagnostics into sections. All frontend dependencies are bundled locally. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
+The bundle contains `index.html`, JavaScript and CSS under `assets/`, `dae-web.json` API-target metadata, and dependency license notices. The React interface uses Cloudflare's Kumo components with light and dark palettes that follow the system preference, and responsive Recharts traffic charts. Overview shows quick selectors, this device's settings and status; Setting separates device management, shared outbound choices and diagnostics into sections. All frontend dependencies are bundled locally. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
@@ -201,7 +205,71 @@ Assets are read on each request. Replace the complete bundle directory when upda
 
 Charts load on demand when Overview has traffic samples. The build includes gzip sidecars, which dae serves to clients accepting gzip without runtime compression. Content-hashed JS/CSS under `assets/` use a one-year immutable cache; HTML and unhashed files use `no-store`. Deploy all chunks and sidecars together, and keep existing hashed filenames immutable.
 
-The Web address is `http://ROUTER_IP:<api_port>/`, or `https://ROUTER_IP:<api_port>/` after trusting the CA. The daemon serves these files on the API origin, preserving browser origin checks and the caller's direct LAN identity. Building the bundle separately does not enable `file://`, arbitrary cross-origin hosting or ordinary reverse proxies for device self-service. Forwarding headers cannot impersonate a device.
+Serve static assets with nginx or another server. `DAE_API_URL` fixes the API target during development and production builds; when unset, the page uses relative `/api/`. An explicit target must be an HTTPS origin (including a reverse-proxy domain), without a path prefix, userinfo, query or fragment. There is no runtime address selector or browser-storage override. Rebuild and redeploy the complete bundle to change the target.
+
+The frontend constant and `dae-web.json` come from the same target parser. The daemon reads metadata from the actual embedded or `DAE_WEB_ROOT` bundle and combines it with verification destinations to generate CSP; there is no duplicate API-target setting. Missing or invalid metadata prevents page serving. An independent static server must use a matching CSP: default same-origin proxying needs only `connect-src 'self'`; same-site direct deployments allow only their fixed API and required proof endpoints, never unrestricted `https:`. Browsers impose limitations on IPv6 CSP host sources; client and server validation still require exact endpoints.
+
+### Same-site direct access
+
+Native dae APIs accept literal IP addresses only. For an independent HTTPS page on port 8443 of the same IP, directly calling dae on HTTPS port 9080:
+
+```sh
+DAE_API_URL=https://192.168.1.1:9080 make web
+```
+
+```text
+global { lan_interface: br-lan }
+api {
+  listen: '9080'
+  user_key: 'replace-with-a-user-key'
+  admin_key: 'replace-with-a-different-admin-key'
+  web_origins: 'https://192.168.1.1:8443'
+}
+```
+
+The browser must trust both the static page certificate and dae CA. These endpoints are same-site but cross-origin, so the exact page origin and credentialed CORS are still required. `SameSite=Strict` does not support arbitrary cross-site deployments. Different LAN IPs, or an HTTP page calling an HTTPS API, are not equivalent same-site login setups. Direct access retains real ingress identity; self-service still requires LAN/MAC evidence.
+
+### Same-origin HTTPS reverse proxy
+
+Deploy a default bundle (without `DAE_API_URL`) at `https://dae-ui.example.com`; the browser calls nginx through same-origin `/api/`. The browser trusts the page certificate, while nginx obtains dae's public CA through a trusted channel and verifies its upstream. Never copy the CA private key or inject a long-lived API key into proxy requests. For example, configure dae with:
+
+```text
+api {
+  listen: '192.168.1.1:9080'
+  admin_key: 'replace-with-a-private-admin-key'
+  web_origins: 'https://dae-ui.example.com'
+}
+```
+
+Minimal nginx `server` configuration (replace certificates, asset directory and actual API IP):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name dae-ui.example.com;
+    ssl_certificate /etc/nginx/dae-ui/fullchain.pem;
+    ssl_certificate_key /etc/nginx/dae-ui/key.pem;
+    root /srv/dae-web;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+    location /api/ {
+        proxy_pass https://192.168.1.1:9080;
+        proxy_ssl_trusted_certificate /etc/nginx/dae-ca.pem;
+        proxy_ssl_verify on;
+        proxy_ssl_name 192.168.1.1;
+        proxy_set_header Host 192.168.1.1:9080;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header X-Dae-Proxy 1;
+    }
+}
+```
+
+Preserve API paths, cookie attributes, Origin and Fetch Metadata. Always overwrite `X-Dae-Proxy`, regardless of a client-supplied value. The upstream Host must match dae's actual IP:port, so the preserved page Origin still belongs in `web_origins`. Both hops use TLS: never substitute HTTP/Unix upstreams or disable certificate verification.
+
+Proxy requests receive only key/cookie privileges, not the proxy machine's LAN/MAC identity. Management, explicit-MAC operations and CA downloads remain available; anonymous LAN, self/device routes and browser CA/MITM verification do not. The page reports verification as unavailable rather than treating a proxy handshake as browser trust. The presence of `X-Dae-Proxy`, `Forwarded`, `X-Forwarded-*` or `X-Real-IP`, even empty, only removes capabilities and never grants identity. Ordinary TCP cannot reliably identify an unmarked proxy; setting the marker is part of the deployment contract. Cookies are not isolated by port: use a dedicated management hostname, not one shared with untrusted HTTPS services.
 
 `make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.
 
@@ -220,13 +288,13 @@ Arguments are old MAC then new MAC. Without `--instance`, exactly one Surge inst
 
 First stop old-MAC traffic/background eligibility and other processes writing the same store, then verify the target MAC and absence of target data. Authorization changes are separate. No current device presence or MITM permission is required; local data, notifications, counters and isolation configuration are untouched. Memory-only mode moves current runtime data without enabling persistence or preserving it across reloads; no active storage runtime returns `503`. Existing target or executing source/target scripts return `409`; a later old-MAC execution may recreate its partition. A published-but-durability-unconfirmed `500` means the move took effect. Timeout or connection failure also does not prove data was unchanged: do not automatically retry. See [storage API semantics](api.md#api), including cross-process limits.
 
-The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `internal/daemon/api.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
+TCP APIs, metrics and pprof share `api.listen` and authorization. Optional static files occupy remaining paths; Unix provides only APIs. The page uses its build-fixed target; login keys travel only from an HTTPS page to an HTTPS API. On the HTTPS management page, API calls and CA downloads include the HttpOnly cookie. HTTP setup requests omit credentials; challenge proofs omit all credentials.
 
 ## Architecture
 
 | Directory | Responsibility |
 | --- | --- |
-| `api` | Plain public wire models and network order; standard library only |
+| `api` | Public data contracts, verified ingress identity, operation errors and network order; standard library only |
 | `api/client` | Concurrent reusable HTTP/Unix client, authentication, JSON and typed errors |
 | `client/status` | Daemon snapshot rendering and generic plugin summaries, without runtime access |
 | `client/cli` | Shared API connection options, instance filtering and explicit plugin command registration |
@@ -234,10 +302,11 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 | `web` | Frontend source, browser requests and independent build |
 | `internal/webui` | Embedding and static serving of frontend build output |
 | `cmd/dae-client` | Independently buildable entry point |
+| `internal/daemon` | Composing handlers, authentication, certificates and monitoring from accepted configuration; publication and reload coordination |
 | `internal/apiserver` | TCP/Unix listeners, reload draining, HTTP routing, authorization and validation; runtime access through stores |
 | `control` | Runtime projection, LAN identity, settings application and persistence |
 
-Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` declares an access policy for each route; `access.go` gates Unix, LAN, device and key/session access; `auth.go` validates Bearer credentials; `session.go` handles login/logout and signed cookies; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go`. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
+Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` declares an access policy for each route; `access.go` gates Unix, LAN, device and key/session access; `auth.go` validates Bearer credentials; `session.go` handles raw-key login, cookie clearing and signed sessions with absolute expiry; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go` and shares ingress identity and operation errors through `api`, without importing `internal/apiserver`. The server maps those errors to HTTP responses. `control` does not import UI packages; `internal/daemon` composes API and Web handlers. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
 
 The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds independently within this repository; Go owns embedding and routing. API contracts, clients and generated frontend types are updated and verified in the same change.
 
@@ -251,9 +320,9 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 
 | Operation | Response / requirement |
 | --- | --- |
-| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified LAN ingress when no key is configured; Unix uses file system permissions |
-| `GET /api/selectors` | `SelectorsResponse`; administration required; `auth_mode` is `api_key`, `lan` or `unix` |
-| `PUT` / `DELETE /api/session` | Browser login / clear cookie; `204`, empty body; keyless login verifies LAN/Unix access and clears stale cookies without issuing a session |
+| `GET /api/status` | `StatusSnapshot`; TCP uses a user/admin key or session, or explicitly enabled anonymous LAN access; Unix uses file system permissions |
+| `GET /api/selectors` | `SelectorsResponse`; user authorization; `auth_mode` is `user_key`, `admin_key`, `lan` or `unix` |
+| `PUT` / `DELETE /api/session` | Raw HTTPS key login: `200` JSON `{role, expires_at}` and `__Host-dae-session` cookie; logout: `204`, clears the cookie without revoking copies; requires `X-Dae-API: 1` |
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | Restore explicit `selector(n)`; admin, empty body; `409` without a default |
 | `POST /api/probes` | `202` + `ProbeResponse`; admin, `{"outbound":"group","node_id":"..."}`; omit or leave `node_id` empty for the entire outbound |
@@ -272,7 +341,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `GET /api/certificate` | Public CA name, SHA-256 fingerprint, and optional `mitm_test_generation` and `mitm_test_origins` |
 | `POST /api/certificate/tests` | `201` + `CertificateTest`; empty body, issues a temporary certificate held in memory without replacing the management certificate; TCP API only |
 | `GET /api/certificate/tests/{id}` | `CertificateTest` over HTTPS using a challenge certificate; success consumes the challenge; management or older challenge connections receive `409` and close for retry |
-| `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Public certificate downloads, `404` when unavailable |
+| `GET /api/certificate/ca.pem`, `/api/certificate/ca.cer`, `/api/certificate/ca.mobileconfig` | User-authorized CA downloads, `404` when unavailable |
 
 `RefreshResources(ctx)` returns an `Operation`; query `Operation(ctx, id)` to
 follow that request. `ResourceRefreshStatus(ctx)` returns the latest refresh as
@@ -281,21 +350,21 @@ api.OperationRequest{Kind: "reload"})` submits a generic operation; `Abort` appl
 only to reload and suspend. Refresh uses resources from the accepted configuration;
 configuration-file changes require `dae reload`. See [resource refresh](api.md#resource-refresh).
 
-All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass LAN ingress verification (direct neighbor validation for Ethernet; interface evidence for IP-only links, including routed subnets), otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
+JSON mutations require `X-Dae-API: 1`, supplied by the SDK; MITM changes additionally require the current CA fingerprint in `X-Dae-MITM`. `client.Options.APIKey` accepts user or administrator keys and `RootCAs` selects trusted roots. TCP credentials require HTTPS, Unix uses filesystem permissions, and anonymous LAN access grants only user privileges. See the [access model](api.md#access-and-connections).
 
-The access gate runs before body parsing, feature checks and resource lookups, and passes the identity verified for this request to the handler. Administrator credentials cannot replace device identity. Device context and explanations require verified LAN ingress; membership, MITM and MITM tests additionally require a nonzero unicast Ethernet MAC. Missing or invalid key/session credentials return `401` with `WWW-Authenticate: Bearer realm="dae"`; failed LAN/device authorization returns `403`, including device self-service over Unix. Protected resource lookups return `404` only after authorization. MITM tests belonging to another device also return `404` to conceal their existence. Unknown routes remain `404`; public certificate routes do not require an identity.
+The access gate runs before body parsing, feature checks and resource lookups, and passes the identity verified for this request to the handler. Administrator credentials cannot replace device identity. Current-device context and current-device explanations require verified LAN ingress; membership, MITM and MITM tests additionally require a nonzero unicast Ethernet MAC. Missing or invalid key/session credentials return `401` with `WWW-Authenticate: Bearer realm="dae"`; failed LAN/device authorization returns `403`, including device self-service over Unix. Protected resource lookups return `404` only after authorization. MITM tests belonging to another device also return `404` to conceal their existence. Unknown routes remain `404`; CA download/metadata routes require user privileges but no device MAC.
 
-URL-encode names as path segments. Bodies are limited to 1 KiB, or 64 KiB for explanations and membership previews. JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin, except for the certificate challenge's HTTPS GET from the initiating HTTP setup page at the same IP and port; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
+URL-encode names as path segments. Bodies are limited to 1 KiB, or 64 KiB for explanations and membership previews. JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browser origins follow the access model described above; certificate challenges bind their initiating origin. TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 
-Successful state operations return `200`; probes return `202` with accepted targets; session operations return `204` without a body. POST also requires `X-Dae-API: 1`, supplied by the SDK. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA, a certificate challenge requiring a fresh handshake, absent selector default, or unsupported probe target; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
+Successful state operations return `200`; probes return `202` with accepted targets; raw-key login returns `200` with `{role, expires_at}` and an HttpOnly session cookie, and logout clears the cookie with `204`. POST also requires `X-Dae-API: 1`, supplied by the SDK. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA, a certificate challenge requiring a fresh handshake, absent selector default, or unsupported probe target; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
 
 Idle device statistics expire after their last minute of history; returning devices start a new observation period. `DeviceStatus.started_at` identifies that period and is zero when no observation exists.
 
-The device SDK exposes `DeviceStatus(ctx)`, `StartMITMTest(ctx)` and `MITMTest(ctx, id)`. The last two create/read a challenge; its HTTPS requests must originate in the browser being tested. Validate the returned `MITMTestProof` ID and fingerprint together with same-origin observations. Discard only MITM results when `mitm_test_generation` changes.
+The device SDK exposes `DeviceStatus(ctx)`, `StartMITMTest(ctx)` and `MITMTest(ctx, id)`. The last two create/read a challenge; `VerifyMITM(ctx)` completes verification from the calling client. Browser verification must send the proof HTTPS requests from that browser. Validate the returned `MITMTestProof` ID and fingerprint together with authenticated API observations. Discard only MITM results when `mitm_test_generation` changes.
 
-Independently test CA trust with a same-origin `POST /api/certificate/tests`, then read `/api/certificate/tests/{id}` over HTTPS on the same API port from the browser being tested. The POST issues a temporary certificate and new key held only in memory and returns `id`, `ca_fingerprint` and `expires_at`. The proof GET must use this or a newer challenge certificate for the same source/router IP pair; management certificates never prove a challenge. Retry `409` responses after the server closes the old connection. The Web client permits at most eight attempts within a shared ten-second deadline. Omit credentials, reject redirects, disable caching and compare the proof ID and CA fingerprint with the POST response. Success consumes the challenge; consumed or expired IDs return `404`. Challenges expire after one minute. Once none remain for the address pair, new connections use the original management certificate again. Clients sharing a source IP share the temporary selection; persistent certificate files stay unchanged.
+Independently test CA trust with an authorized `POST /api/certificate/tests`, then read `/api/certificate/tests/{id}` over HTTPS on the same API port from the browser being tested. The POST issues a temporary certificate and new key held only in memory and returns `id`, `ca_fingerprint` and `expires_at`. The proof GET must use this or a newer challenge certificate for the same source/router IP pair; management certificates never prove a challenge. Retry `409` responses after the server closes the old connection. The Web client permits at most eight attempts within a shared ten-second deadline. Omit credentials, reject redirects, disable caching and compare the proof ID and CA fingerprint with the POST response. Success consumes the challenge; consumed or expired IDs return `404`. Challenges expire after one minute. Once none remain for the address pair, new connections use the original management certificate again. Clients sharing a source IP share the temporary selection; persistent certificate files stay unchanged.
 
-Only the proof GET allows HTTP-to-HTTPS CORS at the same IP and port; ordinary `/api/certificate` metadata remains same-origin and cannot prove trust. The test requires no device identity, and only CA changes invalidate its result. Fresh temporary certificates prevent a previously accepted management certificate warning from passing the test; success still does not prove device-wide CA trust.
+Proof GET allows only its initiating Origin. Ordinary metadata follows user authorization and cannot prove trust. The proof requires no MAC, uses a fresh temporary certificate, and only CA changes invalidate the result.
 
 ## Snapshot semantics and TUI integration
 
@@ -329,3 +398,31 @@ Create an `api/client.Client`, reuse it across requests, and pass cancelable con
 `SelectorState.track_all` is read-only group configuration; when true, the UI shows continuous monitoring instead of test buttons. There is no mutation API. `default_node_id` is present only for explicit `selector(n)`; hide default badges and reset controls when absent. Candidate `tested` distinguishes untested from failed, `checking` indicates queued/running work, `tracking` indicates continuous monitoring, and optional `checked_at` is the last completion time in RFC 3339. Untracked results are historical, not a continuous health guarantee.
 
 Use `errors.As` with a `*client.Error` variable to inspect `StatusCode`. Poll at a suitable interval, such as two seconds; keep the last snapshot and back off on `503`. No push stream or cross-request transaction is currently provided. The library does not retry writes: after a timeout, query the current state before deciding whether to repeat an operation.
+
+## Certificates, remote operations and profiling
+
+```sh
+# Export via the local socket, then transfer through a trusted channel.
+sudo dae-client certificate download --format pem -o dae-ca.pem
+# On the remote client:
+export DAE_API_ENDPOINT=https://192.168.1.1:9080
+export DAE_API_CA=/etc/dae/dae-ca.pem
+export DAE_API_KEY_FILE=/etc/dae/user.key
+dae-client status --recent
+dae-client certificate info
+dae-client certificate verify
+dae-client certificate verify-mitm
+# Administrator key required for these remote calls:
+export DAE_API_KEY_FILE=/etc/dae/admin.key
+dae-client operation reload
+dae-client operation get OPERATION_ID
+dae-client operation resources
+dae-client pprof profile --seconds 30 --output cpu.pprof
+go tool pprof cpu.pprof
+```
+
+Certificate verification requires a direct TCP endpoint and proves the CLI's configured trust store, not another browser's trust. MITM verification also requires a verified device MAC and enabled MITM. Operations are asynchronous; query `get ID` or submit `operation refresh`. Profiling requires `api.pprof: true`; its default timeout is one minute, adjustable with `--timeout`. Unix calls require no key.
+
+pprof also supports HTTPS Basic Auth with username `dae` and password `admin_key`. `go tool pprof` can fetch a Basic URL, but credentials in URLs may appear in history, process arguments and tool output; prefer the key-file download above. Keys in query parameters are unsupported. See [metrics](metrics.md) for Prometheus configuration.
+
+`make WEBUI=n` omits Web assets and skips frontend builds. `api { web: false }` disables page serving at runtime; API and CLI functions remain available. `pnpm --dir web dev` serves static development assets using the same fixed `DAE_API_URL` contract as production. Login development also requires an HTTPS page, same-site direct access or a same-origin HTTPS proxy, and exact `web_origins`. An ordinary HTTP localhost development page cannot log in to a remote API by widening the allowlist.

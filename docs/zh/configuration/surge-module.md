@@ -8,7 +8,6 @@
 
 ```text
 global {
-  api_port: 9080
   resource_cache: true # 默认开启，统一缓存订阅、模块及远程依赖
 }
 
@@ -328,7 +327,7 @@ fetch 提供 Headers、Request、Response 和 `text()` / `json()` / `arrayBuffer
 ./dae plugins surge status
 ```
 
-查询复用 daemon 的状态服务，无需开启 `global.api_port`。`disabled` 表示模块条件不满足；`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
+查询复用 daemon 的状态服务，无需开启 `api.listen`。`disabled` 表示模块条件不满足；`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
 
 `IP MAPS` 显示 IP 映射条目数。实际重写可查看 `debug` 路由日志：`destination_ip` 是原目标，`destination` 是拨号目标，`outbound` 是出站。
 

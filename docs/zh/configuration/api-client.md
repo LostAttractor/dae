@@ -9,10 +9,10 @@
 ```sh
 make client
 sudo ./dae-client status
-./dae-client status --api http://192.168.1.1:9080 --recent
-./dae-client plugins status --api http://192.168.1.1:9080 --json
-./dae-client plugins status --api http://192.168.1.1:9080 --verbose
-./dae-client plugins surge status --api http://192.168.1.1:9080 --instance personal
+./dae-client status --api https://192.168.1.1:9080 --recent
+./dae-client plugins status --api https://192.168.1.1:9080 --json
+./dae-client plugins status --api https://192.168.1.1:9080 --verbose
+./dae-client plugins surge status --api https://192.168.1.1:9080 --instance personal
 ./dae-client status --api unix:///var/run/dae.sock --json
 ```
 
@@ -24,7 +24,9 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | `DAE_API_ENDPOINT`，未设置时为 `unix:///var/run/dae.sock` |
 | `--timeout` | `10s`，单次请求超时；取消命令上下文也会取消请求 |
-| `DAE_API_KEY` | TCP 管理接口配置的 API key，以 Bearer 凭据发送；daemon 未配置密钥时，已验证 LAN 入口的客户端无需设置 |
+| `DAE_API_KEY` | `user_key` 或 `admin_key`；仅 HTTPS 发送 Bearer 凭据 |
+| `--api-key-file` / `DAE_API_KEY_FILE` | 从文件读取 key，优先于 `DAE_API_KEY` |
+| `--api-ca` / `DAE_API_CA` | 严格固定客户端 TLS 仅信任该 PEM CA 文件 |
 | `--json` | `status` 输出完整 API 快照，与 `--verbose`、`--recent` 互斥；MITM 报告命令输出筛选后的实例数组 |
 | `--color` | `status` 文本输出的颜色模式：`auto`（默认）、`always` 或 `never` |
 
@@ -53,11 +55,13 @@ dae selector proxy --json
 
 节点名必须精确匹配；重名时要求使用 ID，不按列表顺序猜测。`--api`、`--timeout`、`DAE_API_ENDPOINT` 和 `DAE_API_KEY` 与 status 相同。选择与持久化由守护进程负责，CLI 不直接修改状态文件。保存路径缺失或有歧义时，文本输出同时显示保存偏好和临时实际选择；后续 reload 可恢复返回的路径。没有显式默认的 selector 不支持 `reset`。
 
-本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
+本地 socket 权限仍为 `0600`，不依赖 `api.listen`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 
-TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证 LAN 入口的客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程在同一 API 端口直接提供 HTTP 和 HTTPS；使用 HTTPS 客户端前，应让其信任 daemon 的 CA。不支持反向代理。
+使用 Unix socket 时，CLI 不读取远端 key 和 CA 文件，SDK 也不发送 Bearer key。
 
-Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
+TCP 需要启用 [API 配置](api.md)。通过 HTTPS 使用 `user_key` 或 `admin_key` 时，设置 `DAE_API_KEY` 或 `--api-key-file`；只有显式开启 `allow_lan_anonymous`，已验证 LAN 入口的客户端才可以无凭据查询状态。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。原生直连使用实际 API IP:port，并信任 daemon CA；也可把 endpoint 指向下述 HTTPS 反代的域名并信任其前端证书，但自身设备接口及 CA/MITM 验证必须直连。CLI、SDK 和 Prometheus 使用显式 key，不需要浏览器 Cookie；无 Origin 的 key 请求不受 `web_origins` 限制。
+
+Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。未设置 `client.Options.Timeout` 时，普通请求默认 10 秒；`Profile` 自动使用实际采集时长加 10 秒传输余量，例如默认 CPU 采集 30 秒对应 40 秒请求超时。显式 Timeout 和调用者 context 仍优先约束请求；profile 不修改并发共享客户端的超时。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
 
 状态表中的 `UP/24H` 和流量的 `AVG/MAX` 使用复合表头，与数据共用各子字段的宽度：标题与数值都从各自字段左侧开始，`/` 在各行中的位置固定。显示宽度计算支持中文和 ANSI 颜色。
 
@@ -119,7 +123,7 @@ make -C web
 
 `web/` 的前端源码、构建配置和测试均使用 TypeScript。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者需要 Make、Node.js 22.13+ 和 pnpm，不需要 Go；Make 会按需安装锁定版本的前端依赖，并在构建前执行严格类型检查。`dae-client` 只包含终端命令，不携带 Web 资源。
 
-产物包含 `index.html`、`assets/` 下的 JavaScript 和 CSS，以及依赖许可声明。React 界面使用 Cloudflare 的 Kumo 组件，浅色/深色配色跟随系统设置，流量图表使用 Recharts 并自适应宽度。Overview 展示快捷节点选择、访问设备设置和状态；Setting 分区提供设备管理、全局节点选择与诊断。所有前端依赖均打包到本地资源中。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
+产物包含 `index.html`、`assets/` 下的 JavaScript 和 CSS、`dae-web.json` API 目标元数据，以及依赖许可声明。React 界面使用 Cloudflare 的 Kumo 组件，浅色/深色配色跟随系统设置，流量图表使用 Recharts 并自适应宽度。Overview 展示快捷节点选择、访问设备设置和状态；Setting 分区提供设备管理、全局节点选择与诊断。所有前端依赖均打包到本地资源中。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
@@ -129,7 +133,71 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 流量图表在 Overview 有采样数据时按需加载。构建产物包含 gzip 文件，dae 根据客户端支持情况直接提供，无需运行时压缩。`assets/` 下文件名含内容哈希的 JS/CSS 使用一年期不可变缓存，HTML 与其他文件使用 `no-store`。发布时应一并部署所有分块及 gzip 文件，不得修改已有哈希文件名对应的内容。
 
-页面通过 `http://路由器IP:<api_port>/` 或信任 CA 后的 `https://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立构建不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
+静态产物可由 nginx 等服务器独立托管。`DAE_API_URL` 在开发和生产构建时固定 API 目标，未设置时使用相对 `/api/`；显式值只能是 HTTPS origin（可为反代域名），不接受路径前缀、userinfo、query 或 fragment。页面不提供运行时地址切换，也不在浏览器存储中覆盖该目标。修改目标后重新构建并完整部署产物。
+
+前端常量与 `dae-web.json` 来自同一次目标解析。daemon 从实际内嵌或 `DAE_WEB_ROOT` 目录读取该元数据，结合证书证明目标生成 CSP，不另设一份 API 目标配置；元数据缺失或非法时不提供页面。独立静态服务器应使用与产物一致的 CSP：默认同源反代只需 `connect-src 'self'`，同站直连则仅放行固定 API 与所需证明端点，不能开放任意 `https:`。IPv6 的 CSP 主机约束存在浏览器限制，客户端和服务端仍校验精确端点。
+
+### 同站直连
+
+原生 dae API 只接受 IP 字面地址。以下示例把独立静态页部署到同一 IP 的 HTTPS 8443 端口，浏览器直连 dae 的 HTTPS 9080 端口：
+
+```sh
+DAE_API_URL=https://192.168.1.1:9080 make web
+```
+
+```text
+global { lan_interface: br-lan }
+api {
+  listen: '9080'
+  user_key: 'replace-with-a-user-key'
+  admin_key: 'replace-with-a-different-admin-key'
+  web_origins: 'https://192.168.1.1:8443'
+}
+```
+
+静态服务器的页面证书与 dae CA 都须被浏览器信任。两者同站但不同源，因此仍需精确 `web_origins` 与 credentialed CORS；Cookie 的 `SameSite=Strict` 不允许任意跨站部署。不同 LAN IP、HTTP 页面到 HTTPS API 均不能当作等价的同站登录部署。直连保留真实入口身份；设备自助仍要求 LAN/MAC 证据。
+
+### 同源 HTTPS 反向代理
+
+将默认构建（不设置 `DAE_API_URL`）部署到 `https://dae-ui.example.com`，页面通过同源 `/api/` 访问 nginx。浏览器信任 nginx 页面证书，nginx 通过可信渠道取得 daemon 的公开 CA 并验证上游；绝不复制 CA 私钥或在代理中注入长期 API key。dae 配置例如：
+
+```text
+api {
+  listen: '192.168.1.1:9080'
+  admin_key: 'replace-with-a-private-admin-key'
+  web_origins: 'https://dae-ui.example.com'
+}
+```
+
+最小 nginx `server` 配置（替换证书、静态目录和实际 API IP）：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name dae-ui.example.com;
+    ssl_certificate /etc/nginx/dae-ui/fullchain.pem;
+    ssl_certificate_key /etc/nginx/dae-ui/key.pem;
+    root /srv/dae-web;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+    location /api/ {
+        proxy_pass https://192.168.1.1:9080;
+        proxy_ssl_trusted_certificate /etc/nginx/dae-ca.pem;
+        proxy_ssl_verify on;
+        proxy_ssl_name 192.168.1.1;
+        proxy_set_header Host 192.168.1.1:9080;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header X-Dae-Proxy 1;
+    }
+}
+```
+
+不改写 API 路径，不改写或移除 Cookie 属性、Origin 或 Fetch Metadata，`X-Dae-Proxy` 必须无条件覆盖客户端同名头。上游 Host 必须匹配 dae 实际 IP:port；保留的页面 Origin 因此仍须加入 `web_origins`。两段均使用 TLS，不能换成 HTTP 或 Unix 上游，也不能关闭上游证书校验。
+
+反代请求只获得 key/Cookie 授予的权限，不借用代理机器的 LAN/MAC 身份。允许管理、显式 MAC 操作与 CA 下载；匿名 LAN、自身设备及浏览器 CA/MITM 验证均不可用，页面显示 unavailable 而不是声称代理握手证明客户端信任。`X-Dae-Proxy`、`Forwarded`、`X-Forwarded-*`、`X-Real-IP` 的存在（包括空值）仅会减权，不能授予身份；未标记代理无法仅从普通 TCP 连接可靠识别，正确覆盖标记是部署契约。Cookie 不按端口隔离，建议专用管理主机名，不与不受信任的 HTTPS 服务共享主机。
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
@@ -148,7 +216,7 @@ dae-client plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --ins
 
 先停用旧 MAC 的流量及后台资格，停止其他进程对同一存储的脚本写入，核对新 MAC 和目标无数据，再执行迁移。设备授权须单独调整；两个设备均不要求在线或启用 MITM。本机数据、通知、计数及隔离配置不变，内存模式仅移动当前 Runtime 数据，不因此启用持久化或跨重载保留；没有活动存储 Runtime 为 `503`。目标存在或源/目标脚本执行中为 `409`；旧 MAC 后续执行仍可能新建分区。提示已发布但持久性未确认的 `500` 表示迁移已经生效，超时或断线也不证明数据未变，均不得自动重试。详见 [API 存储语义](api.md#api) 及跨进程限制。
 
-端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`internal/daemon/api.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
+所有 TCP API、metrics、pprof 共用 `api.listen` 与鉴权。可选静态页面在剩余路径提供；Unix socket 只提供 API。页面使用构建时固定目标，登录 key 仅从 HTTPS 页面发往 HTTPS API；HTTPS 管理页的 API 请求和 CA 下载携带 HttpOnly Cookie；HTTP 安装页的 API 请求和所有挑战证明请求均省略凭据。
 
 ## 代码边界
 
@@ -160,22 +228,23 @@ client/cli、client/status、未来 TUI
                   │                                    │
                   └────────── api 数据契约 ◄────────────┘
 
-web/src ─── 同源 HTTP API ─── internal/apiserver
+web/src ─── 直接 HTTP(S) API ─── internal/apiserver
 
-web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（挂载到 api_port）
+web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（挂载到 api.listen）
 ```
 
-- `api`：普通 Go 数据结构与网络数组顺序，只依赖 Go 标准库；不包含运行时聚合或展示逻辑。
+- `api`：公开数据契约、已验证入口身份、业务错误及网络数组顺序，只依赖 Go 标准库；不包含运行时聚合或展示逻辑。
 - `api/client`：可并发复用的 Go 客户端，封装传输、鉴权、JSON 和错误，不导入 `control`、`common`、`config` 或 `component`。
 - `client/status`：本体状态快照和通用插件摘要的展示实现，不访问运行时；终端输出可写入任意 `io.Writer`。
 - `client/cli`：两种程序与插件共用的连接参数、实例筛选和命令注册接口；`cmd/dae-client` 是独立入口。
 - `plugins/surge/api`、`plugins/surge/client`：插件自己的报告类型、Schema、解析和展示；独立客户端入口显式注册其轻量命令包，不导入脚本运行时。
 - `web`：前端源码、浏览器请求层与独立构建入口，不读取父目录中的代码或文件。
-- `internal/webui`：只嵌入和托管前端构建产物；`cmd` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
+- `internal/webui`：只嵌入和托管前端构建产物；`internal/daemon` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
+- `internal/daemon`：按已接受配置组装 API handler、鉴权、证书与监控依赖，协调发布和重载。
 - `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。
 - `control`：读取运行状态、校验 LAN 身份、应用设置并持久化；Unix 与 TCP 使用同一套 API handler。重载先等待旧 handler 的请求结束，再释放旧控制平面。
 
-运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 为每条路由声明访问策略，`access.go` 统一执行 Unix、LAN、设备及密钥/会话门禁，`auth.go` 校验 Bearer 凭据，`session.go` 处理登录、退出及签名 Cookie；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
+运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 为每条路由声明访问策略，`access.go` 统一执行 Unix、LAN、设备及密钥/会话门禁，`auth.go` 校验 Bearer 凭据，`session.go` 处理原始 key 登录、Cookie 清除及带绝对到期时间的签名会话；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口，通过 `api` 共享入口身份和业务错误，不导入 `internal/apiserver`；HTTP 状态映射由服务端负责。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
 
 前端与 dae 的边界是公开构建产物和 HTTP API 契约。`web/` 在同一仓库内保留独立构建，嵌入、静态托管与端口分发由 Go 宿主负责。API 契约、客户端和前端类型在同一个变更中更新并验证。
 
@@ -189,9 +258,9 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 | 方法与路径 | 响应 | 权限与请求 |
 | --- | --- | --- |
-| `GET /api/status` | `StatusSnapshot` | TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix 使用 socket 权限 |
-| `GET /api/selectors` | `SelectorsResponse` | 管理权限；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
-| `PUT` / `DELETE /api/session` | `204`，无响应正文 | 浏览器登录 / 清除 Cookie；空请求正文。无密钥时验证 LAN/Unix 权限并清除旧 Cookie，不签发会话 |
+| `GET /api/status` | `StatusSnapshot` | TCP 使用普通或管理员 key/会话，或显式开启的 LAN 免 key 权限；Unix 使用 socket 权限 |
+| `GET /api/selectors` | `SelectorsResponse` | 普通权限；`admin_enabled` 标记管理员操作，`auth_mode` 为 `user_key`、`admin_key`、`lan` 或 `unix` |
+| `PUT` / `DELETE /api/session` | 登录：`200` JSON `{role, expires_at}` 和 `__Host-dae-session` Cookie；退出：`204` 清 Cookie，不吊销复制件 | 登录仅接受 HTTPS 原始 key；写请求要求 `X-Dae-API: 1` |
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复显式 `selector(n)`；没有默认时 `409` |
 | `POST /api/probes` | `202` + `ProbeResponse` | 管理权限；`{"outbound":"group","node_id":"..."}` 探测单路径；省略或留空 `node_id` 探测整个出站 |
@@ -210,13 +279,13 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `POST /api/certificate/tests` | `CertificateTest` | 创建 CA 信任挑战，签发内存临时证书；不修改管理证书，只支持 TCP API |
 | `GET /api/certificate/tests/{id}` | `CertificateTest` | 临时证书的 HTTPS 握手证明，成功后消费挑战；管理证书或旧挑战连接 `409` 后关闭并重试 |
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、可选 `mitm_test_generation` 和 `mitm_test_origins`；未启用时 `404` |
-| `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
+| `GET /api/certificate/ca.pem`、`/api/certificate/ca.cer`、`/api/certificate/ca.mobileconfig` | 证书文件 | 普通权限；不可用时 `404` |
 
 资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
-设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。设备空闲且最近一分钟历史过期后回收；再次出现时累计值重新开始，`started_at` 表示本次观察周期起点，无观察记录时为零时间。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
+设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。设备空闲且最近一分钟历史过期后回收；再次出现时累计值重新开始，`started_at` 表示本次观察周期起点，无观察记录时为零时间。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；这两个方法创建/查询挑战；`VerifyMITM(ctx)` 在当前客户端执行完整验证，浏览器验证则由对应浏览器发起 HTTPS 请求。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认经授权的 API 查询返回的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
 
-CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以同一 API 端口的 HTTPS GET `/api/certificate/tests/{id}` 校验 ID 和 CA 指纹。POST 签发仅存内存的临时证书和新密钥，不修改持久化管理证书。GET 要求该源 IP 与路由器 IP 使用本次或更新挑战证书的握手，管理证书或更早挑战的连接返回 `409` 后关闭；重试仍须由被测浏览器执行。证明成功后消费挑战，已消费或过期的 ID 返回 `404`。挑战一分钟过期；该地址对没有剩余挑战后，新连接恢复管理证书。共享源 IP 的连接会临时使用同一组挑战证书。不要求设备身份，仅 CA 指纹变化时清除结果。浏览器成功和服务端观测都不能证明整个设备信任 CA。
+CA 信任独立通过已授权的 `POST /api/certificate/tests` 创建挑战，再以同一 API 端口的 HTTPS GET `/api/certificate/tests/{id}` 校验 ID 和 CA 指纹。POST 签发仅存内存的临时证书和新密钥，不修改持久化管理证书。GET 要求该源 IP 与路由器 IP 使用本次或更新挑战证书的握手，管理证书或更早挑战的连接返回 `409` 后关闭；重试仍须由被测浏览器执行。证明成功后消费挑战，已消费或过期的 ID 返回 `404`。挑战一分钟过期；该地址对没有剩余挑战后，新连接恢复管理证书。共享源 IP 的连接会临时使用同一组挑战证书。不要求设备身份，仅 CA 指纹变化时清除结果。浏览器成功和服务端观测都不能证明整个设备信任 CA。
 
 迁移 SDK 为 `MigrateScriptStore(ctx, "surge", api.ScriptStoreMigrateRequest{FromMAC: "02:00:00:00:00:11", ToMAC: "02:00:00:00:00:22"})`，同步返回 `*api.ScriptStoreMigrateResponse`，含规范化 MAC 和 `KeysMoved`，不返回存储值。非法/相同 MAC 为 `400`，实例/源不存在为 `404`，目标存在或源/目标执行中为 `409`，存储不可用或锁等待取消/超时为 `503`。服务端使用固定五秒可取消锁等待预算；文件 I/O 不保证被硬中断。已发布但持久性未确认返回 `500`，不能自动重试；超时或连接中断亦不能作为未发生变更的证明。
 
@@ -224,19 +293,19 @@ CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以�
 
 `SelectorState.track_all` 是 group 配置的只读值，开启时前端用持续检测状态替代 Test 按钮；没有对应的修改 API。`default_node_id` 仅在显式 `selector(n)` 时存在，省略时隐藏所有默认标记和重置操作。候选的 `tested` 区分未测试与失败，`checking` 表示排队/检测中，`tracking` 表示持续监测，`checked_at` 是最近完成测试时间（RFC 3339，首次完成前省略）。未追踪节点的结果是历史结果，不代表持续健康保证。
 
-所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过 LAN 入口校验（以太网还需直连邻居校验，纯 IP 接口使用入口记录并允许隧道后方子网），否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
+JSON 修改请求要求 `X-Dae-API: 1`，SDK 自动携带；MITM 修改还要求当前 CA 的 `X-Dae-MITM` 指纹。Go SDK 的 `client.Options.APIKey` 接受普通或管理员 key，`RootCAs` 指定信任根。TCP key 必须使用 HTTPS；Unix 免 key；开启的 LAN 免 key 仅授予普通权限。具体角色见 [API 访问模型](api.md#权限与连接)。
 
-门禁在读取请求正文、检查功能状态及查询资源之前执行，并将本次请求验证出的身份传给处理函数。管理员凭据不替代设备身份；设备上下文和规则解释只要求已验证 LAN 入口，成员管理、MITM 和 MITM 测试还要求非零单播以太网 MAC。缺失或错误的密钥/会话返回 `401` 并携带 `WWW-Authenticate: Bearer realm="dae"`；LAN 或设备身份不满足要求返回 `403`。已通过门禁的请求才会得到资源不存在的 `404`；其他设备的 MITM 测试也返回 `404`，避免透露其存在。未知路由仍为 `404`，公开证书接口不要求身份。
+门禁在读取请求正文、检查功能状态及查询资源之前执行，并将本次请求验证出的身份传给处理函数。管理员凭据不替代设备身份；当前设备上下文和当前设备规则解释要求已验证 LAN 入口，成员管理、MITM 和 MITM 测试还要求非零单播以太网 MAC。缺失或错误的密钥/会话返回 `401` 并携带 `WWW-Authenticate: Bearer realm="dae"`；LAN 或设备身份不满足要求返回 `403`。已通过门禁的请求才会得到资源不存在的 `404`；其他设备的 MITM 测试也返回 `404`，避免透露其存在。未知路由仍为 `404`，CA 下载及元数据要求普通权限，无需设备 MAC。
 
-名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
+名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器来源遵循普通／管理员权限模型，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
-状态操作成功返回 `200`；探测受理返回 `202`；会话操作成功返回 `204`，无响应正文。POST 同样需要 `X-Dae-API: 1`，SDK 自动携带。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
+状态操作成功返回 `200`；探测受理返回 `202`；原始 key 登录返回 `200`、`{role, expires_at}` 与 HttpOnly 会话 Cookie，退出清 Cookie 并返回 `204`。POST 同样需要 `X-Dae-API: 1`，SDK 自动携带。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
 
 | 状态码 | 含义 |
 | --- | --- |
 | `400` | 正文、字段、节点 ID 或连接地址等不合法 |
 | `401` | 密钥/会话缺失或无效，携带 Bearer 认证挑战 |
-| `403` | LAN 或设备身份无法确认、Unix 请求设备自助接口、跨源或缺少变更标记 |
+| `403` | LAN/设备身份无法确认、自助接口非直连、浏览器来源/Fetch Metadata 不获许可、HTTP 凭据或缺少变更标记 |
 | `404` / `405` | 资源不存在 / 方法不支持 |
 | `409` | CA 已变化、selector 没有可重置的默认节点，或目标出站不支持探测 |
 | `413` / `415` | 正文过大 / Content-Type 不正确 |
@@ -311,3 +380,31 @@ func main() {
 TUI 可长期复用 `Client`，用带取消的 context 控制刷新，并用 `var apiErr *client.Error` 和 `errors.As(err, &apiErr)` 取得 `StatusCode`。根据展示需要轮询，例如 2 秒一次；收到 `503` 时保留最后快照并退避，恢复后刷新。当前 API 不提供推送流或跨请求事务，多次查询不是同一原子快照。
 
 修改 selector 使用 `Selectors`、`SelectNode`、`ResetSelector`；设备自助使用 `Device`、`SetMembership`、`SetMITM`、`ResetMITM`。`SetMITM(ctx, false, fingerprint)` 显式关闭，`ResetMITM(ctx, fingerprint)` 恢复配置。客户端只维护交互状态，运行时设置的应用与持久化由守护进程负责。
+
+## 证书、远程操作与性能采集
+
+```sh
+# Export via the local socket, then transfer through a trusted channel.
+sudo dae-client certificate download --format pem -o dae-ca.pem
+# On the remote client:
+export DAE_API_ENDPOINT=https://192.168.1.1:9080
+export DAE_API_CA=/etc/dae/dae-ca.pem
+export DAE_API_KEY_FILE=/etc/dae/user.key
+dae-client status --recent
+dae-client certificate info
+dae-client certificate verify
+dae-client certificate verify-mitm
+# Administrator key required for these remote calls:
+export DAE_API_KEY_FILE=/etc/dae/admin.key
+dae-client operation reload
+dae-client operation get OPERATION_ID
+dae-client operation resources
+dae-client pprof profile --seconds 30 --output cpu.pprof
+go tool pprof cpu.pprof
+```
+
+证书验证需要 TCP 直连，并证明当前 CLI 配置的信任库；不会替另一个浏览器完成信任验证。MITM 验证还要求当前连接有可验证的设备 MAC 和已启用的 MITM。`operation` 返回异步任务，可用 `get ID` 查询；刷新使用 `operation refresh`。pprof 需 `api.pprof: true`，默认请求超时为一分钟，可用 `--timeout` 延长。Unix 上仍无需 key。
+
+pprof 也接受 HTTPS Basic Auth，用户名 `dae`、密码为 `admin_key`，供外部工具使用。`go tool pprof` 可读取 Basic URL，但 URL 中的密钥可能出现在历史、进程参数和工具输出中；优先使用上述 key 文件下载方式。不要把 key 放在 query 参数中。Prometheus 配置见 [metrics](metrics.md)。
+
+`make WEBUI=n` 构建不包含 Web 的 daemon，并跳过前端构建；`api { web: false }` 可运行时关闭页面。所有证书和管理能力仍由 API/CLI 提供。开发时 `pnpm --dir web dev` 只提供静态页面，使用与生产构建相同的固定 `DAE_API_URL`。登录开发环境同样需要 HTTPS 页面、同站直连或同源 HTTPS 反代及精确 `web_origins`；普通 HTTP localhost 开发页不是远程 key 登录入口，不能以扩大白名单绕过跨站限制。

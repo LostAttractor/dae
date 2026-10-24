@@ -7,8 +7,12 @@
 ```text
 global {
   lan_interface: br-lan
-  api_port: 9080
-  api_key: '替换为私密密钥'
+}
+api {
+  listen: '9080'
+  user_key: 'replace-with-a-user-key'
+  admin_key: 'replace-with-a-different-admin-key'
+  allow_lan_anonymous: true
 }
 group {
   manual {
@@ -28,7 +32,30 @@ routing {
 }
 ```
 
-`global.api_port` 默认 `0`，不监听；非零时在所有路由器地址提供 HTTP 页面与 API；同一端口也提供完整的 HTTPS 页面与 API，使用 daemon 的本地 CA 签发路由器 IP 证书。默认自动初始化持久化 CA，无需开启 MITM；自定义路径见[本地 CA](certificate.md)。安装并信任 CA 后可用 `https://192.168.1.1:9080/` 访问。用实际局域网 IP 访问，例如 `http://192.168.1.1:9080/`。不支持域名、反向代理或跨源浏览器请求；改变端口或路由器地址后需重载。
+## 权限与连接
+
+`api.listen` 留空时不监听 TCP；Unix socket `/var/run/dae.sock` 始终提供 API，权限为 `0600`，不要求 API key。仅填写端口（如 `'9080'`）绑定 `global.lan_interface` 匹配的入口接口，跟随接口增删；显式 IP 仅在本机持有该地址期间享有旁路。IPv6 链路本地地址须使用裸端口和 `global.lan_interface`；配置不接受显式链路本地 IPv6 地址或带 `%zone` 的地址。`'0.0.0.0:9080'` 和 `'[::]:9080'` 是通配监听，按 Go `tcp` 和系统能力选择地址族，可能同时接受 IPv4/IPv6，不应把 `0.0.0.0` 当作仅 IPv4。TCP 同一端口提供 HTTP 和 HTTPS，HTTPS 使用 daemon 的持久化 CA，与 MITM 是否启用无关。原生直连必须使用实际监听端点的 IP 字面地址；域名入口通过 HTTPS 反向代理提供。
+
+仅填写端口时必须配置 `global.lan_interface`；不接受 bridge、bond 等 master 的从接口，因为本机 TCP 流量交付给 master，而非观测到的入口端口。保留原入口范围时应使用显式 API IP 地址；只有打算将 master 的全部端口作为 LAN 入口时，才改为选择 master。暂时没有匹配接口时等待接口出现，不会回退为监听全部地址。本机地址变化会自动原子更新 API 旁路与设备路由豁免共用的地址集合，不替换控制面或中断管理服务；准备或发布失败时保留原集合并重试。相同 LAN 端点的 pattern 更新保留交集接口上的监听；无法复用的绑定类型切换可能因端口冲突而失败，失败保留原服务，这类变更需要重启。裸端口模式下，内核路由旁路与设备路由豁免均要求目的为本机地址、TCP 端口匹配，且逻辑 LAN 入口上已有实际监听 socket；目的地址不必属于该入口接口。热插拔时若端口临时被占用，监听器会自行退避重试，无需再次触发接口事件。
+
+| 权限 | 授权方式 | 功能 |
+| --- | --- | --- |
+| 普通用户 | HTTPS `user_key` / `admin_key` 或其会话 Cookie；开启 `allow_lan_anonymous` 后的已验证直连 LAN | 全局 status、metrics、selector 读取、CA 下载与信任验证；已识别设备的自身设置、状态与 MITM 验证 |
+| 管理员 | HTTPS `admin_key` 或其会话 Cookie；受文件权限保护的 Unix socket | 包含普通权限；节点切换、探测、脚本、重载、资源刷新、跨设备管理、规则解释、路由影响预览、pprof |
+
+`user_key` 与 `admin_key` 必须不同。没有配置 `admin_key` 时远程管理不可用；LAN 免 key 永远只授予普通权限。两类 key 都不证明设备身份：`/api/device...` 仍校验当前 LAN 连接，涉及 MAC 的操作要求真实以太网身份。远程管理员和 Unix 客户端可以通过显式 MAC 管理接口操作其他设备。
+
+通过 TCP 访问管理接口、metrics 和 pprof 均需 HTTPS，已验证的匿名 LAN 也不例外。开启 `allow_lan_anonymous` 后，已验证的直连 LAN 客户端可通过 HTTP 读取 CA 信息、下载证书和创建信任挑战；挑战证明始终要求 HTTPS。HTTP 安装页不发送凭据，也不加载管理功能。未开启匿名 LAN 时，请从 Unix socket 导出 CA，再通过可信渠道安装。
+
+`web_origins` 是所有浏览器 API 与监控请求的精确来源白名单，包括带 key 或 Cookie 的请求；默认只允许同源。填写不含路径的 HTTP(S) origin，主机大小写和默认端口会规范化。**同源**要求协议、主机、端口均相同；**同站**不要求端口相同，但仍受浏览器的协议与站点判断约束。例如 `https://192.168.1.1:8443` 页面直连 `https://192.168.1.1:9080` 是同站跨源，须把页面源加入白名单。`Sec-Fetch-Site: cross-site` 的管理请求即使来源在白名单内也被拒绝；不同主机的 LAN IP 不因同属局域网就成为同站。CLI、Prometheus 等不带 Origin 的原始 key 调用不受浏览器来源限制，仍须独立鉴权。
+
+仅原始 `user_key` 或 `admin_key` 可以通过 HTTPS 登录，响应 JSON 为 `{role, expires_at}`，会话由 `Set-Cookie` 写入 `__Host-dae-session`：`Secure; HttpOnly; SameSite=Strict; Path=/`，不设置 `Domain`。会话按角色与 API Host/端口签名，七天绝对到期；已有 Cookie、LAN 匿名权限或 Unix 隐式管理员权限不能签发或延长会话。页面以 `credentials: include` 发送管理请求，不保存原始 key 或可供 JavaScript 读取的会话凭据。退出调用 `DELETE /api/session` 清除 Cookie，包括已过期 Cookie；复制件直到到期或相应 key 轮换才失效。
+
+Cookie 不按端口隔离，同一主机名/IP 的其他 HTTPS 服务必须可信；建议使用专用管理主机名。同一 Cookie 作用域内的标签页共享登录状态。显式 Authorization 优先：错误 key 不回退 Cookie，错误 Cookie 不回退匿名 LAN；正确原始 key 可替换过期会话。
+
+独立页面的 API 目标在开发/构建时固定为 `DAE_API_URL`，默认相对 `/api/`，不提供运行时地址切换。支持同站直连或同源 HTTPS 反代。反代两段都必须使用 TLS，上游验证 dae CA、Host 改写为实际 API IP:port、保留页面 Origin 并加入 `web_origins`，无条件设置 `X-Dae-Proxy: 1`。该标记及转发头只会减权，不会赋予代理服务器的 LAN/MAC 身份：匿名访问、所有自身设备接口及浏览器 CA/MITM 验证不可用，key/Cookie 管理、显式 MAC 管理与 CA 下载仍可用。HTTP 或 Unix 反代上游不受支持。最小配置见 [独立部署](api-client.md#同源-https-反向代理)。
+
+`api.web` 默认 `true`，控制 daemon 提供静态页面；`make WEBUI=n` 完全不编入页面。独立部署见 [API 与独立客户端](api-client.md)。`/metrics` 始终作为普通 API 提供，无独立开关；`api.pprof` 默认 `false`，启用后 `/debug/pprof/` 使用管理员权限。
 
 ## 使用与持久化
 
@@ -40,25 +67,17 @@ routing {
 
 `dae status`（包括 verbose/JSON）中，selector 只列出选中、持续追踪、正在检测或仍有活动连接的节点。已测试但空闲且未追踪的候选只在 `/api/selectors` 和页面中保留最后结果；组及全局累计流量仍包含这些路径。
 
-- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过 LAN 入口校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
-- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
+- **Selectors**：普通权限可查看状态；管理员可以切换节点、重置与触发探测。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
+- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，普通权限的节点列表和证书下载仍可用。
 - **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留；设备无活动连接且最近一分钟历史过期后回收统计，重新出现时开始新的观察周期，`started_at` 表示该周期起点。进程重启会重置所有计数。
-- **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
+- **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，普通权限即可读取；退出后若没有 LAN 免 key 权限则清除展示的数据。
 - **HTTPS Modules**：为当前设备选择 **Router default**、**On** 或 **Off**。**Router default** 跟随 `mitm.client_source_address` 并显示当前取值；**On** / **Off** 覆盖该配置，包括显式关闭。开启前须[安装并信任 CA](certificate.md)，否则该设备的 HTTPS 连接会失败。当前浏览器验证 CA 前，该区域持续显示警告；开启期间页面会自动测试 CA，验证失败时显示红色警告。**Test certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
 
 设备与已授权的全局状态在页面可见时每两秒刷新，速率沿用五秒采样、最多一分钟的历史。后台标签页暂停轮询；请求失败会显示更新时间和重试状态。
 
-登录后使用 `HttpOnly`、`SameSite=Strict` Cookie 保存有效期为 7 天的签名会话，Cookie 不包含 API key 原文。刷新页面或重载 daemon 后保留登录状态；**Logout** 清除浏览器 Cookie，修改 `api_key` 会使已有会话失效。**Refresh** 更新状态和刷新时间。设备自助设置无需管理员登录。
-
-`global.api_key` 为可选项。留空时，已验证的 LAN 连接获得完整管理权限，包括 selector、全局状态、其他设备设置、探测、已配置的脚本任务和资源刷新。以太网入口要求源 MAC 与直连 ARP/NDP 邻居一致；`tailscale0`、TUN 等纯 IP 接口要求当前连接有 `global.lan_interface` 的有效入口记录，无需 MAC 或直连邻居。此边界信任从该接口进入的所有来源，包括其他 VPN 节点和隧道后方的路由子网；`lan_interface` 本身不提供加密或用户认证。
-
-权限分为普通 LAN 设备和管理员：配置 `api_key` 后，未登录的 LAN 设备只能读取自身设置、流量与连接上下文，以及修改自身集合和 MITM 设置、执行自身 MITM 测试。全局状态、其他设备、节点、所有诊断与路由影响预览均要求管理员权限；无密钥时所有已验证 LAN 连接都是管理员。网页仅向管理员显示诊断和路由影响入口，退出登录或权限失效会清除已加载的诊断内容。证书下载和 CA 元数据保持公开。
-
-每个请求都会验证权限。私网源 IP、转发头或旧 Cookie 不能代替入口记录。无法验证时返回 `403`，无密钥模式不签发会话。配置密钥后，所有 TCP 管理请求必须通过密钥/会话认证，此认证独立于 LAN 身份。Unix socket 使用文件系统权限。HTTP 会向传输路径上的观察者暴露密钥和可复用会话；安装并信任 CA 后，应使用同一端口的 HTTPS 管理接口。HTTP 与 HTTPS 共用权限校验。
-
 没有以太网身份时，页面显示当前 IP 连接和入口接口，可读取连接上下文；只读诊断另需管理员权限。设备流量、MAC 集合成员变更与比较、设备 MITM 设置和 MITM 测试仍要求可验证的以太网 MAC；管理员登录不能补充该身份。
 
-入口记录包含 TCP 端点、链路类型、时间戳和接口索引，必须在 30 秒内且对应 LAN 钩子仍已挂载。新的数据路径代次使用空记录表，保留数据路径的重载保留入口记录。IPv6 链路本地端点的 zone 必须沿接收方向经 VLAN、网桥或 bond 对应到观测入口。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`。以太网设备身份还要求回程路由直连，且入口 MAC 与该路由接口的 ARP/NDP 邻居一致。
+入口记录包含 TCP 端点、链路类型、时间戳和接口索引，必须在 30 秒内且对应 LAN 钩子仍已挂载。新的数据路径代次使用空记录表，保留数据路径的重载保留入口记录。IPv6 链路本地端点的 zone 必须沿接收方向经 VLAN、网桥或 bond 对应到观测入口。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`，同时将 `api.listen` 设为显式 IP:port，而非裸端口。以太网设备身份还要求回程路由直连，且入口 MAC 与该路由接口的 ARP/NDP 邻居一致。
 
 `client` 块的纯文本简介用作页面显示名称：配置了简介时只显示简介，未配置时显示集合名称。按钮的无障碍标签和操作提示也使用同一显示名称；API 请求仍以配置中的集合名称标识目标。展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 
@@ -86,18 +105,18 @@ routing {
 
 ## 证书与 MITM 测试
 
-启用页面后，HTTP 和 HTTPS 在 `global.api_port` 上共用页面/API，CA 信任测试使用新签发的服务器证书和短期挑战，不要求 MITM 或设备 MAC。daemon 和当前设备均开启 MITM 后可进一步验证透明解密。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
+启用页面后，HTTP 和 HTTPS 在 `api.listen` 上共用页面/API。浏览器 CA/MITM 验证仅支持直接连接 dae；反代入口显示验证不可用，不能用代理的 TLS 握手证明浏览器信任 dae CA。CA 信任测试使用新签发的服务器证书和短期挑战，不要求 MITM 或设备 MAC。daemon 和当前设备均开启 MITM 后可进一步验证透明解密。透明 MITM 测试使用虚拟目标的 443 端口，由 `api.mitm_test_ipv4`（默认 `203.0.113.254`）和 `api.mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
 
 展开 **Certificate & browser verification** 可使用 **Download** 菜单下载描述文件、DER 和 PEM 格式的证书。点击 **Test certificate** 后执行以下测试；页面发现当前设备已开启 HTTPS Modules、开启 HTTPS Modules，或设备与 CA 变化时，也会自动执行：
 
-1. 浏览器同源请求 `POST /api/certificate/tests`，签发仅存于内存的临时证书和新密钥，再通过同一端口的 HTTPS 读取 `/api/certificate/tests/{id}`。服务端只接受发起源 IP 到该路由器 IP 使用本次或更新挑战证书完成的握手；管理证书或更早挑战的连接返回 `409` 并关闭，由浏览器重试。浏览器核对挑战 ID 和 CA 指纹，成功后 **CA trust** 显示 **CA trusted by this browser**。无需先打开 HTTPS 页面或接受证书警告。
+1. 浏览器向 API 请求 `POST /api/certificate/tests`，签发仅存于内存的临时证书和新密钥，再通过同一端口的 HTTPS 读取 `/api/certificate/tests/{id}`。服务端只接受发起源 IP 到该路由器 IP 使用本次或更新挑战证书完成的握手；管理证书或更早挑战的连接返回 `409` 并关闭，由浏览器重试。浏览器核对挑战 ID 和 CA 指纹，成功后 **CA trust** 显示 **CA trusted by this browser**。无需先打开 HTTPS 页面或接受证书警告。
 2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-mitm-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。
 
 虚拟地址须未被占用、流量能够到达 dae，且位于本地子网和其他软件的 Fake IP 池之外；与本地子网重叠的配置会被拒绝。不要将虚拟地址配置到路由器网卡上。如果网络在流量到达 dae 前丢弃默认文档保留地址段，须调整目标地址或路由。捕获严格限定为两个 IP 的 443 端口，API 流量仍由内核直通，无关流量沿用普通路由语义。
 
 测试不修改持久化管理证书、CA、MITM 证书缓存或设备开关。同一源 IP 最多有 8 个未完成信任挑战，全局最多 64 个，超额返回 `429`。挑战期限为一分钟，临时证书有效期另留五分钟时钟偏差余量，不超过 CA 到期时间，也不延长挑战期限。信任证明成功后消费挑战，一分钟内未完成则过期；临时证书随挑战移除，该源 IP 与路由器 IP 之间没有剩余挑战后，新连接恢复原管理证书。共享源 IP 的客户端会临时使用同一组挑战证书，其他源 IP 不受影响。透明 MITM 挑战及观测每个已验证 MAC 最多保留 8 条、全局最多 256 条，一分钟后过期，超额创建返回 `503`。CA 更换使信任挑战失效，MITM 配置发布使拦截挑战失效。CA 指纹变化清除两项结果，MITM 测试代次、设备身份或开关变化只清除透明 MITM 结果。结果附有测试时间和 CA 指纹，只代表当前浏览器。先前对管理证书添加的“接受风险”例外不能让挑战证书通过；依赖该例外的用户在挑战有效期内可能无法新建 HTTPS 连接，可回到 HTTP 安装页安装并信任 CA。浏览器不能区分证书拒绝、网络不通和部分浏览器策略限制时显示 **Verification incomplete**。
 
-请通过路由器的 IPv4 或非链路本地 IPv6 字面地址访问页面，无需外部网站或 DNS 映射。MITM 挑战只接受发起页面的精确 HTTP 或 HTTPS Origin。仅证书挑战的 HTTPS GET 允许同一 IP、同一端口的发起 HTTP 安装页读取；元数据与其他 API 继续要求同源。浏览器根据 `/api/certificate` 的 `mitm_test_origins` 校验虚拟目标。CA 元数据禁止缓存，CA 身份更换后旧 TLS 连接不能读取新 CA 的元数据，相同 CA 的重载保留连接。MITM 挑战完成后关闭连接，不能由缓存响应或普通 HTTPS 可达性替代 MITM 验证。虚拟目标没有上游服务，因此 MITM 验证未完成时不能区分绕过和网络不通。
+API 地址使用 IPv4 或非链路本地 IPv6 字面地址。证书和 MITM 挑战绑定发起请求的精确 Origin，允许独立 Web 读取该挑战的证明。浏览器核对 `/api/certificate` 公布的虚拟目标、挑战 ID 和 CA 指纹。CA 身份更换后旧 TLS 连接不能读取新身份元数据；相同 CA 的重载保留连接。验证结果只代表执行验证的浏览器或 CLI 信任库。
 
 ## 导出 MAC 集合
 
@@ -123,15 +142,13 @@ client {
 
 ## API
 
-POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。配置密钥时，状态查询及 selector 读写需要 `Authorization: Bearer <api_key>` 或有效的浏览器会话 Cookie；未配置时要求通过 LAN 入口校验。MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。密钥模式下显式 Authorization 头优先于 Cookie。名称须 URL 编码；命令行可省略 `Origin`。
-
-未配置 `global.api_key` 时，TCP 管理请求未通过 LAN 身份校验返回 `403`；已配置但请求密钥/会话缺失、错误或过期时返回 `401`。设备自助设置始终要求直连 LAN 身份，不需要该密钥。
+JSON API 的 POST、PUT、DELETE 要求 `X-Dae-API: 1`，JSON 正文要求 `Content-Type: application/json`。MITM 修改还要求 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。名称须 URL 编码，JSON API 不接受查询参数。无效凭据返回 `401`，权限不足或设备身份不可验证返回 `403`。授权先于读取请求正文与资源。pprof 保留标准工具的请求格式和查询参数。
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `PUT /api/session` | 配置密钥时使用 `Authorization: Bearer <api_key>` 登录并设置会话 Cookie；未配置时校验 LAN/Unix 权限并清除旧 Cookie。空正文，成功返回 `204` |
-| `DELETE /api/session` | 清除浏览器会话 Cookie；空正文，成功返回 `204` |
-| `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix socket 使用文件系统权限 |
+| `PUT /api/session` | HTTPS 原始 Bearer key → `200` JSON `{role, expires_at}` 和 HttpOnly 会话 Cookie；不接受已有会话、匿名 LAN 或 Unix 隐式权限 |
+| `DELETE /api/session` | 空正文，`204`，清除会话 Cookie；不吊销已复制会话 |
+| `GET /api/status` | 普通权限：全局运行状态 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`default`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `GET /api/device/status` | 当前设备设置及按 MAC 归属的用户态上游运行统计；仅已识别的直连 LAN 设备 |
 | `POST /api/device/mitm-tests` | 空正文，创建当前设备的透明 MITM 测试挑战；返回 `201`，不改变 MITM 设置 |
@@ -139,7 +156,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `PUT` / `DELETE /api/device/sets/{name}` | 加入 / 退出集合 |
 | `PUT /api/device/mitm` | `{"enabled":true}` 开启，`false` 关闭 |
 | `DELETE /api/device/mitm` | 恢复配置 |
-| `GET /api/selectors` | 需要管理权限；各组的默认/当前节点 ID、覆盖状态、候选节点健康与延迟；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
+| `GET /api/selectors` | 普通权限：selector 状态；`admin_enabled` 表示可执行管理员修改；`auth_mode` 为 `user_key`、`admin_key`、`lan`、`unix` |
 | `PUT /api/selectors/{name}` | `{"node_id":"状态返回的 ID"}` 选择节点 |
 | `DELETE /api/selectors/{name}` | 恢复显式 `selector(n)`；未配置默认时返回 `409` |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"节点 ID"}` 探测单节点；省略或留空 `node_id` 探测整个出站；返回 `202` 和接受的节点 ID |
@@ -152,7 +169,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `POST /api/certificate/tests` | 仅 TCP API；返回 `201` 和一分钟有效的 CA 信任挑战，签发内存临时证书；不修改管理证书，不要求 MAC 或 MITM |
 | `GET /api/certificate/tests/{id}` | 仅 HTTPS；挑战证书握手返回 `id`、`ca_fingerprint`、`expires_at` 并消费挑战，管理证书或旧挑战连接 `409` 后关闭，已消费或失效挑战 `404` |
 | `GET /api/certificate` | CA 名称、SHA-256 指纹，以及可选 `mitm_test_generation`、`mitm_test_origins`；不可用时 `404` |
-| `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
+| `GET /api/certificate/ca.pem`、`/api/certificate/ca.cer`、`/api/certificate/ca.mobileconfig` | 普通权限下载 CA，无需识别 MAC |
 
 MITM 的 `override` 为 `null` 时继承配置；`default` 是配置对该设备的取值，清除覆盖后重新生效。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
@@ -178,9 +195,9 @@ Surge 实例 `isolate_lan` 默认 true；dae 模块描述符中的 `isolate_lan`
 
 Surge 的 `plugins[].details.notifications` 按 scope、MAC、module、script、script_type 分组，各保留最多 50 条 `$notification.post`，最新在前、为空时省略。每条含 `id`、`created_at`、`scope`（local/device/unknown）、设备专用 `mac`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。本机和 unknown 不混组，共享 LAN 显示 local。记录独立于日志级别和执行成功与否，重载清空；文本默认每组 3 条，`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
 
-daemon 的状态 schema 为 15，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且在用户态成功建立的连接，内核直连转发的 fallback 流与其他内核直通流量一样不计入；路径、组和节点统计不含 fallback 字段。`tables` 报告内核表和用户态资源池，提供 `scope`（`kernel` / `userspace`）、`on_full`（`evict` / `reject` / `omit` / `unlimited`）和可选 `error`。`limit: 0` 表示无容量上限；非空 `error` 表示 `used` 不可用，而不是零。LRU 满载时正常淘汰，与拒绝新增的资源池不同。域名表另报告时间 GC、内核候选数量和等待重试的投影变更。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`compiled_plugins` 列出运行进程已注册的插件类型，不含系统 MITM diagnostic。`plugins` 列出已接受配置的实例 ID、类型、`enabled`、宿主生命周期状态和规则数量，并保留系统诊断实例。`declared_scopes` 是实例声明的 HTTP 范围数量，`scopes` 是应用 HTTP 总开关后的有效数量；disabled 实例不求值声明，数量为零且无 `details`。`http_active` 表示 scope 可参与 HTTP 处理，不保证设备截获或 worker 健康；生效时 `http_reason` 为空，否则为 `disabled`、`no_scopes`、`mitm_disabled`、`prepared`、`draining` 或 `unavailable`。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 15，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `api.listen`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且在用户态成功建立的连接，内核直连转发的 fallback 流与其他内核直通流量一样不计入；路径、组和节点统计不含 fallback 字段。`tables` 报告内核表和用户态资源池，提供 `scope`（`kernel` / `userspace`）、`on_full`（`evict` / `reject` / `omit` / `unlimited`）和可选 `error`。`limit: 0` 表示无容量上限；非空 `error` 表示 `used` 不可用，而不是零。LRU 满载时正常淘汰，与拒绝新增的资源池不同。域名表另报告时间 GC、内核候选数量和等待重试的投影变更。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`compiled_plugins` 列出运行进程已注册的插件类型，不含系统 MITM diagnostic。`plugins` 列出已接受配置的实例 ID、类型、`enabled`、宿主生命周期状态和规则数量，并保留系统诊断实例。`declared_scopes` 是实例声明的 HTTP 范围数量，`scopes` 是应用 HTTP 总开关后的有效数量；disabled 实例不求值声明，数量为零且无 `details`。`http_active` 表示 scope 可参与 HTTP 处理，不保证设备截获或 worker 健康；生效时 `http_reason` 为空，否则为 `disabled`、`no_scopes`、`mitm_disabled`、`prepared`、`draining` 或 `unavailable`。仅管理员能看到插件定义的 `details`，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
 
-`dae plugins status --json` 输出进程级 `compiled_plugins`、`buffer_memory` 和完整 `plugins`，没有活动实例或按实例筛选时仍保留编入清单和内存统计；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
+`dae plugins status --json` 输出进程级 `compiled_plugins`、`buffer_memory` 和完整 `plugins`，没有活动实例或按实例筛选时仍保留编入清单和内存统计；`dae plugins <类型> status --instance <ID>` 查询单个实例。普通用户和 LAN 匿名请求保留统计及插件通用状态，但省略所有 `plugins[].details`。完整插件报告及通知要求管理员权限。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本。
 
 通知另受每实例 1 MiB 保守 JSON 编码预算限制，scope、MAC 及文本按最坏转义长度计费。超限先从最长执行域/脚本历史删除最旧记录，数量相同则删除最旧的一条，每组实际可能少于 50 条。verbose/JSON 返回预算内全部记录；MAC 不加入 Prometheus 标签。
 

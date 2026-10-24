@@ -2,16 +2,21 @@
 
 `dae explain`, `dae-client explain`, and Web **Explain Decisions** analyze a hypothetical new flow using current configuration and runtime evidence. They do not connect to targets, query DNS, run scripts, refresh caches or health checks, or change settings. Existing connections and UDP source associations may retain earlier decisions.
 
-All explanations and routing impact previews require administrator access, including `--self` and diagnostic endpoints under `/api/device/...`. With `global.api_key` configured, TCP requests require the key or a valid login session; without a key, verified LAN connections are administrators. Ordinary LAN devices can still read their own state, traffic and connection context, and change their own memberships and MITM preferences.
+All explanations and routing impact previews require administrator authorization, including current-device routes. TCP uses HTTPS `api.admin_key`; Unix uses filesystem permissions. Anonymous LAN access grants only user privileges.
 
 ## CLI
 
-Both executables share commands and the usual [API connection options](api-client.md):
+Both executables share commands and the usual [API connection options](api-client.md).
+For the direct HTTPS examples, obtain the daemon CA through a trusted channel and
+prepare a file containing `api.admin_key`:
 
 ```sh
-dae explain route 198.51.100.10:443 --self --api http://192.168.1.1:9080
+export DAE_API_CA=/etc/dae/dae-ca.pem
+export DAE_API_KEY_FILE=/etc/dae/admin.key
+
+dae explain route 198.51.100.10:443 --self --api https://192.168.1.1:9080
 dae explain route 198.51.100.10:443 --self --sni example.com --join work \
-  --api http://192.168.1.1:9080 --json
+  --api https://192.168.1.1:9080 --json
 dae explain route 198.51.100.10:443 --mac 02:00:00:00:00:10 \
   --source-ip 192.168.1.10 --source-port 40000 --interface br-lan --dscp 0
 dae explain domain example.com
@@ -48,7 +53,7 @@ dae client list
 dae client show work
 dae client device --mac 02:00:00:00:00:10
 dae client join work --mac 02:00:00:00:00:10
-dae client leave work --self --api http://192.168.1.1:9080
+dae client leave work --self --api https://192.168.1.1:9080
 dae client impact work --mac 02:00:00:00:00:10 --joined=false \
   --target 198.51.100.10:443 --source-ip 192.168.1.10
 dae client mitm enable --mac 02:00:00:00:00:10
