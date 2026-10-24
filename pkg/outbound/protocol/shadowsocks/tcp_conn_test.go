@@ -207,7 +207,7 @@ func TestTCPConnWriteRejectsInvalidAddressBeforeWriting(t *testing.T) {
 	}
 }
 
-func TestTCPConnSealWritesValidChunks(t *testing.T) {
+func TestTCPConnWriteBuffersSealsWholeChunks(t *testing.T) {
 	block, err := aes.NewCipher(make([]byte, 16))
 	if err != nil {
 		t.Fatal(err)
@@ -216,16 +216,30 @@ func TestTCPConnSealWritesValidChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	underlay := &fullWriteErrorConn{}
 	conn := &TCPConn{
+		Conn:        underlay,
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
+		onceWrite:   true,
 	}
-	payload := bytes.Repeat([]byte("x"), TCPChunkMaxLen+17)
-	var sealed bytes.Buffer
-	conn.seal(&sealed, payload)
+	// An 8-byte frame header, then payload crossing a chunk boundary.
+	v := [][]byte{[]byte("header.."), bytes.Repeat([]byte("x"), TCPChunkMaxLen), nil, []byte("tail")}
+	var payload []byte
+	for _, b := range v {
+		payload = append(payload, b...)
+	}
+	if n, err := conn.WriteBuffers(v); n != len(payload) || err != nil {
+		t.Fatalf("WriteBuffers() = %d, %v", n, err)
+	}
+	if underlay.writes != 1 {
+		t.Fatalf("underlay writes = %d, want 1", underlay.writes)
+	}
 
+	sealed := &underlay.Buffer
 	nonce := make([]byte, aead.NonceSize())
 	var plaintext []byte
+	var chunks []int
 	for sealed.Len() > 0 {
 		lengthCiphertext := sealed.Next(2 + aead.Overhead())
 		lengthBytes, err := aead.Open(nil, nonce, lengthCiphertext, nil)
@@ -241,9 +255,16 @@ func TestTCPConnSealWritesValidChunks(t *testing.T) {
 		}
 		common.BytesIncLittleEndian(nonce)
 		plaintext = append(plaintext, chunk...)
+		chunks = append(chunks, chunkLength)
 	}
 	if !bytes.Equal(plaintext, payload) {
 		t.Fatal("decrypted chunks do not match payload")
+	}
+	if len(chunks) != 2 || chunks[0] != TCPChunkMaxLen {
+		t.Fatalf("chunk lengths = %v, want one full chunk and the rest", chunks)
+	}
+	if len(v[1]) != TCPChunkMaxLen {
+		t.Fatal("WriteBuffers consumed the caller's buffers")
 	}
 }
 

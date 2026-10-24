@@ -1,9 +1,7 @@
 package shadowsocks
 
 import (
-	"bytes"
 	"crypto/cipher"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
-	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/internal/aeadframe"
@@ -108,64 +105,55 @@ func (c *TCPConn) CloseWrite() error {
 	return err
 }
 
-func (c *TCPConn) Write(b []byte) (n int, err error) {
+func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{b}) }
+
+// WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
+// and writes them at once. An incomplete write is sticky, as in Write.
+func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
-	buf := pool.GetBytesBuffer()
-	payload := pool.GetBytesBuffer()
-	defer pool.PutBytesBuffer(buf)
-	defer pool.PutBytesBuffer(payload)
+	total := 0
+	for _, b := range v {
+		total += len(b)
+	}
+	var salt []byte
+	payload := v
 	if !c.onceWrite {
 		defer func() {
 			if err != nil && !c.onceWrite {
 				c.writeErr = err
 			}
 		}()
-		// Generate salt and setup encryption
-		salt := c.sg.Get()
+		// The salt precedes the first chunk, which carries the address.
+		salt = c.sg.Get()
 		defer pool.PutBuffer(salt)
 		c.cipherWrite, err = CreateCipher(c.masterKey, salt, c.cipherConf)
 		if err != nil {
 			return 0, fmt.Errorf("fail to initiate cipher: %w", err)
 		}
-		// Add salt for first write
-		buf.Write(salt)
-
 		if c.addr != nil {
-			if err = socks5.WriteAddrInfo(c.addr, payload); err != nil {
+			address := pool.GetBytesBuffer()
+			defer pool.PutBytesBuffer(address)
+			if err = socks5.WriteAddrInfo(c.addr, address); err != nil {
 				return 0, err
 			}
+			payload = append([][]byte{address.Bytes()}, v...)
 		}
-
 		c.onceWrite = true
 	}
-	payload.Write(b)
-	c.seal(buf, payload.Bytes())
-	written, err := c.Conn.Write(buf.Bytes())
-	if written == buf.Len() {
-		return len(b), err
+	buf := pool.GetBuffer(len(salt) + aeadframe.SealedSize(c.cipherWrite, payload, TCPChunkMaxLen))
+	defer pool.PutBuffer(buf)
+	out := aeadframe.Seal(append(buf[:0], salt...), c.cipherWrite, c.nonceWrite, payload, TCPChunkMaxLen)
+	written, err := c.Conn.Write(out)
+	if written == len(out) {
+		return total, err
 	}
 	if err == nil {
 		err = io.ErrShortWrite
 	}
 	c.writeErr = err
 	return 0, err
-}
-
-func (c *TCPConn) seal(buf *bytes.Buffer, payload []byte) {
-	chunks := (len(payload) + TCPChunkMaxLen - 1) / TCPChunkMaxLen
-	buf.Grow(len(payload) + chunks*(2+2*c.cipherWrite.Overhead()))
-	var chunkLengthBuf [2]byte
-	for i := 0; i < len(payload); i += TCPChunkMaxLen {
-		// write chunk
-		var chunkLength = common.Min(TCPChunkMaxLen, len(payload)-i)
-		binary.BigEndian.PutUint16(chunkLengthBuf[:], uint16(chunkLength))
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, chunkLengthBuf[:], nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, payload[i:i+chunkLength], nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-	}
 }

@@ -92,3 +92,41 @@ func BenchmarkTCPReadFrames(b *testing.B) {
 		}
 	}
 }
+
+type discardConn struct{ memoryConn }
+
+func (*discardConn) Write(b []byte) (int, error) { return len(b), nil }
+
+// A multiplexer writes batches of frames, each an 8-byte header and its
+// payload in one buffer; here two. "copy" joins them before Write, "buffers"
+// passes them to WriteBuffers.
+func BenchmarkTCPWriteFrames(b *testing.B) {
+	for _, mode := range []string{"copy", "buffers"} {
+		for _, size := range []int{64, 1300, 32<<10 - 8} {
+			b.Run(fmt.Sprintf("%s/bytes=%d", mode, size), func(b *testing.B) {
+				key := bytes.Repeat([]byte{0x11}, 16)
+				conn := newClientForTest(b, new(discardConn), key)
+				if _, err := conn.Write(nil); err != nil {
+					b.Fatal(err)
+				}
+				frame := bytes.Repeat([]byte("x"), 8+size)
+				frames := [][]byte{frame, frame}
+				joined := make([]byte, 2*len(frame))
+				b.ReportAllocs()
+				b.SetBytes(int64(len(joined)))
+				for b.Loop() {
+					var err error
+					if mode == "copy" {
+						copy(joined[copy(joined, frame):], frame)
+						_, err = conn.Write(joined)
+					} else {
+						_, err = conn.WriteBuffers(frames)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}

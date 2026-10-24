@@ -564,12 +564,31 @@ func TestDialContextCancellationClosesIncompleteRequest(t *testing.T) {
 }
 
 func TestClientTCPLargeRequestKeepsNonceSequence(t *testing.T) {
+	for _, vectorised := range []bool{false, true} {
+		t.Run(fmt.Sprint("vectorised=", vectorised), func(t *testing.T) {
+			testClientTCPLargeRequest(t, vectorised)
+		})
+	}
+}
+
+func testClientTCPLargeRequest(t *testing.T, vectorised bool) {
 	key := bytes.Repeat([]byte{5}, 16)
 	raw := new(memoryConn)
 	c := newClientForTest(t, raw, key)
 	payload := bytes.Repeat([]byte{0x5a}, 2*TCPChunkMaxLen+19)
-	if n, err := c.Write(payload); n != len(payload) || err != nil {
-		t.Fatalf("Write=%d %v", n, err)
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	var n int
+	var err error
+	if vectorised {
+		// Segments cross the request header's chunk and the later chunks.
+		n, err = c.WriteBuffers([][]byte{payload[:8], payload[8:TCPChunkMaxLen], nil, payload[TCPChunkMaxLen:]})
+	} else {
+		n, err = c.Write(payload)
+	}
+	if n != len(payload) || err != nil || len(raw.sent) != 1 {
+		t.Fatalf("write=%d %v in %d writes", n, err, len(raw.sent))
 	}
 	wire := bytes.NewReader(raw.sent[0])
 	salt := make([]byte, 16)

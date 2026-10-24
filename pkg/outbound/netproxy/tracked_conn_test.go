@@ -111,3 +111,18 @@ func TestReadSocketFollowsOnlyTransparentReads(t *testing.T) {
 		t.Fatal("protocol adapter unwrapped")
 	}
 }
+
+type buffersTestConn struct{ net.Conn }
+
+func (*buffersTestConn) WriteBuffers([][]byte) (int, error) { return 0, nil }
+
+func TestBuffersWriterOfLooksThroughTrackingOnly(t *testing.T) {
+	writer := &buffersTestConn{Conn: new(net.TCPConn)}
+	if BuffersWriterOf(TrackConn(TrackConn(writer, func() {}), func() {})) != writer {
+		t.Fatal("tracking hid the vectorised writer")
+	}
+	raw := &trackedTestConn{Conn: TrackConn(writer, func() {})}
+	if BuffersWriterOf(raw) != nil || BuffersWriterOf(TrackConn(new(net.TCPConn), func() {})) != nil {
+		t.Fatal("vectorised writer found through a protocol adapter or a plain socket")
+	}
+}

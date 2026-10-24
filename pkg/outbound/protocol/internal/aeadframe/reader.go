@@ -1,6 +1,6 @@
-// Package aeadframe reads the chunk stream shared by Shadowsocks AEAD and
-// Shadowsocks 2022: a sealed 2-byte big-endian length, then the sealed payload
-// of that length, each with its own tag and the next nonce.
+// Package aeadframe reads and seals the chunk stream shared by Shadowsocks
+// AEAD and Shadowsocks 2022: a sealed 2-byte big-endian length, then the
+// sealed payload of that length, each with its own tag and the next nonce.
 package aeadframe
 
 import (

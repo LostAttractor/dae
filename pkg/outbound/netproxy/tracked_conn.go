@@ -91,6 +91,20 @@ func NativeTCPConn(conn net.Conn) *net.TCPConn {
 	}
 }
 
+// BuffersWriterOf returns conn's vectorised writer, looking through ownership
+// tracking, or nil if conn has none.
+func BuffersWriterOf(conn net.Conn) BuffersWriter {
+	switch c := conn.(type) {
+	case *trackedSyscallConn:
+		return BuffersWriterOf(c.Conn)
+	case *trackedConn:
+		return BuffersWriterOf(c.Conn)
+	case BuffersWriter:
+		return c
+	}
+	return nil
+}
+
 // PassthroughReader is implemented by adapters whose reads may become a
 // verbatim pass-through. ReadPassthrough returns the wrapped connection once
 // every later read is served from it unchanged, and nil before then.

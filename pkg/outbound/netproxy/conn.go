@@ -23,6 +23,13 @@ func CloseWrite(conn net.Conn) error {
 	return errors.ErrUnsupported
 }
 
+// BuffersWriter writes the concatenation of its buffers as a single Write
+// would, framing them together where the protocol frames writes. It does not
+// modify the buffers.
+type BuffersWriter interface {
+	WriteBuffers(v [][]byte) (int, error)
+}
+
 type CloseWriteConn struct {
 	net.Conn
 	CloseWriter

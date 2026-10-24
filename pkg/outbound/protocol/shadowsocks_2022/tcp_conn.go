@@ -12,6 +12,7 @@ import (
 	"io"
 	mathrand "math/rand/v2"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -155,65 +156,39 @@ func (c *TCPConn) CloseWrite() error {
 	return err
 }
 
-func (c *TCPConn) Write(b []byte) (n int, err error) {
+func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{b}) }
+
+// WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
+// and writes them at once. An incomplete write is sticky, as in Write.
+func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
-	inputLength := len(b)
-	buf := pool.GetBytesBuffer()
-	defer pool.PutBytesBuffer(buf)
-	if !c.onceWrite {
-		// Any initialization failure is terminal; retrying with the same salt
-		// after encrypting a header must never restart its nonce sequence.
-		defer func() {
-			if err != nil && !c.onceWrite {
-				c.writeErr = err
-			}
-		}()
-		variable := pool.GetBytesBuffer()
-		defer pool.PutBytesBuffer(variable)
-		if err = socks5.WriteAddrInfo(c.addr, variable); err != nil {
-			return 0, err
-		}
-		paddingLength := 0
-		if len(b) == 0 {
-			paddingLength = 1 + mathrand.IntN(MaxPaddingLength)
-		}
-		variable.Write(binary.BigEndian.AppendUint16(nil, uint16(paddingLength)))
-		if paddingLength > 0 {
-			padding := pool.GetBuffer(paddingLength)
-			rand.Read(padding)
-			variable.Write(padding)
-			pool.PutBuffer(padding)
-		}
-		initialLength := min(len(b), TCPChunkMaxLen-variable.Len())
-		variable.Write(b[:initialLength])
-		b = b[initialLength:]
-		var fixed [11]byte
-		fixed[0] = HeaderTypeClientStream
-		binary.BigEndian.PutUint64(fixed[1:], uint64(time.Now().Unix()))
-		binary.BigEndian.PutUint16(fixed[9:], uint16(variable.Len()))
-		buf.Write(c.requestSalt)
-		if err = c.writeIdentityHeader(buf); err != nil {
-			return 0, err
-		}
-		c.cipherWrite, err = CreateCipher(c.uPSK, c.requestSalt, c.cipherConf)
-		if err != nil {
-			return 0, err
-		}
-		buf.Grow(len(fixed) + variable.Len() + 2*c.cipherConf.TagLen)
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, fixed[:], nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, variable.Bytes(), nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-		c.onceWrite = true
+	total := 0
+	for _, b := range v {
+		total += len(b)
 	}
-	c.seal(buf, b)
-	written, err := c.Conn.Write(buf.Bytes())
-	if written == buf.Len() {
-		return inputLength, err
+	var head []byte
+	if !c.onceWrite {
+		header := pool.GetBytesBuffer()
+		defer pool.PutBytesBuffer(header)
+		if v, err = c.writeHeader(header, v, total); err != nil {
+			// Any initialization failure is terminal; retrying with the same
+			// salt after encrypting a header must never restart its nonce
+			// sequence.
+			c.writeErr = err
+			return 0, err
+		}
+		head = header.Bytes()
+	}
+	buf := pool.GetBuffer(len(head) + aeadframe.SealedSize(c.cipherWrite, v, TCPChunkMaxLen))
+	defer pool.PutBuffer(buf)
+	out := aeadframe.Seal(append(buf[:0], head...), c.cipherWrite, c.nonceWrite, v, TCPChunkMaxLen)
+	written, err := c.Conn.Write(out)
+	if written == len(out) {
+		return total, err
 	}
 	if err == nil {
 		err = io.ErrShortWrite
@@ -222,17 +197,52 @@ func (c *TCPConn) Write(b []byte) (n int, err error) {
 	return 0, err
 }
 
-func (c *TCPConn) seal(buf *bytes.Buffer, payload []byte) {
-	chunks := (len(payload) + TCPChunkMaxLen - 1) / TCPChunkMaxLen
-	buf.Grow(len(payload) + chunks*(2+2*c.cipherWrite.Overhead()))
-	var length [2]byte
-	for len(payload) > 0 {
-		n := min(len(payload), TCPChunkMaxLen)
-		binary.BigEndian.PutUint16(length[:], uint16(n))
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, length[:], nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-		buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, payload[:n], nil))
-		common.BytesIncLittleEndian(c.nonceWrite)
-		payload = payload[n:]
+// writeHeader seals the request header with as much of v as fits its first
+// chunk and returns the rest of v.
+func (c *TCPConn) writeHeader(buf *bytes.Buffer, v [][]byte, total int) ([][]byte, error) {
+	variable := pool.GetBytesBuffer()
+	defer pool.PutBytesBuffer(variable)
+	if err := socks5.WriteAddrInfo(c.addr, variable); err != nil {
+		return nil, err
 	}
+	paddingLength := 0
+	if total == 0 {
+		paddingLength = 1 + mathrand.IntN(MaxPaddingLength)
+	}
+	variable.Write(binary.BigEndian.AppendUint16(nil, uint16(paddingLength)))
+	if paddingLength > 0 {
+		padding := pool.GetBuffer(paddingLength)
+		rand.Read(padding)
+		variable.Write(padding)
+		pool.PutBuffer(padding)
+	}
+	v = slices.Clone(v)
+	for initial := min(total, TCPChunkMaxLen-variable.Len()); initial > 0; {
+		n := min(len(v[0]), initial)
+		variable.Write(v[0][:n])
+		v[0], initial = v[0][n:], initial-n
+		if len(v[0]) == 0 {
+			v = v[1:]
+		}
+	}
+	var fixed [11]byte
+	fixed[0] = HeaderTypeClientStream
+	binary.BigEndian.PutUint64(fixed[1:], uint64(time.Now().Unix()))
+	binary.BigEndian.PutUint16(fixed[9:], uint16(variable.Len()))
+	buf.Write(c.requestSalt)
+	if err := c.writeIdentityHeader(buf); err != nil {
+		return nil, err
+	}
+	var err error
+	c.cipherWrite, err = CreateCipher(c.uPSK, c.requestSalt, c.cipherConf)
+	if err != nil {
+		return nil, err
+	}
+	buf.Grow(len(fixed) + variable.Len() + 2*c.cipherConf.TagLen)
+	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, fixed[:], nil))
+	common.BytesIncLittleEndian(c.nonceWrite)
+	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, variable.Bytes(), nil))
+	common.BytesIncLittleEndian(c.nonceWrite)
+	c.onceWrite = true
+	return v, nil
 }

@@ -242,3 +242,73 @@ func TestReaderMaxChunksDoNotAllocate(t *testing.T) {
 		t.Fatalf("%v allocations per chunk", allocs)
 	}
 }
+
+// Seal must frame any split of a payload of small buffers as one contiguous
+// payload would be.
+func TestSealGathersBuffersIntoWholeChunks(t *testing.T) {
+	aead := testAEAD(t)
+	const maxChunk = 1000
+	payload := make([]byte, 2*maxChunk+300)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	var want []byte
+	nonce := make([]byte, aead.NonceSize())
+	for rest := payload; len(rest) > 0; {
+		n := min(len(rest), maxChunk)
+		want = aead.Seal(want, nonce, binary.BigEndian.AppendUint16(nil, uint16(n)), nil)
+		common.BytesIncLittleEndian(nonce)
+		want = aead.Seal(want, nonce, rest[:n], nil)
+		common.BytesIncLittleEndian(nonce)
+		rest = rest[n:]
+	}
+	for _, cuts := range [][]int{{}, {8}, {0, 8, 8, maxChunk}, {999, 1001, 1999, 2001}, {1, 2, 3, 2000}} {
+		var v [][]byte
+		last := 0
+		for _, cut := range cuts {
+			v = append(v, payload[last:cut])
+			last = cut
+		}
+		v = append(v, payload[last:])
+		nonce := make([]byte, aead.NonceSize())
+		got := Seal([]byte("prefix"), aead, nonce, v, maxChunk)
+		if !bytes.Equal(got, append([]byte("prefix"), want...)) {
+			t.Fatalf("cuts %v: sealed stream differs", cuts)
+		}
+		if len(got) != len("prefix")+SealedSize(aead, v, maxChunk) {
+			t.Fatalf("cuts %v: SealedSize disagrees with Seal", cuts)
+		}
+		if nonce[0] != 6 {
+			t.Fatalf("cuts %v: nonce advanced %d times, want 6", cuts, nonce[0])
+		}
+	}
+}
+
+// Buffers of sealDirect bytes or more are sealed in chunks of their own, the
+// small buffers between them gathered into shared chunks.
+func TestSealKeepsLargeBuffersInTheirOwnChunks(t *testing.T) {
+	aead := testAEAD(t)
+	const maxChunk = 30000
+	sizes := []int{100, sealDirect, 70000, 50, 0, 60, sealDirect + 1}
+	chunks := []int{100, sealDirect, 30000, 30000, 10000, 110, sealDirect + 1}
+	var v [][]byte
+	var payload []byte
+	for i, size := range sizes {
+		b := bytes.Repeat([]byte{byte(i)}, size)
+		v, payload = append(v, b), append(payload, b...)
+	}
+	var want []byte
+	nonce := make([]byte, aead.NonceSize())
+	for _, n := range chunks {
+		want = aead.Seal(want, nonce, binary.BigEndian.AppendUint16(nil, uint16(n)), nil)
+		common.BytesIncLittleEndian(nonce)
+		want = aead.Seal(want, nonce, payload[:n], nil)
+		common.BytesIncLittleEndian(nonce)
+		payload = payload[n:]
+	}
+	nonce = make([]byte, aead.NonceSize())
+	got := Seal(nil, aead, nonce, v, maxChunk)
+	if !bytes.Equal(got, want) || len(got) != SealedSize(aead, v, maxChunk) {
+		t.Fatalf("sealed %d bytes, SealedSize %d; want the %d bytes of chunks %v", len(got), SealedSize(aead, v, maxChunk), len(want), chunks)
+	}
+}
