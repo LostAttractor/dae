@@ -20,7 +20,8 @@ global {
     # Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.
     tproxy_port: 12345
 
-    # Set non-zero value to enable pprof.
+    # Set non-zero value to enable pprof. Block and mutex profiles record events only while a capture with
+    # ?seconds=N is in progress, e.g. go tool pprof 'http://localhost:6060/debug/pprof/mutex?seconds=30'.
     pprof_port: 0
 
     # Set non-zero value to enable the Prometheus metrics endpoint.

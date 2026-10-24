@@ -6,11 +6,13 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -72,6 +74,69 @@ func TestObservabilityListenersDeclareTCP(t *testing.T) {
 		if protocol != syscall.IPPROTO_TCP {
 			t.Fatalf("observability listener protocol %d", protocol)
 		}
+	}
+}
+
+func activeCaptures(path string) int {
+	profile := contentionProfiles[path]
+	profile.mu.Lock()
+	defer profile.mu.Unlock()
+	return profile.active
+}
+
+func waitCaptures(t *testing.T, path string, want int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); activeCaptures(path) != want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s captures = %d, want %d", path, activeCaptures(path), want)
+		}
+	}
+}
+
+func TestPprofRecordsContentionOnlyDuringCaptures(t *testing.T) {
+	startPprofServer(0)
+	t.Cleanup(func() { startPprofServer(0) })
+	port := freeLocalPort(t)
+	startPprofServer(port)
+	if fraction := runtime.SetMutexProfileFraction(-1); fraction != 0 {
+		t.Fatalf("enabling pprof set the mutex fraction to %d", fraction)
+	}
+	capture := func(path string) (context.CancelFunc, <-chan struct{}) {
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://localhost:%d%s?seconds=30", port, path), nil)
+			if response, err := http.DefaultClient.Do(request); err == nil {
+				_ = response.Body.Close()
+			}
+		}()
+		return cancel, done
+	}
+	first, firstDone := capture("/debug/pprof/mutex")
+	second, secondDone := capture("/debug/pprof/mutex")
+	waitCaptures(t, "/debug/pprof/mutex", 2)
+	if fraction := runtime.SetMutexProfileFraction(-1); fraction != 1 {
+		t.Fatalf("capture recorded with mutex fraction %d", fraction)
+	}
+	// A client disconnect ends its capture; the overlapping one continues.
+	first()
+	<-firstDone
+	waitCaptures(t, "/debug/pprof/mutex", 1)
+	if fraction := runtime.SetMutexProfileFraction(-1); fraction != 1 {
+		t.Fatal("an ended capture stopped another")
+	}
+	// Closing the server ends the remaining captures.
+	_, blockDone := capture("/debug/pprof/block")
+	waitCaptures(t, "/debug/pprof/block", 1)
+	startPprofServer(0)
+	waitCaptures(t, "/debug/pprof/mutex", 0)
+	waitCaptures(t, "/debug/pprof/block", 0)
+	second()
+	<-secondDone
+	<-blockDone
+	if fraction := runtime.SetMutexProfileFraction(-1); fraction != 0 {
+		t.Fatalf("mutex fraction %d after the last capture", fraction)
 	}
 }
 

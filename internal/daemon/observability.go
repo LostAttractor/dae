@@ -24,7 +24,6 @@ import (
 type observabilityServer struct {
 	name     string
 	handler  http.Handler
-	active   func(bool)
 	server   *http.Server
 	listener net.Listener
 	port     uint16
@@ -35,17 +34,50 @@ var (
 	metricsRegistry = prometheus.NewRegistry()
 	pluginMetrics   mitm.Metrics
 	observabilityMu sync.Mutex
-	pprofService    = observabilityServer{name: "pprof", handler: http.DefaultServeMux, active: func(enabled bool) {
-		rate := 0
-		if enabled {
-			rate = 1
-		}
-		runtime.SetBlockProfileRate(rate)
-		runtime.SetMutexProfileFraction(rate)
-	}}
-	metricsService = observabilityServer{name: "metrics", handler: promhttp.HandlerFor(
+	pprofService    = observabilityServer{name: "pprof", handler: http.HandlerFunc(servePprof)}
+	metricsService  = observabilityServer{name: "metrics", handler: promhttp.HandlerFor(
 		prometheus.Gatherers{metricsRegistry, &pluginMetrics}, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError})}
+	// Recording every blocking and contention event costs a few percent of
+	// CPU, so each runs only while a delta profile of it is captured.
+	contentionProfiles = map[string]*profileWindows{
+		"/debug/pprof/block": {record: runtime.SetBlockProfileRate},
+		"/debug/pprof/mutex": {record: func(rate int) { runtime.SetMutexProfileFraction(rate) }},
+	}
 )
+
+// profileWindows counts the captures of one profile in progress.
+type profileWindows struct {
+	mu     sync.Mutex
+	active int
+	record func(rate int)
+}
+
+func (p *profileWindows) open() (done func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active++
+	if p.active == 1 {
+		p.record(1)
+	}
+	return func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.active--
+		if p.active == 0 {
+			p.record(0)
+		}
+	}
+}
+
+// servePprof records block and mutex events while ?seconds=N captures them.
+// The capture returns when it completes, the client disconnects or the
+// server closes. Profiles without seconds report the windows recorded so far.
+func servePprof(w http.ResponseWriter, r *http.Request) {
+	if profile := contentionProfiles[r.URL.Path]; profile != nil && r.FormValue("seconds") != "" {
+		defer profile.open()()
+	}
+	http.DefaultServeMux.ServeHTTP(w, r)
+}
 
 func init() {
 	metricsRegistry.MustRegister(stats.DefaultStore)
@@ -69,12 +101,6 @@ func serveHTTP(name string, server *http.Server, listener net.Listener, clearCur
 	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 		log.WithError(err).WithField("server", name).Error("HTTP server stopped unexpectedly")
 		stopHTTPServer(name, server, listener)
-	}
-}
-
-func (s *observabilityServer) setActive(enabled bool) {
-	if s.active != nil {
-		s.active(enabled)
 	}
 }
 
@@ -142,7 +168,6 @@ func (u *observabilityUpdate) Commit() {
 		if service.dispatch != nil {
 			service.dispatch.Store(&service.handler)
 		}
-		service.setActive(service.server != nil)
 	}
 	for _, listener := range u.opened {
 		for _, service := range [2]*observabilityServer{&pprofService, &metricsService} {
@@ -166,7 +191,6 @@ func clearObservabilityServer(server *http.Server) {
 	for _, service := range [2]*observabilityServer{&pprofService, &metricsService} {
 		if service.server == server {
 			service.server, service.listener, service.port, service.dispatch = nil, nil, 0, nil
-			service.setActive(false)
 		}
 	}
 }
