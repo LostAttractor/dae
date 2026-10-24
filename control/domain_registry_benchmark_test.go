@@ -3,8 +3,6 @@
 package control
 
 import (
-	"compress/gzip"
-	"encoding/json/v2"
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
@@ -26,29 +24,16 @@ func BenchmarkDomainRegistry(b *testing.B) {
 	for _, sharing := range []int{1, 8} {
 		b.Run(fmt.Sprintf("names-per-IP=%d", sharing), func(b *testing.B) {
 			now := time.Now()
-			entries := make(map[string]map[string]time.Time, 1024)
+			var entries []domainLogEntry
 			for domain := range 1024 {
-				addresses := make(map[string]time.Time, 4)
 				for offset := range 4 {
 					i := domain/sharing*4 + offset + 1
 					ip := netip.AddrFrom4([4]byte{198, 18, byte(i >> 8), byte(i)})
-					addresses[ip.String()] = now.Add(time.Hour)
+					entries = append(entries, domainLogEntry{fmt.Sprintf("d%d.example.", domain), ip, now.Add(time.Hour).UnixNano()})
 				}
-				entries[fmt.Sprintf("d%d.example.", domain)] = addresses
 			}
-			path := filepath.Join(b.TempDir(), "domain-registry.json.gz")
-			f, err := os.Create(path)
-			if err != nil {
-				b.Fatal(err)
-			}
-			w := gzip.NewWriter(f)
-			if err := json.MarshalWrite(w, entries, json.Deterministic(true)); err != nil {
-				b.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				b.Fatal(err)
-			}
-			if err := f.Close(); err != nil {
+			dir := b.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, domainBaseFile), encodeDomainBase(1, entries), 0600); err != nil {
 				b.Fatal(err)
 			}
 			match := func(name string) []uint32 {
@@ -60,7 +45,7 @@ func BenchmarkDomainRegistry(b *testing.B) {
 			}
 			restore := func(b *testing.B) *DomainRegistry {
 				g := newDomainRegistry(4096, time.Hour, func(netip.Addr, []uint32, []uint32) error { return nil }, func(netip.Addr) error { return nil })
-				if err := g.Restore(path, match, now); err != nil {
+				if err := g.Restore(dir, match, now); err != nil {
 					b.Fatal(err)
 				}
 				return g
@@ -197,16 +182,44 @@ func BenchmarkDomainRegistryGC(b *testing.B) {
 	b.ReportMetric(float64(worst), "max-call-ns")
 }
 
-// Include snapshot allocation, deterministic JSON encoding, gzip and atomic
-// publication. The retained-history fixture is shared with activity benchmarks.
-func BenchmarkDomainRegistrySave(b *testing.B) {
-	g, _, _ := benchmarkActivityRegistry(b)
-	path := filepath.Join(b.TempDir(), "domain-registry.json.gz")
+// Compaction copies all pairs under the lock, then encodes and publishes a
+// baseline with its fsyncs. The retained-history fixture is shared with
+// activity benchmarks.
+func BenchmarkDomainRegistryCompaction(b *testing.B) {
+	g, _, now := benchmarkActivityRegistry(b)
+	g.EnablePersistence(b.TempDir())
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := g.Save(path); err != nil {
-			b.Fatal(err)
+		l := g.persist
+		l.io.Lock()
+		g.compact(l, now)
+		l.io.Unlock()
+		if l.rebuild {
+			b.Fatal("compaction failed")
 		}
+	}
+	b.ReportMetric(float64(g.persist.disk.base), "baseline-bytes")
+}
+
+// One renewal window: 1,446 distinct renewed pairs (ten router minutes) are
+// listed under the lock, then encoded, appended and synced by the writer.
+func BenchmarkDomainRegistryRenewals(b *testing.B) {
+	g, keys, now := benchmarkActivityRegistry(b)
+	g.window *= 3 // Current-time I/O really extends the fixture's deadlines.
+	g.EnablePersistence(b.TempDir())
+	g.writeRenewals(now)
+	at := now
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		at = at.Add(domainRenewInterval)
+		g.mu.Lock()
+		for i := range 1446 {
+			g.touch(keys[(i*7919)%len(keys)], at)
+		}
+		g.mu.Unlock()
+		b.StartTimer()
+		g.writeRenewals(at)
 	}
 }
 

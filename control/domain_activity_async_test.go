@@ -4,16 +4,16 @@ package control
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestDomainActivityBatchBeforeCollectionAndSave(t *testing.T) {
-	for _, boundary := range []string{"worker", "sweep", "dns", "save", "close"} {
+func TestDomainActivityBatchBeforeCollectionAndClose(t *testing.T) {
+	for _, boundary := range []string{"worker", "sweep", "dns", "close"} {
 		t.Run(boundary, func(t *testing.T) {
 			g, fake := newTestRegistry(4, 10*time.Second)
 			now := time.Now()
@@ -21,16 +21,16 @@ func TestDomainActivityBatchBeforeCollectionAndSave(t *testing.T) {
 			name := "a.example."
 			g.Upsert(name, ip, testBitmap(0), 10, now)
 			g.Upsert("other.example.", ip, testBitmap(), 100, now)
-			before := g.generation
+			before := g.evidence()
 			key := newDomainActivityKey(ip, "A.EXAMPLE")
 			for _, seconds := range []int{9, 8, 12, 11, 12, 8} {
 				g.activity.enqueue(key, now.Add(time.Duration(seconds)*time.Second))
 			}
 			// Status/verification are read-only and expose applied evidence.
-			if !g.Verify(name, ip).Paired || g.Usage().GC != 0 || g.generation != before || !g.retention(name, ip).Equal(now.Add(10*time.Second)) {
+			if !g.Verify(name, ip).Paired || g.Usage().GC != 0 || !maps.EqualFunc(g.evidence(), before, maps.Equal) {
 				t.Fatal("queue admission or read-only status applied activity")
 			}
-			path := filepath.Join(t.TempDir(), "registry.json.gz")
+			dir := t.TempDir()
 			switch boundary {
 			case "worker":
 				g.flushActivity()
@@ -38,29 +38,25 @@ func TestDomainActivityBatchBeforeCollectionAndSave(t *testing.T) {
 				g.Sweep(now.Add(15 * time.Second))
 			case "dns":
 				g.ObserveDNS(nil, now.Add(15*time.Second))
-			case "save":
-				if err := g.Save(path); err != nil {
-					t.Fatal(err)
-				}
 			case "close":
-				g.EnablePersistence(path)
+				g.EnablePersistence(dir)
 				if err := g.Close(); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if !g.retention(name, ip).Equal(now.Add(22*time.Second)) || g.generation != before+1 || g.Usage().GC != 0 {
+			if !g.retention(name, ip).Equal(now.Add(22*time.Second)) || g.Usage().GC != 0 {
 				t.Fatal("pending activity was lost, repeatedly applied, or used consumer time")
 			}
 			if !g.retention("other.example.", ip).Equal(now.Add(100 * time.Second)) {
 				t.Fatal("named batch refreshed unrelated shared-IP evidence")
 			}
-			if boundary == "save" || boundary == "close" {
+			if boundary == "close" {
 				restored, _ := newTestRegistry(4, 10*time.Second)
-				if err := restored.Restore(path, func(string) []uint32 { return testBitmap(0) }, now.Add(15*time.Second)); err != nil {
+				if err := restored.Restore(dir, func(string) []uint32 { return testBitmap(0) }, now.Add(15*time.Second)); err != nil {
 					t.Fatal(err)
 				}
 				if !restored.retention(name, ip).Equal(now.Add(22 * time.Second)) {
-					t.Fatal("snapshot omitted already accepted I/O")
+					t.Fatal("final write omitted already accepted I/O")
 				}
 			}
 			checkInvariants(t, g, fake)
@@ -150,18 +146,18 @@ func TestDomainActivityCloseSeparatesReloadWindows(t *testing.T) {
 	old.Upsert(key.domain, ip, testBitmap(0), 10, now)
 	activity := old.activity
 	activity.enqueue(key, now.Add(9*time.Second))
-	path := filepath.Join(t.TempDir(), "registry.json.gz")
-	old.EnablePersistence(path)
+	old.EnablePersistence(t.TempDir())
 	next, fake := newTestRegistry(1, 30*time.Second)
 	next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now.Add(10*time.Second))
+	if old.persist != nil || next.persist == nil || !next.persist.enabled {
+		t.Fatal("reload did not hand the persistence files to the successor")
+	}
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
 	activity.enqueue(key, now.Add(15*time.Second))
-	// Saving a retired instance cannot consume the successor's queue.
-	if err := old.Save(path); err != nil {
-		t.Fatal(err)
-	}
+	// A retired instance cannot consume the successor's queue.
+	old.flushActivity()
 	if !old.retention(key.domain, ip).Equal(now.Add(19 * time.Second)) {
 		t.Fatal("pre-close activity used the successor window")
 	}

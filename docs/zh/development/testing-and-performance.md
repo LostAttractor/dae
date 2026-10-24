@@ -56,11 +56,18 @@ HTTP scope 匹配的构建与查询成本可用 `BenchmarkHTTPScopes` 测量：
 go test ./component/mitm -run '^$' -bench '^BenchmarkHTTPScopes$' -benchmem -benchtime=100ms -count=3
 ```
 
-`BenchmarkDomainRegistry` 测量有名和无名活动续期、gzip 冷恢复的耗时及分配。内核写入回调为空操作，因此该基准只衡量用户态 Registry：
+`BenchmarkDomainRegistry` 测量有名和无名活动续期、从二进制基线冷恢复的耗时及分配。内核写入回调为空操作，因此该基准只衡量用户态 Registry：
 
 ```sh
 go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistry$' -benchmem -benchtime=200ms -count=3
+```
+
+`BenchmarkDomainRegistryCompaction` 测量一次压实：锁内扁平复制全部 pair，锁外编码基线并按顺序发布两个文件，`baseline-bytes` 是基线大小。`BenchmarkDomainRegistryRenewals` 测量写入者结束一个续期窗口的成本，每个窗口续期 1,446 个不同的 pair，计时包括编码、追加和 fdatasync，结果取决于测试目录所在的文件系统：
+
+```sh
+go test -tags=netgo,osusergo,trace ./control \
+  -run '^$' -bench '^BenchmarkDomainRegistry(Compaction|Renewals)$' -benchmem -count=3
 ```
 
 `BenchmarkDomainRegistryActivity` 使用包含共享 IP 和全零 bitmap 的 28,042 个 pair，分别测量同步入口的未知目标、期限未变、有效续期和到期前检查。`BenchmarkDomainRegistryContention` 的混合负载中四分之一同步观察延长期限，其余为期限未变或未知目标；用 `-cpu` 改变并发度，`p95-ns` 和 `p99-ns` 包含等待队列锁与 Registry 锁的时间。并发基准的分配量包含延迟采样开销，单次观察的分配量使用 Activity 基准：

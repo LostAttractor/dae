@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
 	"slices"
@@ -55,6 +56,21 @@ func (g *DomainRegistry) Upsert(name string, ip netip.Addr, bitmap []uint32, ttl
 	g.ObserveDNS([]domainObservation{{name: name, ips: []netip.Addr{ip}, bitmap: bitmap, ttl: ttl}}, now)
 }
 func (g *DomainRegistry) Size() int { return g.Usage().UserUsed }
+
+// evidence copies every pair deadline for comparisons across read-only paths.
+func (g *DomainRegistry) evidence() map[string]map[netip.Addr]time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	evidence := make(map[string]map[netip.Addr]time.Time, len(g.byName))
+	for name, r := range g.byName {
+		evidence[name] = make(map[netip.Addr]time.Time, len(r.addresses))
+		for ip, pair := range r.addresses {
+			evidence[name][ip] = pair.retainUntil
+		}
+	}
+	return evidence
+}
+
 func (g *DomainRegistry) retention(name string, ip netip.Addr) time.Time {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -180,11 +196,10 @@ func TestDomainRetentionWindowAndGC(t *testing.T) {
 	if !g.retention(name, ip).Equal(now.Add(window)) {
 		t.Fatal("window is not the TTL floor")
 	}
-	generation := g.generation
 	for range 10 {
 		g.Verify(name, ip)
 	}
-	if g.generation != generation || !g.retention(name, ip).Equal(now.Add(window)) {
+	if !g.retention(name, ip).Equal(now.Add(window)) {
 		t.Fatal("verification refreshed evidence")
 	}
 	g.Upsert(name, ip, testBitmap(0), int((2*window)/time.Second), now)
@@ -526,9 +541,9 @@ func TestDomainUnchangedObservationStillCollects(t *testing.T) {
 			now := time.Now()
 			g.Upsert("match.example.", ip, testBitmap(0), 60, now)
 			g.Upsert("zero.example.", ip, testBitmap(), 10, now)
-			generation := g.generation
+			evidence := g.evidence()
 			observation.run(g, now.Add(9*time.Second))
-			if g.generation != generation || bitmapHas(fake.routing[ip], 0) {
+			if !maps.EqualFunc(g.evidence(), evidence, maps.Equal) || bitmapHas(fake.routing[ip], 0) {
 				t.Fatal("unchanged observation modified retained evidence")
 			}
 			observation.run(g, now.Add(10*time.Second))

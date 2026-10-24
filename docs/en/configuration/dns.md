@@ -223,7 +223,8 @@ every second. Processing time never replaces observation time; an empty batch
 cannot renew an idle connection. Splice counter polling is followed by this
 batch application too.
 
-GC, DNS registration and snapshot copying first apply already queued activity.
+GC, DNS registration, the end of a renewal window and reload copying first
+apply already queued activity.
 The consumer swaps two reusable buffers under the queue lock, establishing one
 observation boundary, then releases the lock. Later enqueues belong to the next
 batch. Pair updates and kernel writes run without the queue lock.
@@ -235,8 +236,9 @@ Synchronous operations may apply it earlier, while a busy worker can delay it
 beyond the next one-second check.
 
 Surviving connections use a shared activity handle redirected when a new
-configuration is published. Reload joins the old periodic writer, applies its
-pending activity, and copies evidence into an independent kernel projection.
+configuration is published. Reload joins the old background worker and any
+journal write in progress, applies its pending activity, and copies evidence
+into an independent kernel projection.
 Activity after the handoff uses the new window; pending events are applied
 before GC. Delivered DNS observations reach both configurations while the old
 one drains, using each configuration's own rules. Reload preserves existing
@@ -304,39 +306,65 @@ Encrypted DNS not handled by a plugin cannot supply passive core observations.
 
 ## Persistence and diagnostics
 
-Dirty state is saved every 60 seconds and once on clean close to
-`$DAE_LOCATION_CACHE/domain-registry.json.gz` (default
-`/var/lib/dae/domain-registry.json.gz`), mode 0600. The file contains **gzip-compressed
-JSON**. Writes stream JSON through gzip at its fastest compression level to a
-temporary file, finish the compressed stream, then use file fsync, atomic rename
-and directory fsync. Save failures are logged, including the final save; they do
-not prevent safe retirement or in-memory registry adoption during reload. View
-it with:
+Evidence is stored in two binary files under `$DAE_LOCATION_CACHE` (default
+`/var/lib/dae`), mode 0600:
 
-```sh
-zcat /var/lib/dae/domain-registry.json.gz | jq .
-```
+- `domain-registry.base`: the baseline. It lists every pair with its exact
+  deadline (nanoseconds), grouped by domain, followed by a CRC32C checksum. A
+  pair's ordinal is its position in the baseline.
+- `domain-registry.journal`: changes since the baseline. Each frame carries a
+  length and a CRC32C that binds the baseline's epoch and the frame's offset.
 
-The JSON groups addresses by domain: `domain → IP → retain_until`. Each domain
-is stored once, while each IP keeps its own absolute deadline, including separate
-IPv4 and IPv6 deadlines. An empty snapshot is `{}`.
+The writes follow from the registry's data structure: a renewal only moves a
+deadline forward to renewal time plus the window, and pairs are deleted only by
+expiry.
 
-```json
-{
-  "example.com.": {
-    "192.0.2.1": "2026-09-19T00:00:00Z",
-    "2001:db8::1": "2026-09-20T00:00:00Z"
-  }
-}
-```
+- **New pairs**: the change that creates pairs, for example registering one DNS
+  response, appends one frame with their domains, IPs and exact deadlines
+  before it returns, without fdatasync. Pairs created while a compaction is
+  being written wait for it and are appended right after, so only a dae crash
+  during a compaction loses them. After a power loss new pairs are durable from
+  the next sync on.
+- **Renewals**: are batched in a 10-minute window. A window ends 10 minutes after
+  it opened, also across reloads. Its frame lists each pair renewed during it
+  once and is followed by fdatasync, which also makes earlier new-pair frames
+  durable. Recovery sets the deadlines of listed pairs to window start + 10
+  minutes + retention window, at most 10 minutes later than in memory. A pair
+  whose final deadline in the window lies outside that range, such as a TTL
+  longer than the retention window or activity applied after the window was
+  due, is recorded with that exact deadline.
+- **Deletions**: are not written. Recovery collects expired pairs by deadline.
+- **Crashes**: lose the renewals of the current window (at most 10 minutes).
+  Those pairs recover their last persisted deadline and expire earlier: by at
+  most 10 minutes if they were also renewed in the previous window, otherwise
+  by up to one retention window. A renewal by a DNS TTL longer than the
+  retention window can lose up to that TTL. A clean close appends a final
+  renewal frame and fdatasyncs it.
 
-Duplicate domain keys and duplicate IPs within a domain are rejected. The whole stream, including the gzip
-checksum and trailer, is validated before any evidence is published.
+The journal is extended in zero-filled 64 KiB chunks, so appended frames
+overwrite allocated blocks without changing the file size and fdatasync writes
+only data. Once the journal reaches the baseline's size (at least one chunk) it
+is compacted: memory is written as a new baseline with a new epoch, followed by
+an empty journal. The baseline is written to `domain-registry.base.tmp`, synced,
+renamed and its directory synced, then the new journal is published the same
+way. Interrupted at any step, the directory holds the old baseline and journal,
+the new baseline with an ignored old journal, or the new pair. If the published
+baseline is unreadable but a complete temporary baseline exists, startup adopts
+the temporary one.
 
-Cold restore loads the validated records directly, preserves their deadlines,
-collects expired records and recomputes current-rule bitmaps before interface
-attachment. There is no snapshot entry/size cap; format, address/name, duplicate
-and trailing-data checks remain.
+Restore validates the whole baseline, then replays journal frames of its epoch in
+order up to the first invalid frame; later writes start at that position. There
+is no baseline entry or size cap; format, address/name, duplicate, trailing-data
+and checksum checks remain. Cold restore loads the records before interface
+attachment, collects expired ones and recomputes current-rule bitmaps. Evidence
+is written only after activation; before it, startup at most publishes an
+adopted temporary baseline. If the journal is missing or of another epoch, the
+first write after activation rewrites the baseline. On reload the new
+configuration takes over the in-memory evidence and both files.
+
+Write failures are logged and switch to rewriting the baseline, retried when
+each renewal window ends and on clean close. They do not prevent safe retirement or in-memory registry adoption
+during reload.
 
 `dae status` / `/api/status` reports:
 

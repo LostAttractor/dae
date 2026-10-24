@@ -223,7 +223,7 @@ func newControlPlane(ctx context.Context, datapath *control.Runtime, preparation
 	if err != nil {
 		return nil, err
 	}
-	c.SetDomainRegistryPath(filepath.Join(common.CacheDirectory(), "domain-registry.json.gz"))
+	c.SetDomainRegistryDir(common.CacheDirectory())
 	if err := c.PrepareKernel(); err != nil {
 		return nil, errors.Join(err, c.Close())
 	}

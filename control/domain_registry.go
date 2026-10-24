@@ -14,6 +14,8 @@ import (
 // create evidence. Rule bitmaps belong to domains, not individual pairs.
 type domainPair struct {
 	retainUntil time.Time
+	ordinal     uint32 // position in the persisted baseline and journal
+	listed      uint32 // persistence renewal window that last listed this pair
 }
 
 type domainRecord struct {
@@ -45,20 +47,16 @@ type DomainRegistry struct {
 	evaluatedAt   time.Time
 	due           domainExpiry // every record, ordered by expiry
 	gcCount       uint64
-	generation    uint64
 	activity      *domainActivity
 	activityBatch domainActivityBatch // reusable drain buffers, owned by mu
+	persist       *domainLog          // nil unless this registry owns the files
+	persistWake   chan struct{}       // asks the worker for writes mutations left to it
 
 	closed     bool
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 	workerDone chan struct{}
 	closeDone  chan struct{}
-
-	// diskMu serializes snapshot writers; the remaining fields use mu.
-	diskMu          sync.Mutex
-	diskPath        string
-	savedGeneration uint64
 }
 
 // Callers provide the actual map capacity and both kernel writers. Domain
@@ -68,7 +66,7 @@ func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpda
 	g := &DomainRegistry{
 		byName: make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
 		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]domainBitmaps), desired: make(map[netip.Addr]domainBitmaps), pending: make(map[netip.Addr]domainPublication), update: update, remove: remove},
-		stopCh: make(chan struct{}), closeDone: make(chan struct{}),
+		stopCh: make(chan struct{}), closeDone: make(chan struct{}), persistWake: make(chan struct{}, 1),
 	}
 	g.activity = &domainActivity{registry: g}
 	return g
@@ -90,12 +88,21 @@ type domainObservation struct {
 
 // ObserveDNS records one response as it is delivered, including replay.
 // A delayed observation retains its own timestamp; the clock prevents it from
-// reviving evidence already collected after a newer observation.
+// reviving evidence already collected after a newer observation. New pairs
+// are journaled before it returns, outside the registry lock; during a
+// compaction they are appended right after it.
 func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Time) {
+	if l := g.observeDNS(observations, at); l != nil {
+		g.appendNew(l)
+	}
+}
+
+// observeDNS returns the log that queued new pairs, if any.
+func (g *DomainRegistry) observeDNS(observations []domainObservation, at time.Time) (created *domainLog) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
-		return
+		return nil
 	}
 	reconsider := g.drainActivity()
 	now := g.clock(at)
@@ -119,8 +126,12 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 					}
 				}
 			} else {
-				g.addPair(r, ip, &domainPair{retainUntil: deadline})
-				g.generation++
+				pair := &domainPair{retainUntil: deadline}
+				g.addPair(r, ip, pair)
+				if g.persist != nil {
+					g.persist.add(r.name, ip, pair)
+					created = g.persist
+				}
 				if changed == nil {
 					changed = make(map[netip.Addr]struct{})
 				}
@@ -129,6 +140,7 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 		}
 	}
 	g.syncProjection(changed, reconsider, now)
+	return created
 }
 
 // extend returns whether this IP's relevant priority increased. Membership and
@@ -136,7 +148,9 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 func (g *DomainRegistry) extend(r *domainRecord, s *ipRecord, pair *domainPair, deadline time.Time) bool {
 	if deadline.After(pair.retainUntil) {
 		pair.retainUntil = deadline
-		g.generation++
+		if g.persist != nil {
+			g.persist.renew(pair)
+		}
 		if !domainBitmapAllZero(r.bitmap) && deadline.After(s.priority) {
 			s.priority = deadline
 			return true
@@ -218,7 +232,6 @@ func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 			if !deadline.After(cutoff) {
 				g.removePair(r, ip)
 				g.gcCount++
-				g.generation++
 				if changed == nil {
 					changed = make(map[netip.Addr]struct{})
 				}

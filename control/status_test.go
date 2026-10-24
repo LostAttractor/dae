@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"reflect"
@@ -112,9 +113,9 @@ func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
 		{181 * time.Second, 0, 0, 0, api.TableUsageBreakdown{GC: 4}},
 	} {
 		domainRegistry.Sweep(now.Add(test.elapsed))
-		generation, evaluatedAt := domainRegistry.generation, domainRegistry.evaluatedAt
+		evidence, evaluatedAt := domainRegistry.evidence(), domainRegistry.evaluatedAt
 		tables := mustStatusSnapshot(t, plane).Tables
-		if domainRegistry.generation != generation || domainRegistry.evaluatedAt != evaluatedAt {
+		if !maps.EqualFunc(domainRegistry.evidence(), evidence, maps.Equal) || domainRegistry.evaluatedAt != evaluatedAt {
 			t.Fatal("status read mutated registry evidence or its clock")
 		}
 		if len(tables) != 2 {

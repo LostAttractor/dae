@@ -5,7 +5,6 @@ package control
 import (
 	"errors"
 	"net/netip"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,16 +33,15 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	g.Upsert("outside.example.", a, matcher.domainMatcher.MatchDomainBitmap("outside.example."), 10, now)
 	g.Upsert(domain, b, matcher.domainMatcher.MatchDomainBitmap(domain), 50, now)
 	// Start the verdict checks from a cold restore, with no inherited kernel
-	// entries. The grouped snapshot must rebuild the same complete-IP projection.
-	path := filepath.Join(t.TempDir(), "domain-registry.json.gz")
-	if err := g.Save(path); err != nil {
-		t.Fatal(err)
-	}
+	// entries. The grouped baseline must rebuild the same complete-IP projection.
+	dir := t.TempDir()
+	g.EnablePersistence(dir)
+	g.writeRenewals(now)
 	for ip := range g.kernel.resident {
 		core.deleteDomainBitmaps(ip)
 	}
 	g = newDomainRegistry(int(state.DomainRoutingMap.MaxEntries()), 10*time.Second, core.writeDomainBitmaps, core.deleteDomainBitmaps)
-	if err := g.Restore(path, matcher.domainMatcher.MatchDomainBitmap, now); err != nil {
+	if err := g.Restore(dir, matcher.domainMatcher.MatchDomainBitmap, now); err != nil {
 		t.Fatal(err)
 	}
 	sequence := uint16(47000)

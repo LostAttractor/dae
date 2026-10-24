@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	log "github.com/sirupsen/logrus"
 )
 
 // Start is called once by the owner before publishing the registry. One worker
-// owns activity batches, GC and saving; persistence starts after activation.
+// owns activity batches, GC, renewal windows and compaction; mutations append
+// their new pairs themselves. Writing starts after activation.
 func (g *DomainRegistry) Start() {
 	// A rejected successor may resume its predecessor's joined worker.
 	select {
@@ -28,10 +28,8 @@ func (g *DomainRegistry) Start() {
 		defer close(g.workerDone)
 		activity := time.NewTicker(time.Second)
 		sweep := time.NewTicker(consts.DnsStateSweepInterval)
-		save := time.NewTicker(time.Minute)
 		defer activity.Stop()
 		defer sweep.Stop()
-		defer save.Stop()
 		for {
 			select {
 			case <-g.stopCh:
@@ -39,27 +37,17 @@ func (g *DomainRegistry) Start() {
 			case now := <-activity.C:
 				g.flushActivity()
 				g.retryProjection(now)
+				// The window ends after the activity it covers is applied.
+				if g.renewalDue(now) {
+					g.writeRenewals(now)
+				}
 			case now := <-sweep.C:
 				g.Sweep(now)
-			case <-save.C:
-				g.flushActivity()
-				g.mu.Lock()
-				path, dirty := g.diskPath, g.generation != g.savedGeneration
-				g.mu.Unlock()
-				if path != "" && dirty {
-					if err := g.Save(path); err != nil {
-						log.WithError(err).Warn("Save domain registry")
-					}
-				}
+			case <-g.persistWake:
+				g.writeNew(time.Now())
 			}
 		}
 	}()
-}
-
-func (g *DomainRegistry) EnablePersistence(path string) {
-	g.mu.Lock()
-	g.diskPath = path
-	g.mu.Unlock()
 }
 
 func (g *DomainRegistry) stopWorker() {
@@ -88,17 +76,13 @@ func (g *DomainRegistry) Close() error {
 	// must not drain activity destined for its successor.
 	reconsider := g.applyActivity()
 	g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
-	path := g.diskPath
 	g.mu.Unlock()
 	defer close(g.closeDone)
 	g.stopWorker()
-	if path != "" {
-		// Disk durability is best-effort, just like periodic saves. All writers
-		// are stopped, so a save failure must not prevent in-memory reload adoption.
-		if err := g.Save(path); err != nil {
-			log.WithError(err).WithField("path", path).Warn("Save domain registry on shutdown")
-		}
-	}
+	// The worker has stopped, so Close is the writer. Disk durability is
+	// best-effort: a failure is logged and never prevents retirement.
+	g.writeRenewals(time.Now())
+	g.closePersistence()
 	return nil
 }
 
@@ -127,27 +111,49 @@ func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchB
 // handlers. Runtime serializes DNS delivery with this snapshot and fans later
 // observations out to every serving generation using its own domain matcher.
 func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) (err error) {
-	// Join the old periodic writer before the new registry can persist a snapshot.
+	// Join the old writer before the successor takes over its files.
 	old.stopWorker()
 	defer func() {
 		if err != nil && old.workerDone != nil {
 			old.Start()
 		}
 	}()
+	// Mutations still appending finish first. The candidate writes nothing
+	// until it is admitted; pairs queued meanwhile wait for the owner's worker.
+	old.mu.Lock()
+	l := old.persist
+	old.mu.Unlock()
+	if l != nil {
+		l.io.Lock()
+		defer l.io.Unlock()
+	}
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	reconsider := old.drainActivity()
 	old.syncProjection(old.gc(old.evaluatedAt), reconsider, old.evaluatedAt)
+	// The successor journals every change from here on, including handoff
+	// activity applied below. Pairs keep their ordinals, and the open window
+	// lists the copies of the pairs it listed.
+	g.persist, old.persist = l, nil
 	g.gcCount = old.gcCount
+	var listed []*domainPair
 	records := make(map[string]*domainRecord, len(old.byName))
 	for name, r := range old.byName {
 		addresses := make(map[netip.Addr]*domainPair, len(r.addresses))
 		for ip, pair := range r.addresses {
-			addresses[ip] = &domainPair{retainUntil: pair.retainUntil}
+			copied := &domainPair{retainUntil: pair.retainUntil, ordinal: pair.ordinal, listed: pair.listed}
+			addresses[ip] = copied
+			if l != nil && !l.rebuild && pair.listed == l.window {
+				listed = append(listed, copied)
+			}
 		}
 		records[name] = &domainRecord{addresses: addresses}
+	}
+	var previous []*domainPair
+	if l != nil {
+		previous, l.renewed = l.renewed, listed
 	}
 	g.installRecords(records, matchBitmap)
 	g.clock(old.evaluatedAt)
@@ -166,13 +172,17 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	g.gc(now)
 	a.unlock()
 	if err := g.rebuildProjection(now); err != nil {
+		if l != nil {
+			l.renewed = previous
+		}
+		old.persist, g.persist = l, nil
+		old.wakePersistence()
 		return err
 	}
 	a.lock()
 	g.activity = a
 	a.registry = g
 	a.unlock()
-	old.diskPath = ""
-	g.generation++
+	g.wakePersistence()
 	return nil
 }

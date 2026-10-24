@@ -31,8 +31,8 @@ type ControlPlane struct {
 	planeHTTP
 	planeAPI
 
-	dnsRelay           *dnsRelay
-	domainRegistryPath string
+	dnsRelay          *dnsRelay
+	domainRegistryDir string
 
 	kernelReady         bool
 	routingGeneration   uint32

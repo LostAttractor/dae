@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"encoding/json/v2"
+	"maps"
 	"net"
 	"net/netip"
 	"reflect"
@@ -271,17 +272,12 @@ func TestDiagnosticsDomainSnapshotDoesNotRefreshRetention(t *testing.T) {
 	when := time.Now().Add(-time.Minute)
 	ip := netip.MustParseAddr("198.51.100.10")
 	g.ObserveDNS([]domainObservation{{name: "target.example.", ips: []netip.Addr{ip}, bitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap("target.example"), ttl: 120}}, when)
-	g.mu.Lock()
-	before := g.generation
-	deadline := g.byName["target.example."].addresses[ip].retainUntil
-	g.mu.Unlock()
+	before := g.evidence()
 	response, err := c.Explain(t.Context(), diagnosticRequest(), false)
 	if err != nil || response.Current.Decision.Verdict != "drop" {
 		t.Fatalf("%+v %v", response, err)
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.generation != before || g.byName["target.example."].addresses[ip].retainUntil != deadline {
+	if !maps.EqualFunc(g.evidence(), before, maps.Equal) {
 		t.Fatal("read refreshed DNS retention")
 	}
 	if _, err := json.Marshal(response); err != nil {

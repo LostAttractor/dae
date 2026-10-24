@@ -66,8 +66,8 @@ func (c *ControlPlane) activateLinks() error {
 		g.EnableSelectionTolerance()
 	}
 	log.WithFields(log.Fields{"window": core.domainRegistry.window, "activity": "userspace and captured splice", "kernel_capacity": core.domainRegistry.kernel.max}).Info("Domain retention active; uncaptured kernel-direct traffic does not refresh evidence")
-	if c.domainRegistryPath != "" {
-		core.domainRegistry.EnablePersistence(c.domainRegistryPath)
+	if c.domainRegistryDir != "" {
+		core.domainRegistry.EnablePersistence(c.domainRegistryDir)
 	}
 	SetAnyfromSoMark(c.soMarkFromDae)
 	log.WithField("duration", time.Since(started)).Debug("Control plane activated")
@@ -88,8 +88,8 @@ func (c *ControlPlane) commitKernelState() error {
 	if err := c.routingMatcher.BuildKernspace(); err != nil {
 		return fmt.Errorf("publish routing: %w", err)
 	}
-	if !core.isReload && c.domainRegistryPath != "" {
-		if err := core.domainRegistry.Restore(c.domainRegistryPath, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+	if !core.isReload && c.domainRegistryDir != "" {
+		if err := core.domainRegistry.Restore(c.domainRegistryDir, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
 			if _, incomplete := errors.AsType[*domainProjectionError](err); incomplete {
 				return err
 			}
@@ -99,9 +99,9 @@ func (c *ControlPlane) commitKernelState() error {
 	return nil
 }
 
-// SetDomainRegistryPath selects the state file before activation. Reload uses
-// in-memory adoption; cold starts restore observations from this path.
-func (c *ControlPlane) SetDomainRegistryPath(path string) { c.domainRegistryPath = path }
+// SetDomainRegistryDir selects the persistence directory before activation.
+// Reload adopts memory and the predecessor's files; cold starts restore them.
+func (c *ControlPlane) SetDomainRegistryDir(dir string) { c.domainRegistryDir = dir }
 
 func (c *ControlPlane) Runtime() *Runtime { return c.core.bpf.Runtime }
 

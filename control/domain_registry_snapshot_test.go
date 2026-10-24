@@ -4,6 +4,7 @@ package control
 
 import (
 	"errors"
+	"maps"
 	"net/netip"
 	"slices"
 	"testing"
@@ -23,9 +24,9 @@ func TestDomainSnapshotRetainsVerificationAndInstalledState(t *testing.T) {
 	g.Upsert("outside.example.", v6, testBitmap(), 120, now)
 	g.kernel.update = func(netip.Addr, []uint32, []uint32) error { return errors.New("publication blocked") }
 	g.Upsert("new.example.", ip, testBitmap(1), 120, now)
-	generation := g.generation
+	evidence := g.evidence()
 	snapshot := g.Snapshot([]netip.Addr{netip.MustParseAddr("::ffff:192.0.2.1")}, "outside.example.")
-	if g.generation != generation || len(g.kernel.pending) != 1 {
+	if !maps.EqualFunc(g.evidence(), evidence, maps.Equal) || len(g.kernel.pending) != 1 {
 		t.Fatal("snapshot changed retention or projection")
 	}
 	for name, record := range snapshot.names {
