@@ -27,6 +27,10 @@ func TestWriteNetAddrMatchesWireCodec(t *testing.T) {
 			if err := WriteNetAddr(addr, &got); err != nil || !bytes.Equal(got.Bytes(), want.Bytes()) {
 				t.Fatalf("wire = %x, %v; want %x", got.Bytes(), err, want.Bytes())
 			}
+			appended, err := AppendNetAddr([]byte("prefix"), addr)
+			if err != nil || !bytes.Equal(appended, append([]byte("prefix"), want.Bytes()...)) {
+				t.Fatalf("appended = %x, %v; want prefix and %x", appended, err, want.Bytes())
+			}
 		})
 	}
 }
@@ -43,6 +47,18 @@ func TestWriteNetAddrRejectsInvalidDestination(t *testing.T) {
 		var buf bytes.Buffer
 		if err := WriteNetAddr(addr, &buf); err == nil {
 			t.Fatalf("accepted invalid address %v", addr)
+		}
+		if _, err := AppendNetAddr(nil, addr); err == nil {
+			t.Fatalf("appended invalid address %v", addr)
+		}
+	}
+}
+
+func TestAppendNetAddrDoesNotAllocateForIPs(t *testing.T) {
+	dst := make([]byte, 0, 32)
+	for _, addr := range []net.Addr{&net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53}, &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 53}} {
+		if allocs := testing.AllocsPerRun(100, func() { _, _ = AppendNetAddr(dst[:0], addr) }); allocs != 0 {
+			t.Fatalf("%v: %v allocations", addr, allocs)
 		}
 	}
 }

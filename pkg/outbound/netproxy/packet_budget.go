@@ -73,6 +73,7 @@ type budgetPacketConn struct {
 }
 
 func (c *budgetPacketConn) DependencyLease() *Lease { return DependencyOf(c.PacketConn) }
+func (c *budgetPacketConn) Unwrap() net.PacketConn  { return c.PacketConn }
 func (c *budgetPacketConn) Close() error {
 	c.once.Do(func() {
 		c.err = c.PacketConn.Close()

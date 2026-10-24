@@ -30,6 +30,36 @@ type BuffersWriter interface {
 	WriteBuffers(v [][]byte) (int, error)
 }
 
+// ErrPacketDropped reports a datagram that NonBlockingWriter.TryWriteTo
+// dropped because its queue was full. It is returned unwrapped.
+var ErrPacketDropped = errors.New("datagram dropped: transport queue full")
+
+// NonBlockingWriter is a packet connection whose writes never wait: TryWriteTo
+// queues the datagram or drops it with ErrPacketDropped, for callers that
+// account for drops, and WriteTo drops it without an error, as a congested
+// link would. Write deadlines have nothing to bound.
+type NonBlockingWriter interface {
+	TryWriteTo(b []byte, addr net.Addr) (int, error)
+}
+
+// PacketConnAs finds T in conn or in the connections it wraps, following
+// Unwrap() net.PacketConn. Wrappers that unwrap preserve how writes block and
+// how datagrams are received, or implement T themselves.
+func PacketConnAs[T any](conn net.PacketConn) (T, bool) {
+	for conn != nil {
+		if t, ok := conn.(T); ok {
+			return t, true
+		}
+		wrapper, ok := conn.(interface{ Unwrap() net.PacketConn })
+		if !ok {
+			break
+		}
+		conn = wrapper.Unwrap()
+	}
+	var zero T
+	return zero, false
+}
+
 type CloseWriteConn struct {
 	net.Conn
 	CloseWriter

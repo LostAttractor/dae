@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -250,5 +251,114 @@ func TestPacketExpiredDeadlineDoesNotStartDNS(t *testing.T) {
 		netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.2:53"), new(routingResult))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expired DNS packet: %v", err)
+	}
+}
+
+// queueingPacketConn never blocks: it queues or drops, as smux UDP streams do.
+type queueingPacketConn struct {
+	deadlineRecordingPacketConn
+	drop bool
+	to   []string // where TryWriteTo queued datagrams
+}
+
+func (c *queueingPacketConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
+	if c.drop {
+		return 0, netproxy.ErrPacketDropped
+	}
+	c.to = append(c.to, addr.String())
+	return len(b), nil
+}
+
+// A transport that never blocks needs no deadline or interruption, also
+// behind the wrappers established associations use, and a destination socket
+// still writes to its target.
+func TestPacketWriteSkipsDeadlinesForNonBlockingTransport(t *testing.T) {
+	conn := &queueingPacketConn{deadlineRecordingPacketConn: deadlineRecordingPacketConn{testPacketConn: newTestPacketConn(false)}}
+	owned, err := netproxy.NewPacketBudget(1).Open(t.Context(), "", func(context.Context, string) (net.PacketConn, error) {
+		return netproxy.TrackPacketConn(conn, func() {}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, target := netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("192.0.2.1:443")
+	wrapped := newDestinationPacketConn(owned, original, target)
+	if _, err := writePacketUntil(t.Context(), time.Now().Add(time.Hour), new(udpWriteSlot), wrapped, []byte("packet"), net.UDPAddrFromAddrPort(original)); err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.deadlines) != 0 || len(conn.to) != 1 || conn.to[0] != target.String() {
+		t.Fatalf("write deadlines = %v, queued to %v; want none, to %v", conn.deadlines, conn.to, target)
+	}
+	if _, ok := newDestinationPacketConn(conn.testPacketConn, original, target).(netproxy.NonBlockingWriter); ok {
+		t.Fatal("destination socket over a blocking transport claims not to block")
+	}
+	if _, err := writePacketUntil(t.Context(), time.Now().Add(-time.Second), nil, wrapped, []byte("late"), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired packet = %v, want it not written", err)
+	}
+}
+
+// A datagram the transport queue drops counts as a capacity drop, not as a
+// failure, an upload or a reason to end the association.
+func TestUDPTransportQueueDropIsNotAFailure(t *testing.T) {
+	conn := &queueingPacketConn{deadlineRecordingPacketConn: deadlineRecordingPacketConn{testPacketConn: newTestPacketConn(false)}, drop: true}
+	path := stats.Path{Dialer: t.Name()}
+	p := new(UdpEndpointPool)
+	defer p.closeAll()
+	src := netip.MustParseAddrPort("192.0.2.10:30000")
+	ue := &UdpEndpoint{conn: conn, NatTimeout: time.Minute, statsPath: path, traffic: stats.DefaultStore.OpenConnection(path, false)}
+	p.add(src, ue)
+	c := &ControlPlane{udpEndpoints: p}
+	for range 3 {
+		if err := c.writeUDP(t.Context(), ue, src, netip.MustParseAddrPort("192.0.2.1:443"), []byte("packet")); err != nil {
+			t.Fatalf("dropped datagram reported %v", err)
+		}
+	}
+	if _, exists := p.pool.Load(src); !exists || p.drops.total.Load() != 3 {
+		t.Fatalf("endpoint present=%v drops=%d, want kept and 3", exists, p.drops.total.Load())
+	}
+	if got := stats.DefaultStore.Snapshot()[path].UploadBytes; got != 0 {
+		t.Fatalf("dropped datagrams counted %d uploaded bytes", got)
+	}
+}
+
+// Users of an smux UDP socket that do not count drops, such as MITM and DNS
+// upstreams, see a datagram its full queue drops as one lost on the way: no
+// write error, so no relay or path error. It counts as a capacity drop, not as
+// uploaded bytes.
+func TestSmuxDatagramDropIsLossForOtherUsers(t *testing.T) {
+	outbound, _ := smuxTestOutbound(t) // the carrier is not read: queues fill
+	conn, err := outbound.ListenPacket(t.Context(), "192.0.2.1:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	path := stats.Path{Dialer: t.Name(), NodeID: time.Now().String()}
+	traffic := stats.DefaultStore.OpenConnection(path, false)
+	defer traffic.Close()
+	upstream := &mitmUpstreamPacketConn{PacketConn: conn, httpUpstream: &httpUpstream{
+		traffic: traffic, path: path, lease: netproxy.NewLease(netproxy.NewResourceRef())}}
+	to := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:443"))
+	payload := make([]byte, 1200)
+	drops := mitmPacketDrops.total.Load()
+	const writes = 200 // beyond a 64 KiB batch and the 64 KiB stream queue
+	for range writes {
+		if _, err := upstream.WriteTo(payload, to); err != nil {
+			t.Fatalf("WriteTo = %v", err)
+		}
+	}
+	dropped := mitmPacketDrops.total.Load() - drops
+	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes; dropped == 0 || uploaded != (writes-dropped)*uint64(len(payload)) {
+		t.Fatalf("%d of %d datagrams dropped, %d bytes uploaded; want drops and only the queued ones uploaded", dropped, writes, uploaded)
+	}
+	// The writer may have taken the whole queue as its batch before blocking
+	// on the carrier; then the queue fills again within its 64 KiB.
+	writer, _ := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn)
+	for i := 0; ; i++ {
+		_, err := writer.TryWriteTo(payload, to)
+		if errors.Is(err, netproxy.ErrPacketDropped) {
+			break
+		}
+		if err != nil || i > 64<<10/len(payload)+1 {
+			t.Fatalf("TryWriteTo = %v after %d queued, want a full queue", err, i)
+		}
 	}
 }

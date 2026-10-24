@@ -3,6 +3,7 @@
 package netproxy
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -124,5 +125,28 @@ func TestBuffersWriterOfLooksThroughTrackingOnly(t *testing.T) {
 	raw := &trackedTestConn{Conn: TrackConn(writer, func() {})}
 	if BuffersWriterOf(raw) != nil || BuffersWriterOf(TrackConn(new(net.TCPConn), func() {})) != nil {
 		t.Fatal("vectorised writer found through a protocol adapter or a plain socket")
+	}
+}
+
+type queueingTestPacket struct{ trackedTestPacket }
+
+func (*queueingTestPacket) TryWriteTo(b []byte, _ net.Addr) (int, error) { return len(b), nil }
+
+func TestPacketConnAsFollowsOwnershipWrappers(t *testing.T) {
+	inner := new(queueingTestPacket)
+	conn, err := NewPacketBudget(1).Open(t.Context(), "", func(context.Context, string) (net.PacketConn, error) {
+		return TrackPacketConn(TrackPacketConn(inner, func() {}), func() {}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, ok := PacketConnAs[NonBlockingWriter](conn); !ok || found != inner {
+		t.Fatal("ownership wrappers hid a non-blocking writer")
+	}
+	if _, ok := PacketConnAs[NonBlockingWriter](TrackPacketConn(new(trackedTestPacket), func() {})); ok {
+		t.Fatal("blocking transport reported as non-blocking")
+	}
+	if _, ok := PacketConnAs[NonBlockingWriter](&BindPacketConn{PacketConn: inner}); ok {
+		t.Fatal("found through a wrapper that does not unwrap")
 	}
 }

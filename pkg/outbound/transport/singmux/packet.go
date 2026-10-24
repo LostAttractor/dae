@@ -1,11 +1,16 @@
 package singmux
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/infra/socks"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 )
 
@@ -49,4 +54,89 @@ func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	}
 	_, err = c.Conn.Write(buf.Bytes())
 	return len(b), err
+}
+
+// smuxPacketConn writes datagrams to an smux stream without waiting: each is
+// queued as its own frames or dropped once the stream or session holds too
+// many queued datagrams; see netproxy.NonBlockingWriter. Reads stay with
+// UDPConn.
+type smuxPacketConn struct {
+	UDPConn
+	leased *leasedStream
+	stream *smuxStream
+
+	request   []byte // sent with the first datagram, which is never dropped
+	mu        sync.Mutex
+	requested atomic.Bool
+}
+
+func newSmuxPacketConn(leased *leasedStream, stream *smuxStream, layer netproxy.FailureLayer, addr string) (*smuxPacketConn, error) {
+	buf := pool.GetBytesBuffer()
+	defer pool.PutBytesBuffer(buf)
+	if err := WriteStreamRequest(buf, &StreamRequest{Destination: addr, UDP: true, PacketAddr: true}); err != nil {
+		_ = leased.Close()
+		return nil, err
+	}
+	stream.session.mu.Lock()
+	stream.datagram = true
+	stream.session.mu.Unlock()
+	return &smuxPacketConn{
+		UDPConn: UDPConn{Conn: Conn{Conn: leased, layer: layer, addr: addr, udp: true, packetAddr: true, onceWrite: true}},
+		leased:  leased, stream: stream, request: bytes.Clone(buf.Bytes()),
+	}, nil
+}
+
+// WriteTo reports a dropped datagram as written: to callers that do not
+// count drops, as quic-go or DNS, ErrPacketDropped would be a failure.
+func (c *smuxPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	n, err := c.TryWriteTo(b, addr)
+	if err == netproxy.ErrPacketDropped {
+		return len(b), nil
+	}
+	return n, err
+}
+
+func (c *smuxPacketConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if !c.requested.Load() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if !c.requested.Load() {
+			return c.writeTo(b, addr, c.request)
+		}
+	}
+	return c.writeTo(b, addr, nil)
+}
+
+// writeTo queues one datagram behind request, if any, which forces it.
+func (c *smuxPacketConn) writeTo(b []byte, addr net.Addr, request []byte) (int, error) {
+	var header [socks.MaxAddrLen + 2]byte
+	prefix, err := socks5.AppendNetAddr(header[:0], addr)
+	if err != nil {
+		return 0, err
+	}
+	prefix = binary.BigEndian.AppendUint16(prefix, uint16(len(b)))
+	size := smuxHeaderSize + len(request) + len(prefix) + len(b)
+	var data []byte
+	if size <= smuxFullFrame {
+		data = newFrame(size, 0)
+	} else {
+		data = pool.GetBuffer(size) // writeDatagram splits it into frames
+	}
+	n := smuxHeaderSize + copy(data[smuxHeaderSize:], request)
+	copy(data[n+copy(data[n:], prefix):], b)
+	err = c.stream.writeDatagram(data, request != nil)
+	if request != nil && err == nil {
+		c.requested.Store(true)
+	}
+	switch {
+	case err == nil:
+		return len(b), nil
+	case err == netproxy.ErrPacketDropped:
+		return 0, err
+	default:
+		return 0, c.leased.failure(err, netproxy.OpWrite)
+	}
 }

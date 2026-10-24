@@ -61,6 +61,7 @@ type trackedPacketConn struct {
 
 func (c *trackedPacketConn) Close() error            { defer c.release(); return c.PacketConn.Close() }
 func (c *trackedPacketConn) DependencyLease() *Lease { return DependencyOf(c.PacketConn) }
+func (c *trackedPacketConn) Unwrap() net.PacketConn  { return c.PacketConn }
 
 type trackedSyscallConn struct {
 	*trackedConn

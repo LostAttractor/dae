@@ -48,6 +48,10 @@ const (
 	smuxCoalesce = 2 << 10
 	// smuxCloseFlush bounds how long Close writes the frames already queued.
 	smuxCloseFlush = 5 * time.Second
+	// A datagram is dropped rather than queued beyond smuxDatagramQueue bytes
+	// of its stream or smuxSessionDatagramQueue bytes of its session.
+	smuxDatagramQueue        = 64 << 10
+	smuxSessionDatagramQueue = 256 << 10
 )
 
 var (
@@ -141,12 +145,14 @@ type smuxSession struct {
 	queued  int
 	waiting int // streams in blocked whose writer still waits
 	blocked fifo[*smuxStream]
-	writing bool          // sendLoop is busy; enqueuers wake it otherwise
-	closing bool          // Close is writing the queue; only FIN may join
-	flushed chan struct{} // closed once sendLoop idles while closing
-	dead    bool
-	err     error // why the session died; set before die closes
-	wake    chan struct{}
+	// datagrams counts the queued bytes of datagram streams.
+	datagrams int
+	writing   bool          // sendLoop is busy; enqueuers wake it otherwise
+	closing   bool          // Close is writing the queue; only FIN may join
+	flushed   chan struct{} // closed once sendLoop idles while closing
+	dead      bool
+	err       error // why the session died; set before die closes
+	wake      chan struct{}
 
 	budget     atomic.Int64 // receive buffer left
 	budgetWake chan struct{}
@@ -272,7 +278,7 @@ func (s *smuxSession) shutdown(err error) bool {
 			}
 			st.queued, st.scheduled = 0, false
 		}
-		s.blocked = fifo[*smuxStream]{}
+		s.blocked, s.datagrams = fifo[*smuxStream]{}, 0
 		s.mu.Unlock()
 		close(s.die)
 		s.carrierCloseErr = s.conn.Close()
@@ -394,7 +400,12 @@ func (s *smuxSession) takeLocked(batch [][]byte) [][]byte {
 		f := st.out.pop()
 		batch = append(batch, f)
 		size += len(f)
-		if f[1] == smuxCmdPSH {
+		switch {
+		case f[1] != smuxCmdPSH:
+		case st.datagram:
+			st.queued -= len(f)
+			s.datagrams -= len(f)
+		default:
 			st.queued -= cap(f)
 			s.queued -= cap(f)
 			if st.need == 0 {
@@ -468,6 +479,7 @@ type smuxStream struct {
 	need      int  // the space its writer waits for in session.blocked
 	reserved  int  // the space the session granted its writer
 	closed    bool
+	datagram  bool // queues datagrams: writes never wait but drop
 	writable  chan struct{}
 
 	// Receive state, guarded by rmu.
@@ -601,6 +613,58 @@ func (st *smuxStream) appendLocked(b []byte) bool {
 	*tail = append(*tail, b...)
 	smuxHeader(*tail, smuxCmdPSH, st.id)
 	return true
+}
+
+// writeDatagram queues data, a pooled buffer it takes over that starts with
+// room for a frame header, unless it would exceed the datagram queues of the
+// stream or the session; then it drops data with netproxy.ErrPacketDropped.
+// It never waits. Data larger than a frame is split into frames that are
+// queued or dropped together. A forced write is never dropped. Datagrams are
+// counted in frame bytes.
+func (st *smuxStream) writeDatagram(data []byte, force bool) error {
+	var frames [3][]byte // a datagram's encoding never exceeds 3 frames
+	parts := frames[:0]
+	if len(data) <= smuxFullFrame {
+		parts = append(parts, data)
+	} else {
+		for rest := data[smuxHeaderSize:]; len(rest) > 0; {
+			part := newFrame(smuxHeaderSize+min(len(rest), smuxMaxFrame), 0)
+			rest = rest[copy(part[smuxHeaderSize:], rest):]
+			parts = append(parts, part)
+		}
+		pool.PutBuffer(data)
+	}
+	n := 0
+	for _, part := range parts {
+		smuxHeader(part, smuxCmdPSH, st.id)
+		n += len(part)
+	}
+	s := st.session
+	s.mu.Lock()
+	var err error
+	switch {
+	case st.closed:
+		err = io.ErrClosedPipe
+	case s.dead:
+		err = s.err
+	case s.closing:
+		err = io.ErrClosedPipe
+	case !force && (st.queued > 0 && st.queued+n > smuxDatagramQueue || s.datagrams > 0 && s.datagrams+n > smuxSessionDatagramQueue):
+		err = netproxy.ErrPacketDropped
+	default:
+		st.queued += n
+		s.datagrams += n
+		for _, part := range parts {
+			st.enqueueLocked(part)
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		for _, part := range parts {
+			putFrame(part)
+		}
+	}
+	return err
 }
 
 // deliver buffers a payload unless the stream is closed.

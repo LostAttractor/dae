@@ -10,6 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
 type packetBenchmarkConn struct {
@@ -61,12 +62,32 @@ func BenchmarkUDPReadFrom(b *testing.B) {
 // Include a real smux session and both endpoints' allocations, using net.Pipe
 // to avoid external network latency. One request/response is one operation.
 func BenchmarkUDPSmuxRoundTrip(b *testing.B) {
-	stream, peer := smuxStreamPair(b)
+	local, remote := net.Pipe()
+	s := newTestSmuxSession(local)
+	server := smuxtest.Server(remote)
+	b.Cleanup(func() {
+		_ = s.Close()
+		_ = server.Close()
+	})
+	conn := testSmuxPacketConn(b, s)
+	peer, err := server.Accept()
+	if err != nil {
+		b.Fatal(err)
+	}
 	const size = 64
 	frame := packetBenchmarkFrame(b, "192.0.2.1:53", size)
 	done := make(chan error, 1)
 	go func() {
-		request := make([]byte, len(frame))
+		request := make([]byte, len("\x00\x03\x03\x0budp.example\x00\x35"))
+		if _, err := io.ReadFull(peer, request); err != nil {
+			done <- err
+			return
+		}
+		if _, err := peer.Write([]byte{0}); err != nil {
+			done <- err
+			return
+		}
+		request = make([]byte, len(frame))
 		for {
 			if _, err := io.ReadFull(peer, request); err != nil {
 				done <- err
@@ -82,7 +103,6 @@ func BenchmarkUDPSmuxRoundTrip(b *testing.B) {
 		_ = peer.Close()
 		<-done
 	})
-	conn := &UDPConn{Conn: Conn{Conn: stream, onceRead: true, onceWrite: true}}
 	address := netproxy.NewAddr("udp", "192.0.2.1:53")
 	payload := make([]byte, size)
 	b.SetBytes(size)

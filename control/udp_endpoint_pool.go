@@ -256,6 +256,7 @@ type UdpEndpointPool struct {
 	resourceOnce         sync.Once
 	resources            *netproxy.PacketBudget
 	sourceLimit          int // zero uses the daemon default; immutable once used.
+	drops                udpPacketDrops
 }
 
 func (p *UdpEndpointPool) packetBudget() *netproxy.PacketBudget {

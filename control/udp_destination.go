@@ -47,6 +47,25 @@ func (c *destinationPacketConn) DependencyLease() *netproxy.Lease {
 	return netproxy.DependencyOf(c.PacketConn)
 }
 
+func newDestinationPacketConn(conn net.PacketConn, original, target netip.AddrPort) net.PacketConn {
+	c := &destinationPacketConn{PacketConn: conn, original: original, target: target}
+	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn); ok {
+		return &nonBlockingDestinationPacketConn{c, writer}
+	}
+	return c
+}
+
+// nonBlockingDestinationPacketConn is a destinationPacketConn over a transport
+// that never waits, which it writes to as WriteTo does.
+type nonBlockingDestinationPacketConn struct {
+	*destinationPacketConn
+	writer netproxy.NonBlockingWriter
+}
+
+func (c *nonBlockingDestinationPacketConn) TryWriteTo(data []byte, _ net.Addr) (int, error) {
+	return c.writer.TryWriteTo(data, net.UDPAddrFromAddrPort(c.target))
+}
+
 // Rewritten destinations need separate sockets to distinguish replies when
 // several original addresses map to one server. Their expiry never changes the
 // source's retained route, node, destination program or random seed.
@@ -139,7 +158,7 @@ func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEnd
 		return nil, err
 	}
 	if key.IsValid() {
-		conn = &destinationPacketConn{PacketConn: conn, original: dst, target: target}
+		conn = newDestinationPacketConn(conn, dst, target)
 	}
 	if ue.mitm && ue.traffic == nil {
 		ue.traffic = stats.DefaultStore.OpenDeviceConnection(ue.statsPath, ue.fallback, ue.destinationParam.routingResult.Mac)

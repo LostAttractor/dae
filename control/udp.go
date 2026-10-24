@@ -103,15 +103,18 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 // writePacketUntil bounds a write with the socket's own deadline and leaves no
 // deadline behind. Cancellation reaches the write only through a worker slot,
 // so a packet arms no timer or context. Only transports without deadline
-// support need a timer.
+// support need a timer, and transports that never block need neither.
 func writePacketUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return 0, context.DeadlineExceeded
+	}
+	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn); ok {
+		return writer.TryWriteTo(data, dst)
+	}
 	if !deadline.IsZero() {
-		if !time.Now().Before(deadline) {
-			return 0, context.DeadlineExceeded
-		}
 		if conn.SetWriteDeadline(deadline) != nil {
 			return writePacketWithTimer(ctx, deadline, conn, data, dst)
 		}
@@ -427,7 +430,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			socketKey = ue.firstDst
 		} else if target != ue.firstDst {
 			socketKey = ue.firstDst
-			conn = &destinationPacketConn{PacketConn: conn, original: ue.firstDst, target: target}
+			conn = newDestinationPacketConn(conn, ue.firstDst, target)
 		}
 	}
 
@@ -486,6 +489,11 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, sl
 			ue.writeDst, ue.writeAddr = dst, net.UDPAddrFromAddrPort(dst)
 		}
 		n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
+		if err == netproxy.ErrPacketDropped {
+			// A full transport queue, as when this pool's own queues are full.
+			c.udpEndpoints.drops.report("transport_queue_full")
+			return nil
+		}
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))

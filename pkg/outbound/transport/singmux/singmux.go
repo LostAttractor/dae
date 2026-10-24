@@ -241,6 +241,11 @@ func (s *Mux) ListenPacket(ctx context.Context, addr string) (net.PacketConn, er
 	if err != nil {
 		return nil, err
 	}
+	if leased, ok := stream.(*leasedStream); ok {
+		if smux, ok := leased.Conn.(*smuxStream); ok {
+			return newSmuxPacketConn(leased, smux, s.Protocol.layer(), addr)
+		}
+	}
 	return &UDPConn{Conn: Conn{Conn: stream, layer: s.Protocol.layer(), addr: addr, udp: true, packetAddr: true}}, nil
 }
 
