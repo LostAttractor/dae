@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -69,8 +70,10 @@ type ControlPlane struct {
 // TODO: HandlePkt HandleConn 分割 Route 和 Dial
 //
 // NewControlPlane consumes prepared kernel resources and copies prepared rules
-// to build the userspace control plane. It does not modify shared BPF maps or
-// bind programs to traffic interfaces. Call PrepareKernel and Runtime.Publish to activate it.
+// to build the userspace control plane. When WAN is configured, it attaches the
+// runtime-wide cgroup hooks that record socket owners before outbounds open
+// sockets; they stay attached if the candidate fails. It does not bind
+// programs to traffic interfaces. Call PrepareKernel and Runtime.Publish to activate it.
 // loadMITM runs after initial connectivity checks, using the configured DNS
 // and routing policies. Module rules are compiled after downloads finish.
 func NewControlPlane(
@@ -108,6 +111,15 @@ func NewControlPlane(
 			err = errors.Join(err, plane.Close())
 		}
 	}()
+	// WAN egress recognizes dae by the owner of the sending socket, which is
+	// recorded when the socket is created or connected. Attach the hooks before
+	// outbounds and connectivity checks open sockets that live on, such as
+	// pooled mux sessions.
+	if len(plane.wanInterface) > 0 || plane.autoWan {
+		if err := core.setupSkPidMonitor(); err != nil {
+			return nil, fmt.Errorf("setup WAN socket identity monitor: %w", err)
+		}
+	}
 	outboundBuilder, err := core.buildOutbounds(startupCtx, nodes, conf.Group, preparedRules.routing, global, plane.noConnectivityOutbound)
 	if err != nil {
 		return nil, err

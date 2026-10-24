@@ -213,3 +213,64 @@ func TestRemoveIncompatiblePinnedMaps(t *testing.T) {
 		}
 	}
 }
+
+// The socket owner storage keeps the name of the cookie-keyed LRU it replaced.
+// Loading over an upgraded pin directory drops the old LRU and pins the
+// storage, which later loads reuse.
+func TestSocketOwnerReplacesCookiePin(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("pinning eBPF maps requires privileges")
+	}
+	pinPath, err := os.MkdirTemp("/sys/fs/bpf", "dae-owner-map-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(pinPath); err != nil {
+			t.Error(err)
+		}
+	})
+	old, err := ebpf.NewMap(&ebpf.MapSpec{Name: "cookie_pid_map", Type: ebpf.LRUHash, KeySize: 8, ValueSize: 20, MaxEntries: 65536})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if err := old.Pin(filepath.Join(pinPath, "cookie_pid_map")); err != nil {
+		t.Fatal(err)
+	}
+	full, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"cookie_pid_map": full.Maps["cookie_pid_map"]}}
+	var pinned ebpf.MapID
+	for range 2 {
+		if err := removeIncompatiblePinnedMaps(spec, pinPath); err != nil {
+			t.Fatal(err)
+		}
+		m, err := ebpf.NewMapWithOptions(spec.Maps["cookie_pid_map"], ebpf.MapOptions{PinPath: pinPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := m.Info()
+		m.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Type != ebpf.SkStorage {
+			t.Fatalf("pinned socket owner map type = %s", info.Type)
+		}
+		id, ok := info.ID()
+		if !ok {
+			t.Skip("map IDs unavailable")
+		}
+		if pinned != 0 && id != pinned {
+			t.Fatalf("second load replaced the pinned storage: map %d, want %d", id, pinned)
+		}
+		pinned = id
+	}
+	entries, err := os.ReadDir(pinPath)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("pins after upgrade = %v, %v", entries, err)
+	}
+}

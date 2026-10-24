@@ -75,15 +75,29 @@ struct {
 	},
 };
 
-/* Populate the cookie and classify the same skb: separate test-run calls can
- * receive different socket cookies, even without a userspace socket.
+/* Own the socket and classify the same skb: each test run has its own dummy
+ * socket, even without a userspace socket.
  */
+static __always_inline void test_own_socket(struct __sk_buff *skb,
+					    const struct pid_pname *value)
+{
+	struct bpf_sock *sk = skb->sk;
+	struct pid_pname *owner;
+
+	if (sk)
+		sk = bpf_sk_fullsock(sk);
+	if (!sk)
+		return;
+	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, BPF_SK_STORAGE_GET_F_CREATE);
+	if (owner)
+		*owner = *value;
+}
+
 static __always_inline int test_entry_mark_owner(struct __sk_buff *skb, bool daemon)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname value = { .pid = PARAM.control_plane_pid + !daemon };
 
-	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	test_own_socket(skb, &value);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_SHOT;
 }
@@ -104,10 +118,9 @@ int test_entry_mark_other(struct __sk_buff *skb)
 SEC("tc/test_entry_pname")
 int test_entry_pname(struct __sk_buff *skb)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname value = { .pid = PARAM.control_plane_pid + 1, .pname = "curl" };
 
-	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	test_own_socket(skb, &value);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_SHOT;
 }
@@ -131,6 +144,49 @@ int test_expire_closing_udp_route(struct __sk_buff *skb)
 	bpf_spin_unlock(&value->lock);
 	expire_udp_route(&udp_routing_cache_map, &key, value);
 	return bpf_map_lookup_elem(&udp_routing_cache_map, &key) ? TC_ACT_SHOT : TC_ACT_OK;
+}
+
+/* Owners seen on TCP segments to SOCKET_OWNER_PORT, keyed by IPv4 source. */
+#define SOCKET_OWNER_PORT 18443
+
+struct socket_owner_probe {
+	__u32 pid;
+	__u32 owned;
+	__u32 unowned;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __be32);
+	__type(value, struct socket_owner_probe);
+	__uint(max_entries, 16);
+} socket_owner_probe_map SEC(".maps");
+
+SEC("cgroup_skb/egress")
+int test_socket_owner_probe(struct __sk_buff *skb)
+{
+	struct socket_owner_probe *probe, empty = {};
+	struct pid_pname *owner;
+	struct tcphdr tcph;
+	struct iphdr iph;
+
+	if (skb->protocol != bpf_htons(ETH_P_IP) ||
+	    bpf_skb_load_bytes(skb, 0, &iph, sizeof(iph)) || iph.protocol != IPPROTO_TCP ||
+	    bpf_skb_load_bytes(skb, iph.ihl * 4, &tcph, sizeof(tcph)) ||
+	    tcph.dest != bpf_htons(SOCKET_OWNER_PORT))
+		return 1;
+	bpf_map_update_elem(&socket_owner_probe_map, &iph.saddr, &empty, BPF_NOEXIST);
+	probe = bpf_map_lookup_elem(&socket_owner_probe_map, &iph.saddr);
+	if (!probe)
+		return 1;
+	owner = socket_owner(skb);
+	if (owner) {
+		probe->pid = owner->pid;
+		__sync_fetch_and_add(&probe->owned, 1);
+	} else {
+		__sync_fetch_and_add(&probe->unowned, 1);
+	}
+	return 1;
 }
 
 SEC("tc/benchmark/parser")
@@ -199,10 +255,8 @@ int testpktgen_so_mark_exact(struct __sk_buff *skb)
 SEC("tc/setup/so_mark_exact")
 int testsetup_so_mark_exact(struct __sk_buff *skb)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname *pid_pname = NULL;
 
-	bpf_map_delete_elem(&cookie_pid_map, &cookie);
 	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
 }
@@ -222,10 +276,8 @@ int testpktgen_so_mark_neighbor(struct __sk_buff *skb)
 SEC("tc/setup/so_mark_neighbor")
 int testsetup_so_mark_neighbor(struct __sk_buff *skb)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname *pid_pname = NULL;
 
-	bpf_map_delete_elem(&cookie_pid_map, &cookie);
 	skb->mark = 0x100U ^ 1;
 	return pid_is_control_plane(skb, &pid_pname);
 }
@@ -245,11 +297,10 @@ int testpktgen_so_mark_pid_precedence(struct __sk_buff *skb)
 SEC("tc/setup/so_mark_pid_precedence")
 int testsetup_so_mark_pid_precedence(struct __sk_buff *skb)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname value = { .pid = PARAM.control_plane_pid + 1 };
 	struct pid_pname *pid_pname = NULL;
 
-	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	test_own_socket(skb, &value);
 	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
 }
@@ -508,10 +559,9 @@ int testpktgen_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
 SEC("tc/setup/ipv4_first_fragment_control_plane")
 int testsetup_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
 {
-	__u64 cookie = bpf_get_socket_cookie(skb);
 	struct pid_pname value = { .pid = PARAM.control_plane_pid };
 
-	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	test_own_socket(skb, &value);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }

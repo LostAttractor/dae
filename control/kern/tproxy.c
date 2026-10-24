@@ -53,7 +53,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 /* Internal layout and metadata limits are not workload tuning parameters. */
 #define MAX_LPM_SIZE 2048000
-#define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_API_CLIENT_NUM 1024
 
 #ifndef MAX_MATCH_SET_LEN
@@ -197,7 +196,7 @@ struct udp_routing_cache_key {
 };
 
 /* Shared by TCP tuples and UDP source decisions, with no alignment holes.
- * Process-name predicates use the socket cookie map, not this result.
+ * Process-name predicates use the socket owner storage, not this result.
  * Preserve first-packet metadata: interfaces, DSCP and policies can change
  * mid-lifetime. generation identifies the published rules; route_epoch is
  * the independent per-device connection policy epoch.
@@ -403,15 +402,17 @@ struct pid_pname {
 	char pname[TASK_COMM_LEN];
 };
 
+/* Owner of a local socket, living and dying with the socket itself, kernel
+ * sockets such as MPTCP subflows included. The pin keeps other processes'
+ * owners across a restart; it keeps the name of the cookie-keyed LRU it
+ * replaced, so loading drops that incompatible pin. */
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__type(key, __u64);
+	__uint(type, BPF_MAP_TYPE_SK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
 	__type(value, struct pid_pname);
-	__uint(max_entries, MAX_COOKIE_PID_PNAME_MAPPING_NUM);
-	/// NOTICE: No persistence.
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } cookie_pid_map SEC(".maps");
-// 6.29 MB
 
 struct udp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
@@ -1111,20 +1112,20 @@ rearm:
 	return state;
 }
 
-// Cookie will change after the first packet, so we just use it for
-// handshake.
+static __always_inline struct pid_pname *socket_owner(struct __sk_buff *skb)
+{
+	struct bpf_sock *sk = skb->sk;
+
+	if (sk)
+		sk = bpf_sk_fullsock(sk);
+	return sk ? bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0) : NULL;
+}
+
+/* LAN packets and forwarded packets carry no local socket, hence no owner. */
 static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 						 struct pid_pname **pid_pname)
 {
-	/// NOTICE: No pid pname info for LAN packet.
-	// Maybe this packet is also in the host (such as docker) ?
-	// I tried and it is false.
-	// __u64 cookie = bpf_get_socket_cookie(skb);
-	// struct pid_pname *pid_pname = bpf_map_lookup_elem(&cookie_pid_map, &cookie);
-	// if (pid_pname) ...
-	__u64 cookie = bpf_get_socket_cookie(skb);
-	*pid_pname = bpf_map_lookup_elem(&cookie_pid_map, &cookie);
-
+	*pid_pname = socket_owner(skb);
 	if (!PARAM.control_plane_pid) {
 		bpf_printk("control_plane_pid is not set.");
 		return false;
@@ -1894,96 +1895,74 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	return 0;
 }
 
-static __always_inline int _update_map_elem_by_cookie(const __u64 cookie,
-						      struct pid_pname *val)
+static __always_inline void current_owner(struct pid_pname *owner)
 {
-	if (unlikely(!cookie)) {
-		bpf_printk("zero cookie");
-		return -EINVAL;
+	if (get_pid_pname(owner)) {
+		/* Keep the pid: dae's own packets must never loop back to dae. */
+		__builtin_memset(owner, 0, sizeof(*owner));
+		owner->pid = bpf_get_current_pid_tgid() >> 32;
 	}
-	if (bpf_map_lookup_elem(&cookie_pid_map, &cookie)) {
-		// Cookie to pid mapping already exists.
-		return 0;
-	}
-
-	int ret;
-
-	ret = get_pid_pname(val);
-	if (ret)
-		return ret;
-
-	// Update map.
-	ret = bpf_map_update_elem(&cookie_pid_map, &cookie, val, BPF_ANY);
-	if (unlikely(ret)) {
-		// bpf_printk("setup_mapping_from_sk: failed update map: %d", ret);
-		return ret;
-	}
-
-	return 0;
 }
 
-static __always_inline int update_map_elem_by_cookie(const __u64 cookie)
-{
-	int ret;
-	struct pid_pname val = {};
-
-	ret = _update_map_elem_by_cookie(cookie, &val);
-	if (ret) {
-		// Fallback to only write pid to avoid loop due to packets sent by dae.
-		val.pid = bpf_get_current_pid_tgid() >> 32;
-		bpf_map_update_elem(&cookie_pid_map, &cookie, &val, BPF_ANY);
-		return ret;
-	}
-	return 0;
-}
-
-// Create cookie to pid, pname mapping.
 SEC("cgroup/sock_create")
 int tproxy_wan_cg_sock_create(struct bpf_sock *sk)
 {
-	update_map_elem_by_cookie(bpf_get_socket_cookie(sk));
+	struct pid_pname owner = {};
+
+	current_owner(&owner);
+	bpf_sk_storage_get(&cookie_pid_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
 	return 1;
 }
 
-// Remove cookie to pid, pname mapping.
-SEC("cgroup/sock_release")
-int tproxy_wan_cg_sock_release(struct bpf_sock *sk)
+/* Own sockets that skipped sock_create: those opened before the hooks were
+ * attached, and kernel sockets. An MPTCP subflow belongs to its connection,
+ * also when a kworker connects an MP_JOIN subflow. */
+static __always_inline void own_socket(struct bpf_sock_addr *ctx)
 {
-	__u64 cookie = bpf_get_socket_cookie(sk);
+	struct bpf_sock *sk = ctx->sk;
+	struct pid_pname *connection = NULL;
+	struct pid_pname owner = {};
 
-	if (unlikely(!cookie)) {
-		bpf_printk("zero cookie");
-		return 1;
+	if (bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0))
+		return;
+	if (bpf_core_type_exists(struct mptcp_sock)) {
+		struct mptcp_sock *msk = bpf_skc_to_mptcp_sock(sk);
+
+		if (msk)
+			connection = bpf_sk_storage_get(&cookie_pid_map, msk, 0, 0);
 	}
-	bpf_map_delete_elem(&cookie_pid_map, &cookie);
-	return 1;
+	if (connection)
+		owner = *connection;
+	else
+		current_owner(&owner);
+	bpf_sk_storage_get(&cookie_pid_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
 }
 
 SEC("cgroup/connect4")
 int tproxy_wan_cg_connect4(struct bpf_sock_addr *ctx)
 {
-	update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+	own_socket(ctx);
 	return 1;
 }
 
 SEC("cgroup/connect6")
 int tproxy_wan_cg_connect6(struct bpf_sock_addr *ctx)
 {
-	update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+	own_socket(ctx);
 	return 1;
 }
 
 SEC("cgroup/sendmsg4")
 int tproxy_wan_cg_sendmsg4(struct bpf_sock_addr *ctx)
 {
-	update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+	own_socket(ctx);
 	return 1;
 }
 
 SEC("cgroup/sendmsg6")
 int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 {
-	update_map_elem_by_cookie(bpf_get_socket_cookie(ctx));
+	own_socket(ctx);
 	return 1;
 }
 

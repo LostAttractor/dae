@@ -54,9 +54,6 @@ func (c *ControlPlane) bindHostInterfaces() error {
 		if err := core.ifmgr.RegisterWithPatternSync("*", nil, nil, core.hostBinder.invalidateWanLink); err != nil {
 			return fmt.Errorf("register WAN link deletion handler: %w", err)
 		}
-		if err := core.setupSkPidMonitor(); err != nil {
-			return fmt.Errorf("setup WAN socket identity monitor: %w", err)
-		}
 		for _, ifname := range c.wanInterface {
 			if err := core.hostBinder.bindWan(ifname, c.prepareWanInterface); err != nil {
 				return err
