@@ -26,11 +26,19 @@ type configuredPlugin struct {
 	resources func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error)
 }
 type instanceInput struct {
-	interfaces *network.InterfaceManager
-	config     any
-	resources  string
-	baseDir    string
-	bodyMemory *membuffer.Budget
+	interfaces   *network.InterfaceManager
+	config       any
+	resources    string
+	baseDir      string
+	bodyMemory   *membuffer.Budget
+	sharedStates plugin.SharedStates
+}
+
+func sameSharedStates(a, b plugin.SharedStates) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return reflect.ValueOf(a).Comparable() && reflect.ValueOf(b).Comparable() && a == b
 }
 
 // PreparedInstance owns a reference and candidate-local resource metadata.
@@ -115,6 +123,11 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 			local.Logger = log.NewEntry(log.StandardLogger())
 		}
 		local.Logger = local.Logger.WithField("plugin_instance", configured.spec.ID)
+		local.SharedStates, err = scopeStates(services.SharedStates, local.BaseDir, configured.spec)
+		if err != nil {
+			// Join any resource loads already admitted before returning.
+			return nil, errors.Join(fmt.Errorf("plugins.%s shared states: %w", configured.spec.ID, err), group.Wait())
+		}
 		locals[i] = local
 		if configured.resources != nil {
 			group.Go(func() error {
@@ -149,8 +162,8 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		if configuration == nil {
 			configuration = spec.Config
 		}
-		input := instanceInput{services.Interfaces, configuration, resource.Key, services.BaseDir, services.BodyMemory}
-		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
+		input := instanceInput{services.Interfaces, configuration, resource.Key, services.BaseDir, services.BodyMemory, services.SharedStates}
+		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && sameSharedStates(existing.input.sharedStates, input.sharedStates) && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
 			instances = append(instances, PreparedInstance{existing, resource.Value})
 			continue
 		}

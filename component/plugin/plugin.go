@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/netip"
 	"time"
@@ -84,6 +85,22 @@ type Spec struct {
 	Config   *config_parser.Section
 }
 
+// SharedStates leases reload-independent state within one base directory, plugin
+// type and instance. Keys must identify compatible state, including its storage
+// path when configurable. The builder only allocates memory: it must not perform
+// I/O or start workers. Restore persisted state lazily after activation instead.
+//
+// Each successful Acquire returns an idempotent release. Plugins must release
+// every lease, including on factory failure, and must not call the state's Close
+// directly. The last release closes the state; a failed Close must leave it usable
+// for another lease and a later Close retry. Acquiring the same key waits for a
+// pending build or Close, honoring ctx cancellation; unrelated keys do not wait.
+// The host rejects new leases at shutdown and closes remaining states after all
+// plugins have stopped. Standalone factories may use private state instead.
+type SharedStates interface {
+	Acquire(context.Context, string, func() (io.Closer, error)) (io.Closer, func() error, error)
+}
+
 // Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
@@ -104,6 +121,9 @@ type Services struct {
 	// Preparation must only read: failed/replaced preparations can be closed
 	// without activation. Reload-sensitive state should be read after activation.
 	Storage Storage
+	// SharedStates is host-owned and scoped to this base directory/type/instance.
+	// Nil supports standalone factories; leases belong to the plugin, not the host.
+	SharedStates SharedStates
 	// Metrics registers instance-owned collectors during preparation. The host adds
 	// dae_plugin_ and the plugin_type/plugin_instance labels. Collect must be
 	// concurrency-safe, perform no I/O and finish promptly. Nil is allowed for

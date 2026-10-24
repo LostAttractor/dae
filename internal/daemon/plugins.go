@@ -91,6 +91,7 @@ func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Autho
 
 	services := plugin.Services{BaseDir: base, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}
 	if runtime != nil {
+		services.SharedStates = runtime.SharedStates()
 		services.Interfaces, err = runtime.Interfaces()
 		if err != nil {
 			return control.PreparedMITM{}, err

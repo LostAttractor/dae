@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -66,6 +67,7 @@ type Runtime struct {
 	ingress           sync.WaitGroup
 	soMarkFromDae     uint32
 	outboundResources outbound.Resources
+	pluginStates      pluginhost.StatePool
 	interfaces        *network.InterfaceManager
 }
 
@@ -73,6 +75,9 @@ func NewRuntime() *Runtime {
 	return &Runtime{planes: make(map[uint32]*ControlPlane), shared: make(map[string]*ebpf.Map), udpEndpoints: new(UdpEndpointPool),
 		done: make(chan struct{}), errors: make(chan error, 1)}
 }
+
+// SharedStates is scoped to each plugin instance by pluginhost during preparation.
+func (r *Runtime) SharedStates() plugin.SharedStates { return &r.pluginStates }
 
 // Interfaces returns the process-owned interface event source. Callers borrow
 // scopes; the source remains alive until every generation has drained.
@@ -252,6 +257,7 @@ func (r *Runtime) Close() error {
 		r.lifecycle.Lock()
 		defer r.lifecycle.Unlock()
 		close(r.done)
+		r.pluginStates.StopAcquiring()
 		r.mu.Lock()
 		planes := slices.Collect(maps.Values(r.planes))
 		clear(r.planes)
@@ -278,6 +284,9 @@ func (r *Runtime) Close() error {
 			<-r.retired
 		}
 		<-aborted
+		if err := r.pluginStates.Close(); err != nil {
+			log.WithError(err).Warn("Close shared plugin state")
+		}
 		if r.interfaces != nil {
 			r.closeErr = errors.Join(r.closeErr, r.interfaces.Close())
 		}
