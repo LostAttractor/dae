@@ -39,15 +39,21 @@ func (p *PathSpec) entryResolver(option *dialer.GlobalOption) (*net.Resolver, er
 	})
 }
 
-func (p *PathSpec) entryDialer(option *dialer.GlobalOption) (netproxy.Dialer, error) {
+// entryDialer shares what it learns about nodes through pool, if given.
+func (p *PathSpec) entryDialer(option *dialer.GlobalOption, pool *PathPool) (netproxy.Dialer, error) {
 	resolver, err := p.entryResolver(option)
 	if err != nil {
 		return nil, err
 	}
-	return direct.NewDirectDialer(direct.Option{
+	entry := direct.Option{
 		Resolver: resolver, Mark: int(p.effectiveMark(option)), Interface: p.Entry.Interface,
 		Mptcp: option.Mptcp, IPVersion: p.IPVersion,
-	}), nil
+	}
+	if pool != nil {
+		// entryResolver's DNS transport depends on exactly these inputs.
+		entry.Lookup = pool.addresses.Lookup(resolver.LookupNetIP, fmt.Sprintf("%s\x00%d\x00%s", option.DNSResolver, entry.Mark, entry.Interface))
+	}
+	return direct.NewDirectDialer(entry), nil
 }
 
 func (p *PathSpec) entryLabel() string {

@@ -27,14 +27,18 @@ type dnsDialFunc func(context.Context, string, string) (net.Conn, error)
 func cacheDNSDial(cache *dnscache.Cache, dial dnsDialFunc) dnsDialFunc {
 	scope := strconv.FormatUint(resolverCacheScope.Add(1), 10) + "\x00"
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		lifetime := addressLifetimeFrom(ctx)
 		if err := ctx.Err(); err != nil {
+			lifetime.fail()
 			return nil, err
 		}
 		if network != "udp" && network != "tcp" {
+			lifetime.fail()
 			return dial(ctx, network, address)
 		}
+		lifetime.open()
 		c := &cachedDNSConn{ctx: ctx, dial: dial, network: network, address: address,
-			exchange: resolverCacheExchange{cache: cache, scope: scope + network + "\x00" + address + "\x00"}}
+			exchange: resolverCacheExchange{cache: cache, scope: scope + network + "\x00" + address + "\x00", lifetime: lifetime}}
 		if network == "udp" {
 			return &cachedDNSPacketConn{c}, nil
 		}
@@ -281,7 +285,7 @@ func (c *cachedDNSConn) observe(wire []byte) {
 		}
 		wire = c.frame[2:]
 	}
-	if c.exchange.observe(wire) {
+	if c.exchange.observe(wire, c.network == "udp") {
 		c.frame = nil
 	}
 }
@@ -294,6 +298,7 @@ func (c *cachedDNSConn) Close() error {
 	}
 	c.closed = true
 	conn, pending := c.conn, c.pending
+	c.exchange.settle(time.Time{}, false)
 	c.reply, c.exchange.query, c.frame = nil, nil, nil
 	c.notifyLocked()
 	c.mu.Unlock()

@@ -148,7 +148,7 @@ func TestEntryDNSBindingAndFamilyRecovery(t *testing.T) {
 	server, queries := entryTestDNS(t, mask)
 	option := &dialer.GlobalOption{DNSResolver: server}
 	spec := &PathSpec{Entry: EntryOptions{Interface: "lo"}, IPVersion: 6}
-	base, err := spec.entryDialer(option)
+	base, err := spec.entryDialer(option, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestEntryDNSBindingAndFamilyRecovery(t *testing.T) {
 	// External DNS must fail closed when the interface cannot be bound. A local
 	// stub intentionally uses loopback independently of the proxy interface.
 	option.DNSResolver = "192.0.2.53:53"
-	base, err = spec.entryDialer(option)
+	base, err = spec.entryDialer(option, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func TestResolveUDPAddrContextLiterals(t *testing.T) {
 	} {
 		t.Run(test.address, func(t *testing.T) {
 			for _, network := range []string{"ip", "ip4", "ip6"} {
-				addr, err := ResolveUDPAddrContext(t.Context(), resolver, network, test.address)
+				addr, err := ResolveUDPAddrContext(t.Context(), resolver.LookupNetIP, network, test.address)
 				if network != "ip" && network != test.family {
 					if err == nil {
 						t.Fatalf("%s accepted the wrong family: address=%v error=%v", network, addr, err)

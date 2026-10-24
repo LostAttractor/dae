@@ -107,6 +107,20 @@ and capacity bounds all retained entries.
   query path. Go still decides TCP retries after UDP truncation; the transports
   have separate cache entries.
 
+Proxy entry dialers also keep the addresses a node name resolves to until the
+earliest expiry among the DNS answers that produced them; hits do not renew it.
+A hit skips the Go resolver entirely, including its address sorting, which opens
+a UDP socket per address. Addresses are kept only when every DNS exchange of the
+lookup ended in a cached answer, counting a truncated UDP reply through its TCP
+retry: hosts-file answers, failures, timeouts and uncacheable replies are not
+kept. Entry paths with the same DNS server, mark and interface share these
+addresses; idle paths keep them when woken, and resource refreshes keep them.
+Every `dae reload` drops them, also when the configuration is unchanged, so a
+hosts-file or resolv.conf change for a cached node name applies after its DNS
+TTL or at the next reload. Go rereads these files at most every five seconds:
+addresses resolved in the first five seconds after a reload are kept only until
+then.
+
 The optional `dns-cache` plugin caches raw upstream answers after request policy,
 server selection, routing and node selection. Response policy runs on every
 request, including hits. Keys include the egress, the resolver identity and the

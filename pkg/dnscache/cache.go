@@ -32,34 +32,41 @@ func New(entries, memoryBytes int) *Cache {
 	return &Cache{store: NewStore[Key, []byte](entries, memoryBytes)}
 }
 
-func (c *Cache) Get(key Key, now time.Time) (*dns.Msg, bool) {
+// Get also reports when the stored answer expires.
+func (c *Cache) Get(key Key, now time.Time) (*dns.Msg, time.Time, bool) {
 	e, ok := c.store.Get(key, now)
 	if !ok {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	m := new(dns.Msg)
 	if err := m.Unpack(e.Value); err != nil {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	Age(m, uint32(max(0, now.Sub(e.ReceivedAt)/time.Second)))
-	return m, true
+	return m, e.Expires, true
 }
 
 // Put stores an owned, validated and correlated reply. Prepare and packing may
 // modify m; no references to it are retained. The caller owns wire validation,
 // request correlation and EDNS policy. Receipt time is not renewed by hits.
-func (c *Cache) Put(key Key, qtype uint16, m *dns.Msg, received time.Time) bool {
+// Put returns when the stored answer expires, or the zero time if m was not
+// stored.
+func (c *Cache) Put(key Key, qtype uint16, m *dns.Msg, received time.Time) time.Time {
 	if c.store.limit <= 0 || c.store.memoryLimit <= 0 {
-		return false
+		return time.Time{}
 	}
 	ttl := Prepare(qtype, m)
 	if ttl == 0 {
-		return false
+		return time.Time{}
 	}
 	wire, err := m.Pack()
 	bytes := len(wire) + len(key.Namespace) + len(key.Query.Question.Name) + len(key.Query.Options) + 512
 	if err != nil || bytes > c.store.memoryLimit {
-		return false
+		return time.Time{}
 	}
-	return c.store.Put(key, Record[[]byte]{Value: wire, ReceivedAt: received, Expires: received.Add(time.Duration(ttl) * time.Second)}, bytes)
+	expires := received.Add(time.Duration(ttl) * time.Second)
+	if !c.store.Put(key, Record[[]byte]{Value: wire, ReceivedAt: received, Expires: expires}, bytes) {
+		return time.Time{}
+	}
+	return expires
 }

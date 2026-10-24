@@ -18,7 +18,10 @@ import (
 type Option struct {
 	// Resolver is supplied by the owner; nil uses net.DefaultResolver.
 	// Socket marks apply to data sockets. DNS transport policy belongs to Resolver.
-	Resolver  *net.Resolver
+	Resolver *net.Resolver
+	// Lookup, if set, answers the dialer's address lookups in front of
+	// Resolver, for example from a cache. net.Dialer keeps Resolver.
+	Lookup    happyeyeballs.Lookup
 	Mptcp     bool
 	Mark      int
 	Interface string
@@ -27,6 +30,7 @@ type Option struct {
 
 type directDialer struct {
 	dialer    net.Dialer
+	lookup    happyeyeballs.Lookup
 	ipVersion string
 }
 
@@ -35,7 +39,10 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	d := &directDialer{dialer: net.Dialer{Resolver: resolver}}
+	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, lookup: option.Lookup}
+	if d.lookup == nil {
+		d.lookup = resolver.LookupNetIP
+	}
 	if option.IPVersion != 0 {
 		d.ipVersion = strconv.Itoa(option.IPVersion)
 	}
@@ -71,24 +78,46 @@ func (d *directDialer) DialContext(ctx context.Context, network, addr string) (n
 		}
 		network = network[:3] + d.ipVersion
 	}
-	if network == "tcp" || network == "tcp4" || network == "tcp6" {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return d.dialer.DialContext(ctx, network, addr)
+	}
+	if network[:3] == "tcp" {
+		return happyeyeballs.Race(ctx, func(ctx context.Context) iter.Seq2[netip.Addr, error] {
+			return happyeyeballs.ResolveWith(ctx, d.lookup, "ip"+network[3:], host)
+		}, func(ctx context.Context, ip netip.Addr) (net.Conn, error) {
+			return d.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		}, func(conn net.Conn) { _ = conn.Close() })
+	}
+	ips, err := d.lookup(ctx, "ip"+network[3:], host)
+	if err != nil {
+		return nil, err
+	}
+	// Like net.Dialer, try the resolver's order until one address connects.
+	var first error
+	for _, ip := range ips {
+		conn, err := d.dialer.DialContext(ctx, network, net.JoinHostPort(ip.Unmap().String(), port))
+		if err == nil {
+			return conn, nil
 		}
-		if _, err := netip.ParseAddr(host); err != nil {
-			return happyeyeballs.Race(ctx, func(ctx context.Context) iter.Seq2[netip.Addr, error] {
-				return happyeyeballs.Resolve(ctx, d.dialer.Resolver, "ip"+network[3:], host)
-			}, func(ctx context.Context, ip netip.Addr) (net.Conn, error) {
-				return d.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-			}, func(conn net.Conn) { _ = conn.Close() })
+		if first == nil {
+			first = err
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
-	return d.dialer.DialContext(ctx, network, addr)
+	if first == nil {
+		first = &net.DNSError{Name: host, Err: "no suitable address", IsNotFound: true}
+	}
+	return nil, first
 }
 
 func (d *directDialer) ResolveUDPAddr(ctx context.Context, address string) (*net.UDPAddr, error) {
-	return common.ResolveUDPAddrContext(ctx, d.dialer.Resolver, "ip"+d.ipVersion, address)
+	return common.ResolveUDPAddrContext(ctx, d.lookup, "ip"+d.ipVersion, address)
 }
 
 func (d *directDialer) ListenPacket(ctx context.Context, _ string) (net.PacketConn, error) {

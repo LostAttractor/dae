@@ -168,7 +168,12 @@ func (c *cacheWireConn) Write(p []byte) (int, error) {
 	c.reply = c.makeReply(q)
 	return len(p), nil
 }
-func (c *cacheWireConn) Read(p []byte) (int, error)     { return copy(p, c.reply), nil }
+func (c *cacheWireConn) Read(p []byte) (int, error) {
+	if c.reply == nil {
+		return 0, io.EOF // Unanswered.
+	}
+	return copy(p, c.reply), nil
+}
 func (*cacheWireConn) Close() error                     { return nil }
 func (*cacheWireConn) SetDeadline(time.Time) error      { return nil }
 func (*cacheWireConn) SetReadDeadline(time.Time) error  { return nil }

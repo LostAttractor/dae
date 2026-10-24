@@ -29,8 +29,9 @@ func ResolveIPAddrWithResolver(resolver *net.Resolver, address string) (*net.IPA
 	return &addrs[0], nil
 }
 
-// ResolveUDPAddrContext resolves within one address family (ip, ip4 or ip6).
-func ResolveUDPAddrContext(ctx context.Context, resolver *net.Resolver, network, address string) (*net.UDPAddr, error) {
+// ResolveUDPAddrContext resolves within one address family (ip, ip4 or ip6)
+// using a lookup such as net.Resolver.LookupNetIP.
+func ResolveUDPAddrContext(ctx context.Context, lookup func(context.Context, string, string) ([]netip.Addr, error), network, address string) (*net.UDPAddr, error) {
 	host, portString, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -39,7 +40,7 @@ func ResolveUDPAddrContext(ctx context.Context, resolver *net.Resolver, network,
 	if err != nil {
 		return nil, fmt.Errorf("invalid port: %s", portString)
 	}
-	addrs, err := resolver.LookupNetIP(ctx, network, host)
+	addrs, err := lookup(ctx, network, host)
 	if err != nil {
 		return nil, err
 	}

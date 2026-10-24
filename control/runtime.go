@@ -92,6 +92,9 @@ func NewRuntime() *Runtime {
 // SharedStates is scoped to each plugin instance by pluginhost during preparation.
 func (r *Runtime) SharedStates() plugin.SharedStates { return &r.pluginStates }
 
+// RelearnNodes makes node entry dials resolve node names again.
+func (r *Runtime) RelearnNodes() { r.outboundResources.Paths.Relearn() }
+
 // Interfaces returns the process-owned interface event source. Callers borrow
 // scopes; the source remains alive until every generation has drained.
 func (r *Runtime) Interfaces() (*network.InterfaceManager, error) {

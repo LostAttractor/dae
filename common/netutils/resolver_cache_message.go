@@ -17,6 +17,13 @@ type resolverCacheExchange struct {
 	scope string
 	query *dns.Msg
 	key   dnscache.Key
+	// lifetime, if set, receives this exchange's outcome exactly once.
+	lifetime *addressLifetime
+}
+
+func (x *resolverCacheExchange) settle(expires time.Time, neutral bool) {
+	x.lifetime.settle(expires, neutral)
+	x.lifetime = nil
 }
 
 // Internal queries only cache ordinary EDNS negotiation. Option-specific
@@ -36,7 +43,7 @@ func (x *resolverCacheExchange) lookup(wire []byte, datagram bool) []byte {
 		return nil
 	}
 	x.query, x.key = query, dnscache.Key{Namespace: x.scope, Query: key}
-	response, hit := x.cache.Get(x.key, time.Now())
+	response, expires, hit := x.cache.Get(x.key, time.Now())
 	if !hit {
 		return nil
 	}
@@ -54,20 +61,24 @@ func (x *resolverCacheExchange) lookup(wire []byte, datagram bool) []byte {
 		return nil
 	}
 	x.query = nil
+	x.settle(expires, false)
 	return reply
 }
 
 // observe ignores malformed or unrelated packets without normalizing them.
 // A correlated reply completes observation even when its policy forbids caching.
-func (x *resolverCacheExchange) observe(wire []byte) bool {
+func (x *resolverCacheExchange) observe(wire []byte, datagram bool) bool {
 	response := new(dns.Msg)
 	if UnpackDnsMessage(wire, response) != nil || ValidateDnsResponse(x.query, response, x.query.Id) != nil {
 		return false
 	}
+	var expires time.Time
 	if internalCacheEDNS(response) {
 		dnscache.StripOPT(response)
-		x.cache.Put(x.key, x.query.Question[0].Qtype, response, time.Now())
+		expires = x.cache.Put(x.key, x.query.Question[0].Qtype, response, time.Now())
 	}
+	// net.Resolver retries a truncated datagram over TCP, which settles the answer.
+	x.settle(expires, datagram && response.Truncated)
 	x.query = nil
 	return true
 }

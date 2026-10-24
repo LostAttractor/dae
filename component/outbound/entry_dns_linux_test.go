@@ -175,7 +175,7 @@ routing { fallback: proxy }`)
 		if tcpQueries.Load() == 0 {
 			t.Fatal("DNS TCP retry was not exercised")
 		}
-		base, err := variants[2].entryDialer(option)
+		base, err := variants[2].entryDialer(option, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

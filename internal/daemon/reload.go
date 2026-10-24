@@ -89,6 +89,9 @@ func (a *application) reload(ctx context.Context, suspend, abort bool) (string, 
 		return "", fmt.Errorf("load configuration: %w", err)
 	}
 	log.WithField("files", includes).Debug("Loaded configuration files")
+	// What dae learned about nodes lasts until the user reloads, also when
+	// nothing changed. Resource refreshes keep it.
+	a.datapath.RelearnNodes()
 	return a.apply(ctx, next, suspend, abort, false)
 }
 

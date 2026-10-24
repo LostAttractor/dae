@@ -111,7 +111,7 @@ func TestEntryScopedUDPWithoutInterfaceBinding(t *testing.T) {
 	if err := netns.Set(ns); err != nil {
 		t.Fatal(err)
 	}
-	base, err := (&PathSpec{IPVersion: 6}).entryDialer(new(dialer.GlobalOption))
+	base, err := (&PathSpec{IPVersion: 6}).entryDialer(new(dialer.GlobalOption), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

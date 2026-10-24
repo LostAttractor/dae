@@ -15,5 +15,5 @@ func ResolveUDPAddr(ctx context.Context, dialer Dialer, address string) (*net.UD
 	}); ok {
 		return resolver.ResolveUDPAddr(ctx, address)
 	}
-	return common.ResolveUDPAddrContext(ctx, common.BootstrapResolver, "ip", address)
+	return common.ResolveUDPAddrContext(ctx, common.BootstrapResolver.LookupNetIP, "ip", address)
 }

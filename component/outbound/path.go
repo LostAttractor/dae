@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
@@ -30,10 +31,17 @@ type PathSpec struct {
 
 // PathPool reuses complete physical paths across groups and reloads. The pool
 // indexes runtimes; their existing member ownership controls actual retirement.
+// Its paths' entry dialers share node addresses, which outlive dormant
+// runtimes and rebuilt configurations until Relearn.
 type PathPool struct {
-	mu    sync.Mutex
-	paths map[string]*dialer.Dialer
+	mu        sync.Mutex
+	paths     map[string]*dialer.Dialer
+	addresses netutils.AddressCache
 }
+
+// Relearn makes every path resolve its nodes again, including the paths in
+// use; lookups in flight cannot refill what it drops.
+func (p *PathPool) Relearn() { p.addresses.Reset() }
 
 func (p *PathPool) prune() {
 	p.mu.Lock()
@@ -215,7 +223,7 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		}
 	}
 	d, err := dialer.NewRecreatableDialer(func() (*netproxy.Runtime, error) {
-		base, err := spec.entryDialer(option)
+		base, err := spec.entryDialer(option, pool)
 		if err != nil {
 			return nil, err
 		}

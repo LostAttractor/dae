@@ -220,7 +220,7 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 	// Validate the same entry and protocol constructors used by BuildPath.
 	// Group members, presentation keys and dormant-session watchers belong to
 	// serving paths and provide no additional validation here.
-	base, err := new(PathSpec).entryDialer(option)
+	base, err := new(PathSpec).entryDialer(option, nil)
 	if err != nil {
 		return errors.New("node dialer construction failed")
 	}
