@@ -17,6 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/client/cli"
+	"github.com/daeuniverse/dae/internal/testutil"
 	surgeapi "github.com/daeuniverse/dae/plugins/surge/api"
 	"github.com/spf13/cobra"
 )
@@ -31,7 +32,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	}
 	memory := api.BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}
 	var queries atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries.Add(1)
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer report-secret" {
 			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
@@ -42,6 +43,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 	for _, test := range []struct {
 		name, want, absent string
 		args               []string

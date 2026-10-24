@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestSelectorCLIUsesCanonicalHealth(t *testing.T) {
@@ -46,7 +47,7 @@ func TestSelectorCLIListsSelectsAndResets(t *testing.T) {
 		{ID: "duplicate-a", Name: "Duplicate"}, {ID: "duplicate-b", Name: "Duplicate"},
 	}}
 	writes := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer selector-secret" {
 			t.Error("missing configured credentials")
 		}
@@ -74,7 +75,9 @@ func TestSelectorCLIListsSelectsAndResets(t *testing.T) {
 		_ = json.MarshalWrite(w, state)
 	}))
 	defer server.Close()
+	t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 	t.Setenv("DAE_API_ENDPOINT", server.URL)
+	t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 	run := func(args ...string) (string, error) {
 		cmd := NewSelectorCommand()
 		var output bytes.Buffer
@@ -108,7 +111,7 @@ func TestSelectorCLIListsSelectsAndResets(t *testing.T) {
 }
 
 func TestSelectorCLISavedFallbackAndAPIFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != "GET" {
 			w.WriteHeader(http.StatusConflict)
@@ -120,6 +123,7 @@ func TestSelectorCLISavedFallbackAndAPIFailure(t *testing.T) {
 		}}})
 	}))
 	defer server.Close()
+	t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 	cmd := NewSelectorCommand()
 	var output bytes.Buffer
 	cmd.SetOut(&output)

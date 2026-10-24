@@ -18,7 +18,7 @@ func main() {
 	root.AddCommand(cli.NewSelectorCommand())
 	root.AddCommand(cli.NewMITMCommand(map[string]cli.MITMCommands{"surge": surgeclient.Commands}))
 	root.AddCommand(cli.NewExplainCommand())
-	root.AddCommand(cli.NewClientCommand())
+	root.AddCommand(cli.NewClientCommand(), cli.NewCertificateCommand(), cli.NewPprofCommand(), cli.NewOperationCommand())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

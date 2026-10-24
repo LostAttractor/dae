@@ -16,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/client/cli"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestStoreMigrationCommandUsesAPI(t *testing.T) {
@@ -45,7 +46,7 @@ func TestStoreMigrationCommandUsesAPI(t *testing.T) {
 			var queries, mutations atomic.Int32
 			instances := []api.PluginInstanceStatus{{ID: "personal", Type: "surge"}, {ID: "work", Type: "surge"}}
 			instances = append(instances[:test.count:test.count], api.PluginInstanceStatus{ID: "other", Type: "demo"})
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") != "Bearer store-secret" {
 					t.Errorf("missing credentials")
 				}
@@ -76,6 +77,7 @@ func TestStoreMigrationCommandUsesAPI(t *testing.T) {
 				}
 			}))
 			defer server.Close()
+			t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 			command := cli.NewMITMCommand(map[string]cli.MITMCommands{"surge": Commands})
 			var output bytes.Buffer
 			command.SetOut(&output)

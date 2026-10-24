@@ -6,18 +6,21 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestSettingsRequests(t *testing.T) {
 	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.Header.Get("Authorization") != "Bearer secret" {
 			t.Error("missing write credentials")
@@ -58,7 +61,7 @@ func TestSettingsRequests(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c, err := New(Options{Endpoint: server.URL, APIKey: "secret"})
+	c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server), APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,11 +96,11 @@ func TestSettingsRequests(t *testing.T) {
 
 func TestErrorsCancellationAndRedirects(t *testing.T) {
 	redirected := false
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { redirected = true }))
+	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { redirected = true }))
 	defer target.Close()
 	for _, code := range []int{401, 403, 409, 503, 302} {
 		t.Run(http.StatusText(code), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if code == 302 {
 					w.Header().Set("Location", target.URL)
 				}
@@ -105,7 +108,7 @@ func TestErrorsCancellationAndRedirects(t *testing.T) {
 				_, _ = io.WriteString(w, `{"error":"try again"}`)
 			}))
 			defer server.Close()
-			c, err := New(Options{Endpoint: server.URL, APIKey: "secret"})
+			c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server), APIKey: "secret"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -147,8 +150,39 @@ func TestClientTimeout(t *testing.T) {
 	}
 }
 
+func TestEndpointNormalization(t *testing.T) {
+	for _, test := range []struct{ endpoint, want string }{
+		{"HTTPS://API.Example:00443/", "https://api.example"},
+		{"http://API.Example:00080/", "http://api.example"},
+		{"https://127.0.0.1:00443", "https://127.0.0.1"},
+		{"https://127.0.0.1:09443/", "https://127.0.0.1:9443"},
+		{"http://127.0.0.1:08080", "http://127.0.0.1:8080"},
+		{"https://[0:0:0:0:0:0:0:1]:00443/", "https://[::1]"},
+		{"https://[2001:0DB8:0:0:0:0:0:1]:09443", "https://[2001:db8::1]:9443"},
+		{"http://[2001:DB8::1]:00080/", "http://[2001:db8::1]"},
+		{"https://[0:0:0:0:0:FFFF:7F00:1]:443", "https://[::ffff:127.0.0.1]"},
+		{"unix:///tmp/dae.sock", "http://localhost"},
+	} {
+		t.Run(test.endpoint, func(t *testing.T) {
+			c, err := New(Options{Endpoint: test.endpoint})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if c.base != test.want {
+				t.Fatalf("base = %q, want %q", c.base, test.want)
+			}
+		})
+	}
+}
+
 func TestEndpointValidation(t *testing.T) {
-	for _, endpoint := range []string{"/var/run/dae.sock", "unix://host/tmp/sock", "unix:///", "http://user:pass@127.0.0.1", "http://127.0.0.1/api", "http://127.0.0.1?", "http://127.0.0.1/#token"} {
+	for _, endpoint := range []string{
+		"/var/run/dae.sock", "unix://host/tmp/sock", "unix:///", "http://user:pass@127.0.0.1",
+		"http://127.0.0.1/api", "http://127.0.0.1?", "http://127.0.0.1/#token", "https://127.0.0.1#",
+		"https://:443", "https://127.0.0.1:", "https://127.0.0.1:0", "https://127.0.0.1:65536",
+		"https://[not-an-ip]", "https://[127.0.0.1]", "https://::1", "https://[fe80::1%25eth0]", "https://*.example",
+	} {
 		if c, err := New(Options{Endpoint: endpoint}); err == nil {
 			c.Close()
 			t.Errorf("accepted %s", endpoint)
@@ -165,11 +199,11 @@ func TestClientDoesNotDependOnDefaultTransport(t *testing.T) {
 	http.DefaultTransport = &struct{ http.RoundTripper }{previous}
 	defer func() { http.DefaultTransport = previous }()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"schema":15}`)
 	}))
 	defer server.Close()
-	c, err := New(Options{Endpoint: server.URL})
+	c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,12 +214,12 @@ func TestClientDoesNotDependOnDefaultTransport(t *testing.T) {
 }
 
 func TestOversizedErrorKeepsHTTPStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = io.WriteString(w, strings.Repeat("x", (8<<10)+1))
 	}))
 	defer server.Close()
-	c, err := New(Options{Endpoint: server.URL})
+	c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,9 +248,9 @@ func TestStatusAcceptsChangingHealthAndRejectsInvalidEnvelope(t *testing.T) {
 		{"wrong type", `{"schema":"15"}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, test.body) }))
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, test.body) }))
 			defer server.Close()
-			c, err := New(Options{Endpoint: server.URL})
+			c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -229,5 +263,29 @@ func TestStatusAcceptsChangingHealthAndRejectsInvalidEnvelope(t *testing.T) {
 				t.Fatal("failed request returned a success-shaped result")
 			}
 		})
+	}
+}
+
+func TestUnixDoesNotSendRemoteAPIKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if values := r.Header.Values("Authorization"); len(values) != 0 {
+			t.Error("Unix socket received Authorization")
+		}
+		io.WriteString(w, `{}`)
+	})}
+	go server.Serve(ln)
+	defer server.Close()
+	c, err := New(Options{Endpoint: "unix://" + path, APIKey: "remote-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Certificate(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }

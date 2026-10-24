@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"fmt"
@@ -31,14 +33,16 @@ const maxResponseSize = 32 << 20
 type Options struct {
 	Endpoint string
 	APIKey   string
+	RootCAs  *x509.CertPool
 	Timeout  time.Duration
 }
 
 type Client struct {
-	base   string
-	apiKey string
-	local  bool
-	http   *http.Client
+	base            string
+	apiKey          string
+	local           bool
+	http            *http.Client
+	timeoutExplicit bool
 }
 
 // Error is a non-success API response. StatusCode can be used with errors.AsType
@@ -66,16 +70,26 @@ func New(options Options) (*Client, error) {
 		if u.Host != "" || !strings.HasPrefix(u.Path, "/") || u.Path == "/" {
 			return nil, fmt.Errorf("Unix endpoint must be unix:///absolute/socket/path")
 		}
+		options.APIKey = "" // Unix administration uses socket permissions.
 		socket := u.Path
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}
 		endpoint = "http://localhost"
 	case "http", "https":
-		if u.Host == "" || (u.Path != "" && u.Path != "/") {
+		if u.Scheme == "http" && options.APIKey != "" {
+			return nil, fmt.Errorf("API credentials require an HTTPS endpoint")
+		}
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: options.RootCAs}
+		if u.Host == "" || (u.Path != "" && u.Path != "/") || strings.ContainsAny(endpoint, "?#") {
 			return nil, fmt.Errorf("HTTP endpoint must be an origin without a path")
 		}
-		endpoint = strings.TrimSuffix(endpoint, "/")
+		u.Path = ""
+		// The request base also identifies the initiating origin in challenge proofs.
+		endpoint, err = api.NormalizeOriginURL(u)
+		if err != nil {
+			return nil, fmt.Errorf("API endpoint: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("API endpoint requires unix, http, or https scheme")
 	}
@@ -83,7 +97,7 @@ func New(options Options) (*Client, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}
-	return &Client{base: endpoint, apiKey: options.APIKey, local: u.Scheme == "unix", http: &http.Client{
+	return &Client{base: endpoint, apiKey: options.APIKey, local: u.Scheme == "unix", timeoutExplicit: options.Timeout != 0, http: &http.Client{
 		Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
@@ -119,13 +133,10 @@ func (c *Client) requestStatus[T any](ctx context.Context, method, path string, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
 	if fingerprint != "" {
 		req.Header.Set("X-Dae-MITM", fingerprint)
 	}
-	response, err := c.http.Do(req)
+	response, err := c.send(req)
 	if err != nil {
 		return nil, fmt.Errorf("contact dae API: %w", err)
 	}
@@ -273,4 +284,11 @@ func (c *Client) ResetMITM(ctx context.Context, fingerprint string) (*api.Device
 
 func (c *Client) Certificate(ctx context.Context) (*api.Certificate, error) {
 	return c.request[api.Certificate](ctx, "GET", "/api/certificate", nil, "")
+}
+
+func (c *Client) send(request *http.Request) (*http.Response, error) {
+	if c.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return c.http.Do(request)
 }

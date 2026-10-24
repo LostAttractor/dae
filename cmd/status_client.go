@@ -5,5 +5,5 @@ package cmd
 import "github.com/daeuniverse/dae/client/cli"
 
 func init() {
-	rootCmd.AddCommand(cli.NewStatusCommand(), cli.NewSelectorCommand(), cli.NewExplainCommand(), cli.NewClientCommand())
+	rootCmd.AddCommand(cli.NewStatusCommand(), cli.NewSelectorCommand(), cli.NewExplainCommand(), cli.NewClientCommand(), cli.NewCertificateCommand(), cli.NewPprofCommand(), cli.NewOperationCommand())
 }

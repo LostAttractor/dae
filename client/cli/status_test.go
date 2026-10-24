@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
@@ -23,7 +24,7 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 3, Limit: 16, Error: "read map: permission denied"},
 		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 6, Limit: 8},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer cli-secret" {
 			t.Errorf("wrong API request: %s %s", r.Method, r.URL.Path)
@@ -33,6 +34,7 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 		_ = json.MarshalWrite(w, snapshot, jsonv1.FormatDurationAsNano(true))
 	}))
 	defer server.Close()
+	t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 	t.Setenv("DAE_API_ENDPOINT", server.URL)
 	for _, mode := range []string{"", "--verbose", "--recent", "--json"} {
 		cmd := NewStatusCommand()
@@ -79,4 +81,13 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 	if err := plugins.Execute(); err != nil || !strings.Contains(output.String(), "no configured instances") {
 		t.Fatal(output.String(), err)
 	}
+}
+
+func TestUnixConnectionIgnoresRemoteCredentialFiles(t *testing.T) {
+	c := Connection{endpoint: "unix:///unused.sock", keyFile: "missing-key", caFile: "missing-ca"}
+	remote, err := c.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.Close()
 }
