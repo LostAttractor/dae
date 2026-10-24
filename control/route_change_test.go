@@ -33,14 +33,6 @@ func newTestDeviceRoutes(t *testing.T) *deviceRoutes {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { outer.Close() })
-	inner, err := ebpf.NewMap(spec.Maps["unused_device_routes"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer inner.Close()
-	if err := outer.Update(uint32(0), inner, ebpf.UpdateAny); err != nil {
-		t.Fatal(err)
-	}
 	return &deviceRoutes{outer: outer}
 }
 
@@ -131,7 +123,11 @@ func TestDeviceRouteCommitAndRollback(t *testing.T) {
 	check := func(gated bool, epoch uint64) {
 		t.Helper()
 		var table *ebpf.Map
-		if err := outer.Lookup(uint32(0), &table); err != nil {
+		err := outer.Lookup(uint32(0), &table)
+		if !gated && epoch == 0 && errors.Is(err, ebpf.ErrKeyNotExist) {
+			return // No device has a state yet.
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		defer table.Close()
@@ -146,11 +142,21 @@ func TestDeviceRouteCommitAndRollback(t *testing.T) {
 			}
 		}
 	}
+	// Packets skip the table until a device has a state.
+	empty := func() {
+		t.Helper()
+		var table *ebpf.Map
+		if err := outer.Lookup(uint32(0), &table); !errors.Is(err, ebpf.ErrKeyNotExist) {
+			table.Close()
+			t.Fatalf("device table published without device states: %v", err)
+		}
+	}
+	empty()
 	failed := errors.New("settings rejected")
 	if err := d.change(changed, func(commit func() error) error { check(true, 0); return failed }); !errors.Is(err, failed) {
 		t.Fatal(err)
 	}
-	check(false, 0)
+	empty()
 	if lease.AbortCause() != nil {
 		t.Fatal("failed transaction aborted old flows")
 	}

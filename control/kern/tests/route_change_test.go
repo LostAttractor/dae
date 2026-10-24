@@ -79,9 +79,21 @@ func TestDeviceRouteEpochs(t *testing.T) {
 			t.Fatalf("TC status=%d want=%d: %v", status, want, err)
 		}
 	}
+	spec, err := loadBpftest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices, err := ebpf.NewMap(spec.Maps["device_routes_map"].InnerMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devices.Close()
+	if err := obj.DeviceRoutesMap.Update(uint32(0), devices, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
 	epoch := func(value uint64, updating uint32) {
 		t.Helper()
-		if err := obj.UnusedDeviceRoutes.Update(mac, bpftestDeviceRouteState{Epoch: value, Updating: updating}, ebpf.UpdateAny); err != nil {
+		if err := devices.Update(mac, bpftestDeviceRouteState{Epoch: value, Updating: updating}, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -119,10 +131,14 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		other := slices.Clone(ack)
 		other[11]++
 		run(other, next)
-		// API TCP traffic survives even with an old/missing tuple.
+		// API TCP traffic survives even with an old/missing tuple. Exemptions
+		// are published together with the API port.
 		exempt := bpftestIpPort{Port: key.Dport}
 		exempt.Ip.U6Addr8 = key.Dip.U6Addr8
 		if err := obj.RouteExemptMap.Update(exempt, uint8(1), ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		if err := obj.ApiPort.Set(key.Dport); err != nil {
 			t.Fatal(err)
 		}
 		run(ack, next)
@@ -149,6 +165,9 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		run(udp, drop)
 		epoch(1, 0)
 		if err := obj.RouteExemptMap.Delete(exempt); err != nil {
+			t.Fatal(err)
+		}
+		if err := obj.ApiPort.Set(uint16(0)); err != nil {
 			t.Fatal(err)
 		}
 		run(ack, redirect) // removing the exemption restores epoch enforcement

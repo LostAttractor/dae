@@ -88,11 +88,14 @@ func (d *deviceRoutes) change(changed map[[6]byte]bool, apply func(commit func()
 	for mac := range changed {
 		d.device(mac)
 	}
+	// The slot is empty until a device has a state.
 	var previous *ebpf.Map
-	if err := d.outer.Lookup(uint32(0), &previous); err != nil {
+	if err := d.outer.Lookup(uint32(0), &previous); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return err
 	}
-	defer previous.Close()
+	if previous != nil {
+		defer previous.Close()
+	}
 	gate, err := d.table(changed, true)
 	if err != nil {
 		return err
@@ -107,6 +110,9 @@ func (d *deviceRoutes) change(changed map[[6]byte]bool, apply func(commit func()
 		return err
 	}
 	if err := apply(func() error { return d.outer.Update(uint32(0), next, ebpf.UpdateAny) }); err != nil {
+		if previous == nil {
+			return errors.Join(err, d.outer.Delete(uint32(0)))
+		}
 		return errors.Join(err, d.outer.Update(uint32(0), previous, ebpf.UpdateAny))
 	}
 	for mac := range changed {

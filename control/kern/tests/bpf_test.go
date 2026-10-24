@@ -23,7 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../../../kern -I.
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -type device_route_state -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../../../kern -I.
 
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
 	dataOut = make([]byte, len(data))
@@ -133,10 +133,6 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, fmt.Errorf("update LpmArrayMap: %w", err)
-	}
-	if err := obj.DeviceRoutesMap.Update(uint32(0), obj.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
-		obj.Close()
-		return nil, err
 	}
 	defaultProfile := bpftestRoutingProfile{
 		Length: obj.RoutingMap.MaxEntries(),

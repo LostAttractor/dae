@@ -296,8 +296,10 @@ struct device_route_table {
 	__uint(key_size, ETH_ALEN);
 	__type(value, struct device_route_state);
 	__uint(max_entries, 65536);
-} unused_device_routes SEC(".maps");
+};
 
+/* Userspace replaces the table to publish device states together. The slot
+ * stays empty until a device has a state, so packets skip the table. */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
 	__uint(key_size, sizeof(__u32));
@@ -351,6 +353,17 @@ volatile __be16 api_port;
 volatile __u32 default_routing_profile;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
+
+/* Exemptions are TCP to API addresses on the API port, published together
+ * with api_port. */
+static __always_inline bool route_exempt(const struct tuples_key *five)
+{
+	__be16 port = api_port;
+	struct ip_port destination = { .ip = five->dip, .port = five->dport };
+
+	return five->l4proto == IPPROTO_TCP && port && five->dport == port &&
+	       bpf_map_lookup_elem(&route_exempt_map, &destination);
+}
 
 struct api_client {
 	__u64 observed_at;
@@ -1578,9 +1591,9 @@ static __always_inline int do_tproxy_unfragmented(
 	bool isdns = tuples->five.dport == bpf_htons(53);
 
 	struct device_route_state *device = device_route(ethh->h_source);
-	struct ip_port destination = { .ip = tuples->five.dip, .port = tuples->five.dport };
+	bool exempt = route_exempt(&tuples->five);
 
-	if (l4proto == IPPROTO_TCP && bpf_map_lookup_elem(&route_exempt_map, &destination))
+	if (exempt)
 		device = NULL;
 	if (device && device->updating)
 		return TCX_DROP;
@@ -1719,8 +1732,7 @@ static __always_inline int do_tproxy_unfragmented(
 selected:
 	/* A membership commit may have raced route evaluation. */
 	device = device_route(ethh->h_source);
-	if (device && (device->updating || device->epoch != route_epoch) &&
-	    !(l4proto == IPPROTO_TCP && bpf_map_lookup_elem(&route_exempt_map, &destination)))
+	if (device && (device->updating || device->epoch != route_epoch) && !exempt)
 		return TCX_DROP;
 	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags) {
 		if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result, fallback))

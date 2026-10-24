@@ -109,9 +109,6 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if len(runtime.shared) != 0 {
 		return bpf, nil
 	}
-	if err := bpf.DeviceRoutesMap.Update(uint32(0), bpf.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
-		return nil, errors.Join(err, bpf.Close())
-	}
 	if err := runtime.retainMaps(bpf.bpfObjects); err != nil {
 		return nil, errors.Join(err, bpf.Close())
 	}
