@@ -29,6 +29,23 @@ const (
 	maxIncludeDepth     = 32
 )
 
+type InvalidFilenameError struct {
+	Path string
+}
+
+func (e *InvalidFilenameError) Error() string {
+	return fmt.Sprintf("invalid config filename %v: must have suffix .dae", e.Path)
+}
+
+type UnsafePermissionsError struct {
+	Path string
+	Mode os.FileMode
+}
+
+func (e *UnsafePermissionsError) Error() string {
+	return fmt.Sprintf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", e.Mode.Perm(), e.Path)
+}
+
 type Merger struct {
 	entry             string
 	entryDir          string
@@ -96,7 +113,7 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 
 	// Check filename
 	if !strings.HasSuffix(entry, ".dae") {
-		return fmt.Errorf("invalid config filename %v: must has suffix .dae", entry)
+		return &InvalidFilenameError{Path: entry}
 	}
 	var f *os.File
 	if entry == m.entry {
@@ -120,7 +137,7 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 		return fmt.Errorf("config is not a regular file: %v", entry)
 	}
 	if fi.Mode()&0037 > 0 {
-		return fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, entry)
+		return &UnsafePermissionsError{Path: entry, Mode: fi.Mode()}
 	}
 	// Read and parse.
 	if fi.Size() > maxConfigFileSize {

@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/daemon"
 
 	"github.com/spf13/cobra"
@@ -25,7 +24,7 @@ func newValidateCommand(definitions map[string]plugin.Definition) *cobra.Command
 			if configFile == "" {
 				return fmt.Errorf("argument --config or -c is required")
 			}
-			conf, _, err := config.Load(configFile)
+			conf, _, err := loadConfig(cmd, &configFile)
 			if err != nil {
 				return err
 			}

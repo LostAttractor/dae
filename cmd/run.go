@@ -11,7 +11,6 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/daeuniverse/dae/pkg/logger"
 	log "github.com/sirupsen/logrus"
@@ -53,7 +52,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			}
 
 			// Read config from --config cfgFile.
-			conf, includes, err := config.Load(cfgFile)
+			conf, includes, err := loadConfig(cmd, &cfgFile)
 			if err != nil {
 				return fmt.Errorf("read config: %w", err)
 			}
