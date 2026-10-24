@@ -60,15 +60,11 @@ func (a *Anyfrom) Close() error {
 	return a.conn.Close()
 }
 
+// WriteToUDPAddrPortWithDeadline sends without arming the socket deadline
+// unless the socket is full. Callers refresh the idle deadline before writing;
+// that refresh also detects a closed socket.
 func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
-	// Keep the allocation-free net path when uncontended. A concurrent writer
-	// may send immediately without waiting for the shared deadline owner.
-	if a.writeMu.TryLock() {
-		defer a.writeMu.Unlock()
-		return a.writeWithDeadlineLocked(b, addr, deadline)
-	}
 	if n, err, attempted := a.tryWrite(b, addr, deadline); attempted {
-		a.refreshIdleDeadline()
 		return n, err
 	}
 	return a.writeWithDeadline(b, addr, deadline)
@@ -78,16 +74,10 @@ func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, 
 func (a *Anyfrom) writeWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
-	return a.writeWithDeadlineLocked(b, addr, deadline)
-}
-
-func (a *Anyfrom) writeWithDeadlineLocked(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
 	if err := a.conn.SetWriteDeadline(deadline); err != nil {
 		return 0, err
 	}
 	defer a.conn.SetWriteDeadline(time.Time{})
-
-	defer a.refreshIdleDeadline()
 	return a.conn.WriteToUDPAddrPort(b, addr)
 }
 

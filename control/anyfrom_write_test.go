@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
 )
 
 func TestAnyfromWriteFamiliesDeadlinesAndClose(t *testing.T) {
@@ -120,6 +122,41 @@ func TestAnyfromInvalidDestinationUsesNetValidation(t *testing.T) {
 	for _, dst := range []netip.AddrPort{{}, netip.MustParseAddrPort("[::1]:1234")} {
 		if _, err := a.WriteToUDPAddrPortWithDeadline(nil, dst, time.Now().Add(time.Second)); err == nil {
 			t.Fatal("invalid destination accepted")
+		}
+	}
+}
+
+// One reply on an uncontended socket, including the kernel send to a loopback
+// receiver that drains in the background.
+func BenchmarkAnyfromWrite(b *testing.B) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer receiver.Close()
+	if err := receiver.SetReadBuffer(4 << 20); err != nil {
+		b.Fatal(err)
+	}
+	go func() {
+		buffer := make([]byte, 2048)
+		for {
+			if _, _, err := receiver.ReadFromUDPAddrPort(buffer); err != nil {
+				return
+			}
+		}
+	}()
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	a := &Anyfrom{conn: sender, idleTTL: time.Hour}
+	defer a.Close()
+	dst := receiver.LocalAddr().(*net.UDPAddr).AddrPort()
+	payload := make([]byte, 1200)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := a.WriteToUDPAddrPortWithDeadline(payload, dst, time.Now().Add(consts.DefaultDNSTimeout)); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
