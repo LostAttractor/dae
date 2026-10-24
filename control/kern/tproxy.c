@@ -49,6 +49,7 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 #define PACKET_OTHERHOST 3
 
 #define NOWHERE_IFINDEX 0
+#define BPF_F_CURRENT_NETNS (-1L)
 #define CLOCK_MONOTONIC 1
 
 /* Internal layout and metadata limits are not workload tuning parameters. */
@@ -88,10 +89,18 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
-#define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
+#define UDP_CONN_STATE_TIMEOUT_S 300
+/* Unanswered inbound flows live within an answer's latency; this only bounds
+ * how fast a flood can cycle them. */
+#define UDP_INBOUND_PENDING_NUM 16384
+#define NSEC_PER_SEC 1000000000ULL
+#define TIMEOUT_UDP_CONN_STATE (UDP_CONN_STATE_TIMEOUT_S * NSEC_PER_SEC)
 #define UDP_ROUTING_CACHE_TTL_NS (60ULL * 1000 * 1000 * 1000)
 
 #define NDP_REDIRECT 137
+
+/* cb[0] of a reply dae relays back from the dae0 pair, until the reply path. */
+#define DAE_REPLY_MARK 0xdae0dae0
 
 // Param keys:
 static const __u32 zero_key;
@@ -430,6 +439,17 @@ struct {
 	__type(value, struct udp_conn_state);
 } udp_conn_state_map SEC(".maps");
 // 16.78 MB
+
+/* Inbound flows that nobody has answered yet, keyed like their state, with
+ * the coarse second of their latest datagram. Any remote can start one with
+ * a spoofed source, so they wait here instead of in udp_conn_state_map: a
+ * flood only cycles this LRU and never keeps other flows from their state. */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, UDP_INBOUND_PENDING_NUM);
+	__type(key, struct tuples_key);
+	__type(value, __u32);
+} udp_inbound_pending_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -1067,6 +1087,11 @@ static __always_inline int prep_redirect_to_control_plane(
 	return 0;
 }
 
+static __always_inline __u32 udp_conn_now(void)
+{
+	return bpf_ktime_get_coarse_ns() / NSEC_PER_SEC;
+}
+
 static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
 					   struct tuples_key *key,
 					   struct udp_conn_state *val)
@@ -1086,15 +1111,20 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 	dst->l4proto = key->l4proto;
 }
 
-static __always_inline struct udp_conn_state *
-refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
+static __always_inline struct udp_conn_state *touch_udp_conn_state(struct tuples_key *key)
 {
 	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, key);
 
 	if (state)
-		goto rearm;
+		bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+	return state;
+}
 
+static __always_inline struct udp_conn_state *
+new_udp_conn_state(struct tuples_key *key, bool is_wan_ingress_direction)
+{
 	struct udp_conn_state new_state = {};
+	struct udp_conn_state *state;
 
 	new_state.is_wan_ingress_direction = is_wan_ingress_direction;
 	if (unlikely(bpf_map_update_elem(&udp_conn_state_map, key, &new_state, BPF_NOEXIST)))
@@ -1106,10 +1136,101 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 
 	bpf_timer_init(&state->timer, &udp_conn_state_map, CLOCK_MONOTONIC);
 	bpf_timer_set_callback(&state->timer, refresh_udp_conn_state_timer_cb);
-
-rearm:
 	bpf_timer_start(&state->timer, TIMEOUT_UDP_CONN_STATE, 0);
 	return state;
+}
+
+static __always_inline struct udp_conn_state *
+track_udp_conn_state(struct tuples_key *key, bool is_wan_ingress_direction)
+{
+	struct udp_conn_state *state = touch_udp_conn_state(key);
+
+	return state ? state : new_udp_conn_state(key, is_wan_ingress_direction);
+}
+
+/* Whether an inbound packet reaches a local socket other than dae's. dae's
+ * own flows never consult their state, since WAN egress passes dae's packets
+ * first. */
+static __always_inline bool udp_to_local_socket(struct __sk_buff *skb,
+						const struct tuples_key *five)
+{
+	struct bpf_sock_tuple tuple = {};
+	__u32 size = sizeof(tuple.ipv6);
+	struct pid_pname *owner;
+	struct bpf_sock *sk;
+	bool local;
+
+	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		tuple.ipv4.saddr = five->sip.u6_addr32[3];
+		tuple.ipv4.daddr = five->dip.u6_addr32[3];
+		tuple.ipv4.sport = five->sport;
+		tuple.ipv4.dport = five->dport;
+		size = sizeof(tuple.ipv4);
+	} else {
+		__builtin_memcpy(tuple.ipv6.saddr, &five->sip, IPV6_BYTE_LENGTH);
+		__builtin_memcpy(tuple.ipv6.daddr, &five->dip, IPV6_BYTE_LENGTH);
+		tuple.ipv6.sport = five->sport;
+		tuple.ipv6.dport = five->dport;
+	}
+	sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
+	if (!sk)
+		return false;
+	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0);
+	local = !owner || owner->pid != PARAM.control_plane_pid;
+	bpf_sk_release(sk);
+	return local;
+}
+
+/* A datagram without state on the reply path may start an inbound flow. It
+ * waits for its answer, refreshed by further datagrams. */
+static __always_inline void note_inbound_udp(const struct tuples_key *key)
+{
+	__u32 now = udp_conn_now();
+	__u32 *seen = bpf_map_lookup_elem(&udp_inbound_pending_map, key);
+
+	if (!seen)
+		bpf_map_update_elem(&udp_inbound_pending_map, key, &now, BPF_ANY);
+	else if (*(volatile __u32 *)seen != now)
+		*(volatile __u32 *)seen = now;
+}
+
+/* Absent from kernels without conntrack. The low bits of _nfct hold the
+ * packet's ip_conntrack_info. */
+struct sk_buff___dae_ct {
+	unsigned long _nfct;
+} __attribute__((preserve_access_index));
+
+#define NFCT_INFO_MASK 7
+#define NFCT_ESTABLISHED_REPLY 3 /* IP_CT_ESTABLISHED_REPLY */
+
+/* Whether conntrack saw the flow of a local packet start at the remote end.
+ * WAN ingress, before NAT, misses a local socket that NAT redirects inbound
+ * flows to; its replies leave WAN egress after reverse NAT, still without
+ * state. dae's relayed replies start outbound state, so their flows never
+ * get here. */
+static __always_inline bool answers_inbound_flow(struct __sk_buff *ctx)
+{
+	struct sk_buff___dae_ct *skb;
+
+	if (!bpf_core_field_exists(struct sk_buff___dae_ct, _nfct))
+		return false;
+	skb = bpf_cast_to_kern_ctx(ctx);
+	return (skb->_nfct & NFCT_INFO_MASK) == NFCT_ESTABLISHED_REPLY;
+}
+
+/* Whether a packet without state answers an inbound flow, whose replies leave
+ * directly: one that started on the reply path within the idle timeout, or
+ * one that conntrack saw start at the remote end. An answered flow keeps its
+ * state; the pending entry ages out of its LRU. */
+static __always_inline bool answers_inbound_udp(struct __sk_buff *skb, bool is_wan,
+						const struct tuples_key *key)
+{
+	__u32 *seen = bpf_map_lookup_elem(&udp_inbound_pending_map, key);
+
+	/* Signed: a datagram on another CPU may store a later second than now. */
+	if (seen && (__s32)(udp_conn_now() - *(volatile __u32 *)seen) <= UDP_CONN_STATE_TIMEOUT_S)
+		return true;
+	return is_wan && answers_inbound_flow(skb);
 }
 
 static __always_inline struct pid_pname *socket_owner(struct __sk_buff *skb)
@@ -1249,6 +1370,8 @@ static __always_inline int do_tproxy_first_fragment(
 		struct udp_conn_state *conn_state =
 			bpf_map_lookup_elem(&udp_conn_state_map, &tuples->five);
 
+		if (!conn_state && answers_inbound_udp(skb, is_wan, &tuples->five))
+			conn_state = new_udp_conn_state(&tuples->five, true);
 		if (conn_state && conn_state->is_wan_ingress_direction) {
 			if (skb->mark)
 				return TCX_DROP;
@@ -1325,8 +1448,7 @@ direct:
 	device = device_route(ethh->h_source);
 	if (device && (device->updating || device->epoch != route_epoch))
 		return TCX_DROP;
-	if (l4proto == IPPROTO_UDP &&
-	    !refresh_udp_conn_state_timer(&tuples->five, false))
+	if (l4proto == IPPROTO_UDP && !track_udp_conn_state(&tuples->five, false))
 		return TCX_DROP;
 	skb->mark = 0;
 	return TCX_NEXT;
@@ -1452,8 +1574,12 @@ static __always_inline int do_tproxy_unfragmented(
 	}
 
 	if (l4proto == IPPROTO_UDP) {
-		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples->five, false);
+		struct tuples_key *five = &tuples->five;
+		struct udp_conn_state *conn_state = touch_udp_conn_state(five);
+
+		if (!conn_state)
+			conn_state = new_udp_conn_state(five,
+							answers_inbound_udp(skb, is_wan, five));
 		if (!conn_state)
 			return TCX_DROP;
 		if (conn_state->is_wan_ingress_direction) {
@@ -1586,8 +1712,10 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
 		&l4h, l4proto, offset, packet_end, ret);
 }
 
+/* Return traffic toward LAN hosts (lan_egress) or local sockets (wan_ingress),
+ * before NAT and the firewall on WAN ingress. */
 static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
-					 bool drop_ndp_redirect)
+					 bool wan)
 {
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
@@ -1609,7 +1737,7 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 	if (ret)
 		return TCX_NEXT;
 
-	if (drop_ndp_redirect && skb->ingress_ifindex == NOWHERE_IFINDEX &&
+	if (!wan && skb->ingress_ifindex == NOWHERE_IFINDEX &&
 	    l4proto == IPPROTO_ICMPV6 &&
 	    l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
 		// Only drop NDP_REDIRECT packets from localhost on LAN egress.
@@ -1632,8 +1760,22 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		/* Replies also keep a kernel-direct source lifetime alive. */
 		read_udp_route(&source, &ignored, false);
 
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
+		/* A packet without state may start an inbound flow, whose replies
+		 * leave directly; its state waits for the answer. On WAN ingress,
+		 * only a local socket can answer: NAT and forwarded flows get their
+		 * state on LAN egress, and WAN egress recognizes replies of local
+		 * sockets behind NAT. dae's relayed replies belong to proxied
+		 * associations and start outbound state. */
+		bool relayed = skb->cb[0] == DAE_REPLY_MARK;
+
+		if (relayed)
+			skb->cb[0] = 0;
+		if (touch_udp_conn_state(&reversed_tuples_key))
+			return TCX_NEXT;
+		if (relayed && !new_udp_conn_state(&reversed_tuples_key, false))
 			return TCX_DROP;
+		if (!relayed && (!wan || udp_to_local_socket(skb, &tuples.five)))
+			note_inbound_udp(&reversed_tuples_key);
 	}
 
 	return TCX_NEXT;
@@ -1642,13 +1784,13 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 SEC("tc/lan_egress_l2")
 int lan_egress_l2(struct __sk_buff *skb)
 {
-	return do_reply_path(skb, ETH_HLEN, true);
+	return do_reply_path(skb, ETH_HLEN, false);
 }
 
 SEC("tc/lan_egress_l3")
 int lan_egress_l3(struct __sk_buff *skb)
 {
-	return do_reply_path(skb, 0, true);
+	return do_reply_path(skb, 0, false);
 }
 
 SEC("tc/lan_ingress_l2")
@@ -1666,13 +1808,13 @@ int lan_ingress_l3(struct __sk_buff *skb)
 SEC("tc/wan_ingress_l2")
 int tproxy_wan_ingress_l2(struct __sk_buff *skb)
 {
-	return do_reply_path(skb, ETH_HLEN, false);
+	return do_reply_path(skb, ETH_HLEN, true);
 }
 
 SEC("tc/wan_ingress_l3")
 int tproxy_wan_ingress_l3(struct __sk_buff *skb)
 {
-	return do_reply_path(skb, 0, false);
+	return do_reply_path(skb, 0, true);
 }
 
 // We cannot modify the dest address here.
@@ -1768,6 +1910,7 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	bpf_skb_change_type(skb, type);
 	__u64 flags = redirect_entry->from_wan ? BPF_F_INGRESS : 0;
 
+	skb->cb[0] = DAE_REPLY_MARK;
 	return bpf_redirect(redirect_entry->ifindex, flags);
 }
 

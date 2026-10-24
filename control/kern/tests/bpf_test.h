@@ -690,7 +690,7 @@ check_status_code(struct __sk_buff *skb, __u32 expected_status_code)
 static __always_inline int
 check_ipv4_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 		     __u32 saddr, __u32 daddr, __u16 sport, __u16 dport,
-		     bool expected_state)
+		     bool expected_inbound)
 {
 	if (check_status_code(skb, expected_status_code))
 		return TC_ACT_SHOT;
@@ -703,7 +703,7 @@ check_ipv4_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 	key.sport = bpf_htons(sport);
 	key.dport = bpf_htons(dport);
 	key.l4proto = IPPROTO_UDP;
-	if (!expected_state && bpf_map_lookup_elem(&udp_conn_state_map, &key))
+	if (!expected_inbound && bpf_map_lookup_elem(&udp_conn_state_map, &key))
 		return TC_ACT_SHOT;
 
 	__builtin_memset(&key, 0, sizeof(key));
@@ -715,8 +715,10 @@ check_ipv4_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 	key.dport = bpf_htons(sport);
 	key.l4proto = IPPROTO_UDP;
 
-	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, &key);
-	if (!!state != expected_state || (state && !state->is_wan_ingress_direction))
+	/* A datagram on the reply path starts at most an unanswered inbound
+	 * flow, which takes state only with its answer. */
+	if (bpf_map_lookup_elem(&udp_conn_state_map, &key) ||
+	    !!bpf_map_lookup_elem(&udp_inbound_pending_map, &key) != expected_inbound)
 		return TC_ACT_SHOT;
 	return TC_ACT_OK;
 }
@@ -724,7 +726,7 @@ check_ipv4_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 static __always_inline int
 check_ipv6_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 		     __u32 saddr, __u32 daddr, __u16 sport, __u16 dport,
-		     bool expected_state)
+		     bool expected_inbound)
 {
 	if (check_status_code(skb, expected_status_code))
 		return TC_ACT_SHOT;
@@ -737,7 +739,7 @@ check_ipv6_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 	key.sport = bpf_htons(sport);
 	key.dport = bpf_htons(dport);
 	key.l4proto = IPPROTO_UDP;
-	if (!expected_state && bpf_map_lookup_elem(&udp_conn_state_map, &key))
+	if (!expected_inbound && bpf_map_lookup_elem(&udp_conn_state_map, &key))
 		return TC_ACT_SHOT;
 
 	__builtin_memset(&key, 0, sizeof(key));
@@ -749,8 +751,10 @@ check_ipv6_udp_state(struct __sk_buff *skb, __u32 expected_status_code,
 	key.dport = bpf_htons(sport);
 	key.l4proto = IPPROTO_UDP;
 
-	struct udp_conn_state *state = bpf_map_lookup_elem(&udp_conn_state_map, &key);
-	if (!!state != expected_state || (state && !state->is_wan_ingress_direction))
+	/* A datagram on the reply path starts at most an unanswered inbound
+	 * flow, which takes state only with its answer. */
+	if (bpf_map_lookup_elem(&udp_conn_state_map, &key) ||
+	    !!bpf_map_lookup_elem(&udp_inbound_pending_map, &key) != expected_inbound)
 		return TC_ACT_SHOT;
 	return TC_ACT_OK;
 }

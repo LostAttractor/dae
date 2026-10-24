@@ -131,7 +131,8 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		"routing_tuples_map": b.RoutingTuplesMap,
 		"tcp_flow_map":       b.TcpFlowMap,
 		"udp_bindings_map":   b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
-		"udp_routing_cache_map": b.UdpRoutingCacheMap,
+		"udp_inbound_pending_map": b.UdpInboundPendingMap,
+		"udp_routing_cache_map":   b.UdpRoutingCacheMap,
 	} {
 		owned, err := m.Clone()
 		if err != nil {

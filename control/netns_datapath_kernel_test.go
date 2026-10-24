@@ -301,6 +301,13 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	if source != client.LocalAddr().(*net.UDPAddr).AddrPort() {
 		t.Fatalf("UDP source changed: %s, want %s", source, client.LocalAddr())
 	}
+	// A relayed reply without state starts its flow as outbound. An inbound
+	// flow would send the client's next datagrams around the relay.
+	flow := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(target.Port()), L4proto: unix.IPPROTO_UDP}
+	flow.Sip.U6Addr8, flow.Dip.U6Addr8 = source.Addr().As16(), target.Addr().As16()
+	if err := objects.UdpConnStateMap.Delete(flow); err != nil {
+		t.Fatalf("UDP flow state: %v", err)
+	}
 	reply, err := ns.With(func() (net.PacketConn, error) {
 		lc := internalLinkListenerConfig()
 		return lc.ListenPacket(t.Context(), "udp"+family, target.String())
@@ -315,6 +322,10 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	n, err = client.Read(buf)
 	if err != nil || !bytes.Equal(buf[:n], payload) {
 		t.Fatalf("UDP reply=%q err=%v", buf[:n], err)
+	}
+	var state bpfUdpConnState
+	if err := objects.UdpConnStateMap.Lookup(flow, &state); err != nil || state.IsWanIngressDirection {
+		t.Fatalf("relayed reply flow state %+v: %v", state, err)
 	}
 	assertInternalLinkRoute(t, objects, source, target, unix.IPPROTO_UDP)
 }

@@ -996,10 +996,11 @@ int testsetup_ipv6_first_udp_fragment_wan_ingress(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
+/* No local socket answers: a forwarded flow gets its state on LAN egress. */
 SEC("tc/check/ipv6_first_udp_fragment_wan_ingress")
 int testcheck_ipv6_first_udp_fragment_wan_ingress(struct __sk_buff *skb)
 {
-	return check_ipv6_udp_state(skb, TCX_NEXT, 3, 4, 19237, 83, true);
+	return check_ipv6_udp_state(skb, TCX_NEXT, 3, 4, 19237, 83, false);
 }
 
 SEC("tc/pktgen/ipv6_nonfirst_udp_fragment")
