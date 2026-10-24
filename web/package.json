@@ -8,9 +8,10 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm run typecheck && node --import tsx build.ts",
-    "test:dev": "node --import tsx --test tests/dev-server.ts",
+    "test:dev": "node --import tsx --test tests/api.ts tests/dev-server.ts",
     "test": "node --import tsx tests/browser.ts",
     "test:certificate": "node --import tsx tests/certificate.ts",
+    "test:session": "node --import tsx tests/session.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "types:api": "node --import tsx tooling/generate-api-types.ts",
     "types:check": "node --import tsx tooling/generate-api-types.ts --check"

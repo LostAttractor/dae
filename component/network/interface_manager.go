@@ -298,6 +298,12 @@ func (m *InterfaceManager) queueLinkUpdate(update netlink.LinkUpdate) <-chan err
 		previous = m.links[attrs.Index]
 		if previous != nil && previous.Attrs().Name == attrs.Name {
 			m.links[attrs.Index] = update.Link
+			if previous.Attrs().MasterIndex != attrs.MasterIndex {
+				done := make(chan error, 1)
+				m.enqueueDelivery(change, done)
+				m.mu.Unlock()
+				return done
+			}
 			m.mu.Unlock()
 			return nil
 		}
@@ -388,11 +394,17 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 	}
 	sortLinks(links)
 	initialLinks := make([]netlink.Link, 0, len(links))
+	topologyChanged := false
 	for _, link := range links {
 		if link == nil || link.Attrs() == nil {
 			continue
 		}
-		m.links[link.Attrs().Index] = link
+		attrs := link.Attrs()
+		if old := m.links[attrs.Index]; old == nil || old.Attrs().Name != attrs.Name || old.Attrs().MasterIndex != attrs.MasterIndex {
+			// A registration dump can observe a topology change before its queued notification.
+			topologyChanged = true
+		}
+		m.links[attrs.Index] = link
 		if callbackMatches(registered, link.Attrs().Name) && initCallback != nil {
 			initialLinks = append(initialLinks, link)
 		}
@@ -407,6 +419,9 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 			}
 			return nil
 		})
+	}
+	if topologyChanged {
+		delivery = append(m.eventCallbacksLocked(false), delivery...)
 	}
 	done := make(chan error, 1)
 	m.enqueueDelivery(delivery, done)

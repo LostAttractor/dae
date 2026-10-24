@@ -3,7 +3,6 @@ package apiserver
 
 import (
 	"context"
-	"errors"
 	"net/netip"
 
 	contract "github.com/daeuniverse/dae/api"
@@ -34,12 +33,3 @@ type DeviceStore interface {
 	UpdateClientSet(string, netip.Addr, [6]byte, bool) (contract.DeviceState, error)
 	UpdateMITM(netip.Addr, [6]byte, *bool) (contract.DeviceState, error)
 }
-
-var (
-	ErrSelectorNotFound  = errors.New("selector group not found")
-	ErrSelectorNode      = errors.New("node_id is not a path in this selector")
-	ErrSelectorNoDefault = errors.New("selector has no configured default")
-	ErrProbeOutbound     = errors.New("probe outbound not found")
-	ErrProbeNode         = errors.New("node_id is not a path in this outbound")
-	ErrProbeUnsupported  = errors.New("outbound does not support connectivity probes")
-)

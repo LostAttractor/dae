@@ -195,7 +195,7 @@ func newControlPlane(
 		return nil, err
 	}
 	preparedRules.validationOutbounds = outboundBuilder.validationOutbounds
-	if err := preparedRules.bypassLocalAPI(global.APIPort); err != nil {
+	if err := preparedRules.bypassLocalAPI(conf.API.Listen); err != nil {
 		return nil, err
 	}
 	if err := plane.initializeRouting(preparedRules, outboundBuilder, conf); err != nil {

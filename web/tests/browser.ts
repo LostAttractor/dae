@@ -20,7 +20,8 @@ import { gunzipSync } from "node:zlib";
 
 const profile = await mkdtemp(join(tmpdir(), "dae-web-"));
 const source = join(profile, "public");
-await promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../build.ts", import.meta.url)), source]);
+await promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../build.ts", import.meta.url)), source], { env: { ...process.env, DAE_API_URL: "" } });
+assert.deepEqual(JSON.parse(await readFile(join(source, "dae-web.json"), "utf8")), { api_origin: "" });
 for (const entry of await readdir(source, { recursive: true, withFileTypes: true })) {
   if (!entry.isFile()) continue;
   const path = join(entry.parentPath, entry.name);
@@ -74,6 +75,9 @@ let renewAPILeaf: () => Promise<void>;
     const server = createTLSServer({ cert: await readFile(kind === "untrusted" ? untrusted : leaf), key: await readFile(kind === "untrusted" ? untrustedKey : leafKey) }, (req, res) => {
       const mitm = kind === "mitm";
       if (!mitm && req.url !== `/api/certificate/tests/${fixture.caTest?.id}`) return void httpServer.emit("request", req, res);
+      assert.equal(req.headers.cookie, undefined, "proofs must not include management cookies");
+      assert.equal(req.headers.authorization, undefined, "proofs must not include keys");
+      if (fixture.proxied) return res.writeHead(403).end();
       if ((req.headers.origin && req.headers.origin !== origin) || req.url !== (mitm ? "/test/browser-proof" : `/api/certificate/tests/${fixture.caTest?.id}`)) return res.writeHead(403).end();
       if (!mitm && (handshakeGeneration.get(req.socket as TLSSocket) ?? 0) < caGeneration) return res.writeHead(409, { "Access-Control-Allow-Origin": origin, Connection: "close" }).end();
       if (mitm) {
@@ -122,7 +126,7 @@ function resetFixture() {
     ...(i === 0 ? { latency_ms: 28.5, checked_at: "2026-09-22T00:00:00Z" } : {}),
   }));
   fixture = {
-    mode: "lan", requests: [], nextRead: null,
+    mode: "admin", requests: [], nextRead: null,
     nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [], tables: [], compiled_plugins: [], plugins: [],
     stats: { active_connections: 2, total_connections: 7, upload_bytes: 2048, download_bytes: 8192, history: { upload_bytes_per_second: [100, 200], download_bytes_per_second: [400, 800] } },
     selectors: [
@@ -145,6 +149,15 @@ function managedDevice(mac: string) {
 
 const httpServer = createServer(async (req, res) => {
   const url = req.url || "/";
+  if (req.headers.origin) {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE", "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Dae-API, X-Dae-MITM" }).end();
+    return;
+  }
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
@@ -170,14 +183,26 @@ const httpServer = createServer(async (req, res) => {
       const types: Record<string, string> = { html: "text/html", js: "text/javascript", css: "text/css" };
       res.writeHead(200, {
         "Content-Type": types[path.split(".").at(-1)!], "Cache-Control": "no-store",
-        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://${new URL(origin).hostname.includes(":") ? "*" : new URL(origin).hostname}:${serverPort(server)}/api/certificate/tests/ https://203.0.113.254:443/test/ https://*:443/test/; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://${new URL(origin).hostname.includes(":") ? "*" : new URL(origin).hostname}:${serverPort(server)}/api/ https://203.0.113.254:443/test/ https://*:443/test/; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
       });
       res.end(await readFile(join(source, path)));
       return;
     }
+    const hasSession = /(?:^|;\s*)__Host-dae-session=session-valid(?:;|$)/.test(req.headers.cookie || "");
+    const authenticated = hasSession && !fixture.sessionExpired;
+    const staleSession = hasSession && !authenticated;
+    const loginRequired = !authenticated && (fixture.mode === "admin_key" || staleSession);
+    if (staleSession && url !== "/api/session") res.setHeader("X-Dae-Session-Invalid", "1");
+    if (url !== "/api/session") assert.equal(req.headers.authorization, undefined, "management fetches use cookies, not automatic Bearer");
+    if (fixture.proxied && (url === "/api/device" || url.startsWith("/api/device/") || url.startsWith("/api/certificate/tests"))) return json({ error: "Direct API connection required" }, 403);
+    if (url.startsWith("/api/device") || url.startsWith("/api/certificate")) {
+      if (fixture.mode === "denied") return json({ error: "Access denied" }, 403);
+      if (loginRequired) return json({ error: "Login required" }, 401);
+    }
     if (url.endsWith("/diagnostics/explain") || url.endsWith("/impact")) {
       if (fixture.mode === "denied") return json({ error: "Access denied" }, 403);
-      if (fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid")) return json({ error: "Administrator access required" }, 401);
+      if (loginRequired) return json({ error: "Administrator access required" }, 401);
+      if ((fixture.mode === "lan" || fixture.mode === "user_key") && !authenticated) return json({ error: "Administrator access required" }, 403);
     }
     if (req.method !== "GET") {
       assert.equal(req.headers["x-dae-api"], "1");
@@ -193,7 +218,13 @@ const httpServer = createServer(async (req, res) => {
       }
       if (url === "/api/session") {
         if (req.method === "PUT" && req.headers.authorization !== "Bearer test-key") return json({ error: "Incorrect API key" }, 401);
-        res.setHeader("Set-Cookie", req.method === "PUT" ? "session=valid; Path=/api; HttpOnly; SameSite=Strict" : "session=; Path=/api; Max-Age=0");
+        const login = req.method === "PUT";
+        assert.ok((req.socket as TLSSocket).encrypted, "sessions require HTTPS");
+        res.setHeader("Set-Cookie", `__Host-dae-session=${login ? "session-valid" : ""}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${login ? 60 : 0}`);
+        if (login) {
+          fixture.sessionExpired = false;
+          return json({ role: "admin", expires_at: new Date(Date.now() + 60000).toISOString() });
+        }
         res.writeHead(204).end();
         return;
       }
@@ -259,8 +290,9 @@ const httpServer = createServer(async (req, res) => {
     if (url === "/api/selectors") {
       const override = fixture.nextRead;
       fixture.nextRead = null;
-      const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
-      const data = status === 200 ? { auth_mode: fixture.mode, admin_enabled: true, selectors: fixture.selectors } : { error: status === 401 ? "Login required" : status === 403 ? "Direct LAN access required" : "API is reloading" };
+      const status = override?.status || (fixture.mode === "denied" ? 403 : loginRequired ? 401 : 200);
+      const admin = fixture.mode === "admin" || authenticated;
+      const data = status === 200 ? { auth_mode: admin ? "admin_key" : fixture.mode, admin_enabled: admin, selectors: fixture.selectors } : { error: status === 401 ? "Login required" : status === 403 ? "Direct LAN access required" : "API is reloading" };
       const snapshot = structuredClone(data);
       override?.started.resolve();
       if (override?.release) await override.release.promise;
@@ -280,8 +312,9 @@ const httpServer = createServer(async (req, res) => {
     if (url === "/api/status") {
       const override = fixture.nextGlobalRead;
       fixture.nextGlobalRead = null;
-      const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
-      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", uptime: 600e9, stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins: fixture.plugins };
+      const status = override?.status || (fixture.mode === "denied" ? 403 : loginRequired ? 401 : 200);
+      const plugins = fixture.plugins.map(plugin => authenticated ? plugin : { ...plugin, details: undefined });
+      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", uptime: 600e9, stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins };
       override?.started.resolve();
       if (override?.release) await override.release.promise;
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
@@ -313,7 +346,7 @@ const server = createTCPServer(socket => {
 });
 server.listen(0);
 await once(server, "listening");
-let origin = `http://127.0.0.1:${serverPort(server)}`;
+let origin = `https://127.0.0.1:${serverPort(server)}`;
 const chromium = spawn(process.env.CHROMIUM || "chromium", [
   "--headless", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
   // Headless Chromium reports no pointing device; emulate a mouse so hover-only styles apply.
@@ -466,6 +499,7 @@ try {
   await call("Log.enable");
 
   await test("review regression: initial access failures retry without a manual refresh", async () => {
+    fixture.mode = "lan";
     fixture.nextRead = { status: 503, started: deferred() };
     await page();
     assert.match(await js('document.querySelector("#access-description").textContent'), /Checking/);
@@ -630,6 +664,7 @@ try {
   });
 
   await test("review regression: initial global read failures remain visible to authorized users", async () => {
+    fixture.mode = "lan";
     fixture.nextGlobalRead = { status: 503, started: deferred() };
     await page();
     assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
@@ -714,12 +749,12 @@ try {
     } finally { response.release.resolve(); chartResponse = null; }
   });
 
-  await test("L3 LAN retains management and diagnostics without device controls", async () => {
+  await test("L3 administrator retains management and diagnostics without device controls", async () => {
     fixture.l3 = true;
     fixture.requests = [];
     fixture.deviceStatusReads = 0;
     await page();
-    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
     assert.equal(await js('document.querySelector("#identity").textContent'), "100.64.0.23");
     assert.match(await js('document.querySelector("#device-mac").textContent'), /Unavailable \(IP-only connection\)/);
     assert.match(await js('document.querySelector("#sets").textContent'), /no Ethernet MAC/);
@@ -761,6 +796,7 @@ try {
   });
 
   await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
+    await page();
     fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "browser-one", mitm_test_origins: mitmOrigins };
     fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
     await js('document.querySelector("#refresh").click()');
@@ -807,7 +843,7 @@ try {
     await until('document.querySelector("#mitm .trust-notice")?.dataset.tone === "success"');
     const ipv4Origin = origin;
     try {
-      origin = `http://[::1]:${serverPort(server)}`;
+      origin = `https://[::1]:${serverPort(server)}`;
       fixture.untrusted = false;
       fixture.bypass = false;
       await page();
@@ -849,7 +885,8 @@ try {
     // Switching this fixture's CA must retire pooled connections from earlier
     // cases, or navigation can still use their already trusted TLS handshake.
     for (const socket of sockets) socket.destroy();
-    const httpOrigin = origin;
+    const previousOrigin = origin;
+    const httpOrigin = origin.replace("https:", "http:");
     try {
       origin = origin.replace("http:", "https:");
       await call("Page.navigate", { url: "about:blank" });
@@ -867,7 +904,7 @@ try {
       await js('document.querySelector("#test-certificate").click()');
       await ready();
       assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete", "HTTP setup must not reuse the HTTPS exception");
-    } finally { origin = httpOrigin; }
+    } finally { origin = previousOrigin; }
   });
 
   await test("Recharts shows rate history, keyboard tooltips and stable live updates", async () => {
@@ -911,7 +948,7 @@ try {
     assert.equal(await js('document.title'), "Network Panel · Setting · Explain");
     assert.equal(await js('document.querySelector("#diagnostics .setting-heading span[title]").textContent'), "Read-only");
     assert.match(await js('document.querySelector("#updated time").getAttribute("aria-label")'), /^Updated /);
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await page("#setting/devices");
     assert.equal(await js('document.querySelector("#devices-locked").checkVisibility()'), true);
     assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), false);
@@ -1011,7 +1048,7 @@ try {
     await ready();
     await until('document.querySelector("#message") === null');
 
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await page();
     await js('document.querySelector("#api-key").value = "wrong"; document.querySelector("#login-form").requestSubmit()');
     await ready();
@@ -1087,11 +1124,12 @@ try {
     assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /2 KiB\/s/);
   });
 
-  await test("device statistics remain live without global administration access", async () => {
+  await test("LAN device statistics remain live after administrator logout", async () => {
     await call("Emulation.setDeviceMetricsOverride", { width: 960, height: 1000, deviceScaleFactor: 1, mobile: false });
-    fixture.mode = "api_key";
+    fixture.mode = "lan";
     await page();
-    assert.equal(await js('document.querySelector("#global-tab").getAttribute("aria-disabled") === "true"'), true);
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
+    assert.equal(await js('document.querySelector("#global-tab").getAttribute("aria-disabled") === "true"'), false);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /2 KiB/);
     fixture.stats.upload_bytes = 4096;
     await until('document.querySelector("#device-traffic").textContent.includes("4 KiB")');
@@ -1103,10 +1141,52 @@ try {
     await until('document.querySelector("#global-traffic .recharts-surface") !== null');
     await js('document.querySelector("#logout").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-traffic .recharts-surface")'), null);
-    assert.equal(await js('document.querySelector("#daemon-version").textContent'), "");
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
+    assert.equal(await js('document.querySelector("#global-tab").getAttribute("aria-disabled") === "true"'), false);
+    await js('document.querySelector("#device-tab").click()');
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /4 KiB/);
     assert.equal(await js('document.querySelector("#device-tab").getAttribute("aria-selected")'), "true");
+  });
+
+  for (const readKey of ["nextContextRead", "nextDeviceRead"] as const) {
+    await test(`device access logout clears protected data and discards late ${readKey}`, async () => {
+      fixture.mode = "admin_key";
+      await page();
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await ready();
+      await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+      assert.equal(await js('document.querySelector("#device-mac").textContent'), fixture.device.mac);
+      const read = { started: deferred(), release: deferred() };
+      fixture[readKey] = read;
+      await read.started.promise;
+      try {
+        await js('document.querySelector("#logout").click()');
+        assert.equal(await js('document.querySelector("#device-mac").textContent'), "Unavailable");
+        await ready();
+        read.release.resolve();
+        await delay(200);
+        assert.equal(await js('document.querySelector("#access-title").textContent'), "Guest");
+        assert.equal(await js('document.querySelector("#identity").textContent'), "Unavailable");
+        assert.equal(await js('document.querySelector("#device-mac").textContent'), "Unavailable");
+        assert.equal(await js('document.querySelector("#device-traffic .traffic-metrics")'), null);
+        assert.equal(await js('document.querySelector("#device-traffic .recharts-surface")'), null);
+        assert.equal(await js('document.querySelectorAll("#sets .client-toggle").length'), 0);
+      } finally { read.release.resolve(); }
+    });
+  }
+
+  await test("device access background 401 and 403 clear protected data and allow recovery", async () => {
+    for (const code of [401, 403]) {
+      await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+      const read = { started: deferred(), status: code };
+      fixture.nextDeviceRead = read;
+      await read.started.promise;
+      await until('document.querySelector("#device-mac").textContent === "Unavailable"');
+      assert.equal(await js('document.querySelector("#device-traffic .traffic-metrics")'), null);
+      assert.equal(await js('document.querySelector("#device-traffic .recharts-surface")'), null);
+      assert.equal(await js('document.querySelectorAll("#sets .client-toggle").length'), 0);
+      await until(`document.querySelector("#device-mac").textContent === ${JSON.stringify(fixture.device.mac)}`);
+    }
   });
 
   await test("traffic scopes switch by keyboard and device identity appears beside access", async () => {
@@ -1114,7 +1194,7 @@ try {
     await until('document.querySelector("#device-tab") !== null');
     assert.equal(await js('document.querySelector(".device-identity #identity").textContent'), fixture.device.source_ip);
     assert.equal(await js('document.querySelector("#device-mac").checkVisibility()'), true);
-    assert.equal(await js('document.querySelector(".page-title-row #access-title").textContent'), "LAN Access");
+    assert.equal(await js('document.querySelector(".page-title-row #access-title").textContent'), "Administrator");
     assert.equal(await js('document.querySelector("#refresh").textContent'), "Refresh");
     assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
     assert.equal(await js('document.querySelectorAll("#status-view h2").length'), 1);
@@ -1150,7 +1230,7 @@ try {
     assert.equal(await js('document.querySelector(".set-state").textContent'), "On");
     assert.equal(await js('document.querySelector(".client-toggle [role=switch]").getAttribute("aria-checked") === "true"'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#global-traffic .recharts-surface")'), null);
@@ -1206,10 +1286,10 @@ try {
     assert.equal(await js('document.querySelector("#managed-client-mac").value'), "02:00:00:00:00:44");
     await visit("overview");
     await until('document.querySelectorAll(".traffic-chart").length === 2');
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 1);
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 0);
     assert.equal(await js('document.querySelector("#global-status").checkVisibility()'), false);
     assert.equal(await js('document.querySelector("#quick-selectors-locked").checkVisibility()'), true);
     await visit("selector");
@@ -1252,6 +1332,164 @@ try {
     assert.equal(await js('document.querySelector("#access-required").textContent'), "Access denied");
   });
 
+  await test("Guest certificate denials clear stale state without a refresh failure", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
+    for (const mode of ["admin_key", "denied"] as const) {
+      fixture.mode = "admin";
+      await page();
+      assert.equal(await js('document.querySelector("#certificate-panel").hidden'), false);
+      fixture.mode = mode;
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#access-title").textContent'), "Guest");
+      assert.equal(await js('document.querySelector("#certificate-panel").hidden'), true);
+      assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "");
+      assert.equal(await js('document.querySelector("#test-certificate").disabled'), true);
+      // Losing access is reported once; refreshing as a Guest is a normal state.
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#message").dataset.tone'), "success");
+      assert.notEqual(await js('document.querySelector("#updated").textContent'), "Refresh incomplete");
+    }
+  });
+
+  await test("manual certificate testing joins a blocked automatic challenge", async () => {
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
+    await js(`
+      window.certificateTestRequests = 0;
+      const originalFetch = window.fetch;
+      window.fetch = async (url, options) => {
+        if (new URL(String(url), location.origin).pathname === "/api/certificate/tests") {
+          certificateTestRequests++;
+          if (certificateTestRequests === 1) await new Promise(resolve => { window.releaseCertificateTest = resolve; });
+        }
+        return originalFetch(url, options);
+      };
+    `);
+    try {
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await until('typeof releaseCertificateTest === "function"');
+      await js('document.querySelector("#test-certificate").click()');
+      assert.equal(await js('document.querySelector("#controls").disabled'), true);
+      assert.equal(await js('certificateTestRequests'), 1, "manual testing reuses the pending CA challenge");
+      await js('releaseCertificateTest()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+      assert.equal(fixture.requests.filter(request => request.path === "/api/certificate/tests").length, 1);
+      assert.equal(fixture.requests.filter(request => request.path === "/api/device/mitm-tests").length, 1);
+    } finally { await js('window.releaseCertificateTest?.()'); }
+  });
+
+  await test("login retires an automatic denial even when the access mode stays the same", async () => {
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
+    await js(`
+      window.certificateTestRequests = 0;
+      const originalFetch = window.fetch;
+      window.fetch = async (url, options) => {
+        const path = new URL(String(url), location.origin).pathname;
+        if (path === "/api/certificate/tests" && ++certificateTestRequests === 1) {
+          return new Promise(resolve => {
+            window.releaseCertificateTest = () => resolve(new Response(JSON.stringify({ error: "Previous access denied" }), {
+              status: 403, headers: { "Content-Type": "application/json" },
+            }));
+          });
+        }
+        if (path === "/api/session" && options.method === "PUT") releaseCertificateTest();
+        return originalFetch(url, options);
+      };
+    `);
+    try {
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await until('typeof releaseCertificateTest === "function"');
+      assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await ready();
+      await until('document.querySelector("#certificate-mitm-result").textContent === "Transparent MITM verified"');
+      assert.equal(await js('certificateTestRequests'), 2, "a new session does not reuse the previous session's task");
+      assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
+      assert.equal(await js('document.querySelector("#test-certificate").disabled'), false);
+    } finally { await js('window.releaseCertificateTest?.()'); }
+  });
+
+  await test("certificate verification recovers after login with the same CA", async () => {
+    fixture.mode = "admin_key";
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
+    // Keep the expired session's background polls from clearing the CA before login.
+    const { identifier } = await call("Page.addScriptToEvaluateOnNewDocument", { source: "Object.defineProperty(document, 'hidden', { value: true });" });
+    try {
+      await page();
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await ready();
+      await until('document.querySelector("#certificate-mitm-result").textContent === "Transparent MITM verified"');
+      const generation = caGeneration;
+      fixture.sessionExpired = true;
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(caGeneration, generation, "an expired session cannot create a CA challenge");
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification unavailable");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification unavailable");
+      assert.equal(await js('document.querySelector("#certificate-panel").hidden'), false);
+      assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "browser-ca");
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await ready();
+      assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
+      assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "browser-ca");
+      assert.equal(await js('document.querySelector("#test-certificate").disabled'), false, "login restores retry without replacing the CA");
+      assert.equal(caGeneration, generation, "unchanged metadata does not repeat the automatic test");
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    } finally {
+      await call("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+    }
+  });
+
+  await test("proxy denials make device and browser verification unavailable, never trusted", async () => {
+    fixture.proxied = true;
+    fixture.mode = "admin_key";
+    fixture.certificate = { name: "Test CA", fingerprint: "browser-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
+    await page();
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
+    assert.equal(await js('document.querySelector("#device-mac").textContent'), "Unavailable");
+    assert.equal(await js('document.querySelector("#certificate-panel").hidden'), false);
+    assert.equal(await js('document.querySelector("#test-certificate").hidden'), false);
+    await js(`
+      window.certificateTestRequests = 0;
+      const originalFetch = window.fetch;
+      window.fetch = (url, options) => {
+        if (new URL(String(url), location.origin).pathname === "/api/certificate/tests") certificateTestRequests++;
+        return originalFetch(url, options);
+      };
+    `);
+    const generation = caGeneration;
+    await js('document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(caGeneration, generation, "proxy cannot start a certificate challenge");
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification unavailable");
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification unavailable");
+    assert.equal(await js('document.querySelector("#test-certificate").disabled'), true);
+    assert.equal(await js('document.querySelector("#certificate-http-setup").hidden'), true);
+    assert.equal(await js('document.querySelector("#message").dataset.tone'), "warning");
+    assert.match(await js('document.querySelector("#certificate-test-info").textContent'), /Proxy TLS trust is not browser trust/);
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await delay(2200);
+    assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "browser-ca");
+    assert.equal(await js('document.querySelector("#test-certificate").disabled'), true, "login and metadata polls do not undo a capability denial");
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification unavailable");
+    assert.equal(await js('certificateTestRequests'), 1, "proxy verification is not retried automatically");
+  });
+
   await test("certificate UI requires both browser proof and interception observation", async () => {
     fixture.certificate = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "one", mitm_test_origins: mitmOrigins };
     fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "test-ca" };
@@ -1262,7 +1500,7 @@ try {
     // One download action lists each format; the profile opens normally for Safari to install it.
     await js('document.querySelector("#certificate-download").click()');
     await until('document.querySelector(".certificate-downloads")?.checkVisibility()');
-    assert.deepEqual(await js('[...document.querySelectorAll(".certificate-downloads a")].map(link => [link.getAttribute("href"), link.hasAttribute("download")])'), [["/ca.mobileconfig", false], ["/ca.cer", true], ["/ca.pem", true]]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".certificate-downloads a")].map(link => [link.getAttribute("href"), link.hasAttribute("download"), link.referrerPolicy])'), [[`${origin}/api/certificate/ca.mobileconfig`, false, "origin"], [`${origin}/api/certificate/ca.cer`, true, ""], [`${origin}/api/certificate/ca.pem`, true, ""]]);
     await elementShot(".device-settings", "dae-web-certificate-downloads");
     await key("Escape", 27);
     await until('!document.querySelector(".certificate-downloads")?.checkVisibility()');
@@ -1271,15 +1509,18 @@ try {
       const originalFetch = window.fetch;
       window.fetch = async (url, options) => {
         const address = String(url);
+        const pathname = new URL(address, location.origin).pathname;
         const reply = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-        if (address === "/api/certificate/tests") return reply({ id: "ca-challenge", ca_fingerprint: "test-ca" });
-        if (address === "/api/device/mitm-tests") {
+        if (pathname === "/api/certificate/tests") return reply({ id: "ca-challenge", ca_fingerprint: "test-ca" });
+        if (pathname === "/api/device/mitm-tests") {
           if (testMode === "unavailable") return new Response(JSON.stringify({ error: "Certificate testing unavailable" }), { status: 503 });
+          if (testMode === "proxy-create") return new Response(JSON.stringify({ error: "Direct connection required" }), { status: 403 });
           return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: testMode !== "disabled", mitm_url: "https://203.0.113.254/test/challenge" });
         }
-        if (address === "/api/device/mitm-tests/challenge") return reply({ mitm_observed: testMode === "mitm" });
-        if (address.startsWith("https://")) {
-          if (options.credentials !== "omit" || options.redirect !== "error" || options.mode !== "cors") throw Error("unsafe challenge request");
+        if (pathname === "/api/device/mitm-tests/challenge") return testMode === "proxy-observe" ? new Response(JSON.stringify({ error: "Direct connection required" }), { status: 403 }) : reply({ mitm_observed: testMode === "mitm" });
+        if (pathname.startsWith("/api/certificate/tests/") || pathname.startsWith("/test/")) {
+          if (options.credentials !== "omit" || options.redirect !== "error" || options.mode !== "cors" || options.headers) throw Error("unsafe challenge request");
+          if (pathname.startsWith("/test/") && testMode === "proxy-proof") return new Response(null, { status: 403 });
           if (testMode === "tls-error") throw new TypeError("Failed to fetch");
           if (testMode === "bypass" && address.includes("203.0.113.254")) throw new TypeError("Failed to fetch");
           return reply(address.includes("203.0.113.254") ? { id: "challenge", ca_fingerprint: "test-ca" } : { id: "ca-challenge", ca_fingerprint: testMode === "wrong-ca" ? "other-ca" : "test-ca" });
@@ -1330,6 +1571,8 @@ try {
       await ready();
       assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "CA trust test required");
+      assert.equal(await js('document.querySelector("#certificate-http-setup").hidden'), false);
+      assert.equal(await js('document.querySelector("#certificate-http-setup").getAttribute("href")'), `http://${new URL(origin).host}/`);
       await feedback("warning", "warning", "warning");
       await js('testMode = "disabled"; document.querySelector("#test-certificate").click()');
       await ready();
@@ -1341,6 +1584,12 @@ try {
       assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Test unavailable");
       await feedback("error", "success", "error");
+    }
+    for (const mode of ["proxy-create", "proxy-proof", "proxy-observe"]) {
+      await js(`testMode = ${JSON.stringify(mode)}; document.querySelector("#test-certificate").click()`);
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Test unavailable");
+      await feedback("warning", "success", "warning");
     }
     await js('testMode = "wrong-ca"; document.querySelector("#test-certificate").click()');
     await ready();
@@ -1992,7 +2241,7 @@ try {
   });
 
   await test("LAN guests retain device controls without diagnostic entry points", async () => {
-    fixture.mode = "api_key";
+    fixture.mode = "lan";
     await page("#setting/explain");
     assert.equal(await js('document.querySelector("#diagnostic-form")'), null);
     assert.equal(await js('document.querySelector("#setting-explain-tab")'), null);
@@ -2010,7 +2259,7 @@ try {
   });
 
   await test("logout discards pending current-device explanations and routing impact", async () => {
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await page();
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
@@ -2080,7 +2329,7 @@ try {
       held.release.resolve();
       await delay(100);
       assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
-      fixture.mode = "lan";
+      fixture.mode = "admin";
       await js('document.querySelector("#refresh").click()');
       await ready();
       assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
@@ -2157,8 +2406,39 @@ try {
     assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
   });
 
-  await test("cookie login, expired session and delayed reads after logout", async () => {
-    fixture.mode = "api_key";
+  await test("LAN and user access can read global status and browse candidates without administration", async () => {
+    for (const role of ["lan", "user_key"] as const) {
+      fixture.mode = role;
+      await page();
+      await until('document.querySelector("#daemon-version").textContent.includes("test-daemon")');
+      assert.equal(await js('document.querySelector("#access-title").textContent'), role === "lan" ? "LAN Access" : "User");
+      assert.match(await js('document.querySelector("#daemon-version").textContent'), /test-daemon/);
+      assert.equal(await js('document.querySelector("#managed-clients-view").hidden'), true);
+      await visit("selector");
+      await js('document.querySelector("#selectors .node-picker").click()');
+      await until('document.querySelector(".node-search input") !== null');
+      assert.equal(await js('[...document.querySelectorAll(".select-node")].every(button => button.disabled)'), true);
+      assert.equal(await js('[...document.querySelectorAll(".test-node, .test-all, .test-selected, .reset")].every(button => !button.checkVisibility())'), true);
+      await key("Escape", 27);
+    }
+  });
+
+  await test("HTTP pages have no key login or runtime API target switch", async () => {
+    const savedOrigin = origin;
+    origin = origin.replace("https:", "http:");
+    fixture.mode = "admin_key";
+    try {
+      await page();
+      assert.equal(await js('document.querySelector("#login-form, #api-key, #api-address-form, #mitm-choice")'), null);
+      assert.match(await js('document.querySelector("main").textContent'), /Certificate setup/);
+      assert.equal(await js('document.querySelector("main a").protocol'), "https:");
+    } finally {
+      origin = savedOrigin;
+    }
+  });
+
+  await test("Cookie login, expired session and delayed reads after logout", async () => {
+    fixture.mode = "admin_key";
     await page();
     assert.equal(await js('document.querySelector("#login-form").hidden'), false);
     for (const width of [320, 1280]) {
@@ -2180,6 +2460,11 @@ try {
     assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
     assert.equal(await js('document.querySelector("#api-key").value'), "");
     assert.equal(await js('document.activeElement.id'), "refresh");
+    assert.equal(await js('document.cookie'), "", "HttpOnly session is not script-readable");
+    assert.equal(await js('localStorage.length + sessionStorage.length'), 0, "no credentials or target in browser storage");
+    const cookies = await call("Network.getCookies", { urls: [origin] });
+    const session = cookies.cookies.find(cookie => cookie.name === "__Host-dae-session");
+    assert.ok(session?.httpOnly && session.secure && session.sameSite === "Strict" && session.path === "/");
     await page();
     assert.equal(await js('document.querySelectorAll(".selector-row").length'), 4);
     const read = { started: deferred(), release: deferred() };
@@ -2189,15 +2474,52 @@ try {
     await ready();
     read.release.resolve();
     await delay(200);
+    assert.ok(fixture.requests.some(request => request.path === "/api/session" && request.method === "DELETE"));
+    assert.equal((await call("Network.getCookies", { urls: [origin] })).cookies.some(cookie => cookie.name === "__Host-dae-session"), false);
     assert.equal(await js('document.querySelectorAll(".selector-row").length'), 0);
     assert.equal(await js('document.querySelector("#login-form").hidden'), false);
     assert.equal(await js('document.activeElement.id'), "api-key");
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
-    await call("Network.clearBrowserCookies");
+    fixture.sessionExpired = true;
     await until('document.querySelector("#updated").textContent === "Login required"');
     assert.equal(await js('document.querySelectorAll(".selector-row").length'), 0);
     assert.equal(await js('document.querySelector("#selectors-locked").hidden'), false);
+    fixture.mode = "lan";
+    await page();
+    assert.equal(await js('document.querySelector("#logout").innerText'), "Clear session");
+    await js('document.querySelector("#logout").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
+    assert.equal((await call("Network.getCookies", { urls: [origin] })).cookies.some(cookie => cookie.name === "__Host-dae-session"), false);
+  });
+
+  await test("Guest tabs recover after another tab logs in or renews the session", async () => {
+    fixture.mode = "admin_key";
+    await page();
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "Guest");
+    const otherTarget = await (await fetch(`http://${endpoint.host}/json/new?about:blank`, { method: "PUT" })).json() as { id: string; webSocketDebuggerUrl: string };
+    const otherSocket = new WebSocket(otherTarget.webSocketDebuggerUrl);
+    await once(otherSocket, "open");
+    const other = cdp(otherSocket);
+    try {
+      await other.call("Page.navigate", { url: origin });
+      const deadline = Date.now() + 10000;
+      while (!await other.js('document.querySelector("#controls")?.getAttribute("aria-busy") === "false"')) {
+        assert.ok(Date.now() < deadline, "second tab becomes ready");
+        await delay(30);
+      }
+      await call("Page.bringToFront");
+      for (const method of ["PUT", "DELETE", "PUT"]) {
+        const status = await other.js(`fetch("/api/session", { method: ${JSON.stringify(method)}, credentials: "include", headers: { "X-Dae-API": "1", Authorization: "Bearer test-key" } }).then(response => response.status)`);
+        assert.equal(status, method === "PUT" ? 200 : 204);
+        await until(`document.querySelector("#access-title").textContent === "${method === "PUT" ? "Administrator" : "Guest"}"`);
+      }
+      assert.equal(await js('document.querySelectorAll(".selector-row").length'), 4);
+    } finally {
+      await call("Target.closeTarget", { targetId: otherTarget.id });
+      otherSocket.close();
+    }
   });
 
   await test("forbidden LAN access is not presented as a missing login", async () => {
@@ -2307,7 +2629,7 @@ try {
     fixture.groups.reverse();
     await until('document.querySelector("#global-groups").firstElementChild.dataset.name === "direct"');
     assert.equal(await js('openGroup.isConnected && (openGroup.querySelector(".disclosure-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".disclosure-trigger")'), true);
-    fixture.mode = "api_key";
+    fixture.mode = "admin_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#global-groups")'), null);

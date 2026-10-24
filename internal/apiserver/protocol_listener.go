@@ -40,6 +40,32 @@ func newProtocolListener(listener net.Listener, configuration *tls.Config) *prot
 	return l
 }
 
+type acceptOutcome uint8
+
+const (
+	acceptFailed acceptOutcome = iota
+	acceptRetry
+	acceptCanceled
+)
+
+// Preserve net/http's retry behavior for transient resource failures.
+func retryTemporaryAccept(err error, retry *time.Duration, cancelA, cancelB <-chan struct{}) acceptOutcome {
+	temporary, ok := errors.AsType[net.Error](err)
+	if !ok || !temporary.Temporary() {
+		return acceptFailed
+	}
+	*retry = min(max(5*time.Millisecond, *retry*2), time.Second)
+	timer := time.NewTimer(*retry)
+	select {
+	case <-timer.C:
+		return acceptRetry
+	case <-cancelA:
+	case <-cancelB:
+	}
+	timer.Stop()
+	return acceptCanceled
+}
+
 func (l *protocolListener) run() {
 	defer close(l.done)
 	defer l.workers.Wait()
@@ -47,17 +73,11 @@ func (l *protocolListener) run() {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			// Preserve net/http's retry behavior for transient resource failures.
-			if temporary, ok := errors.AsType[net.Error](err); ok && temporary.Temporary() {
-				retry = min(max(5*time.Millisecond, retry*2), time.Second)
-				timer := time.NewTimer(retry)
-				select {
-				case <-timer.C:
-					continue
-				case <-l.closed:
-					timer.Stop()
-					return
-				}
+			switch retryTemporaryAccept(err, &retry, l.closed, nil) {
+			case acceptRetry:
+				continue
+			case acceptCanceled:
+				return
 			}
 			l.stop(err)
 			return

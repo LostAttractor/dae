@@ -30,7 +30,6 @@ func (c *ControlPlane) kernelTableStatuses() []api.TableUsage {
 		{"outbound_connectivity_map", b.OutboundConnectivityMap},
 		{"routing_profile_map", b.RoutingProfileMap},
 		{"routing_interface_map", b.RoutingInterfaceMap},
-		{"route_exempt_map", b.RouteExemptMap},
 	}
 	var tables []api.TableUsage
 	var ids []ebpf.MapID

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -48,6 +49,7 @@ type controlPlaneCore struct {
 	ownedInterfaces   *network.InterfaceManager
 	netmon            *network.HostNetworkMonitor
 	outboundResources *outbound.Resources
+	apiAddressChanges chan struct{}
 
 	outboundCallbackMu sync.Mutex
 	outboundRecovery   func()
@@ -105,10 +107,21 @@ func newControlPlaneCore(resources UserspaceResources) (*controlPlaneCore, error
 		ownedInterfaces:   ownedInterfaces,
 		netmon:            netmon,
 		outboundResources: resources.Outbounds,
+		apiAddressChanges: make(chan struct{}, 1),
 		closed:            closed,
 		close:             toClose,
 	}
 	core.domainRegistry = newDomainRegistry(0, consts.DefaultDNSRetentionWindow, nil, nil)
+	// Recheck after publication as addresses may change while the candidate is built.
+	core.apiAddressChanges <- struct{}{}
+	netmon.Register(func(previous, next network.HostNetworkSnapshot) {
+		if !slices.Equal(previous.LocalAddresses, next.LocalAddresses) {
+			select {
+			case core.apiAddressChanges <- struct{}{}:
+			default:
+			}
+		}
+	})
 	core.addCleanup(core.closeBpf)
 	core.addCleanup(core.tableReader.Close)
 	core.addCleanup(core.domainRegistry.Close)

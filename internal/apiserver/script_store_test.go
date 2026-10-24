@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 type scriptStoreMigrationFunc func(context.Context, string, api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error)
@@ -64,7 +65,7 @@ func TestScriptStoreAPIValidationAndErrors(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			options := Options{APIKey: "secret", ScriptStorage: scriptStoreMigrationFunc(func(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error) {
+			options := Options{AdminKey: "secret", ScriptStorage: scriptStoreMigrationFunc(func(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error) {
 				calls++
 				deadline, ok := ctx.Deadline()
 				if !ok || time.Until(deadline) > 5*time.Second {
@@ -85,7 +86,7 @@ func TestScriptStoreAPIValidationAndErrors(t *testing.T) {
 			if body == "" {
 				body = valid
 			}
-			r := httptest.NewRequest("POST", "http://192.0.2.1:8081/api/plugins/personal/store/migrate", strings.NewReader(body))
+			r := httptest.NewRequest("POST", "https://192.0.2.1:8081/api/plugins/personal/store/migrate", strings.NewReader(body))
 			var local net.Addr = &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 8081}
 			if test.unix {
 				local = &net.UnixAddr{Name: "dae.sock", Net: "unix"}
@@ -126,7 +127,7 @@ func TestScriptStoreAPIValidationAndErrors(t *testing.T) {
 
 func TestScriptStoreAPIClientRoundTrip(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(NewHandler(Options{APIKey: "secret", ScriptStorage: scriptStoreMigrationFunc(func(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error) {
+	server := httptest.NewTLSServer(NewHandler(Options{AdminKey: "secret", ScriptStorage: scriptStoreMigrationFunc(func(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error) {
 		calls++
 		if instance != "personal / store" || request.FromMAC != "02:00:00:00:00:aa" || request.ToMAC != "02:00:00:00:00:bb" {
 			t.Errorf("request lost: %s %+v", instance, request)
@@ -137,7 +138,7 @@ func TestScriptStoreAPIClientRoundTrip(t *testing.T) {
 		return api.ScriptStoreMigrateResponse{Instance: instance, FromMAC: request.FromMAC, ToMAC: request.ToMAC, KeysMoved: 4}, nil
 	})}))
 	defer server.Close()
-	remote, err := client.New(client.Options{Endpoint: server.URL, APIKey: "secret"})
+	remote, err := client.New(client.Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server), APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

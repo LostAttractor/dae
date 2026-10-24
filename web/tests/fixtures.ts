@@ -37,7 +37,7 @@ export type FixtureResult = Omit<ExplainResult, "outbounds"> & {
 export type FixtureBody = Partial<ExplainRequest & { node_id: string; outbound: string; enabled: boolean; joined: boolean }>;
 export interface RecordedRequest { method: string; path: string; body: FixtureBody }
 export interface Fixture {
-  mode: "lan" | "api_key" | "denied";
+  mode: "admin" | "lan" | "admin_key" | "user_key" | "denied";
   requests: RecordedRequest[];
   deviceStatusReads?: number;
   nextRead: DeferredRead | null;
@@ -64,4 +64,6 @@ export interface Fixture {
   l3?: boolean;
   bypass?: boolean;
   untrusted?: boolean;
+  proxied?: boolean;
+  sessionExpired?: boolean;
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestOperationNotifyFailure(t *testing.T) {
@@ -88,9 +89,9 @@ func TestOperationNotifyReadyFailure(t *testing.T) {
 
 func TestOperationAPIQueueAndStatus(t *testing.T) {
 	o := newOperations()
-	server := httptest.NewServer(apiserver.NewHandler(apiserver.Options{APIKey: "secret", Operations: o}))
+	server := httptest.NewTLSServer(apiserver.NewHandler(apiserver.Options{AdminKey: "secret", Operations: o}))
 	defer server.Close()
-	remote, err := client.New(client.Options{Endpoint: server.URL, APIKey: "secret"})
+	remote, err := client.New(client.Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server), APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +150,7 @@ func TestOperationsBoundedAndCanceled(t *testing.T) {
 	active := <-o.requests
 	o.start(active)
 	o.stop()
-	if _, err := o.SubmitOperation(api.OperationRequest{Kind: "suspend"}); !errors.Is(err, apiserver.ErrOperationsClosed) {
+	if _, err := o.SubmitOperation(api.OperationRequest{Kind: "suspend"}); !errors.Is(err, api.ErrOperationsClosed) {
 		t.Fatal(err)
 	}
 	for id, record := range o.records {
@@ -192,7 +193,7 @@ func TestLocalOperationsSurvivePlaneDrain(t *testing.T) {
 	}
 	defer server.Close()
 	o := newOperations()
-	server.SetOperations(o)
+	server.SetLocalServices(apiserver.LocalServices{Operations: o})
 	remote, err := client.New(client.Options{Endpoint: "unix://" + path})
 	if err != nil {
 		t.Fatal(err)

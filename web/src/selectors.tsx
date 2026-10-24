@@ -31,7 +31,7 @@ function Health({ node }: { node?: SelectorNode }) {
     <span className={`node-latency tabular-nums empty:hidden ${meta}`}>{node?.checking ? "Testing…" : latencyLabel(node)}</span></>;
 }
 
-function Selector({ selector, actions, compact = false }: { selector: SelectorState; actions: SelectorControls; compact?: boolean }) {
+function Selector({ selector, actions, administrator, compact = false }: { selector: SelectorState; actions: SelectorControls; administrator: boolean; compact?: boolean }) {
   const id = useId();
   const picker = useRef<HTMLButtonElement>(null), search = useRef<HTMLInputElement>(null), list = useRef<HTMLDivElement>(null);
   // The popup spans the picker and its Test button, leaving room for node names.
@@ -133,7 +133,7 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
               </InputGroup.Addon>}
             </InputGroup>
             <p className="node-results mx-2 mt-2 mb-1 flex-none text-xs text-kumo-subtle" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
-            <div ref={list} className="node-list grid min-h-0 gap-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector}
+            <div ref={list} className="node-list grid min-h-0 gap-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector} administrator={administrator}
               hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
                 if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
                   setOpen(false); picker.current!.focus();
@@ -143,7 +143,7 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
           </div>
         </Popover.Content>
       </Popover>
-      <Button className="test-selected" type="button" hidden={compact || selector.track_all} disabled={!selected || selected.checking}
+      <Button className="test-selected" type="button" hidden={!administrator || compact || selector.track_all} disabled={!selected || selected.checking}
         aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)}>Test selected</Button>
     </div>
     {!compact && selected && (!selector.track_all || selected.checked_at) && <div className="selector-monitoring mt-2.5 flex flex-wrap items-center gap-2">
@@ -153,43 +153,45 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
     {!compact && <div className="selector-actions mt-3 flex flex-wrap items-center gap-2 [&:not(:has(>:not([hidden])))]:hidden">
       <span className="tracking-status text-kumo-subtle" title="All nodes are monitored automatically" hidden={!selector.track_all}>Monitoring all nodes</span>
       <div className="selector-buttons button-row flex flex-wrap gap-2" hidden={selector.track_all && !selector.default_node_id}>
-        <Button className="test-all" type="button" hidden={selector.track_all} disabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
+        <Button className="test-all" type="button" hidden={!administrator || selector.track_all} disabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
           aria-label={`Test all nodes in ${selector.name}`} onClick={() => probe()}>Test All</Button>
-        <Button className="reset" type="button" hidden={!selector.default_node_id} disabled={!selector.overridden}
+        <Button className="reset" type="button" hidden={!administrator || !selector.default_node_id} disabled={!selector.overridden}
           onClick={() => save("DELETE", undefined, `${selector.name}: reset to default.`)}>Use default</Button>
       </div>
     </div>}
   </section>;
 }
 
-function NodeOption({ node, selector, hidden, onProbe, onSelect }: { node: SelectorNode; selector: SelectorState; hidden: boolean; onProbe: () => void; onSelect: () => void }) {
+function NodeOption({ node, selector, administrator, hidden, onProbe, onSelect }: { node: SelectorNode; selector: SelectorState; administrator: boolean; hidden: boolean; onProbe: () => void; onSelect: () => void }) {
   const selected = node.id === selector.node_id;
   return <div className="selector-node grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md [contain-intrinsic-size:auto_64px] [content-visibility:auto] hover:bg-kumo-tint has-[.select-node:focus-visible]:outline-2 has-[.select-node:focus-visible]:-outline-offset-2 has-[.select-node:focus-visible]:outline-kumo-brand has-[.select-node[aria-pressed=true]]:bg-kumo-info-tint" data-node={node.id} hidden={hidden}>
-    <button className="select-node grid min-h-14 min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-0.5 rounded-l-md px-2.5 py-2 text-left font-medium text-kumo-default outline-none disabled:cursor-default" type="button" aria-pressed={selected} onClick={onSelect}
+    <button className="select-node grid min-h-14 min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-0.5 rounded-l-md px-2.5 py-2 text-left font-medium text-kumo-default outline-none disabled:cursor-default" type="button" aria-pressed={selected} disabled={!administrator} onClick={onSelect}
       title={`${node.name}${node.id === selector.default_node_id ? " · Default" : ""}\n${monitoringLabel(node)}${node.checked_at ? ` · ${checkedLabel(node)}` : ""}`}
       aria-label={`${selected ? "Selected" : "Select"} ${node.name}, ${healthLabels[healthState(node)]} ${latencyLabel(node)}`.trim()}>
       <span className="node-name truncate">{node.name}</span>
       <span className="node-check col-start-2 row-span-2 w-4 text-kumo-link" aria-hidden="true">{selected && <CheckIcon size={14} weight="bold" />}</span>
       <span className="node-status col-start-1 flex flex-wrap items-center gap-2"><Health node={node} /></span>
     </button>
-    <Button className="test-node mr-2 min-w-16 self-center" type="button" hidden={selector.track_all} disabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe}>Test</Button>
+    <Button className="test-node mr-2 min-w-16 self-center" type="button" hidden={!administrator || selector.track_all} disabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe}>Test</Button>
   </div>;
 }
 
 export function createSelectors(overviewContainer: HTMLElement, settingContainer: HTMLElement, actions: SelectorActions) {
   const renderOverview = createView(overviewContainer), renderSetting = createView(settingContainer);
   let selectors: SelectorState[] | null = null, message: string | null = null;
+  let administrator = false;
   let view: "overview" | "selector" | null = "overview";
   const controls = { ...actions, layer: byId("popup-layer"), update: (updated: SelectorState) => show((selectors || []).map(selector => selector.name === updated.name ? updated : selector)) };
   function render() {
     const content = selectors ? selectors.length
-      ? selectors.map(selector => <Selector key={selector.name} selector={selector} actions={controls} compact={view === "overview"} />)
+      ? selectors.map(selector => <Selector key={selector.name} selector={selector} actions={controls} administrator={administrator} compact={view === "overview"} />)
       : <Empty size="sm" title="No outbound groups" />
       : message && <StatusBanner tone="error" title={message} />;
     renderOverview(view === "overview" ? content : null);
     renderSetting(view === "selector" ? content : null);
   }
-  function show(next: SelectorState[]) {
+  function show(next: SelectorState[], admin = administrator) {
+    administrator = admin;
     selectors = next;
     message = null;
     render();

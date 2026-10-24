@@ -9,9 +9,138 @@ export interface paths {
         };
         /**
          * Read public CA identity
-         * @description Public same-origin CA metadata on HTTP and HTTPS. This endpoint is not a trust test: existing TLS connections and certificate exceptions can permit access. Use certificate/tests to verify browser CA trust. mitm_test_generation belongs only to interception tests.
+         * @description Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access.
          */
         get: operations["getCertificate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/certificate/ca.cer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download public CA material; 404 when unavailable */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Certificate download */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/pkix-cert": string;
+                    };
+                };
+                /** @description Certificate unavailable */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/certificate/ca.mobileconfig": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download public CA material; 404 when unavailable */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Certificate download */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/x-apple-aspen-config": string;
+                    };
+                };
+                /** @description Certificate unavailable */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/certificate/ca.pem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download public CA material; 404 when unavailable */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Certificate download */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/x-pem-file": string;
+                    };
+                };
+                /** @description Certificate unavailable */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         put?: never;
         post?: never;
         delete?: never;
@@ -31,7 +160,7 @@ export interface paths {
         put?: never;
         /**
          * Start a browser CA trust test
-         * @description Public, same-origin, empty body, requires X-Dae-API: 1. Issues a fresh temporary leaf and key held only in memory. Challenges expire after one minute; certificate validity includes five additional minutes for client clock skew, capped by CA expiry. At most 8 pending challenges per source IP and 64 globally; excess requests return 429. Only new TLS connections from the initiating source IP to the connected router IP use pending challenge leaves; the persistent management leaf, CA and MITM cache stay unchanged. Clients sharing a source IP share this temporary selection. Does not require MITM or a device MAC. GET the returned id over HTTPS on the same socket with credentials omitted and redirects rejected.
+         * @description Create a short-lived trust challenge using user access. Requires a direct TCP connection; reverse proxies are rejected. A new temporary leaf proves trust independently of stored exceptions for the management certificate.
          */
         post: operations["startCertificateTest"];
         delete?: never;
@@ -49,7 +178,7 @@ export interface paths {
         };
         /**
          * Prove browser trust using a fresh TLS handshake
-         * @description HTTPS only. Permits the initiating HTTP setup origin at the same literal IP and port. Requires a temporary leaf issued for this source/router IP pair at or after challenge creation. Connections using the management leaf or an older challenge leaf receive 409 and Connection: close; retry to establish a new handshake. Validate the returned id and ca_fingerprint. Success consumes the challenge. Completion or expiry discards its temporary leaf; after the last pending challenge for the pair, new connections use the persistent management leaf again. 404 means consumed, expired, replaced CA, or different source/router IP. Browser TLS failure does not distinguish an untrusted CA from network or browser-policy failure.
+         * @description Read a one-time trust proof over a fresh TLS connection. The unpredictable challenge ID, actual source/destination addresses and initiating Web origin bind the proof to its authorized creation.
          */
         get: operations["verifyCertificateTest"];
         put?: never;
@@ -162,7 +291,9 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path: {
                     name: components["parameters"]["Name"];
                 };
@@ -211,7 +342,9 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path: {
                     /** @description Nonzero unicast Ethernet MAC. */
                     mac: components["parameters"]["MAC"];
@@ -241,7 +374,9 @@ export interface paths {
         delete: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path: {
                     /** @description Nonzero unicast Ethernet MAC. */
                     mac: components["parameters"]["MAC"];
@@ -333,12 +468,14 @@ export interface paths {
         put?: never;
         /**
          * Explain a new flow for the verified LAN connection
-         * @description Read-only; administrator access is required, including for current-device diagnostics. A configured API key requires Bearer authentication or a valid session; otherwise verified LAN connections are administrators. Also requires X-Dae-API: 1 and verified LAN ingress. Ethernet ingress requires a direct matching neighbor; IP ingress requires no MAC. Identity overrides are rejected. Request limit 64 KiB, evaluation budget five seconds. No DNS queries, connections or scripts are executed.
+         * @description Read-only; administrator access is required, including for current-device diagnostics. Requires an HTTPS administrator key or browser session on a direct verified LAN connection; anonymous LAN access never grants administration. Unix and reverse proxies cannot provide current-device identity. Also requires X-Dae-API: 1 and verified LAN ingress. Ethernet ingress requires a direct matching neighbor; IP ingress requires no MAC. Identity overrides are rejected. Request limit 64 KiB, evaluation budget five seconds. No DNS queries, connections or scripts are executed.
          */
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -395,7 +532,7 @@ export interface paths {
         put?: never;
         /**
          * Create a current-browser transparent MITM challenge (direct LAN only)
-         * @description Empty body. Does not change the device's MITM setting. Verify browser CA trust independently with a fresh-leaf certificate/tests challenge on the API socket. When MITM is enabled, GET mitm_url with credentials omitted and redirects rejected. Virtual IP:443 targets return MITMTestProof locally through interception, without an upstream service, and accept only the initiating page's exact HTTP or HTTPS Origin. A failed virtual-target request cannot distinguish bypass from unreachable traffic.
+         * @description Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access. Current-device requests additionally require verified LAN identity.
          */
         post: operations["startMITMTest"];
         delete?: never;
@@ -452,12 +589,14 @@ export interface paths {
         put?: never;
         /**
          * Preview a current-device membership change
-         * @description Administrator access, verified Ethernet LAN identity and X-Dae-API: 1 required. A configured API key requires Bearer authentication or a valid session; otherwise verified LAN connections are administrators. Does not change membership. Supply flow for before/after routing analysis.
+         * @description Administrator access, verified Ethernet LAN identity and X-Dae-API: 1 required. Requires an HTTPS administrator key or browser session on a direct verified LAN connection; anonymous LAN access never grants administration. Unix and reverse proxies cannot provide current-device identity. Does not change membership. Supply flow for before/after routing analysis.
          */
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path: {
                     name: components["parameters"]["Name"];
                 };
@@ -568,7 +707,11 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                    /** @description Current CA SHA-256 fingerprint. */
+                    "X-Dae-MITM": string;
+                };
                 path: {
                     /** @description Nonzero unicast Ethernet MAC. */
                     mac: components["parameters"]["MAC"];
@@ -601,7 +744,11 @@ export interface paths {
         delete: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                    /** @description Current CA SHA-256 fingerprint. */
+                    "X-Dae-MITM": string;
+                };
                 path: {
                     /** @description Nonzero unicast Ethernet MAC. */
                     mac: components["parameters"]["MAC"];
@@ -643,7 +790,9 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    "X-Dae-API": "1";
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -820,7 +969,7 @@ export interface paths {
         };
         /**
          * List manual selectors (requires administration)
-         * @description On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.
+         * @description Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access.
          */
         get: operations["getSelectors"];
         put?: never;
@@ -841,13 +990,13 @@ export interface paths {
         get?: never;
         /**
          * Override a selector
-         * @description On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.
+         * @description Unix uses local socket permissions. TCP requires administrator credentials over HTTPS. LAN access alone never grants administration.
          */
         put: operations["selectNode"];
         post?: never;
         /**
          * Restore an explicitly configured selector(n) default; 409 when none exists
-         * @description On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.
+         * @description Unix uses local socket permissions. TCP requires administrator credentials over HTTPS. LAN access alone never grants administration.
          */
         delete: operations["resetSelector"];
         options?: never;
@@ -865,13 +1014,13 @@ export interface paths {
         get?: never;
         /**
          * Create a browser session
-         * @description With a configured global.api_key, requires Authorization: Bearer <api_key>, including on Unix, and issues a signed seven-day session cookie without the API key. Missing/incorrect credentials return 401. Without a configured key, requires verified LAN ingress or filesystem-authorized Unix access, returns 204 and clears stale cookies without issuing a session; failed LAN identification returns 403. Empty request body.
+         * @description Exchange a raw user or administrator key over HTTPS for a seven-day HttpOnly Cookie session scoped to the API host and role. The response never exposes the credential to JavaScript. Existing sessions, anonymous LAN access and Unix socket identity cannot issue or renew a session. Key rotation invalidates sessions for that role.
          */
         put: operations["login"];
         post?: never;
         /**
          * Clear the browser session cookie
-         * @description Empty request body. Clears the caller's cookie even if its session is expired. Does not require authentication.
+         * @description Clears the host-only cookie even when expired. Origin and mutation-header checks still apply. Other copies remain valid until expiry or key rotation; logout is not server-side revocation.
          */
         delete: operations["logout"];
         options?: never;
@@ -888,7 +1037,7 @@ export interface paths {
         };
         /**
          * Read the runtime snapshot
-         * @description On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.
+         * @description Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access. User and anonymous LAN responses omit plugins[].details; full plugin reports and script notifications require administration.
          */
         get: operations["getStatus"];
         put?: never;
@@ -899,41 +1048,18 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ca.cer": {
+    "/debug/pprof/": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Download public CA material; 404 when unavailable */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Certificate download */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/pkix-cert": string;
-                    };
-                };
-                /** @description Certificate unavailable */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        /**
+         * Standard Go pprof index
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofIndex"];
         put?: never;
         post?: never;
         delete?: never;
@@ -942,41 +1068,18 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ca.mobileconfig": {
+    "/debug/pprof/allocs": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Download public CA material; 404 when unavailable */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Certificate download */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/x-apple-aspen-config": string;
-                    };
-                };
-                /** @description Certificate unavailable */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
+        /**
+         * Standard Go pprof allocs
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofAllocs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -985,41 +1088,199 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ca.pem": {
+    "/debug/pprof/block": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Download public CA material; 404 when unavailable */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Certificate download */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/x-pem-file": string;
-                    };
-                };
-                /** @description Certificate unavailable */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
+        /**
+         * Standard Go pprof block
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofBlock"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/cmdline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
         };
+        /**
+         * Standard Go pprof cmdline
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofCmdline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/goroutine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof goroutine
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofGoroutine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/heap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof heap
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofHeap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/mutex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof mutex
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofMutex"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof profile
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/symbol": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof symbol
+         * @description Enabled by api.pprof. Accepts plus-separated program counters in the raw query.
+         */
+        get: operations["pprofSymbol"];
+        put?: never;
+        /**
+         * Resolve Go program counters
+         * @description Enabled by api.pprof. Browser sessions require X-Dae-API: 1.
+         */
+        post: operations["pprofSymbolLookup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/threadcreate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof threadcreate
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofThreadcreate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/debug/pprof/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Standard Go pprof trace
+         * @description Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.
+         */
+        get: operations["pprofTrace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Prometheus metrics */
+        get: operations["metrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1555,7 +1816,7 @@ export interface components {
             declared_scopes: number;
             /** Format: int64 */
             destination_rules: number;
-            /** @description Opaque plugin-defined JSON report. Its schema belongs to the plugin; reports exclude configuration credentials. */
+            /** @description Administrator-only plugin-defined JSON report, omitted for user and anonymous LAN access. Its schema belongs to the plugin; reports exclude configuration credentials but can contain private script output. */
             details?: unknown;
             /** @description Enabled flag from the accepted configuration. Disabled instances are not instantiated and do not prepare resources. */
             enabled: boolean;
@@ -1731,10 +1992,10 @@ export interface components {
         SelectorsResponse: {
             admin_enabled: boolean;
             /**
-             * @description The request's administrative access mode: configured API key/session, verified LAN ingress with no configured key, or filesystem-authorized Unix socket. LAN access is revalidated for every request and creates no browser session.
+             * @description User or administrator Bearer credentials, anonymous verified LAN user access, or local Unix administration.
              * @enum {string}
              */
-            auth_mode: "api_key" | "lan" | "unix";
+            auth_mode: "user_key" | "admin_key" | "lan" | "unix";
             selectors: components["schemas"]["SelectorState"][];
         };
         SelectorState: {
@@ -1748,6 +2009,12 @@ export interface components {
             saved_selection?: components["schemas"]["SavedSelectorSelection"];
             /** @description Read-only group track_all configuration. False by default: only the selected node is monitored. Configure the file and reload to change it. */
             track_all: boolean;
+        };
+        Session: {
+            /** Format: date-time */
+            expires_at: string;
+            /** @enum {string} */
+            role: "user" | "admin";
         };
         SessionStatus: {
             accepting: boolean;
@@ -2434,16 +2701,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Access verified; no response body */
-            204: {
+            /** @description Session metadata with the credential in Set-Cookie only. */
+            200: {
                 headers: {
-                    /** @description With a configured key: dae_session; Path=/api; HttpOnly; SameSite=Strict; Max-Age=604800. Without a key: expires any stale dae_session cookie instead. */
+                    /** @description __Host-dae-session; Path=/; Secure; HttpOnly; SameSite=Strict; Expires set to the absolute session deadline. */
                     "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
             };
-            default: components["responses"]["Error"];
         };
     };
     logout: {
@@ -2457,16 +2725,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cookie cleared; no response body */
+            /** @description Session cookie expired with Set-Cookie */
             204: {
                 headers: {
-                    /** @description Expires the dae_session cookie at Path=/api */
-                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            default: components["responses"]["Error"];
         };
     };
     getStatus: {
@@ -2488,6 +2753,314 @@ export interface operations {
                 };
             };
             default: components["responses"]["Error"];
+        };
+    };
+    pprofIndex: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofAllocs: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofBlock: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofCmdline: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofGoroutine: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofHeap: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofMutex: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofProfile: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofSymbol: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Symbol count and resolved names. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    pprofSymbolLookup: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required with a session cookie. */
+                "X-Dae-API"?: "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                /** @example 0x1+0x2 */
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Symbol count and resolved names. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    pprofThreadcreate: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    pprofTrace: {
+        parameters: {
+            query?: {
+                debug?: number;
+                gc?: number;
+                seconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standard Go profiling output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+        };
+    };
+    metrics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing process and plugin metrics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
         };
     };
 }

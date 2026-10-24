@@ -24,6 +24,7 @@ DEBUG_FLAGS ?= n
 NOSTRIP ?= n
 STATIC ?= n
 GRPC_TRACE ?= n
+WEBUI ?= y
 SURGE_RUNTIME ?= quickjs
 PLUGINS_CONFIG ?= plugins.cfg
 ifeq ($(SURGE_RUNTIME),nodejs)
@@ -35,6 +36,12 @@ $(error SURGE_RUNTIME must be quickjs or nodejs)
 endif
 export CGO_ENABLED
 GO_BUILD_TAGS := netgo,osusergo
+ifeq ($(WEBUI),n)
+GO_BUILD_TAGS := $(GO_BUILD_TAGS),no_webui
+WEB_ASSETS :=
+else
+WEB_ASSETS := web-assets
+endif
 ifeq ($(SURGE_RUNTIME),nodejs)
 GO_BUILD_TAGS := $(GO_BUILD_TAGS),surge_nodejs
 endif
@@ -142,7 +149,7 @@ check-go-version:
 
 ## Begin Dae Build
 dae: export GOOS=linux
-dae: check-go-arch check-go-version plugins ebpf web-assets
+dae: check-go-arch check-go-version plugins ebpf $(WEB_ASSETS)
 	@echo $(CFLAGS)
 	go build -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
@@ -231,7 +238,7 @@ $(BUILD_TAGS_FILE): $(BPF_INPUTS) build/ebpf.inputs | check-go-version check-bpf
 		test ! -f "$$output" || printf '%s\n' "$$output"; \
 	done > build/ebpf.outputs
 
-test: plugins ebpf web-assets
+test: plugins ebpf $(WEB_ASSETS)
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) scripts/routing-map-memory.go scripts/routing-map-memory_test.go
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 	$(MAKE) check-boundaries
@@ -245,6 +252,12 @@ config-parser-check: check-go-version
 
 # Package boundaries remain independent of the repository's module boundary.
 check-boundaries: check-go-version
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./control) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\/(internal\/(apiserver|daemon|webui)|(api\/)?client)(\/|$$)/ { print "Forbidden control dependency: " $$0; bad=1 } END { exit bad }'
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./internal/apiserver) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\/(control|(api\/)?client|plugins|internal\/(daemon|webui))(\/|$$)/ { print "Forbidden API server dependency: " $$0; bad=1 } END { exit bad }'
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./pkg/outbound/...) && \
 		printf '%s\n' "$$dependencies" | \
 		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/pkg\/(outbound|proxylink|membuffer)(\/|$$)/ { print "Forbidden outbound dependency: " $$0; bad=1 } END { exit bad }'
@@ -303,6 +316,9 @@ client-test: check-go-version
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/...) && \
 		printf '%s\n' "$$dependencies" | \
 		awk '/^github.com\/daeuniverse\/dae\/component\// { print "Forbidden core client dependency: " $$0; bad=1 } END { exit bad }'
+	@dependencies=$$(CGO_ENABLED=0 go list -test -deps ./api/... ./client/...) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\/(component|control|config|internal\/apiserver)(\/|$$)/ { print "Forbidden core client test dependency: " $$0; bad=1 } END { exit bad }'
 	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./plugins/surge/api ./plugins/surge/client ./cmd/dae-client
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./plugins/surge/api ./plugins/surge/client ./cmd/dae-client) && \
 		printf '%s\n' "$$dependencies" | \

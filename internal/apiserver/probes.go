@@ -9,7 +9,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveProbe(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveProbe(w http.ResponseWriter, r *http.Request, who caller) {
 	var request api.ProbeRequest
 	if !apiBody(w, r, &request) {
 		return
@@ -21,11 +21,11 @@ func (s *handler) serveProbe(w http.ResponseWriter, r *http.Request, who caller)
 	response, err := s.options.Probes.Probe(request, r.RemoteAddr)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrProbeOutbound):
+		case errors.Is(err, api.ErrProbeOutbound):
 			apiError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, ErrProbeNode):
+		case errors.Is(err, api.ErrProbeNode):
 			apiError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, ErrProbeUnsupported):
+		case errors.Is(err, api.ErrProbeUnsupported):
 			apiError(w, http.StatusConflict, err.Error())
 		default:
 			apiError(w, http.StatusInternalServerError, "could not request connectivity probe")

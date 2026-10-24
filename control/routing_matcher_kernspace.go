@@ -76,9 +76,16 @@ func encodeRoutingProfiles(profiles []routingProfile) (ids []uint32, values []bp
 
 func (m *RoutingMatcher) BuildKernspace() error {
 	// Each configuration uploads once into fresh private maps. Mutable client
-	// sets and interface bindings update their own slots after preparation.
+	// sets, API addresses and interface bindings update their own slots after preparation.
 	if err := m.uploadLPMTries(); err != nil {
 		return err
+	}
+	slot := ^uint32(0)
+	if m.apiSetSlot != nil {
+		slot = *m.apiSetSlot
+	}
+	if err := m.bpf.ApiLpmSlot.Set(slot); err != nil {
+		return fmt.Errorf("publish API address slot: %w", err)
 	}
 	if err := m.uploadRoutingPool(); err != nil {
 		return err

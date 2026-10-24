@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
@@ -105,25 +106,14 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	// Keep sampling through reloads and until all traffic producers have drained.
 	defer stopSampling()
-	var inheritedObservability map[uint16]*os.File
 	var inheritedAPI *apiserver.Server
 	if incoming != nil {
-		inheritedAPI, err = incoming.takeManagement(conf.Global.APIPort)
+		inheritedAPI, err = incoming.takeManagement(conf.API, conf.Global.LanInterface)
 		if err != nil {
 			return err
 		}
 		defer inheritedAPI.Close()
-		inheritedObservability, err = incoming.takeObservability()
-		if err != nil {
-			return err
-		}
 	}
-	observability, err := prepareInheritedObservability(conf.Global.PprofPort, conf.Global.MetricsPort, inheritedObservability, incoming != nil)
-	if err != nil {
-		return err
-	}
-	observability.Commit()
-	defer reconfigureObservabilityServers(0, 0)
 	settingsPath := filepath.Join(common.CacheDirectory(), "runtime-state.json")
 	runtimeSettings, err := settings.Open(settingsPath)
 	if err != nil {
@@ -238,7 +228,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	datapath.RefreshTCPIdleTimeouts()
 	refresh.Commit()
 	app.setCertificates(certificates)
-	local.SetOperations(app.operations)
+	local.SetLocalServices(apiserver.LocalServices{Operations: app.operations, Metrics: metricsHandler, Pprof: conf.API.Pprof})
 	stopOperations := context.AfterFunc(ctx, app.operations.stop)
 	defer stopOperations()
 	defer func() {
@@ -263,7 +253,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		log.WithField("cutover", time.Since(incoming.manifest.CutoverAt)).Info("Replacement datapath ready")
 		app.localAPI.Activate()
 		app.managementAPI.Activate()
-		observability.Activate()
+		candidate.apiUpdate.Commit()
 		incoming.close()
 	}
 	pruneSubscriptions(conf, filepath.Dir(options.ConfigFile))
@@ -272,7 +262,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	signal.Ignore(syscall.SIGHUP)
 	resolver.SetRoute(plane.DNSResolverDialer())
 	if management != nil {
-		log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
+		log.Infof("API listening at %s", conf.API.Listen)
 	}
 	if err := app.finishStartup(ctx); err != nil {
 		return err
@@ -284,6 +274,9 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	refreshTimer := time.NewTimer(time.Hour)
 	defer refreshTimer.Stop()
+	apiRoutingTimer := time.NewTimer(time.Hour)
+	apiRoutingTimer.Stop()
+	defer apiRoutingTimer.Stop()
 	var retryAfter time.Time
 	runOperation := func(id string) error {
 		err := app.executeOperation(ctx, id)
@@ -316,6 +309,13 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			return nil
 		case err := <-ingressErrors:
 			return err
+		case <-app.plane.APIAddressChanges():
+			apiRoutingTimer.Reset(0)
+		case <-apiRoutingTimer.C:
+			if err := app.plane.RefreshAPIRouting(ctx); err != nil {
+				log.WithError(resource.RedactError(err)).Warn("Could not refresh API routing after host address changes; retrying")
+				apiRoutingTimer.Reset(time.Second)
+			}
 		case <-refreshC:
 			if _, err := app.operations.submit(api.OperationRequest{Kind: "refresh"}, "automatic"); err != nil {
 				retryAfter = time.Now().Add(time.Second)
@@ -369,8 +369,6 @@ func exit(datapath *control.Runtime, servers ...*apiserver.Server) error {
 	if offlineErr := datapath.GoOffline(); offlineErr != nil {
 		err = fmt.Errorf("mark kernel datapath offline: %w", offlineErr)
 	}
-	startPprofServer(0)
-	startMetricsServer(0)
 	for _, server := range servers {
 		server.Stop()
 	}

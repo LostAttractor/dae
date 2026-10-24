@@ -20,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/config"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -159,21 +160,21 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 			t.Fatalf("API packet left kernel direct: verdict %d", status)
 		}
 	}
-	handler := plane.APIHandler("identity-test", nil, nil)
-	checkKeylessAdmin := func(source, destination netip.AddrPort, allowed bool) {
+	handler := plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "identity-test", nil, nil, nil)
+	checkKeylessRead := func(source, destination netip.AddrPort, allowed bool) {
 		t.Helper()
-		r := httptest.NewRequestWithContext(t.Context(), "GET", "http://192.0.2.1:9080/api/selectors", nil)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "https://192.0.2.1:9080/api/selectors", nil)
 		r.Host, r.RemoteAddr = destination.String(), source.String()
 		r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, net.TCPAddrFromAddrPort(destination)))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		if allowed {
 			var data api.SelectorsResponse
-			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &data) != nil || !data.AdminEnabled || data.AuthMode != "lan" {
-				t.Fatalf("keyless LAN administration: %d %s", w.Code, w.Body.String())
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &data) != nil || data.AdminEnabled || data.AuthMode != "lan" {
+				t.Fatalf("keyless LAN read: %d %s", w.Code, w.Body.String())
 			}
 		} else if w.Code != 403 {
-			t.Fatalf("keyless non-LAN administration: %d %s", w.Code, w.Body.String())
+			t.Fatalf("keyless non-LAN read: %d %s", w.Code, w.Body.String())
 		}
 	}
 	for _, test := range []struct {
@@ -202,7 +203,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		must(plane.publishAPIObservation())
 		source, destination := netip.MustParseAddrPort(test.source), netip.MustParseAddrPort(test.destination)
 		observe(source, destination, test.ingress, test.hardware, test.lanHook)
-		got, err := plane.resolveAPIClient(source, destination)
+		got, err := plane.ResolveAPIClient(source, destination)
 		t.Logf("%s: MAC = %v, error = %v", test.name, got, err)
 		if (err == nil) != test.want || test.want && (got.MAC != test.hardware || got.IfIndex != uint32(test.ingress.Attrs().Index)) {
 			t.Errorf("%s: want accepted = %v", test.name, test.want)
@@ -210,14 +211,14 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		if test.want && (got.LinkType == "ip") != (test.ingress == tun) {
 			t.Errorf("%s: wrong link type: %s", test.name, got.LinkType)
 		}
-		checkKeylessAdmin(source, destination, test.want)
+		checkKeylessRead(source, destination, test.want)
 	}
 	{ // Disabled APIs must not observe L3 traffic.
 		source, destination := netip.MustParseAddrPort("100.64.0.23:40001"), netip.MustParseAddrPort("100.64.0.1:9080")
 		plane.apiPort = 0
 		must(plane.publishAPIObservation())
 		observe(source, destination, tun, [6]byte{}, true)
-		checkKeylessAdmin(source, destination, false)
+		checkKeylessRead(source, destination, false)
 		plane.apiPort = 9080
 		must(plane.publishAPIObservation())
 	}
@@ -225,14 +226,14 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		source, destination := netip.MustParseAddrPort("100.64.0.23:40001"), netip.MustParseAddrPort("100.64.0.1:9080")
 		observe(source, destination, tun, [6]byte{}, true)
 		plane.core.hostTCXLinks = plane.core.hostTCXLinks[:len(plane.core.hostTCXLinks)-1]
-		checkKeylessAdmin(source, destination, false)
+		checkKeylessRead(source, destination, false)
 	}
 	source, destination := netip.MustParseAddrPort("192.0.2.23:40001"), netip.MustParseAddrPort("192.0.2.1:9080")
 	{ // A tuple and observed MAC identify the peer despite another link's IP.
 		must(plane.publishAPIObservation())
 		neighbor(wan, "192.0.2.23", other)
 		observe(source, destination, lan, mac, true)
-		if _, err := plane.resolveAPIClient(source, destination); err != nil {
+		if _, err := plane.ResolveAPIClient(source, destination); err != nil {
 			t.Errorf("unrelated neighbor on another interface blocked LAN peer: %v", err)
 		}
 		must(netlink.NeighDel(&netlink.Neigh{LinkIndex: wan.Attrs().Index, IP: net.ParseIP("192.0.2.23")}))
@@ -240,11 +241,11 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	{ // A current matching packet replaces historical, mismatching evidence.
 		must(plane.publishAPIObservation())
 		observe(source, destination, lan, other, true)
-		if _, err := plane.resolveAPIClient(source, destination); err == nil {
+		if _, err := plane.ResolveAPIClient(source, destination); err == nil {
 			t.Error("accepted a packet whose MAC differs from the current neighbor")
 		}
 		observe(source, destination, lan, mac, true)
-		if _, err := plane.resolveAPIClient(source, destination); err != nil {
+		if _, err := plane.ResolveAPIClient(source, destination); err != nil {
 			t.Errorf("historical MAC blocked a current matching observation: %v", err)
 		}
 	}
@@ -256,23 +257,23 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		must(plane.core.bpf.ApiClientMap.Lookup(&key, &client))
 		client.ObservedAt -= uint64(time.Minute)
 		must(plane.core.bpf.ApiClientMap.Update(&key, &client, ebpf.UpdateAny))
-		if _, err := plane.resolveAPIClient(source, destination); err == nil {
+		if _, err := plane.ResolveAPIClient(source, destination); err == nil {
 			t.Fatal("accepted expired LAN evidence")
 		}
-		checkKeylessAdmin(source, destination, false)
+		checkKeylessRead(source, destination, false)
 		observe(source, destination, lan, mac, true)
-		_, err := plane.resolveAPIClient(source, destination)
+		_, err := plane.ResolveAPIClient(source, destination)
 		must(err)
-		checkKeylessAdmin(source, destination, true)
+		checkKeylessRead(source, destination, true)
 	}
 	{ // Reload retires the previous LAN authorization.
 		must(plane.publishAPIObservation())
 		observe(source, destination, lan, mac, true)
 		must(plane.publishAPIObservation())
-		if _, err := plane.resolveAPIClient(source, destination); err == nil {
+		if _, err := plane.ResolveAPIClient(source, destination); err == nil {
 			t.Fatal("accepted evidence retained across reload")
 		}
-		checkKeylessAdmin(source, destination, false)
+		checkKeylessRead(source, destination, false)
 	}
 }
 

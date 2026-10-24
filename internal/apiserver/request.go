@@ -10,9 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strings"
 
+	"github.com/daeuniverse/dae/api"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -48,7 +48,19 @@ func sameOrigin(r *http.Request) bool {
 	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 		return false
 	}
-	return originMatches(r, requestScheme(r))
+	origins := r.Header.Values("Origin")
+	if len(origins) == 0 {
+		return true
+	}
+	if len(origins) != 1 {
+		return false
+	}
+	origin, err := api.NormalizeOrigin(origins[0])
+	if err != nil {
+		return false
+	}
+	local, err := api.NormalizeOrigin(requestScheme(r) + "://" + r.Host)
+	return err == nil && origin == local
 }
 
 func requestScheme(r *http.Request) string {
@@ -59,54 +71,12 @@ func requestScheme(r *http.Request) string {
 }
 
 func requestOrigin(r *http.Request) string {
-	host := r.Host
-	if r.TLS != nil {
-		host = strings.TrimSuffix(host, ":443")
-	} else {
-		host = strings.TrimSuffix(host, ":80")
+	if validOrigin(r) {
+		origin, _ := api.NormalizeOrigin(r.Header.Get("Origin"))
+		return origin
 	}
-	return requestScheme(r) + "://" + host
-}
-
-func originMatches(r *http.Request, scheme string) bool {
-	origins := r.Header.Values("Origin")
-	if len(origins) == 0 {
-		return true // Non-browser clients can use the API without Origin.
-	}
-	if len(origins) != 1 {
-		return false
-	}
-	origin, err := url.Parse(origins[0])
-	if err != nil {
-		return false
-	}
-	expected := url.URL{Host: r.Host}
-	port, expectedPort := origin.Port(), expected.Port()
-	if port == "" {
-		port = "80"
-		if origin.Scheme == "https" {
-			port = "443"
-		}
-	}
-	if expectedPort == "" {
-		expectedPort = "80"
-		if r.TLS != nil {
-			expectedPort = "443"
-		}
-	}
-	return origin.Scheme == scheme && strings.EqualFold(origin.Hostname(), expected.Hostname()) && port == expectedPort &&
-		origin.User == nil && origin.Path == "" && origin.RawQuery == "" && origin.Fragment == ""
-}
-
-// The HTTP setup page may read its certificate proof over HTTPS on the same
-// socket. All other API requests retain the normal same-origin policy.
-func certificateBootstrap(w http.ResponseWriter, r *http.Request) bool {
-	if r.TLS == nil || r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/api/certificate/tests/") || r.Header.Get("Origin") == "" || !originMatches(r, "http") {
-		return false
-	}
-	w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
-	w.Header().Add("Vary", "Origin")
-	return true
+	origin, _ := api.NormalizeOrigin(requestScheme(r) + "://" + r.Host)
+	return origin
 }
 
 func apiError(w http.ResponseWriter, status int, message string) {
@@ -145,21 +115,21 @@ func apiBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) 
 	return true
 }
 
-func apiClient(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, ClientIdentity, bool) {
+func apiClient(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, api.ClientIdentity, bool) {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		apiError(w, 400, "cannot read the connection source address")
-		return netip.Addr{}, ClientIdentity{}, false
+		return netip.Addr{}, api.ClientIdentity{}, false
 	}
 	ip := peer.Addr().Unmap()
 	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
 	if !ok {
 		apiError(w, 400, "cannot read the connection destination address")
-		return ip, ClientIdentity{}, false
+		return ip, api.ClientIdentity{}, false
 	}
 	if resolve == nil {
 		apiError(w, 403, "LAN ingress verification unavailable")
-		return ip, ClientIdentity{}, false
+		return ip, api.ClientIdentity{}, false
 	}
 	client, err := resolve(netip.AddrPortFrom(ip, peer.Port()), local.AddrPort())
 	if err != nil {

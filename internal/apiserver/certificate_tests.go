@@ -142,7 +142,12 @@ func (i *apiTLSIdentity) expireTests(now time.Time) {
 	}
 }
 
-func (s *handler) serveCertificateTest(w http.ResponseWriter, r *http.Request, _ caller) {
+func (s *Handler) serveCertificateTest(w http.ResponseWriter, r *http.Request, _ caller) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		apiError(w, http.StatusMethodNotAllowed, "certificate tests do not accept "+r.Method)
+		return
+	}
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -190,9 +195,19 @@ func (s *handler) serveCertificateTest(w http.ResponseWriter, r *http.Request, _
 		apiError(w, http.StatusNotFound, "certificate test expired or belongs to another connection address")
 		return
 	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
+	var origin string
+	switch origins := r.Header.Values("Origin"); len(origins) {
+	case 0:
 		origin = requestOrigin(r)
+	case 1:
+		origin, err = api.NormalizeOrigin(origins[0])
+		if err != nil {
+			apiError(w, http.StatusForbidden, "certificate proof requires a valid initiating origin")
+			return
+		}
+	default:
+		apiError(w, http.StatusForbidden, "certificate proof requires a single initiating origin")
+		return
 	}
 	if r.TLS == nil || origin != test.origin {
 		apiError(w, http.StatusForbidden, "certificate proof requires HTTPS from the initiating page")

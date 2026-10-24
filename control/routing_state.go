@@ -23,14 +23,20 @@ type routingState struct {
 	rulesMu           sync.RWMutex
 	simulatedLpmTries [][]netip.Prefix
 	clientSetSlots    map[string]int
+	apiSetSlot        *uint32
 	kernelLpmLen      int
 	routing           RoutingProgram
 }
 
 // Reuse only immutable predicates at matching slots. Client membership can
 // change while a successor is being prepared, and belongs to each generation.
-func (s *routingState) reuseStaticTries(dst []*trie.Trie, prefixes [][]netip.Prefix, clients map[string]int) {
-	dynamic := make(map[int]bool, len(clients)+len(s.clientSetSlots))
+func (s *routingState) reuseStaticTries(dst []*trie.Trie, prefixes [][]netip.Prefix, clients map[string]int, apiSlot *uint32) {
+	dynamic := make(map[int]bool, len(clients)+len(s.clientSetSlots)+2)
+	for _, slot := range []*uint32{apiSlot, s.apiSetSlot} {
+		if slot != nil {
+			dynamic[int(*slot)] = true
+		}
+	}
 	for _, slot := range clients {
 		dynamic[slot] = true
 	}
@@ -63,7 +69,14 @@ func (s *routingState) SetClientMembers(name string, members [][6]byte, kernelRe
 	if !exists {
 		return nil
 	}
-	prefixes := sourceMacPrefixes(members)
+	if err := s.replacePrefixes(slot, sourceMacPrefixes(members), kernelReady); err != nil {
+		return fmt.Errorf("update client set %q: %w", name, err)
+	}
+	return nil
+}
+
+// Both routing and API exemptions read this slot; one map swap publishes the set.
+func (s *routingState) replacePrefixes(slot int, prefixes []netip.Prefix, kernelReady bool) error {
 	s.rulesMu.RLock()
 	unchanged := slices.Equal(s.simulatedLpmTries[slot], prefixes)
 	s.rulesMu.RUnlock()
@@ -72,13 +85,13 @@ func (s *routingState) SetClientMembers(name string, members [][6]byte, kernelRe
 	}
 	next, err := trie.NewTrieFromPrefixes(prefixes)
 	if err != nil {
-		return fmt.Errorf("build client set %q: %w", name, err)
+		return fmt.Errorf("build address set: %w", err)
 	}
 	var kernelMap *ebpf.Map
 	if kernelReady && slot < s.kernelLpmLen {
 		kernelMap, err = newLpmMap(prefixes)
 		if err != nil {
-			return fmt.Errorf("build kernel client set %q: %w", name, err)
+			return fmt.Errorf("build kernel address set: %w", err)
 		}
 		defer kernelMap.Close()
 	}
@@ -86,7 +99,7 @@ func (s *routingState) SetClientMembers(name string, members [][6]byte, kernelRe
 	defer s.rulesMu.Unlock()
 	if kernelMap != nil {
 		if err := s.bpf.LpmArrayMap.Update(uint32(slot), kernelMap, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update kernel client set %q: %w", name, err)
+			return fmt.Errorf("publish kernel address set: %w", err)
 		}
 	}
 	s.simulatedLpmTries[slot] = prefixes

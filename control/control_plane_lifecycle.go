@@ -120,9 +120,6 @@ func (c *ControlPlane) commitKernelState() error {
 	if err := c.publishAPIObservation(); err != nil {
 		return err
 	}
-	if err := c.updateRouteExemptions(); err != nil {
-		return err
-	}
 	if err := c.publishHTTPClients(); err != nil {
 		return err
 	}

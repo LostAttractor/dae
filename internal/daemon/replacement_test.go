@@ -170,7 +170,6 @@ func TestReadReplacementRejectsInvalidState(t *testing.T) {
 		{name: "topology", message: "operation or topology", change: func(m *replacementManifest) { m.PeerIndex = m.HostIndex }},
 		{name: "missing-lock", message: "missing inherited lock", change: func(*replacementManifest) {}},
 		{name: "removed-predecessor", message: "invalid inherited resource", change: func(m *replacementManifest) { m.Files["predecessor"] = 3 }},
-		{name: "invalid-observe-port", message: "invalid inherited resource", change: func(m *replacementManifest) { m.Files["observe/0"] = 3 }},
 		{name: "standard-resource-fd", message: "invalid lock descriptor", change: func(m *replacementManifest) { m.Files["lock"] = 2 }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -221,13 +220,11 @@ func TestReplacementStateTakeTransfersAndCleansOwnership(t *testing.T) {
 		t.Cleanup(func() { _ = f.Close() })
 		return f
 	}
-	obsGood, obsBad, link0, lockFile := newTemp(), newTemp(), newTemp(), newTemp()
+	link0, lockFile := newTemp(), newTemp()
 	state := &replacementState{
 		files: map[string]*os.File{
-			"lock":          lockFile,
-			"link/0":        link0,
-			"observe/9090":  obsGood,
-			"observe/99999": obsBad,
+			"lock":   lockFile,
+			"link/0": link0,
 		},
 	}
 	if got := state.take("lock"); got != lockFile {
@@ -241,14 +238,6 @@ func TestReplacementStateTakeTransfersAndCleansOwnership(t *testing.T) {
 	}
 	if _, err := link0.Stat(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("takeLinks failure leaked link/0 FD: %v", err)
-	}
-	if _, err := state.takeObservability(); err == nil {
-		t.Fatal("takeObservability with out-of-range port succeeded")
-	}
-	for name, file := range map[string]*os.File{"obsGood": obsGood, "obsBad": obsBad} {
-		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
-			t.Fatalf("%s leaked on takeObservability error: %v", name, err)
-		}
 	}
 	if len(state.files) != 0 {
 		t.Fatalf("remaining unconsumed files = %v, want empty", state.files)

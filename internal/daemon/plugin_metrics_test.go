@@ -4,9 +4,7 @@ package daemon
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -20,8 +18,6 @@ type endpointMetricsPlugin struct{ counter prometheus.Counter }
 func (*endpointMetricsPlugin) Plan() plugin.Plan { return plugin.Plan{} }
 
 func TestMetricsEndpointPublishesPluginLifecycle(t *testing.T) {
-	startMetricsServer(0)
-	t.Cleanup(func() { startMetricsServer(0) })
 	t.Setenv("DAE_LOCATION_CACHE", t.TempDir())
 	var current *endpointMetricsPlugin
 	definitions := map[string]plugin.Definition{"fixture": {Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
@@ -45,23 +41,13 @@ func TestMetricsEndpointPublishesPluginLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	current.counter.Add(5) // Collection is independent of listener state.
-	port := freeLocalPort(t)
-	startMetricsServer(port)
-	_, _, server, _ := observabilityState()
-	if server == nil {
-		t.Fatal("metrics listener did not start")
-	}
 	scrape := func() string {
-		response, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", port))
-		if err != nil {
-			t.Fatal(err)
+		w := httptest.NewRecorder()
+		metricsHandler.ServeHTTP(w, httptest.NewRequest("GET", "http://localhost/metrics", nil))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
 		}
-		defer response.Body.Close()
-		body, err := io.ReadAll(response.Body)
-		if err != nil || response.StatusCode != http.StatusOK {
-			t.Fatalf("scrape: %s %v", response.Status, err)
-		}
-		return string(body)
+		return w.Body.String()
 	}
 	metric := `dae_plugin_fixture_events_total{plugin_instance="local",plugin_type="fixture"} `
 	assert := func(want string) {
@@ -81,13 +67,7 @@ func TestMetricsEndpointPublishesPluginLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert("0")
-	_, _, afterReload, _ := observabilityState()
-	if afterReload != server {
-		t.Fatal("plugin reload restarted the listener")
-	}
-	startMetricsServer(0)
 	current.counter.Add(3)
-	startMetricsServer(port)
 	assert("3")
 	if err := second.Close(); err != nil {
 		t.Fatal(err)

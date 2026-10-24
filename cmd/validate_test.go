@@ -21,10 +21,12 @@ func TestValidateUsesStartupChecks(t *testing.T) {
 	}{
 		{name: "unknown plugin", sections: `plugins { absent {} }`, wantError: "not compiled"},
 		{name: "plugin settings", sections: `plugins { fixture { unknown: private-value } }`, wantError: "unknown setting"},
-		{name: "invalid target", global: `api_port: 2023 api_mitm_test_ipv4: invalid`, sections: `mitm { enabled: true }`, wantError: "api_mitm_test_ipv4"},
+		{name: "invalid target", sections: `api { listen: '127.0.0.1:2023' mitm_test_ipv4: invalid } mitm { enabled: true }`, wantError: "api.mitm_test_ipv4"},
 		{name: "unpaired certificate", sections: `certificate { ca_cert: absent.pem }`, wantError: "configured together"},
 		{name: "runtime preflight", sections: `plugins { fixture {} }`, preflightError: true, wantError: "runtime unavailable"},
-		{name: "valid", global: `api_port: 2023`, sections: `mitm { enabled: true } plugins { fixture {} }`},
+		{name: "valid", sections: `api { listen: '127.0.0.1:2023' } mitm { enabled: true } plugins { fixture {} }`},
+		{name: "bare API port without LAN", sections: `api { listen: 2023 }`, wantError: "global.lan_interface"},
+		{name: "unmatched LAN pattern", global: `lan_interface: dae-test-nonexistent-*`, sections: `api { listen: 2023 }`},
 		{name: "disabled plugin", sections: `plugins { absent { enabled: false } }`},
 	} {
 		t.Run(test.name, func(t *testing.T) {

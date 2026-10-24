@@ -2,7 +2,7 @@ import type { DeviceState, DeviceActions, MITMState } from "./types.ts";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Select } from "@cloudflare/kumo/components/select";
 import { useEffect, useState } from "react";
-import { type CertificateTrust, certificateTestable, onCertificateTrust } from "./certificate.ts";
+import { type CertificateTrust, onCertificateTrust } from "./certificate.ts";
 import { InlineNotice, StatusBanner } from "./notice.tsx";
 import { createView } from "./react-view.ts";
 
@@ -26,6 +26,7 @@ function TrustNotice({ enabled, trust, retest }: { enabled: boolean; trust: Cert
   if (enabled && trust === "unverified") return <StatusBanner tone="error" title="This browser could not verify the CA certificate"
     description="If it is not installed and trusted, this device's HTTPS connections fail while HTTPS modules are on. Install it under Certificate & browser verification and test again."
     action={<Button type="button" className="retest-certificate" onClick={retest}>Test again</Button>} />;
+  if (trust === "unavailable") return <StatusBanner tone="warning" title="Browser verification unavailable" description="Use an authorized direct connection to dae to verify this browser’s CA trust." />;
   if (trust === "trusted") return <InlineNotice tone="success" className="trust-notice mt-1.5 text-sm">This browser trusts the CA certificate.</InlineNotice>;
   if (enabled && trust === "testing") return <p className="trust-notice mt-1.5 text-sm text-kumo-subtle" role="status">Checking that this browser trusts the CA certificate…</p>;
   return <StatusBanner tone="warning" title="Install and trust the CA certificate first"
@@ -42,7 +43,7 @@ function MITM({ mitm, trust, actions }: { mitm: MITMState; trust: CertificateTru
     if (saved) document.querySelector<HTMLElement>("#mitm-choice")?.focus();
   }
   return <>
-    <TrustNotice enabled={mitm.enabled} trust={certificateTestable ? trust : "unknown"} retest={actions.retest} />
+    <TrustNotice enabled={mitm.enabled} trust={trust} retest={actions.retest} />
     <div className="mt-3"><MITMChoiceRow id="mitm-choice" value={mitmChoice(mitm.override)} defaultLabel={`Router default (${routerDefault})`} onChange={choose} /></div>
   </>;
 }

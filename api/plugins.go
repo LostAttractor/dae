@@ -12,7 +12,8 @@ type PluginStatus struct {
 }
 
 // PluginInstanceStatus excludes plugin configuration and its credentials.
-// Reports may include explicit script output, such as notifications.
+// Reports may include explicit script output, such as notifications; Details
+// is omitted from HTTP responses without administrator privileges.
 type PluginInstanceStatus struct {
 	ID               string          `json:"id"`
 	Type             string          `json:"type"`

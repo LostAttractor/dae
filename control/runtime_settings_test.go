@@ -13,11 +13,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
 func selectorJSON(t *testing.T, path *selector.Path) string {
@@ -201,8 +201,8 @@ func TestRuntimeSettingsReloadSerializesAPIWrites(t *testing.T) {
 	for i := range 8 {
 		workers.Go(func() {
 			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
-			handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
-				return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
+			handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+				return api.ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
 			}, nil, nil)
 			for _, method := range []string{"PUT", "DELETE", "PUT", "PUT"} {
 				if w := apiTestRequest(handler, method, "/api/device/sets/gaming", "", ""); w.Code != 200 {

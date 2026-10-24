@@ -1,10 +1,28 @@
 // HTTP boundary shared by browser clients. All paths are relative to the API origin.
 import type { MITMTestProof, CertificateTest } from "./types.ts";
 
+const origin = __DAE_API_URL__ || location.origin;
+export const apiOrigin = () => origin;
+export const loginAvailable = location.protocol === "https:" && new URL(origin).protocol === "https:";
+const credentials = loginAvailable ? "include" : "omit";
+function apiURL(path: string) {
+  const url = new URL(path, origin);
+  if (url.origin !== origin || !url.pathname.startsWith("/api/") || url.username || url.password || url.hash) throw new Error("Invalid API address");
+  return url;
+}
+export async function downloadCertificate(format: string) {
+  const response = await fetch(apiURL(`/api/certificate/ca.${encodeURIComponent(format)}`), { credentials, redirect: "error" });
+  if (!response.ok) throw new Error(`Certificate download failed (${response.status})`);
+  const blob = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = blob; link.download = `dae-ca.${format}`; link.click();
+  setTimeout(() => URL.revokeObjectURL(blob), 60000);
+}
+
 export type HTTPMethod = "GET" | "POST" | "PUT" | "DELETE";
 
 export class HTTPError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(message: string, public readonly status: number, public readonly invalidSession = false) {
     super(message);
   }
 }
@@ -13,17 +31,19 @@ export const errorMessage = (error: unknown): string => error instanceof Error ?
 export const errorStatus = (error: unknown): number | undefined => error instanceof HTTPError ? error.status : undefined;
 
 export async function request<T = unknown>(path: string, method: HTTPMethod = "GET", body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+  if (Object.keys(headers).some(name => name.toLowerCase() === "authorization") && !loginAvailable) throw new Error("API keys require an HTTPS page and API address. Install the CA first, then use HTTPS.");
   if (method === "PUT" || method === "DELETE" || method === "POST") headers["X-Dae-API"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, {
-    method, headers, cache: "no-store", credentials: "same-origin",
+  const response = await fetch(apiURL(path), {
+    method, headers, cache: "no-store", credentials, redirect: "error",
     signal: AbortSignal.timeout(15000),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
     const detail = response.headers.get("Content-Type")?.startsWith("application/json")
       ? (await response.json()).error : await response.text();
-    throw new HTTPError(detail || `Request failed (${response.status}).`, response.status);
+    const invalidSession = response.status === 401 && response.headers.get("X-Dae-Session-Invalid") === "1";
+    throw new HTTPError(detail || `Request failed (${response.status}).`, response.status, invalidSession);
   }
   return response.status === 204 ? undefined as T : response.json();
 }
@@ -32,8 +52,8 @@ export async function request<T = unknown>(path: string, method: HTTPMethod = "G
 // replacing the persistent management leaf. The proof consumes the challenge.
 export async function certificateRequest(): Promise<CertificateTest> {
   const test = await request<CertificateTest>("/api/certificate/tests", "POST");
-  const url = new URL(`/api/certificate/tests/${encodeURIComponent(test.id)}`, location.href);
-  const port = location.port || (location.protocol === "https:" ? "443" : "80");
+  const url = new URL(`/api/certificate/tests/${encodeURIComponent(test.id)}`, origin);
+  const port = new URL(origin).port || (new URL(origin).protocol === "https:" ? "443" : "80");
   url.protocol = "https:";
   url.port = port;
   const signal = AbortSignal.timeout(10000);

@@ -40,7 +40,7 @@ func TestAccessPolicyMustBeExplicit(t *testing.T) {
 					t.Fatal("route accepted an unspecified or ambiguous access policy")
 				}
 			}()
-			new(handler).route(http.NewServeMux(), "GET /test", test.policy, func(http.ResponseWriter, *http.Request, caller) {})
+			new(Handler).route(http.NewServeMux(), "GET /test", test.policy, func(http.ResponseWriter, *http.Request, caller) {})
 		})
 	}
 }
@@ -82,15 +82,20 @@ func TestAccessGatePrecedesBodyAndResourceAccess(t *testing.T) {
 				}
 				t.Run(route+"/"+credentials, func(t *testing.T) {
 					method, path, _ := strings.Cut(route, " ")
-					r := httptest.NewRequestWithContext(t.Context(), method, "http://192.0.2.1:9080"+path, nil)
+					r := httptest.NewRequestWithContext(t.Context(), method, "https://192.0.2.1:9080"+path, nil)
 					r.RemoteAddr = "192.0.2.10:45000"
 					r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
 					r.Header.Set("X-Dae-API", "1")
-					r.Header.Set("Authorization", credentials)
+					if credentials != "" {
+						r.Header.Set("Authorization", credentials)
+					}
 					r.Body = unreadBody{t}
 					w := httptest.NewRecorder()
-					NewHandler(Options{APIKey: "secret", ResolveClient: rejectLANClient}).ServeHTTP(w, r)
+					NewHandler(Options{AdminKey: "secret", AllowLANAnonymous: true, ResolveClient: rejectLANClient}).ServeHTTP(w, r)
 					want := group.status
+					if credentials == "" && (path == "/api/status" || path == "/api/selectors") {
+						want = 403
+					}
 					if credentials == "Bearer wrong" {
 						want = 401
 					} else if group.name == "admin-self" && credentials == "Bearer secret" {
@@ -142,10 +147,10 @@ func TestAccessGateResolvesPerRequestAndPassesIdentity(t *testing.T) {
 	d := &gateDevices{}
 	diagnostics := &gateDiagnostics{}
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
-	identity := ClientIdentity{LinkType: "ethernet", MAC: mac, IfIndex: 5, PhysicalIfIndex: 7}
+	identity := api.ClientIdentity{LinkType: "ethernet", MAC: mac, IfIndex: 5, PhysicalIfIndex: 7}
 	calls := 0
-	h := NewHandler(Options{APIKey: "secret", Devices: d, Diagnostics: diagnostics,
-		ResolveClient: func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
+	h := NewHandler(Options{AdminKey: "secret", AllowLANAnonymous: true, Devices: d, Diagnostics: diagnostics,
+		ResolveClient: func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
 			calls++
 			return identity, nil
 		},
@@ -171,7 +176,7 @@ func TestAccessGateResolvesPerRequestAndPassesIdentity(t *testing.T) {
 		t.Fatalf("expected resource checks only after authorization: %d", d.queries)
 	}
 	// The next request must use fresh evidence, even with the same source IP.
-	identity = ClientIdentity{LinkType: "ip", IfIndex: 8, PhysicalIfIndex: 9}
+	identity = api.ClientIdentity{LinkType: "ip", IfIndex: 8, PhysicalIfIndex: 9}
 	request("PUT", "/api/device/sets/known", 403)
 	request("POST", "/api/device/sets/unknown/impact", 403)
 	if d.queries != 2 {
@@ -180,5 +185,30 @@ func TestAccessGateResolvesPerRequestAndPassesIdentity(t *testing.T) {
 	request("GET", "/api/device/context", 200)
 	if c := diagnostics.context; c.SourceIP != "192.0.2.10" || c.LinkType != "ip" || c.MAC != "" || *c.IfIndex != 8 || *c.PhysicalIfIndex != 9 {
 		t.Fatalf("diagnostics did not inherit verified identity: %+v", c)
+	}
+}
+
+func TestHTTPIsOnlyForCertificateSetup(t *testing.T) {
+	h := NewHandler(Options{AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, Certificates: &Certificates{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })}})
+	for pattern, policy := range h.policies {
+		method, path, _ := strings.Cut(pattern, " ")
+		if policy&accessBootstrap != 0 {
+			continue
+		}
+		if w := accessRequest(t, h, method, path, "", "", false, false); w.Code != 403 {
+			t.Errorf("%s accepted plaintext: %d", pattern, w.Code)
+		}
+	}
+	if w := accessRequest(t, h, "GET", "/api/certificate", "Bearer key", "", false, false); w.Code != 403 {
+		t.Fatalf("HTTP bootstrap accepted credentials: %d", w.Code)
+	}
+	h.options.WebOrigins = []string{"http://192.0.2.1:9080"}
+	if w := accessRequest(t, h, "GET", "/api/status", "", "http://192.0.2.1:9080", true, false); w.Code != 403 {
+		t.Fatalf("HTTP origin accepted for TLS management: %d", w.Code)
+	}
+	for _, path := range []string{"/api/certificate", "/api/certificate/ca.pem"} {
+		if w := accessRequest(t, h, "GET", path, "", "", false, false); w.Code != 200 {
+			t.Errorf("%s bootstrap: %d", path, w.Code)
+		}
 	}
 }

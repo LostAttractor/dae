@@ -53,7 +53,7 @@ func ParseTargets(ip4, ip6 string) ([2]netip.Addr, error) {
 	for i, text := range []string{ip4, ip6} {
 		ip, err := netip.ParseAddr(text)
 		if err != nil || ip.Zone() != "" || !ip.IsGlobalUnicast() || ip.Is4In6() || ip.Is4() != (i == 0) {
-			return targets, fmt.Errorf("api_mitm_test_ipv%d requires a unicast IPv%d literal", 4+i*2, 4+i*2)
+			return targets, fmt.Errorf("api.mitm_test_ipv%d requires a unicast IPv%d literal", 4+i*2, 4+i*2)
 		}
 		targets[i] = ip
 	}
@@ -77,7 +77,7 @@ func PreparePlan(targets [2]netip.Addr, addresses []net.Addr) (plugin.Plan, erro
 		}
 		for _, target := range targets {
 			if prefix.Contains(target) {
-				return plugin.Plan{}, fmt.Errorf("MITM test target %s overlaps local subnet %s; select an unused routed address with api_mitm_test_ipv4/api_mitm_test_ipv6", target, prefix)
+				return plugin.Plan{}, fmt.Errorf("MITM test target %s overlaps local subnet %s; select an unused routed address with api.mitm_test_ipv4/api.mitm_test_ipv6", target, prefix)
 			}
 		}
 	}

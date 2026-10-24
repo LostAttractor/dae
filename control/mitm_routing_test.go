@@ -258,9 +258,7 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 			if got != want || mark != 0 || must {
 				t.Errorf("api_port=%d route(%s:%d,%v)=(%v,%d,%v), want (%v,0,false)", port, test.destination, test.port, test.proto, got, mark, must, want)
 			}
-			exempt := test.proto == consts.L4ProtoType_TCP && slices.ContainsFunc(prepared.apiBypass, func(key bpfIpPort) bool {
-				return key.Ip.U6Addr8 == ip.As16() && key.Port == common.Htons(test.port)
-			})
+			exempt := test.proto == consts.L4ProtoType_TCP && slices.Contains(prepared.apiBypass, netip.AddrPortFrom(ip.Unmap(), test.port))
 			if exempt != (want == consts.OutboundDirect) {
 				t.Errorf("API routing and device exemption disagree for %s:%d/%v", test.destination, test.port, test.proto)
 			}

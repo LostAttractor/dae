@@ -62,8 +62,8 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 	}
 	return &ControlPlane{
 		settings:                  runtimeSettings,
-		apiKey:                    global.APIKey,
-		apiPort:                   global.APIPort,
+		apiListen:                 conf.API.Listen,
+		apiPort:                   conf.API.Port(),
 		clients:                   clients,
 		mitmClients:               mitmClients,
 		mitmEnabled:               conf.MITM.Enabled,

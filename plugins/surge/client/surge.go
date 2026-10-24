@@ -151,6 +151,9 @@ func Surge(instances []api.PluginInstanceStatus) (surgeapi.SurgeStatus, error) {
 		if instance.Type != "surge" || !instance.Enabled && len(instance.Details) == 0 {
 			continue
 		}
+		if len(instance.Details) == 0 {
+			return status, fmt.Errorf("plugins.%s: Surge status unavailable; plugin details require administrator access", instance.ID)
+		}
 		var detail *surgeapi.SurgeStatus
 		if err := json.Unmarshal(instance.Details, &detail); err != nil {
 			return status, fmt.Errorf("plugins.%s: invalid Surge status: %w", instance.ID, err)

@@ -8,7 +8,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveResources(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveResources(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -16,9 +16,9 @@ func (s *handler) serveResources(w http.ResponseWriter, r *http.Request, who cal
 		apiError(w, http.StatusServiceUnavailable, "resource refresh is unavailable")
 		return
 	}
-	if r.Method == http.MethodGet {
-		writeAPI(w, s.options.Operations.ResourceRefreshStatus())
+	if r.Method == http.MethodPost {
+		s.submitOperation(w, api.OperationRequest{Kind: "refresh"})
 		return
 	}
-	s.submitOperation(w, api.OperationRequest{Kind: "refresh"})
+	writeAPI(w, s.options.Operations.ResourceRefreshStatus())
 }

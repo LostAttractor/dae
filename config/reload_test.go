@@ -22,7 +22,7 @@ func TestGlobalFieldsDeclareReloadOwnership(t *testing.T) {
 func TestReloadSeparatesServicesFromControlPlane(t *testing.T) {
 	before := Global{TproxyPort: 12345}
 	after := before
-	after.APIKey, after.LogLevel, after.PprofPort, after.MetricsPort = "new", "debug", 8081, 8082
+	after.LogLevel = "debug"
 	after.DisableWaitingNetwork, after.ResourceCache = true, true
 	after.ResourceUpdateInterval = 123
 	if !reflect.DeepEqual(before.ControlPlaneConfig(), after.ControlPlaneConfig()) || before.CheckReload(after) != nil {

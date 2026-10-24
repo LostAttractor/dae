@@ -9,17 +9,17 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveSelectors(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveSelectors(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
 	writeAPI(w, contract.SelectorsResponse{
-		Selectors: s.options.Selectors.Selectors(), AdminEnabled: true,
+		Selectors: s.options.Selectors.Selectors(), AdminEnabled: who.role == roleAdmin,
 		AuthMode: who.mode,
 	})
 }
 
-func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveSelector(w http.ResponseWriter, r *http.Request, who caller) {
 	id := ""
 	if r.Method == http.MethodPut {
 		var request contract.SelectNodeRequest
@@ -37,11 +37,11 @@ func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request, who call
 	state, err := s.options.Selectors.Select(r.PathValue("group"), id, r.RemoteAddr)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrSelectorNotFound):
+		case errors.Is(err, contract.ErrSelectorNotFound):
 			apiError(w, 404, err.Error())
-		case errors.Is(err, ErrSelectorNode):
+		case errors.Is(err, contract.ErrSelectorNode):
 			apiError(w, 400, err.Error())
-		case errors.Is(err, ErrSelectorNoDefault):
+		case errors.Is(err, contract.ErrSelectorNoDefault):
 			apiError(w, 409, err.Error())
 		default:
 			apiSaveError(w, err)

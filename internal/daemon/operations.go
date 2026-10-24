@@ -13,7 +13,6 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
-	"github.com/daeuniverse/dae/internal/apiserver"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -46,7 +45,7 @@ func newOperations() *operations {
 
 func (o *operations) SubmitOperation(request api.OperationRequest) (api.Operation, error) {
 	if request.ExecutablePID != 0 || request.Replace {
-		return api.Operation{}, apiserver.ErrOperationInvalid
+		return api.Operation{}, api.ErrOperationInvalid
 	}
 	return o.submit(request, "api")
 }
@@ -54,7 +53,7 @@ func (o *operations) SubmitOperation(request api.OperationRequest) (api.Operatio
 // Ownership transfers only after the request has been accepted.
 func (o *operations) SubmitExecutableOperation(request api.OperationRequest, executable *os.File) (api.Operation, error) {
 	if request.Kind != "reload" || executable == nil || request.ExecutablePID <= 0 {
-		return api.Operation{}, apiserver.ErrOperationInvalid
+		return api.Operation{}, api.ErrOperationInvalid
 	}
 	return o.enqueue(request, "api", executable)
 }
@@ -67,16 +66,16 @@ func (o *operations) enqueue(request api.OperationRequest, trigger string, execu
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
-		return api.Operation{}, apiserver.ErrOperationsClosed
+		return api.Operation{}, api.ErrOperationsClosed
 	}
 	if o.replacing {
-		return api.Operation{}, apiserver.ErrOperationsBusy
+		return api.Operation{}, api.ErrOperationsBusy
 	}
 	if request.Kind != "reload" && request.Kind != "suspend" && request.Kind != "refresh" || request.Kind == "refresh" && request.Abort {
-		return api.Operation{}, apiserver.ErrOperationInvalid
+		return api.Operation{}, api.ErrOperationInvalid
 	}
 	if len(o.requests) == cap(o.requests) || request.Kind == "refresh" && o.refresh != nil && o.refresh.status.FinishedAt.IsZero() {
-		return api.Operation{}, apiserver.ErrOperationsBusy
+		return api.Operation{}, api.ErrOperationsBusy
 	}
 	status := api.Operation{ID: rand.Text(), Kind: request.Kind, State: "queued", Trigger: trigger, QueuedAt: time.Now()}
 	record := &operationRecord{status: status, request: request, executable: executable}
@@ -92,7 +91,7 @@ func (o *operations) beginReplacement() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if len(o.requests) != 0 {
-		return apiserver.ErrOperationsBusy
+		return api.ErrOperationsBusy
 	}
 	o.replacing = true
 	return nil

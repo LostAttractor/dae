@@ -165,6 +165,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 		value.Plugins, value.Subscription, value.Node = nil, nil, nil
 		value.Routing = config.Routing{}
 		value.Certificate = config.Certificate{}
+		value.API = config.API{Listen: conf.API.Listen, MITMTestIPv4: conf.API.MITMTestIPv4, MITMTestIPv6: conf.API.MITMTestIPv6}
 		value.MITM.BufferMemoryLimit = 0
 		value.Global = value.Global.ControlPlaneConfig()
 		return value

@@ -13,19 +13,20 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	apiclient "github.com/daeuniverse/dae/api/client"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestDiagnosticsAPIAndClientAdministration(t *testing.T) {
 	c := diagnosticPlane(t, "client(work) -> block", "")
-	c.apiKey = "secret"
-	server := httptest.NewServer(c.apiHandler("test", testClientIngress, nil, nil))
+	server := httptest.NewTLSServer(c.apiHandlerWithPolicy(config.API{AdminKey: "secret"}, "test", testClientIngress, nil, nil))
 	defer server.Close()
-	admin, err := apiclient.New(apiclient.Options{Endpoint: server.URL, APIKey: "secret"})
+	admin, err := apiclient.New(apiclient.Options{RootCAs: testutil.TLSRoots(server), Endpoint: server.URL, APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	guest, err := apiclient.New(apiclient.Options{Endpoint: server.URL})
+	guest, err := apiclient.New(apiclient.Options{RootCAs: testutil.TLSRoots(server), Endpoint: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,10 +88,9 @@ func TestDiagnosticsAPIAndClientAdministration(t *testing.T) {
 
 func TestDiagnosticsAPIProtectsGlobalEvidence(t *testing.T) {
 	c := diagnosticPlane(t, "domain(full: other-device.example) -> block\nclient(work) -> block", "")
-	c.apiKey = "secret"
 	ip := netip.MustParseAddr("203.0.113.77")
 	c.core.domainRegistry.ObserveDNS([]domainObservation{{name: "other-device.example.", ips: []netip.Addr{ip}, bitmap: c.routingMatcher.domainMatcher.MatchDomainBitmap("other-device.example"), ttl: 120}}, time.Now())
-	h := c.apiHandler("test", testClientIngress, nil, nil)
+	h := c.apiHandlerWithPolicy(config.API{AdminKey: "secret"}, "test", testClientIngress, nil, nil)
 	for _, query := range []struct{ path, body, evidence string }{
 		{"/api/device/diagnostics/explain", `{"flow":{"destination":{"ip":"203.0.113.77","port":443}}}`, "other-device.example"},
 		{"/api/device/diagnostics/explain", `{"kind":"domain","flow":{"destination":{"domain":"other-device.example"}}}`, "other-device.example"},

@@ -165,16 +165,6 @@ struct {
 } redirect_track SEC(".maps");
 // 7.86 MB
 
-struct ip_port {
-	union ip6 ip;
-	__be16 port;
-	/* ip6's 8-byte alignment makes this a 24-byte hash key. Lookups compare
-	 * every byte, but implicit C padding is not guaranteed to be initialized
-	 * and can differ from userspace's zero-filled keys. Keep the tail explicit
-	 * so aggregate initializers that set only ip and port also zero these bytes.
-	 */
-	__u8 pad[6];
-};
 
 struct tuples_key {
 	union ip6 sip;
@@ -368,14 +358,6 @@ struct {
 	__array(values, struct device_route_table);
 } device_routes_map SEC(".maps");
 
-/* The management API is a local service, outside device forwarding policy. */
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct ip_port);
-	__type(value, __u8);
-	__uint(max_entries, 1024);
-} route_exempt_map SEC(".maps");
-
 static __always_inline struct device_route_state *device_route(const __u8 *mac)
 {
 	void *table = bpf_map_lookup_elem(&device_routes_map, &zero_key);
@@ -412,22 +394,14 @@ volatile const __s32 proxy_netns_id = BPF_F_CURRENT_NETNS;
 
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
+/* Both the routing predicate and device exemptions use this live address set. */
+volatile __u32 api_lpm_slot = (__u32)-1;
 volatile __u32 default_routing_profile;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
 /* Published per generation; only terminal unexpected exit uses this policy. */
 volatile __u32 unexpected_exit_behavior = OUTBOUND_DIRECT;
 
-/* Exemptions are TCP to API addresses on the API port, published together
- * with api_port. */
-static __always_inline bool route_exempt(const struct tuples_key *five)
-{
-	__be16 port = api_port;
-	struct ip_port destination = { .ip = five->dip, .port = five->dport };
-
-	return five->l4proto == IPPROTO_TCP && port && five->dport == port &&
-	       bpf_map_lookup_elem(&route_exempt_map, &destination);
-}
 
 struct api_client {
 	__u64 observed_at;
@@ -496,6 +470,20 @@ struct {
 } udp_bindings_map SEC(".maps");
 
 #include "routing_maps.h"
+
+/* One immutable LPM replacement updates API bypass and device exemptions. */
+static __always_inline bool route_exempt(const struct tuples_key *five)
+{
+	__be16 port = api_port;
+	if (five->l4proto != IPPROTO_TCP || !port || five->dport != port)
+		return false;
+	__u32 slot = api_lpm_slot;
+	struct map_lpm_type *table = bpf_map_lookup_elem(&lpm_array_map, &slot);
+	struct lpm_key key = { .trie_key.prefixlen = IPV6_BYTE_LENGTH * 8 };
+
+	__builtin_memcpy(key.data, five->dip.u6_addr8, IPV6_BYTE_LENGTH);
+	return table && bpf_map_lookup_elem(table, &key);
+}
 
 struct pid_pname {
 	__u32 pid;

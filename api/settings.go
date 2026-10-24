@@ -58,7 +58,7 @@ type DeviceState struct {
 type SelectorsResponse struct {
 	Selectors    []SelectorState `json:"selectors"`
 	AdminEnabled bool            `json:"admin_enabled"`
-	// AuthMode is api_key (Bearer/session), lan (verified direct LAN), or unix.
+	// AuthMode is user_key or admin_key (Bearer/session), lan (verified direct LAN), or unix.
 	AuthMode string `json:"auth_mode"`
 }
 type SelectNodeRequest struct {
@@ -73,4 +73,10 @@ type Certificate struct {
 	Fingerprint        string   `json:"fingerprint"`
 	MITMTestGeneration string   `json:"mitm_test_generation,omitempty"`
 	MITMTestOrigins    []string `json:"mitm_test_origins,omitempty"`
+}
+
+// Session describes a browser login; its credential is an HttpOnly cookie.
+type Session struct {
+	Role      string    `json:"role"`
+	ExpiresAt time.Time `json:"expires_at"`
 }

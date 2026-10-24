@@ -4,42 +4,15 @@ package control
 import (
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/internal/routingabi"
-	"net/http"
 	"net/netip"
 	"time"
 
 	"github.com/cilium/ebpf"
 	contract "github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"golang.org/x/sys/unix"
 )
-
-func (c *ControlPlane) APIHandler(version string, operations apiserver.OperationStore, certificates *apiserver.Certificates) http.Handler {
-	return c.apiHandler(version, c.resolveAPIClient, operations, certificates)
-}
-
-func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, operations apiserver.OperationStore, certificates *apiserver.Certificates) http.Handler {
-	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Operations: operations, Diagnostics: c}
-	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
-	options.DeviceStatus = c.DeviceStatus
-	if host := c.MITMHost(); host != nil {
-		options.Scripts = host
-		options.ScriptStorage = host
-	}
-	options.Certificates = certificates
-	if tests := c.MITMTests(); tests != nil {
-		options.MITMTests = tests
-		if certificates != nil {
-			copy := *certificates
-			copy.Identity.MITMTestGeneration = tests.Generation()
-			copy.Identity.MITMTestOrigins = tests.Origins()
-			options.Certificates = &copy
-		}
-	}
-	return apiserver.NewHandler(options)
-}
 
 // Each request refreshes the entry at the LAN hook, including keep-alive data.
 const apiClientTTL = 30 * time.Second
@@ -51,16 +24,17 @@ func apiClientKey(source, destination netip.AddrPort) bpfTuplesKey {
 	return key
 }
 
-func (c *ControlPlane) resolveAPIClient(source, destination netip.AddrPort) (apiserver.ClientIdentity, error) {
+// ResolveAPIClient verifies the current connection against this generation's LAN ingress evidence.
+func (c *ControlPlane) ResolveAPIClient(source, destination netip.AddrPort) (contract.ClientIdentity, error) {
 	client, err := c.resolveAPIObservation(source, destination)
 	if err != nil {
-		return apiserver.ClientIdentity{}, err
+		return contract.ClientIdentity{}, err
 	}
 	linkType := "ethernet"
 	if client.LinkType == routingabi.API_CLIENT_LINK_IP {
 		linkType = "ip"
 	}
-	return apiserver.ClientIdentity{LinkType: linkType, MAC: client.Mac, IfIndex: client.Ifindex, PhysicalIfIndex: client.Physinif}, nil
+	return contract.ClientIdentity{LinkType: linkType, MAC: client.Mac, IfIndex: client.Ifindex, PhysicalIfIndex: client.Physinif}, nil
 }
 
 func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort) (bpfApiClient, error) {

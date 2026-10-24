@@ -4,7 +4,7 @@ package control
 
 import (
 	"errors"
-	"github.com/daeuniverse/dae/internal/routingabi"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/internal/routingabi"
 )
 
 func TestMITMSelectionUsesPublishedHTTPPolicy(t *testing.T) {
@@ -36,7 +37,7 @@ func TestMITMSelectionUsesPublishedHTTPPolicy(t *testing.T) {
 
 func TestHTTPClientAdmissionSkipsScopesAndSharesResult(t *testing.T) {
 	prepared := prepareFlowRulesForTest(t, "dport(8443) -> dnat('198.51.100.20:9443')\ndport(53) -> must\ndport(9443) -> bump", "dport(443) -> direct(mark:37)")
-	prepared.bypass = planRulesForTest(t, "dport(9000) -> direct")
+	prepared.bypassAPI(9000, []net.Addr{&net.IPNet{IP: net.ParseIP("198.51.100.8"), Mask: net.CIDRMask(32, 32)}})
 	prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{
 		{Scope: plugin.Scope{{Host: "198.51.100.9"}}},
 		{Scope: plugin.Scope{{Host: "198.51.100.8"}}, PreserveRoute: true},

@@ -92,7 +92,7 @@ func (a *Authority) Handler() http.Handler {
 	resources := map[string]resource{
 		"/ca.cer":          {"application/pkix-cert", "dae-ca.cer", bytes.Clone(cert.Raw)},
 		"/ca.pem":          {"application/x-pem-file", "dae-ca.pem", CertificatePEM(cert)},
-		"/ca.mobileconfig": {"application/x-apple-aspen-config", "dae-ca.mobileconfig", MobileConfig(cert)},
+		"/ca.mobileconfig": {"application/x-apple-aspen-config", "", MobileConfig(cert)},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

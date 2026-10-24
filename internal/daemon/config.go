@@ -27,6 +27,9 @@ func LoadReloadConfig(path string, current *config.Config, suspend bool) (*confi
 	}
 	next := new(*current)
 	next.Global.WanInterface, next.Global.LanInterface = nil, nil
+	if _, _, lan, _ := next.API.Endpoint(); lan {
+		next.API.Listen = ""
+	}
 	next.Global.LogLevel = "warning"
 	return next, nil, nil
 }

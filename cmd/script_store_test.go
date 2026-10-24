@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/testutil"
 	"github.com/daeuniverse/dae/plugins/surge"
 )
 
@@ -31,7 +32,7 @@ func TestSurgeStoreMigrationDaemonCommandAPI(t *testing.T) {
 	for _, published := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "published"}[published], func(t *testing.T) {
 			var mutations atomic.Int32
-			server := httptest.NewServer(apiserver.NewHandler(apiserver.Options{APIKey: "secret", Status: func() *api.StatusSnapshot {
+			server := httptest.NewTLSServer(apiserver.NewHandler(apiserver.Options{AdminKey: "secret", Status: func() *api.StatusSnapshot {
 				return &api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: []api.PluginInstanceStatus{{ID: "personal", Type: "surge"}}}
 			}, ScriptStorage: commandStoreMigrator(func(_ context.Context, instance string, request api.ScriptStoreMigrateRequest) (api.ScriptStoreMigrateResponse, error) {
 				mutations.Add(1)
@@ -44,6 +45,7 @@ func TestSurgeStoreMigrationDaemonCommandAPI(t *testing.T) {
 				return api.ScriptStoreMigrateResponse{Instance: instance, FromMAC: request.FromMAC, ToMAC: request.ToMAC, KeysMoved: 3}, nil
 			})}))
 			defer server.Close()
+			t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 			var connection cli.Connection
 			definition := surge.Plugin
 			definition.Configure = func(plugin.Spec) (plugin.Factory, error) {

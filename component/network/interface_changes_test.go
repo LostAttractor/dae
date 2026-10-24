@@ -89,6 +89,32 @@ func TestInterfaceChangesPrecedeSlowLifecycleCallback(t *testing.T) {
 	<-finished
 }
 
+func TestInterfaceTopologyChangeFollowsMaster(t *testing.T) {
+	source := scopeTestSource(t)
+	scope := testInterfaceScope(t, source)
+	var added, changed atomic.Int32
+	scope.SetChangeCallback(func() { changed.Add(1) })
+	if err := scope.RegisterSync("lan", nil, func(netlink.Link) { added.Add(1) }, nil); err != nil {
+		t.Fatal(err)
+	}
+	link := func(master int) netlink.Link {
+		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "lan", Index: 2, MasterIndex: master}}
+	}
+	update := func(master int) {
+		source.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: link(master)})
+	}
+	update(0)
+	update(3)
+	source.listLinks = func() ([]netlink.Link, error) { return []netlink.Link{link(0)}, nil }
+	if err := testInterfaceScope(t, source).RegisterSync("other", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	update(0)
+	if added.Load() != 1 || changed.Load() != 3 {
+		t.Fatalf("additions = %d, topology changes = %d; want 1, 3", added.Load(), changed.Load())
+	}
+}
+
 func TestInterfaceChangesCancelScopeAndSource(t *testing.T) {
 	source, err := newInterfaceManager(func(ch chan<- netlink.LinkUpdate, done <-chan struct{}, _ netlink.LinkSubscribeOptions) error {
 		go func() { <-done; close(ch) }()

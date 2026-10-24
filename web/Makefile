@@ -14,7 +14,7 @@ FORCE:
 
 ../build/web.inputs: FORCE | deps
 	@mkdir -p ../build
-	@{ printf '%s\n' '$(abspath $(DIST))' "$$NODE_ENV"; command -v node; node --version; \
+	@{ printf '%s\n' '$(abspath $(DIST))' "$$NODE_ENV" "$$DAE_API_URL"; command -v node; node --version; \
 		printf '%s\n' $(INPUTS); } > $@.tmp
 	@if ! cmp -s $@.tmp $@ || ! test -s ../build/web.outputs || \
 		! (while IFS= read -r output; do test -f "$$output" || exit 1; done < ../build/web.outputs); then \

@@ -17,6 +17,13 @@ func TestSurgeDisabledWithoutDetails(t *testing.T) {
 	}
 }
 
+func TestSurgeDetailsRequireAdministration(t *testing.T) {
+	_, err := Surge([]api.PluginInstanceStatus{{ID: "private", Type: "surge", Enabled: true, State: "active"}})
+	if err == nil || !strings.Contains(err.Error(), "plugin details require administrator access") {
+		t.Fatalf("missing administration hint: %v", err)
+	}
+}
+
 func TestSurgeUsesInstanceReports(t *testing.T) {
 	instances := []api.PluginInstanceStatus{
 		{ID: "other", Type: "demo", Details: json.RawMessage(`{"tasks":1}`)},

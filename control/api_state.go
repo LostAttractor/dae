@@ -13,7 +13,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/internal/apiserver"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -72,14 +71,14 @@ func (c *ControlPlane) Selectors() []api.SelectorState {
 func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error) {
 	group := c.outboundGroup(name)
 	if group == nil || !group.IsSelector() {
-		return api.SelectorState{}, apiserver.ErrSelectorNotFound
+		return api.SelectorState{}, api.ErrSelectorNotFound
 	}
 	if id == "" && group.DefaultSelection() == "" {
-		return api.SelectorState{}, apiserver.ErrSelectorNoDefault
+		return api.SelectorState{}, api.ErrSelectorNoDefault
 	}
 	index := slices.IndexFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
 	if id != "" && index == -1 {
-		return api.SelectorState{}, apiserver.ErrSelectorNode
+		return api.SelectorState{}, api.ErrSelectorNode
 	}
 	// Keep the live choice and its saved override together, including rollback.
 	c.settingsMu.Lock()
@@ -103,13 +102,13 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 func (c *ControlPlane) Probe(request api.ProbeRequest, source string) (api.ProbeResponse, error) {
 	group := c.outboundGroup(request.Outbound)
 	if group == nil {
-		return api.ProbeResponse{}, apiserver.ErrProbeOutbound
+		return api.ProbeResponse{}, api.ErrProbeOutbound
 	}
 	if !group.ChecksConnectivity() {
-		return api.ProbeResponse{}, apiserver.ErrProbeUnsupported
+		return api.ProbeResponse{}, api.ErrProbeUnsupported
 	}
 	if request.NodeID != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == request.NodeID }) {
-		return api.ProbeResponse{}, apiserver.ErrProbeNode
+		return api.ProbeResponse{}, api.ErrProbeNode
 	}
 	response := api.ProbeResponse{Outbound: group.Name, NodeIDs: make([]string, 0, len(group.Dialers))}
 	for _, d := range group.Dialers {

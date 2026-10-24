@@ -22,11 +22,14 @@ import (
 	"github.com/daeuniverse/dae/internal/handoff"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
+	"golang.org/x/sys/unix"
 )
 
 type Server struct {
 	raw           net.Listener
 	held          *handoff.Listener
+	binding       string
+	interfaces    *interfaceListener
 	listener      net.Listener
 	http          *http.Server
 	cancel        context.CancelFunc
@@ -36,7 +39,7 @@ type Server struct {
 	handler       http.Handler
 	tls           *apiTLSIdentity
 	daemonMu      sync.RWMutex
-	daemonHandler http.Handler
+	daemonHandler *Handler
 }
 
 type tlsGenerationKey struct{}
@@ -79,7 +82,38 @@ func listen(network, address string, hold bool) (*Server, error) {
 		held = handoff.Hold(listener)
 		listener = held
 	}
-	return serveListener(listener, raw, network, held), nil
+	s := serveListener(listener, raw, network, held)
+	s.binding = network + " " + address
+	return s, nil
+}
+
+func FromTCPFile(file *os.File, address string) (*Server, error) {
+	want, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	bound, err := unix.GetsockoptInt(int(file.Fd()), unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
+	if err != nil || bound != 0 {
+		return nil, errors.Join(errors.New("inherited API socket has an interface binding"), err)
+	}
+	raw, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	tcp, ok := raw.(*net.TCPListener)
+	if !ok {
+		raw.Close()
+		return nil, errors.New("inherited API socket is not TCP")
+	}
+	got := tcp.Addr().(*net.TCPAddr)
+	if got.Port != want.Port || !(got.IP.Equal(want.IP) || got.IP.IsUnspecified() && want.IP.IsUnspecified()) {
+		raw.Close()
+		return nil, errors.New("inherited API address differs")
+	}
+	held := handoff.Hold(raw)
+	s := serveListener(held, raw, "tcp", held)
+	s.binding = "tcp " + address
+	return s, nil
 }
 
 func FromFile(file *os.File, network string) (*Server, error) {
@@ -98,6 +132,16 @@ func FromFile(file *os.File, network string) (*Server, error) {
 	return serveListener(listener, raw, network, held), nil
 }
 
+func (s *Server) Binding() string {
+	if s.interfaces != nil {
+		s.interfaces.mu.Lock()
+		defer s.interfaces.mu.Unlock()
+		if s.interfaces.active != nil {
+			return s.interfaces.active.binding
+		}
+	}
+	return s.binding
+}
 func serveListener(listener, raw net.Listener, network string, held *handoff.Listener) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{listener: listener, raw: raw, held: held, cancel: cancel}
@@ -125,7 +169,11 @@ func (s *Server) File() (*os.File, error) {
 	if s == nil {
 		return nil, nil
 	}
-	return handoff.DupSocket(s.raw.(syscall.Conn), "api")
+	raw, ok := s.raw.(syscall.Conn)
+	if !ok {
+		return nil, errors.New("API listener has multiple sockets")
+	}
+	return handoff.DupSocket(raw, "api")
 }
 
 func (s *Server) Activate() {
@@ -160,19 +208,20 @@ func (s *Server) tlsConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
-// SetOperations installs daemon-owned routes on the local socket. These do not
+// SetLocalServices installs daemon-owned routes on the local socket. These do not
 // touch a plane and remain available while its handler is drained or replaced.
 // Remote requests continue to use the plane's current authorization policy.
-func (s *Server) SetOperations(store OperationStore) {
+func (s *Server) SetLocalServices(services LocalServices) {
 	if s == nil {
 		return
 	}
 	s.daemonMu.Lock()
 	defer s.daemonMu.Unlock()
-	s.daemonHandler = nil
-	if store != nil {
-		s.daemonHandler = NewHandler(Options{Operations: store})
+	if services.Operations == nil && services.Metrics == nil && !services.Pprof {
+		s.daemonHandler = nil
+		return
 	}
+	s.daemonHandler = newLocalHandler(services)
 }
 
 // SetHandler waits for all requests using the previous handler to finish.
@@ -222,32 +271,61 @@ func (s *Server) Configure(handler http.Handler, authority *localca.Authority, d
 	}
 }
 
+func serveMonitoringLocked(unlock func(), handler any, w http.ResponseWriter, r *http.Request) bool {
+	monitoring, ok := handler.(interface {
+		PrepareMonitoring(http.ResponseWriter, *http.Request) (http.Handler, bool)
+	})
+	if !ok {
+		return false
+	}
+	target, matched := monitoring.PrepareMonitoring(w, r)
+	if !matched {
+		return false
+	}
+	unlock()
+	if target != nil {
+		target.ServeHTTP(w, r)
+	}
+	return true
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if localAPISocket(r) && operationPath(r.URL.Path) {
+	if localAPISocket(r) && localServicePath(r.URL.Path) {
 		s.daemonMu.RLock()
-		defer s.daemonMu.RUnlock()
 		if s.daemonHandler != nil {
+			if serveMonitoringLocked(s.daemonMu.RUnlock, s.daemonHandler, w, r) {
+				return
+			}
+			defer s.daemonMu.RUnlock()
 			s.daemonHandler.ServeHTTP(w, r)
 			return
 		}
+		s.daemonMu.RUnlock()
 	}
 	gate := s.requestGate()
 	if !gate.TryAcquire(1) {
 		unavailable(w)
 		return
 	}
-	defer gate.Release(1)
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	release := func() {
+		s.mu.RUnlock()
+		gate.Release(1)
+	}
 	if r.TLS != nil {
 		generation, ok := r.Context().Value(tlsGenerationKey{}).(*tlsConnectionGeneration)
 		if !ok || s.tls == nil || generation.identity != s.tls {
+			release()
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Connection", "close")
 			http.Error(w, "API configuration changed; start a new connection", http.StatusServiceUnavailable)
 			return
 		}
 	}
+	if serveMonitoringLocked(release, s.handler, w, r) {
+		return
+	}
+	defer release()
 	if s.handler == nil {
 		unavailable(w)
 		return
@@ -280,5 +358,5 @@ func (s *Server) Stop() {
 func (s *Server) Close() {
 	s.Stop()
 	s.Configure(nil, nil, "")
-	s.SetOperations(nil)
+	s.SetLocalServices(LocalServices{})
 }

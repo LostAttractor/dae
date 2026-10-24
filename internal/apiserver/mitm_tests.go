@@ -15,7 +15,7 @@ type MITMTestStore interface {
 	Get(string, netip.Addr, [6]byte) (api.MITMTest, bool)
 }
 
-func (s *handler) serveMITMTest(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveMITMTest(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}

@@ -72,14 +72,9 @@ func TestDisabledPluginStatusAcceptsWithoutHost(t *testing.T) {
 		if err != nil || prepared.Host != nil {
 			t.Fatalf("disabled instances created a host: %+v, %v", prepared, err)
 		}
-		observability, err := prepareObservabilityServers(0, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
 		result, err := app.replaceServices(t.Context(), &next, nil, netip.AddrPort{}, nil, &prepared, func() {
 			t.Fatal("disabled-only change replaced the API handler")
-		}, observability)
-		observability.Close()
+		})
 		if err != nil || result == "" || app.plane.MITMHost() != nil {
 			t.Fatalf("disabled-only accept failed: %s, %v", result, err)
 		}

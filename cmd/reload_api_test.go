@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
@@ -19,7 +20,7 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 			t.Run(kind+map[bool]string{false: "/environment", true: "/flag"}[explicit], func(t *testing.T) {
 				t.Setenv("DAE_API_KEY", "command-test-key")
 				requests := 0
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					requests++
 					if r.Header.Get("Authorization") != "Bearer command-test-key" {
 						t.Error("missing configured API credential")
@@ -43,6 +44,7 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 					}
 				}))
 				defer server.Close()
+				t.Setenv("DAE_API_CA", testutil.TLSFile(t, server))
 				t.Setenv("DAE_API_ENDPOINT", server.URL)
 				args := []string{"--abort"}
 				if explicit {

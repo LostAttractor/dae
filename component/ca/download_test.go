@@ -17,19 +17,20 @@ func TestCertificateDownloadsContainOnlyPublicCertificate(t *testing.T) {
 	a, _, _ := testAuthority(t)
 	handler := a.Handler()
 	for _, test := range []struct {
-		path string
-		mime string
-		body []byte
+		path        string
+		mime        string
+		disposition string
+		body        []byte
 	}{
-		{"/ca.cer", "application/pkix-cert", a.certificate.Raw},
-		{"/ca.pem", "application/x-pem-file", CertificatePEM(a.certificate)},
-		{"/ca.mobileconfig", "application/x-apple-aspen-config", MobileConfig(a.certificate)},
+		{"/ca.cer", "application/pkix-cert", `attachment; filename="dae-ca.cer"`, a.certificate.Raw},
+		{"/ca.pem", "application/x-pem-file", `attachment; filename="dae-ca.pem"`, CertificatePEM(a.certificate)},
+		{"/ca.mobileconfig", "application/x-apple-aspen-config", "", MobileConfig(a.certificate)},
 	} {
 		t.Run(test.path, func(t *testing.T) {
 			result := httptest.NewRecorder()
 			handler.ServeHTTP(result, httptest.NewRequest(http.MethodGet, test.path, nil))
-			if result.Code != http.StatusOK || result.Header().Get("Content-Type") != test.mime || !bytes.Equal(result.Body.Bytes(), test.body) {
-				t.Fatalf("bad response: code=%d mime=%s", result.Code, result.Header().Get("Content-Type"))
+			if result.Code != http.StatusOK || result.Header().Get("Content-Type") != test.mime || result.Header().Get("Content-Disposition") != test.disposition || !bytes.Equal(result.Body.Bytes(), test.body) {
+				t.Fatalf("bad response: code=%d mime=%s disposition=%q", result.Code, result.Header().Get("Content-Type"), result.Header().Get("Content-Disposition"))
 			}
 			if bytes.Contains(result.Body.Bytes(), []byte("PRIVATE KEY")) {
 				t.Fatal("download included private key")

@@ -1,7 +1,5 @@
 import type { AuthMode, Page, SettingSection, DeviceState, DeviceStatus, DeviceContext, SelectorsResponse, CertificateMetadata, GlobalStatus } from "./types.ts";
-import "./style.css";
-import { followColorScheme } from "./color-mode.ts";
-import { request as apiRequest, errorMessage, errorStatus, type HTTPMethod } from "./api.ts";
+import { request as apiRequest, errorMessage, errorStatus, HTTPError, type HTTPMethod, loginAvailable } from "./api.ts";
 import { byId } from "./dom.ts";
 import { mountShell } from "./shell.tsx";
 import { createNotifications } from "./notifications.tsx";
@@ -9,7 +7,7 @@ import { createMITM } from "./mitm.tsx";
 import { createSettingNavigation } from "./setting.tsx";
 import { createSelectors } from "./selectors.tsx";
 import { createStatus } from "./status.tsx";
-import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.ts";
+import { certificateAccessChanged, certificateDevice, certificateIdentity, testCertificate } from "./certificate.ts";
 import { createDiagnostics } from "./diagnostics.tsx";
 import { createClientSets, createManagedClients } from "./clients.tsx";
 import { createNavigation } from "./navigation.tsx";
@@ -17,8 +15,9 @@ import { createUpdatedLabel } from "./updated.tsx";
 
 const accessDenied = (error: unknown) => errorStatus(error) === 401 || errorStatus(error) === 403;
 const accessLabels = {
-  api_key: { title: "Administrator", description: "Logged in · Remembered for 7 days" },
-  lan: { title: "LAN Access", description: "Verified LAN ingress · No API key configured" },
+  admin_key: { title: "Administrator", description: "Full management access" },
+  user_key: { title: "User", description: "Status and device settings" },
+  lan: { title: "LAN Access", description: "Verified LAN ingress · User access without a key" },
   unix: { title: "Local access", description: "Authorized by local socket permissions" },
 };
 let authMode: AuthMode | null | undefined;
@@ -29,7 +28,6 @@ let globalRequestVersion = 0;
 let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
-followColorScheme();
 mountShell(byId("app"));
 const message = createNotifications(byId("notifications"), byId("notification-layer"));
 byId<HTMLButtonElement>("test-certificate").disabled = true;
@@ -97,28 +95,33 @@ async function run(action: () => Promise<unknown>, success = "", pending = "Savi
 
 function setAccess(mode: AuthMode | null, error?: unknown) {
   const authorized = mode !== null;
-  const { title, description } = authorized ? accessLabels[mode] : { title: "Guest", description: "Log in with your API key to manage the network." };
+  const admin = mode === "admin_key" || mode === "unix";
+  const signedIn = mode === "admin_key" || mode === "user_key";
+  const { title, description } = authorized ? accessLabels[mode] : { title: "Guest", description: loginAvailable ? "Log in with your API key to manage the network." : "HTTPS is required to log in. HTTP supports anonymous setup only." };
   const denied = errorStatus(error) === 403;
+  if (authMode !== mode) certificateAccessChanged();
   authMode = mode;
-  diagnostics.setAccess(authorized);
-  clientSets.setAccess(authorized);
-  settingNavigation.setAccess(authorized);
-  managedClients.setAccess(authorized);
+  diagnostics.setAccess(admin);
+  clientSets.setAccess(admin);
+  settingNavigation.setAccess(admin);
+  managedClients.setAccess(admin);
+  byId("managed-clients-view").hidden = !admin;
+  byId("devices-locked").hidden = admin;
+  byId("devices-login-hint").textContent = denied ? errorMessage(error) : loginAvailable ? "Log in above to manage other devices." : "Open this page over HTTPS to log in and manage other devices.";
+  byId<HTMLFormElement>("login-form").hidden = admin || !loginAvailable;
   if (authorized) status.allowGlobal();
-  byId("managed-clients-view").hidden = !authorized;
-  byId("devices-locked").hidden = authorized;
-  byId("devices-login-hint").textContent = denied ? errorMessage(error) : "Log in above to manage other devices.";
-  byId<HTMLFormElement>("login-form").hidden = authorized;
   byId("access-title").textContent = title;
   byId("access-description").textContent = denied ? errorMessage(error) : description;
-  byId("logout").hidden = mode !== "api_key";
+  const logout = byId("logout");
+  logout.textContent = signedIn ? "Log out" : "Clear session";
+  logout.hidden = !signedIn && !(loginAvailable && error instanceof HTTPError && error.invalidSession);
   for (const prefix of ["", "quick-"]) {
     byId(`${prefix}selectors-locked`).hidden = authorized;
     byId(`${prefix}selectors`).hidden = !authorized;
     byId(`${prefix}selector-count`).hidden = !authorized;
     byId(`${prefix}access-required`).textContent = denied ? "Access denied" : "Login required";
     byId(`${prefix}access-required`).dataset.tone = denied ? "error" : "neutral";
-    byId(`${prefix}login-hint`).textContent = denied ? errorMessage(error) : "Enter your API key above to view outbound groups and switch nodes.";
+    byId(`${prefix}login-hint`).textContent = denied ? errorMessage(error) : loginAvailable ? "Enter your API key above to view outbound groups and switch nodes." : "Open this page over HTTPS to log in and view outbound groups.";
   }
   if (!authorized) {
     globalRequestVersion++;
@@ -142,6 +145,18 @@ function renderDevice(device: DeviceState) {
   mitm.show(device.mitm);
 }
 
+function clearDevice(reason: string) {
+  deviceRequestVersion++;
+  deviceStateKey = "";
+  status.deviceError(reason, true);
+  diagnostics.setDevice("");
+  certificateDevice(null);
+  byId("identity").textContent = "Unavailable";
+  byId("device-mac").textContent = "Unavailable";
+  clientSets.unavailable(reason);
+  mitm.unavailable();
+}
+
 // Mutations run serially. Reads check their version before applying any state,
 // so a stale 401 cannot clear access granted by a more recent request.
 async function adminRequest<T = unknown>(path: string, method?: HTTPMethod, body?: unknown, headers?: Record<string, string>): Promise<T> {
@@ -156,7 +171,7 @@ async function adminRequest<T = unknown>(path: string, method?: HTTPMethod, body
 function renderSelectors(data: SelectorsResponse) {
   setAccess(data.auth_mode);
   for (const prefix of ["", "quick-"]) byId(`${prefix}selector-count`).textContent = `${data.selectors.length} group${data.selectors.length === 1 ? "" : "s"}`;
-  selectors.show(data.selectors);
+  selectors.show(data.selectors, data.admin_enabled);
 }
 
 async function loadSelectors({ allowGuest = false, background = false } = {}) {
@@ -172,7 +187,7 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
     if (accessDenied(error)) {
       setAccess(null, error);
       updatedLabel.message(errorStatus(error) === 401 ? "Login required" : "Access denied");
-      if (background) message(errorMessage(error), "error");
+      if (background && !allowGuest) message(errorMessage(error), "error");
       if (allowGuest || background) return;
     } else if (background) {
       updatedLabel.message("Live update failed · Retrying");
@@ -216,17 +231,9 @@ async function loadDevice({ background = false } = {}) {
     status.setDevice(snapshot);
   } catch (error) {
     if (version !== deviceRequestVersion) return;
-    status.deviceError(errorMessage(error), errorStatus(error) === 403 || !background);
-    if (errorStatus(error) === 403 || !background) {
-      deviceStateKey = "";
-      diagnostics.setDevice("");
-      certificateDevice(null);
-      byId("identity").textContent = "Unavailable";
-      byId("device-mac").textContent = "Unavailable";
-      clientSets.unavailable(errorMessage(error));
-      mitm.unavailable();
-    }
-    if (errorStatus(error) !== 403 && !background) throw error;
+    if (accessDenied(error) || !background) clearDevice(errorMessage(error));
+    else status.deviceError(errorMessage(error), false);
+    if (!accessDenied(error) && !background) throw error;
   }
 }
 
@@ -241,8 +248,10 @@ async function loadCertificate({ background = false } = {}) {
     byId("certificate-panel").hidden = false;
   } catch (error) {
     if (version !== certificateRequestVersion) return;
-    if (errorStatus(error) === 404) {
+    if (accessDenied(error) || errorStatus(error) === 404) {
       certificateIdentity(null);
+      byId("certificate-name").textContent = "";
+      byId("certificate-fingerprint").textContent = "";
       byId("certificate-panel").hidden = true;
     } else if (!background) throw error;
   }
@@ -284,19 +293,27 @@ async function refresh() {
 
 byId<HTMLFormElement>("login-form").onsubmit = async (event) => {
   event.preventDefault();
+  if (!loginAvailable) return;
   const signedIn = await run(async () => {
-    await request("/api/session", "PUT", undefined, { Authorization: `Bearer ${byId<HTMLInputElement>("api-key").value}` });
+    const key = byId<HTMLInputElement>("api-key").value;
     byId<HTMLInputElement>("api-key").value = "";
+    certificateAccessChanged();
+    await request("/api/session", "PUT", undefined, { Authorization: `Bearer ${key}` });
     await loadAdmin();
+    await Promise.all([loadDevice(), loadCertificate()]);
   }, "Access verified. Outbound groups and traffic for all devices are now available.", "Logging in…");
   byId(signedIn ? "refresh" : "api-key").focus();
 };
 byId("logout").onclick = async () => {
   const signedOut = await run(async () => {
+    certificateAccessChanged();
     await request("/api/session", "DELETE");
     setAccess(null);
-    await loadAdmin({ allowGuest: true });
-  }, "Your saved login session has been cleared.", "Logging out…");
+    clearDevice("Login required to view this device.");
+    certificateIdentity(null);
+    byId("certificate-panel").hidden = true;
+    await Promise.all([loadAdmin({ allowGuest: true }), loadDevice(), loadCertificate()]);
+  }, "Browser login session cleared.", "Logging out…");
   if (signedOut) byId(authMode === null ? "api-key" : "refresh").focus();
 };
 byId("refresh").onclick = () => run(refresh, "Network state refreshed.", "Refreshing network state…");
@@ -311,7 +328,7 @@ setInterval(async () => {
   try {
     await Promise.allSettled([
       loadDevice({ background: true }), loadCertificate({ background: true }),
-      ...(authMode === null ? [] : [loadAdmin({ background: true })]),
+      loadAdmin({ background: true, allowGuest: authMode === null }),
     ]);
   } finally {
     pollingSelectors = false;

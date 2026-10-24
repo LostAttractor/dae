@@ -1,3 +1,4 @@
+import { apiOrigin, downloadCertificate } from "./api.ts";
 import type { ReactNode } from "react";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Popover } from "@cloudflare/kumo/components/popover";
@@ -25,7 +26,10 @@ export function CertificateDownload() {
       className={`certificate-downloads [&>[data-side]]:hidden w-72 max-w-[calc(100vw-24px)] gap-0 p-1.5 text-base outline-0 ${floating}`}>
       <Popover.Title className="sr-only">Download the CA certificate</Popover.Title>
       <ul className="grid gap-0.5">{downloads.map(({ href, label, hint, download }) => <li key={href}>
-        <a href={href} download={download || undefined} className="grid gap-0.5 rounded-md px-2.5 py-2 text-kumo-default no-underline outline-none hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand">
+        <a href={new URL(`/api/certificate${href}`, apiOrigin()).href} download={download || undefined} referrerPolicy={download ? undefined : "origin"} onClick={download ? (event) => {
+          event.preventDefault();
+          downloadCertificate(href.slice(4)).catch(error => { const target = document.getElementById("certificate-test-info"); if (target) target.textContent = String(error); });
+        } : undefined} className="grid gap-0.5 rounded-md px-2.5 py-2 text-kumo-default no-underline outline-none hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand">
           <span>{label}</span><span className="text-xs text-kumo-subtle">{hint}</span>
         </a>
       </li>)}</ul>

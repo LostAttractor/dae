@@ -194,7 +194,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if after := app.plane.MITMStatus(); !reflect.DeepEqual(after.Plugins, status.Plugins) || !reflect.DeepEqual(after.CompiledPlugins, status.CompiledPlugins) {
 		t.Fatalf("failed reload changed plugin status: %+v", after)
 	}
-	write("global { disable_waiting_network:true api_key:'new-key' log_level:debug }\nplugins { fixture {} }\nrouting { fallback:direct }")
+	write("global { disable_waiting_network:true log_level:debug }\napi { admin_key:'new-key' }\nplugins { fixture {} }\nrouting { fallback:direct }")
 	if _, err := app.reload(t.Context(), false, false); err != nil {
 		t.Fatal(err)
 	}

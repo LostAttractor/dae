@@ -17,11 +17,11 @@ import (
 func TestDeviceStatusRequiresLANIdentityEvenWithAdminKey(t *testing.T) {
 	for _, verified := range []bool{false, true} {
 		called := false
-		handler := NewHandler(Options{APIKey: "secret", ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
+		handler := NewHandler(Options{AdminKey: "secret", ResolveClient: func(source, destination netip.AddrPort) (api.ClientIdentity, error) {
 			if !verified {
-				return ClientIdentity{}, errors.New("not a LAN peer")
+				return api.ClientIdentity{}, errors.New("not a LAN peer")
 			}
-			return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 1}}, nil
+			return api.ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 1}}, nil
 		}, DeviceStatus: func(ip netip.Addr, mac [6]byte) api.DeviceStatus {
 			called = true
 			if ip.String() != "192.0.2.2" || mac != [6]byte{2, 1} {
@@ -29,10 +29,9 @@ func TestDeviceStatusRequiresLANIdentityEvenWithAdminKey(t *testing.T) {
 			}
 			return api.DeviceStatus{Scope: "userspace_upstream"}
 		}})
-		r := httptest.NewRequest("GET", "http://192.0.2.1:9080/api/device/status", nil)
+		r := httptest.NewRequest("GET", "https://192.0.2.1:9080/api/device/status", nil)
 		r.RemoteAddr = "192.0.2.2:45000"
 		r.Header.Set("Authorization", "Bearer secret")
-		r.Header.Set("X-Forwarded-For", "192.0.2.99")
 		r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)

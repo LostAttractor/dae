@@ -13,13 +13,13 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 
@@ -327,10 +327,10 @@ def main(binary, wan=False):
         settings_path = directory / "cache" / "runtime-state.json"
         env = dict(os.environ, DAE_LOCATION_CACHE=str(directory / "cache"))
         env.pop("NOTIFY_SOCKET", None)
-        text = "global { disable_waiting_network:true auto_config_kernel_parameter:true lan_interface:lan0 api_key:fixture-key api_port:18080 metrics_port:18081 pprof_port:18082 }\nclient { fixture { nftset:'inet/dae_replacement/clients' } }\nrouting { fallback:direct }\n"
+        text = "global { disable_waiting_network:true auto_config_kernel_parameter:true lan_interface:lan0 }\napi { listen:'127.0.0.1:18080' admin_key:fixture-key pprof:true }\nclient { fixture { nftset:'inet/dae_replacement/clients' } }\nrouting { fallback:direct }\n"
         if wan:
             text = text.replace("lan_interface:lan0", "lan_interface:lan0 wan_interface:wan0").replace("routing { fallback:direct }", f"routing {{ dip({subscription_host}) && dport({subscriptions.server_port}) -> block\n fallback:direct }}")
-        ports = (18080, 18081, 18082)
+        ports = (18080,)
         exec_dns_gaps = []
 
         def write_config(value):
@@ -400,7 +400,11 @@ def main(binary, wan=False):
                 assert any(path.name == "daemon_identity_map" and path.parent.parent.name == "guards" for path in pinned), pinned
 
         def api_request(method, path, body=None, management=False, timeout=2):
-            connection = http.client.HTTPConnection("127.0.0.1", ports[0], timeout=timeout)
+            if management:
+                trust = ssl.create_default_context(cafile=str(directory / "cache/pki/ca.pem"))
+                connection = http.client.HTTPSConnection("127.0.0.1", ports[0], timeout=timeout, context=trust)
+            else:
+                connection = http.client.HTTPConnection("localhost", timeout=timeout)
             try:
                 if not management:
                     connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -432,17 +436,15 @@ def main(binary, wan=False):
             return set(exported.get("elem", []))
 
         def listeners():
-            for port, path in zip(ports, ("/api/status", "/metrics", "/debug/pprof/")):
-                headers = {"Authorization": "Bearer fixture-key"} if port == ports[0] else {}
-                request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers)
-                with urllib.request.urlopen(request, timeout=2) as response:
-                    assert response.status == 200
+            for path in ("/api/status", "/metrics", "/debug/pprof/"):
+                status, body = api_request("GET", path, management=True)
+                assert status == 200, (path, status, body)
 
         def ready():
             try:
                 listeners()
                 return True
-            except (OSError, http.client.HTTPException):
+            except (OSError, http.client.HTTPException, AssertionError):
                 return False
 
         def reload(executable, *flags, success=True, replacement=False):
@@ -457,7 +459,7 @@ def main(binary, wan=False):
                 assert startups() == count + int(expected), "unexpected number of daemon startups"
                 assert_image(executable)
                 assert identity() == initial
-                if ports == (18080, 18081, 18082):
+                if ports == (18080,):
                     assert listener_identity(ports) == initial_listeners
                 if expected:
                     duplicate_run()
@@ -511,7 +513,7 @@ def main(binary, wan=False):
                     probe_subscription(True)
                 original_generation = generation()
                 original_startups = startups()
-                for invalid in ("invalid configuration", text.replace("lan_interface:lan0", "lan_interface:lan1"), text.replace("metrics_port:18081", "metrics_port:18080")):
+                for invalid in ("invalid configuration", text.replace("lan_interface:lan0", "lan_interface:lan1"), text.replace("listen:'127.0.0.1:18080'", "listen:invalid")):
                     write_config(invalid)
                     reload(binary, "--replace", success=False)
                     assert_image(binary)
@@ -592,15 +594,15 @@ def main(binary, wan=False):
                     listeners()
                     fd_counts.append(stable_fd_count())
                     assert_running_pins()
-                changed_text = text.replace("global {", "global { tproxy_port:12346 so_mark_from_dae:512").replace("api_port:18080", "api_port:18081").replace("metrics_port:18081", "metrics_port:18080").replace("pprof_port:18082", "pprof_port:18085")
+                changed_text = text.replace("global {", "global { tproxy_port:12346 so_mark_from_dae:512").replace("listen:'127.0.0.1:18080'", "listen:'127.0.0.1:18081'")
                 write_config(changed_text)
-                ports = (18081, 18080, 18085)
+                ports = (18081,)
                 reload(str(different), "--replace")
                 traffic()
                 listeners()
                 try:
-                    with socket.create_connection(("127.0.0.1", 18082), timeout=2):
-                        raise AssertionError("old pprof listener remains open")
+                    with socket.create_connection(("127.0.0.1", 18080), timeout=2):
+                        raise AssertionError("old API listener remains open")
                 except ConnectionRefusedError:
                     pass
                 assert len(set(fd_counts)) == 1, fd_counts
@@ -632,7 +634,8 @@ def main(binary, wan=False):
                     if failure == "settings":
                         settings_path.write_text("invalid settings")
                     else:
-                        write_config(changed_text.replace("api_port:18081", "api_port:53"))  # The fixture's host TCP DNS listener already owns this port.
+                        host, port = dns_tcp.getsockname()
+                        write_config(changed_text.replace("listen:'127.0.0.1:18081'", f"listen:'{host}:{port}'"))
                     before_startups = startups()
                     failed_reload = subprocess.Popen([binary, "reload", "--replace"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                     assert master.wait(timeout=20) != 0, f"{failure} failure unexpectedly kept the retired daemon alive"

@@ -8,29 +8,20 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
+	"net/http/httptest"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
 func prepareAPIOnUnusedPort(t *testing.T, current *apiserver.Server) *apiserver.Server {
 	t.Helper()
 	for range 10 {
-		listener, err := net.Listen("tcp", ":0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := uint16(listener.Addr().(*net.TCPAddr).Port)
-		if err := listener.Close(); err != nil {
-			t.Fatal(err)
-		}
-		server, err := prepareAPIServer(current, port, false)
-		// Only another binder winning the release/rebind window is retryable.
+		server, _, err := prepareAPIServer(current, localAPIConfig(freeLocalPort(t)), nil, nil, false)
 		if errors.Is(err, syscall.EADDRINUSE) {
 			continue
 		}
@@ -68,7 +59,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	server.SetHandler(handler("old CA and settings"))
 
 	// Building a candidate must not change the active page or its settings.
-	same, err := prepareAPIServer(server, port, false)
+	same, _, err := prepareAPIServer(server, localAPIConfig(port), nil, nil, false)
 	if err != nil || same != server {
 		t.Fatalf("unchanged port replaced listener: %v", err)
 	}
@@ -84,7 +75,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	}
 	defer occupied.Close()
 	port = uint16(occupied.Addr().(*net.TCPAddr).Port)
-	if _, err := prepareAPIServer(server, port, false); err == nil {
+	if _, _, err := prepareAPIServer(server, localAPIConfig(port), nil, nil, false); err == nil {
 		t.Fatal("occupied port accepted")
 	}
 	check(server, http.StatusOK, "new CA and settings")
@@ -97,7 +88,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	next.SetHandler(handler("changed port"))
 	check(next, http.StatusOK, "changed port")
 
-	if result, err := prepareAPIServer(next, 0, false); result != nil || err != nil {
+	if result, _, err := prepareAPIServer(next, config.API{}, nil, nil, false); result != nil || err != nil {
 		t.Fatalf("disabled server = %v, %v", result, err)
 	}
 	next.Close()
@@ -108,74 +99,32 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	}
 }
 
-func TestAPIPortServesWebAndReservesAPIRoutes(t *testing.T) {
-	for _, external := range []bool{false, true} {
-		t.Run(fmt.Sprint("external=", external), func(t *testing.T) {
-			directory := ""
-			if external {
-				directory = t.TempDir()
-				if err := os.WriteFile(filepath.Join(directory, "index.html"), []byte("independent UI"), 0644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(filepath.Join(directory, "chunks"), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(directory, "chunks", "new.js"), []byte("export const ready = true;"), 0644); err != nil {
-					t.Fatal(err)
-				}
-				// Even a conflicting static file cannot shadow an API/certificate operation.
-				if err := os.WriteFile(filepath.Join(directory, "ca.pem"), []byte("wrong certificate"), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("DAE_WEB_ROOT", directory)
-			server := prepareAPIOnUnusedPort(t, nil)
-			defer server.Close()
-			server.SetHandler(daemonAPIHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, `{"source":"API"}`)
-			})))
-			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
-			defer client.CloseIdleConnections()
-			for _, path := range []string{"/", "/api/status", "/api/selectors", "/ca.pem", "/chunks/new.js", "/webui.go", "/Makefile", "/README.md", "/src/app.js"} {
-				r, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", server.Addr().(*net.TCPAddr).Port, path))
-				if err != nil {
-					t.Fatal(err)
-				}
-				body, err := io.ReadAll(r.Body)
-				r.Body.Close()
-				if err != nil {
-					t.Fatal(err)
-				}
-				switch path {
-				case "/":
-					if r.StatusCode != 200 {
-						t.Fatal("Web unavailable on api_port", r.StatusCode)
-					}
-					if external && string(body) != "independent UI" {
-						t.Fatal("external UI not served")
-					}
-					if !external && !strings.Contains(r.Header.Get("Content-Type"), "text/html") {
-						t.Fatal("embedded UI not served")
-					}
-				case "/api/status", "/api/selectors", "/ca.pem":
-					if string(body) != `{"source":"API"}` {
-						t.Fatalf("static files shadowed %s: %s", path, body)
-					}
-				case "/chunks/new.js":
-					want := 404
-					if external {
-						want = 200
-					}
-					if r.StatusCode != want {
-						t.Fatal("new UI assets require daemon changes")
-					}
-				case "/webui.go", "/Makefile", "/README.md", "/src/app.js":
-					if r.StatusCode != 404 {
-						t.Fatalf("development file exposed as a Web asset: %s", path)
-					}
-				}
-			}
-		})
+func localAPIConfig(port uint16) config.API {
+	return config.API{Listen: fmt.Sprintf("127.0.0.1:%d", port)}
+}
+
+func TestWebSwitchPreservesAPIAndMonitoring(t *testing.T) {
+	handler := daemonAPIHandler(apiserver.NewHandler(apiserver.Options{
+		AdminKey: "admin", Pprof: true,
+		Status:  func() *api.StatusSnapshot { return &api.StatusSnapshot{} },
+		Metrics: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "metric 1\n") }),
+	}), false)
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+	for _, path := range []string{"/", "/api/status", "/metrics", "/debug/pprof/goroutine?debug=1"} {
+		r, _ := http.NewRequestWithContext(t.Context(), "GET", server.URL+path, nil)
+		r.Header.Set("Authorization", "Bearer admin")
+		response, err := server.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		want := 200
+		if path == "/" {
+			want = 404
+		}
+		if response.StatusCode != want {
+			t.Fatalf("%s: %d", path, response.StatusCode)
+		}
 	}
 }

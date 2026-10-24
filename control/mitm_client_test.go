@@ -20,7 +20,7 @@ import (
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/config"
 )
 
 func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
@@ -55,15 +55,16 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
 	other := [6]byte{2, 0, 0, 0, 0, 11}
 	var resolveError error
-	resolve := func(peer, _ netip.AddrPort) (apiserver.ClientIdentity, error) {
+	resolve := func(peer, _ netip.AddrPort) (api.ClientIdentity, error) {
 		source := peer.Addr()
 		if source != ip {
 			t.Fatalf("unexpected source: %s", source)
 		}
-		return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, resolveError
+		return api.ClientIdentity{LinkType: "ethernet", MAC: mac}, resolveError
 	}
-	handler := plane.apiHandler("test", resolve, nil, nil)
-	endpoint := "http://192.0.2.1:8081/api/device/mitm"
+	handler := plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", resolve, nil, nil)
+	endpoint := "https://192.0.2.1:8081/api/device/mitm"
+	proxied := false
 	request := func(method, path, body string, code int) api.MITMState {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -75,9 +76,10 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		r.RemoteAddr = net.JoinHostPort(ip.String(), "45000")
 		r.Header.Set("X-Dae-MITM", authority.Fingerprint())
 		r.Header.Set("X-Dae-API", "1")
-		// Forwarding headers cannot choose which device is changed.
-		r.Header.Set("X-Forwarded-For", "192.0.2.11")
-		r.Header.Set("Forwarded", "for=192.0.2.11")
+		if proxied {
+			r.Header.Set("X-Forwarded-For", "192.0.2.11")
+			r.Header.Set("Forwarded", "for=192.0.2.11")
+		}
 		if method == http.MethodPut {
 			r.Header.Set("Content-Type", "application/json")
 		}
@@ -102,11 +104,17 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	// The production resolver must reject every device endpoint when no LAN is
 	// configured, even if the caller knows the CA fingerprint.
-	handler = plane.APIHandler("test", nil, nil)
+	handler = plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", nil, nil, nil)
 	request("GET", endpoint, "", 403)
 	request("PUT", endpoint, `{"enabled":true}`, 403)
 	request("DELETE", endpoint, "", 403)
-	handler = plane.apiHandler("test", resolve, nil, nil)
+	handler = plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", resolve, nil, nil)
+	// A proxy can neither choose an identity nor act on its own LAN identity.
+	proxied = true
+	request("GET", endpoint, "", 403)
+	request("PUT", endpoint, `{"enabled":true}`, 403)
+	request("DELETE", endpoint, "", 403)
+	proxied = false
 	if state := request("GET", endpoint, "", 200); state.Enabled || state.Override != nil {
 		t.Fatalf("default state: %+v", state)
 	}
@@ -120,7 +128,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	// A new plane restores the saved settings with its configured defaults.
 	// Retired planes keep their own published policy, just like their routing predicates.
 	reloaded := makePlane([]string{"all"})
-	handler = reloaded.apiHandler("test", resolve, nil, nil)
+	handler = reloaded.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", resolve, nil, nil)
 	state = request("PUT", endpoint, `{"enabled":false}`, 200)
 	if state.Enabled || state.Override == nil || *state.Override || selected(reloaded, mac) || !selected(reloaded, other) || !selected(plane, mac) {
 		t.Fatalf("device disable did not override all across reload: %+v", state)

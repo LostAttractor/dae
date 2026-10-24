@@ -45,8 +45,8 @@ func configurePlugins(conf *config.Config, definitions map[string]plugin.Definit
 			return nil, fmt.Errorf("plugin ID %q is reserved for MITM verification", spec.Name)
 		}
 	}
-	if conf.MITM.Enabled && conf.Global.APIPort != 0 {
-		if _, err := mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6); err != nil {
+	if conf.MITM.Enabled && conf.API.Port() != 0 {
+		if _, err := mitmverify.ParseTargets(conf.API.MITMTestIPv4, conf.API.MITMTestIPv6); err != nil {
 			return nil, err
 		}
 	}
@@ -55,7 +55,7 @@ func configurePlugins(conf *config.Config, definitions map[string]plugin.Definit
 
 func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Authority, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string, runtime *control.Runtime) (control.PreparedMITM, error) {
 	m := conf.MITM
-	if len(conf.Plugins) == 0 && !(m.Enabled && conf.Global.APIPort != 0) {
+	if len(conf.Plugins) == 0 && !(m.Enabled && conf.API.Port() != 0) {
 		return control.PreparedMITM{}, nil
 	}
 	base := common.CacheDirectory()
@@ -68,8 +68,8 @@ func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Autho
 	var diagnosticPlan plugin.Plan
 	var targets [2]netip.Addr
 	var addresses []net.Addr
-	if authority != nil && conf.Global.APIPort != 0 {
-		targets, err = mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6)
+	if authority != nil && conf.API.Port() != 0 {
+		targets, err = mitmverify.ParseTargets(conf.API.MITMTestIPv4, conf.API.MITMTestIPv6)
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}

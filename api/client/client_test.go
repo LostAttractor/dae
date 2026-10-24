@@ -161,6 +161,8 @@ func TestEndpointNormalization(t *testing.T) {
 		{"https://[2001:0DB8:0:0:0:0:0:1]:09443", "https://[2001:db8::1]:9443"},
 		{"http://[2001:DB8::1]:00080/", "http://[2001:db8::1]"},
 		{"https://[0:0:0:0:0:FFFF:7F00:1]:443", "https://[::ffff:127.0.0.1]"},
+		{"https://[FE80::1%25LAN]:00443/", "https://[fe80::1%25LAN]"},
+		{"https://[fe80::1%25LAN]:09080", "https://[fe80::1%25LAN]:9080"},
 		{"unix:///tmp/dae.sock", "http://localhost"},
 	} {
 		t.Run(test.endpoint, func(t *testing.T) {
@@ -181,7 +183,7 @@ func TestEndpointValidation(t *testing.T) {
 		"/var/run/dae.sock", "unix://host/tmp/sock", "unix:///", "http://user:pass@127.0.0.1",
 		"http://127.0.0.1/api", "http://127.0.0.1?", "http://127.0.0.1/#token", "https://127.0.0.1#",
 		"https://:443", "https://127.0.0.1:", "https://127.0.0.1:0", "https://127.0.0.1:65536",
-		"https://[not-an-ip]", "https://[127.0.0.1]", "https://::1", "https://[fe80::1%25eth0]", "https://*.example",
+		"https://[not-an-ip]", "https://[127.0.0.1]", "https://::1", "https://[2001:db8::1%25eth0]", "https://[fe80::1%25LAN]:", "https://*.example",
 	} {
 		if c, err := New(Options{Endpoint: endpoint}); err == nil {
 			c.Close()
@@ -190,6 +192,17 @@ func TestEndpointValidation(t *testing.T) {
 	}
 	if _, err := New(Options{Timeout: -time.Second}); err == nil {
 		t.Error("negative timeout accepted")
+	}
+}
+
+func TestScopedEndpointOrigin(t *testing.T) {
+	c, err := New(Options{Endpoint: "https://[fe80::1%25LAN]:9080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.origin != "https://[fe80::1]:9080" {
+		t.Fatalf("challenge origin = %q", c.origin)
 	}
 }
 

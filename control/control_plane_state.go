@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 
@@ -56,8 +57,8 @@ type planeHTTP struct {
 type planeAPI struct {
 	settings   *settings.Store
 	settingsMu sync.Mutex
-	apiKey     string
+	apiListen  string
 	apiPort    uint16
 	clients    map[string]config.Client
-	apiBypass  []bpfIpPort
+	apiBypass  []netip.AddrPort
 }

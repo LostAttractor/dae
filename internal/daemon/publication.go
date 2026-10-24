@@ -21,9 +21,11 @@ type preparedPlane struct {
 	plane       *control.ControlPlane
 	api         *apiserver.Server
 	previousAPI *apiserver.Server
+	apiUpdate   *apiserver.InterfaceUpdate
 }
 
 func (p *preparedPlane) closeAPI() {
+	p.apiUpdate.Rollback()
 	if p.api != p.previousAPI {
 		p.api.Close()
 	}
@@ -47,11 +49,15 @@ func (a *application) assemblePlane(ctx context.Context, conf *config.Config, in
 		return nil, errors.Join(err, plane.Close())
 	}
 	plane.SetPluginConfiguration(conf.Plugins, slices.Sorted(maps.Keys(a.definitions)))
-	api, err := prepareAPIServer(a.managementAPI, conf.Global.APIPort, a.staging)
+	manager, err := a.datapath.Interfaces()
 	if err != nil {
 		return nil, errors.Join(err, plane.Close())
 	}
-	return &preparedPlane{plane: plane, api: api, previousAPI: a.managementAPI}, nil
+	api, update, err := prepareAPIServer(a.managementAPI, conf.API, conf.Global.LanInterface, manager, a.staging)
+	if err != nil {
+		return nil, errors.Join(err, plane.Close())
+	}
+	return &preparedPlane{plane: plane, api: api, previousAPI: a.managementAPI, apiUpdate: update}, nil
 }
 
 // publishPlane adopts both resources only after successful routing publication.
@@ -64,6 +70,9 @@ func (a *application) publishPlane(candidate *preparedPlane, abort bool) error {
 			return errors.Join(err, candidate.plane.Close())
 		}
 		return &activationError{err}
+	}
+	if !a.staging {
+		candidate.apiUpdate.Commit()
 	}
 	a.plane = candidate.plane
 	if a.managementAPI != candidate.api {

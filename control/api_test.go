@@ -44,10 +44,10 @@ func newAPITestPlaneWithPolicy(t *testing.T, store *settings.Store, policy diale
 	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, policy)
 	t.Cleanup(func() { _ = group.Close() })
 	_, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
-	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingState: matcher.routingState, routingMatcher: matcher}
+	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, routingState: matcher.routingState, routingMatcher: matcher}
 }
 func apiTestRequest(handler http.Handler, method, path, body, token string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, "http://192.0.2.1:9080"+path, strings.NewReader(body))
+	r := httptest.NewRequest(method, "https://192.0.2.1:9080"+path, strings.NewReader(body))
 	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
 	r.RemoteAddr = "192.0.2.10:45000"
 	r.Header.Set("X-Dae-API", "1")
@@ -63,15 +63,15 @@ func testClientMAC(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
 	return [6]byte{2, 0, 0, 0, 0, 10}, nil
 }
 
-func testClientIngress(source, destination netip.AddrPort) (apiserver.ClientIdentity, error) {
+func testClientIngress(source, destination netip.AddrPort) (api.ClientIdentity, error) {
 	mac, err := testClientMAC(source, destination)
-	return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, err
+	return api.ClientIdentity{LinkType: "ethernet", MAC: mac}, err
 }
 
 func TestAPIIPIngressCapabilities(t *testing.T) {
 	plane := diagnosticPlane(t, "client(gaming) -> block\nsip(192.0.2.10) -> direct", "")
-	resolve := func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
-		return apiserver.ClientIdentity{LinkType: "ip", IfIndex: 8}, nil
+	resolve := func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+		return api.ClientIdentity{LinkType: "ip", IfIndex: 8}, nil
 	}
 	handler := plane.apiHandler("test", resolve, nil, nil)
 	for _, path := range []string{"/api/selectors", "/api/device/context"} {
@@ -90,7 +90,7 @@ func TestAPIIPIngressCapabilities(t *testing.T) {
 		`{"context":{},"flow":{"destination":{"ip":"198.51.100.10","port":443}}}`,
 		`{"kind":"dns","context":{},"flow":{"destination":{}},"dns":{"name":"example.test"}}`,
 	} {
-		if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", body, ""); w.Code != 200 {
+		if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", body, "test-secret"); w.Code != 200 {
 			t.Fatalf("IP explanation: %d %s", w.Code, w.Body.String())
 		}
 	}
@@ -99,15 +99,14 @@ func TestAPIIPIngressCapabilities(t *testing.T) {
 		{"PUT", "/api/device/sets/gaming", ""},
 		{"POST", "/api/device/sets/gaming/impact", `{"joined":true,"context":{}}`},
 	} {
-		if w := apiTestRequest(handler, test.method, test.path, test.body, ""); w.Code != 403 {
+		if w := apiTestRequest(handler, test.method, test.path, test.body, "test-secret"); w.Code != 403 {
 			t.Fatalf("MAC-only %s: %d %s", test.path, w.Code, w.Body.String())
 		}
 	}
-	if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", `{"context":{"link_type":"ethernet"},"flow":{"destination":{}}}`, ""); w.Code != 400 {
+	if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", `{"context":{"link_type":"ethernet"},"flow":{"destination":{}}}`, "test-secret"); w.Code != 400 {
 		t.Fatalf("caller changed link identity: %d %s", w.Code, w.Body.String())
 	}
-	plane.apiKey = "test-secret"
-	handler = plane.apiHandler("test", resolve, nil, nil)
+	handler = plane.apiHandlerWithPolicy(config.API{AdminKey: "test-secret"}, "test", resolve, nil, nil)
 	if w := apiTestRequest(handler, "GET", "/api/selectors", "", ""); w.Code != 401 {
 		t.Fatalf("IP ingress bypassed API key: %d %s", w.Code, w.Body.String())
 	}
@@ -128,7 +127,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	selected := group.Dialers[1].StatsID()
 	body := `{"node_id":"` + selected + `"}`
 	// Global selectors remain available when no device-facing LAN is configured.
-	production := plane.APIHandler("test", nil, nil)
+	production := plane.apiHandler("test", nil, nil, nil)
 	if w := apiTestRequest(production, "GET", "/api/selectors", "", "test-secret"); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -143,7 +142,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 		method, path, body, token string
 		code                      int
 	}{
-		{"GET", "/api/selectors", "", "", 401},
+		{"GET", "/api/selectors", "", "", 200},
 		{"GET", "/api/selectors", "", "wrong", 401},
 		{"GET", "/api/selectors", "", "test-secret", 200},
 		{"GET", "/api/device", "", "", 200},
@@ -203,14 +202,13 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != nil {
 		t.Fatal("selector reset failed")
 	}
-	plane.apiKey = ""
 	// Configuration changes publish a new handler, as on daemon reload.
-	handler = plane.apiHandler("test", testClientIngress, nil, nil)
-	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, ""); w.Code != 200 || group.Selection() != selected {
-		t.Fatal("keyless LAN selector mutation failed", w.Code, w.Body.String())
+	handler = plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", testClientIngress, nil, nil)
+	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, ""); w.Code != 401 || group.Selection() != group.DefaultSelection() {
+		t.Fatal("LAN gained administrator privileges without a key", w.Code, w.Body.String())
 	}
-	if w := apiTestRequest(plane.APIHandler("test", nil, nil), "PUT", "/api/selectors/proxy", body, "test-secret"); w.Code != 403 {
-		t.Fatal("keyless selector mutation bypassed LAN identification", w.Code, w.Body.String())
+	if w := apiTestRequest(plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", nil, nil, nil), "PUT", "/api/selectors/proxy", body, "test-secret"); w.Code != 401 {
+		t.Fatal("removed administrator key still authorized mutation", w.Code, w.Body.String())
 	}
 	// Device self-service uses the same LAN identity boundary.
 	if w := apiTestRequest(handler, "PUT", "/api/device/sets/gaming", "", ""); w.Code != 200 {
@@ -329,8 +327,8 @@ func TestDeviceAPIReportsIdentityFailureWithoutHidingSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
-		return apiserver.ClientIdentity{}, net.ErrClosed
+	handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+		return api.ClientIdentity{}, net.ErrClosed
 	}, nil, nil)
 	for _, path := range []string{"/api/device", "/api/device/sets/gaming"} {
 		method := "GET"
@@ -359,7 +357,7 @@ func TestGlobalAPIRequiresMutationHeader(t *testing.T) {
 	plane := newAPITestPlane(t, store)
 	handler := plane.apiHandler("test", testClientIngress, nil, nil)
 	for _, path := range []string{"/api/device/sets/gaming", "/api/selectors/proxy"} {
-		r := httptest.NewRequest("PUT", "http://192.0.2.1:9080"+path, nil)
+		r := httptest.NewRequest("PUT", "https://192.0.2.1:9080"+path, nil)
 		r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
 		r.RemoteAddr = "192.0.2.10:45000"
 		r.Header.Set("Authorization", "Bearer test-secret")

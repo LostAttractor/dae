@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 type scriptTriggerFunc func(context.Context, string, api.ScriptRunRequest) (api.ScriptRunResponse, error)
@@ -51,14 +52,14 @@ func TestScriptAPIValidationAndErrors(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			handler := NewHandler(Options{APIKey: "secret", Scripts: scriptTriggerFunc(func(_ context.Context, instance string, request api.ScriptRunRequest) (api.ScriptRunResponse, error) {
+			handler := NewHandler(Options{AdminKey: "secret", Scripts: scriptTriggerFunc(func(_ context.Context, instance string, request api.ScriptRunRequest) (api.ScriptRunResponse, error) {
 				calls++
-				if instance != "personal" || request.Script != "签到" || (test.want == 202 && request.Module != "youpin") {
+				if instance != "personal" || request.Script != "签到" || (test.name == "accepted" && request.Module != "youpin") {
 					t.Errorf("wrong selection: %s %+v", instance, request)
 				}
 				return api.ScriptRunResponse{Instance: instance, Module: "youpin", Run: 3, Status: api.ScriptTaskStatus{Name: request.Script, Scope: "local", Type: "cron", Runs: 3, State: "waiting", LastTrigger: "http-api"}}, test.storeErr
 			})})
-			r := httptest.NewRequest("POST", "http://192.0.2.1:8081/api/plugins/personal/scripts/run", strings.NewReader(test.body))
+			r := httptest.NewRequest("POST", "https://192.0.2.1:8081/api/plugins/personal/scripts/run", strings.NewReader(test.body))
 			r = r.WithContext(context.WithValue(t.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 8081}))
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("X-Dae-API", test.marker)
@@ -88,7 +89,7 @@ func TestScriptAPIValidationAndErrors(t *testing.T) {
 
 func TestScriptAPIClientRoundTrip(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(NewHandler(Options{APIKey: "secret", Scripts: scriptTriggerFunc(func(_ context.Context, instance string, request api.ScriptRunRequest) (api.ScriptRunResponse, error) {
+	server := httptest.NewTLSServer(NewHandler(Options{AdminKey: "secret", Scripts: scriptTriggerFunc(func(_ context.Context, instance string, request api.ScriptRunRequest) (api.ScriptRunResponse, error) {
 		calls++
 		if instance != "personal" || request.Module != "小米有品" || request.Script != "有品签到" || request.MAC != "02:00:00:00:00:50" {
 			t.Errorf("selection lost: %s %+v", instance, request)
@@ -99,7 +100,7 @@ func TestScriptAPIClientRoundTrip(t *testing.T) {
 		return api.ScriptRunResponse{Instance: instance, Module: request.Module, Run: 1, Status: api.ScriptTaskStatus{Name: request.Script, Scope: "device", MAC: request.MAC, Type: "generic", Runs: 1, State: "waiting"}}, nil
 	})}))
 	defer server.Close()
-	remote, err := client.New(client.Options{Endpoint: server.URL, APIKey: "secret"})
+	remote, err := client.New(client.Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server), APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

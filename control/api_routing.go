@@ -3,43 +3,128 @@
 package control
 
 import (
+	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
+	"syscall"
 
-	"github.com/cilium/ebpf"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"golang.org/x/sys/unix"
 )
 
-func (p *preparedRules) bypassLocalAPI(port uint16) error {
-	if port == 0 {
-		return nil
+func (p *preparedRules) bypassLocalAPI(listen string) error {
+	address, port, lan, err := config.ParseAPIEndpoint(listen)
+	if err != nil || port == 0 {
+		return err
 	}
+	if !lan {
+		endpoint, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := endpoint.Addr().Unmap(); !ip.IsUnspecified() {
+			p.bypassAPI(port, []net.Addr{&net.IPNet{IP: ip.AsSlice(), Mask: net.CIDRMask(ip.BitLen(), ip.BitLen())}})
+			return nil
+		}
+	}
+	ipv4, ipv6, err := apiListenFamilies(address)
+	if err != nil {
+		return fmt.Errorf("read API listen address families: %w", err)
+	}
+	// LAN binding constrains ingress interfaces, not the local destination IPs.
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
 		return fmt.Errorf("read host addresses for API routing: %w", err)
 	}
+	addresses = slices.DeleteFunc(addresses, func(address net.Addr) bool {
+		prefix, err := netip.ParsePrefix(address.String())
+		return err != nil || prefix.Addr().Unmap().Is4() && !ipv4 || prefix.Addr().Unmap().Is6() && !ipv6
+	})
 	p.bypassAPI(port, addresses)
 	return nil
 }
 
-// APIRoutingCurrent checks the host-address input to the installed API bypass.
-// Reload must replace routing when this input changes, even with identical config.
+// Go's tcp wildcard (including 0.0.0.0) may select a dual-stack IPv6 socket.
+// Inspect its chosen socket after default options, then abort before binding.
+func apiListenFamilies(address string) (ipv4, ipv6 bool, err error) {
+	inspected := errors.New("API listen socket inspected")
+	lc := net.ListenConfig{Control: func(network, _ string, raw syscall.RawConn) error {
+		ipv4, ipv6 = network == "tcp4", network == "tcp6"
+		if ipv6 {
+			var optionErr error
+			if err := raw.Control(func(fd uintptr) {
+				var only int
+				only, optionErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_V6ONLY)
+				ipv4 = only == 0
+			}); err != nil {
+				return err
+			}
+			if optionErr != nil {
+				return optionErr
+			}
+		}
+		return inspected
+	}}
+	_, err = lc.Listen(context.Background(), "tcp", address)
+	if errors.Is(err, inspected) {
+		err = nil
+	}
+	return ipv4, ipv6, err
+}
+
+// APIAddressChanges coalesces host address changes for serialized daemon publication.
+func (c *ControlPlane) APIAddressChanges() <-chan struct{} {
+	return c.core.apiAddressChanges
+}
+
+// APIRoutingCurrent compares the endpoint's exact address set with its bypass.
 func (c *ControlPlane) APIRoutingCurrent() (bool, error) {
 	var current preparedRules
-	if err := current.bypassLocalAPI(c.apiPort); err != nil {
+	if err := current.bypassLocalAPI(c.apiListen); err != nil {
 		return false, err
 	}
 	return c.matchesAPIBypass(current.apiBypass), nil
 }
 
-func (c *ControlPlane) matchesAPIBypass(current []bpfIpPort) bool {
+// RefreshAPIRouting atomically replaces the shared bypass/exemption address set.
+// The daemon serializes it with configuration changes; no generation is retired.
+func (c *ControlPlane) RefreshAPIRouting(ctx context.Context) error {
+	c.core.lifecycleMu.Lock()
+	defer c.core.lifecycleMu.Unlock()
+	if c.closedDone.Load() {
+		return net.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var current preparedRules
+	if err := current.bypassLocalAPI(c.apiListen); err != nil {
+		return err
+	}
+	if c.matchesAPIBypass(current.apiBypass) {
+		return nil
+	}
+	if c.routingState.apiSetSlot == nil {
+		return fmt.Errorf("API address set is not installed")
+	}
+	if err := c.routingState.replacePrefixes(int(*c.routingState.apiSetSlot), apiBypassPrefixes(current.apiBypass), c.kernelReady); err != nil {
+		return fmt.Errorf("refresh API address set: %w", err)
+	}
+	c.apiBypass = current.apiBypass
+	return nil
+}
+
+func (c *ControlPlane) matchesAPIBypass(current []netip.AddrPort) bool {
 	// Interface order and duplicate addresses do not change the exact
 	// address/port set installed in the kernel.
-	seen := make(map[bpfIpPort]bool, len(current))
+	seen := make(map[netip.AddrPort]bool, len(current))
 	for _, key := range current {
 		seen[key] = false
 	}
@@ -57,14 +142,13 @@ func (c *ControlPlane) matchesAPIBypass(current []bpfIpPort) bool {
 	return true
 }
 
-// Preserve the original LAN peer for the daemon's HTTP API, including when the
-// configured fallback is a proxy. Only exact host addresses and this TCP port
-// bypass routing; changes to interface addresses are picked up on reload.
+// Preserve the original LAN peer for the daemon's HTTP API. Only exact host
+// addresses and this TCP port bypass routing, never their surrounding subnets.
 func (p *preparedRules) bypassAPI(port uint16, addresses []net.Addr) {
+	p.apiPort, p.apiBypass = port, nil
 	if port == 0 {
 		return
 	}
-	var hosts []*config_parser.Param
 	seen := make(map[netip.Addr]bool)
 	for _, address := range addresses {
 		prefix, err := netip.ParsePrefix(address.String())
@@ -75,45 +159,48 @@ func (p *preparedRules) bypassAPI(port uint16, addresses []net.Addr) {
 		if (!ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() && !ip.IsLoopback()) || seen[ip] {
 			continue
 		}
-		key := bpfIpPort{Port: common.Htons(port)}
-		key.Ip.U6Addr8 = ip.As16()
-		p.apiBypass = append(p.apiBypass, key)
-		hosts = append(hosts, &config_parser.Param{Val: ip.String()})
+		p.apiBypass = append(p.apiBypass, netip.AddrPortFrom(ip, port))
 		seen[ip] = true
 	}
-	if len(hosts) == 0 {
-		return
-	}
-	rule := &config_parser.RoutingRule{
-		AndFunctions: []*config_parser.Function{
-			{Name: "dip", Params: hosts},
-			{Name: "dport", Params: []*config_parser.Param{{Val: strconv.Itoa(int(port))}}},
-			{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}}},
-		},
-		Outbound: config_parser.Function{Name: consts.OutboundDirect.String()},
-	}
-	p.bypass = append(p.bypass, rule)
 }
 
-// The API changes membership itself, so its local TCP connection must survive
-// that change. Refresh the same exact address/port exclusions on activation.
-func (c *ControlPlane) updateRouteExemptions() error {
-	m := c.core.bpf.RouteExemptMap
-	var key bpfIpPort
-	var value uint8
-	it := m.Iterate()
-	for it.Next(&key, &value) {
-		if err := m.Delete(&key); err != nil {
-			return err
-		}
+func apiBypassPrefixes(addresses []netip.AddrPort) []netip.Prefix {
+	prefixes := make([]netip.Prefix, len(addresses))
+	for i, address := range addresses {
+		ip := address.Addr()
+		prefixes[i] = netip.PrefixFrom(ip, ip.BitLen())
 	}
-	if err := it.Err(); err != nil {
-		return err
+	slices.SortFunc(prefixes, netip.Prefix.Compare)
+	return slices.Compact(prefixes)
+}
+
+func (b *RoutingMatcherBuilder) compileAPIBypass(p *preparedRules) {
+	if p.apiPort == 0 {
+		return
 	}
-	for _, key := range c.apiBypass {
-		if err := m.Update(&key, uint8(1), ebpf.UpdateAny); err != nil {
-			return err
-		}
+	// A dedicated slot prevents live API addresses from mutating static dip rules.
+	b.apiSetSlot = new(uint32(len(b.simulatedLpmTries)))
+	b.simulatedLpmTries = append(b.simulatedLpmTries, apiBypassPrefixes(p.apiBypass))
+	var slot [16]byte
+	binary.LittleEndian.PutUint32(slot[:], *b.apiSetSlot)
+	start := uint32(len(b.rules))
+	b.rules = append(b.rules,
+		bpfMatchSet{Type: uint8(consts.MatchType_IpSet), Action: uint8(consts.MatchActionAnd), Value: slot},
+		bpfMatchSet{Type: uint8(consts.MatchType_Port), Action: uint8(consts.MatchActionAnd), Value: encodePortRange([2]uint16{p.apiPort, p.apiPort})},
+		bpfMatchSet{Type: uint8(consts.MatchType_L4Proto), Action: uint8(consts.MatchActionRoute), Flags: matchFlagBypass,
+			Outbound: uint8(consts.OutboundDirect), Value: [16]byte{byte(consts.L4ProtoType_TCP)}},
+	)
+	// Describe the live set, not address literals that diagnostics would retain after a refresh.
+	rule := &config_parser.RoutingRule{
+		AndFunctions: []*config_parser.Function{
+			{Name: "dip", Params: []*config_parser.Param{{Val: "<API addresses>"}}},
+			{Name: "dport", Params: []*config_parser.Param{{Val: strconv.Itoa(int(p.apiPort))}}},
+			{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}}},
+		},
+		Outbound: config_parser.Function{Name: "direct"},
 	}
-	return nil
+	for i, function := range rule.AndFunctions {
+		b.rememberMatch(int(start)+i, function)
+	}
+	b.rememberRule(start, rule, "api_bypass", "routing")
 }

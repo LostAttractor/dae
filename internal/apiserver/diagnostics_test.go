@@ -38,13 +38,10 @@ func (d *accessDiagnostics) DiagnosticDeviceContext(input api.DiagnosticContext)
 }
 
 func TestDiagnosticAuthorizationMatrix(t *testing.T) {
-	identity := ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}, IfIndex: 5}
-	verified := func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) { return identity, nil }
-	login := sessionRequest(t, NewHandler(Options{APIKey: "secret"}), "PUT", "/api/session", "", map[string]string{"Authorization": "Bearer secret", "X-Dae-API": "1"})
-	if login.Code != 204 {
-		t.Fatal(login.Code, login.Body.String())
-	}
-	cookie := login.Result().Cookies()[0].String()
+	identity := api.ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}, IfIndex: 5}
+	verified := func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) { return identity, nil }
+	cookie := loginCookie(t, NewHandler(Options{AdminKey: "secret"}), "secret")
+	token := cookie.Name + "=" + cookie.Value
 	for _, test := range []struct {
 		name, key, bearer, cookie    string
 		lan, ipOnly, unix            bool
@@ -53,18 +50,18 @@ func TestDiagnosticAuthorizationMatrix(t *testing.T) {
 		{name: "keyed LAN", key: "secret", lan: true, admin: 401, self: 401, device: 401, context: 200},
 		{name: "keyed IP LAN", key: "secret", lan: true, ipOnly: true, admin: 401, self: 401, device: 401, context: 200},
 		{name: "keyed unknown ingress", key: "secret", admin: 401, self: 401, device: 401, context: 403},
-		{name: "keyless LAN", lan: true, admin: 200, self: 200, device: 200, context: 200},
-		{name: "keyless IP LAN", lan: true, ipOnly: true, admin: 200, self: 200, device: 403, context: 200},
-		{name: "keyless unknown ingress", admin: 403, self: 403, device: 403, context: 403},
-		{name: "keyless stale credentials", lan: true, bearer: "old", cookie: "dae_session=old", admin: 200, self: 200, device: 200, context: 200},
+		{name: "keyless LAN", lan: true, admin: 401, self: 401, device: 401, context: 200},
+		{name: "keyless IP LAN", lan: true, ipOnly: true, admin: 401, self: 401, device: 401, context: 200},
+		{name: "keyless unknown ingress", admin: 401, self: 401, device: 401, context: 403},
+		{name: "keyless stale credentials", lan: true, bearer: "old", cookie: sessionCookieName + "=old", admin: 401, self: 401, device: 401, context: 401},
 		{name: "key LAN", key: "secret", bearer: "secret", lan: true, admin: 200, self: 200, device: 200, context: 200},
 		{name: "key IP LAN", key: "secret", bearer: "secret", lan: true, ipOnly: true, admin: 200, self: 200, device: 403, context: 200},
 		{name: "key without LAN", key: "secret", bearer: "secret", admin: 200, self: 403, device: 403, context: 403},
-		{name: "session LAN", key: "secret", cookie: cookie, lan: true, admin: 200, self: 200, device: 200, context: 200},
-		{name: "session without LAN", key: "secret", cookie: cookie, admin: 200, self: 403, device: 403, context: 403},
-		{name: "invalid key overrides session", key: "secret", bearer: "wrong", cookie: cookie, lan: true, admin: 401, self: 401, device: 401, context: 401},
-		{name: "invalid session LAN", key: "secret", cookie: "dae_session=invalid", lan: true, admin: 401, self: 401, device: 401, context: 200},
-		{name: "rotated session LAN", key: "new-secret", cookie: cookie, lan: true, admin: 401, self: 401, device: 401, context: 200},
+		{name: "session LAN", key: "secret", cookie: token, lan: true, admin: 200, self: 200, device: 200, context: 200},
+		{name: "session without LAN", key: "secret", cookie: token, admin: 200, self: 403, device: 403, context: 403},
+		{name: "invalid key overrides session", key: "secret", bearer: "wrong", cookie: token, lan: true, admin: 401, self: 401, device: 401, context: 401},
+		{name: "invalid session LAN", key: "secret", cookie: sessionCookieName + "=invalid", lan: true, admin: 401, self: 401, device: 401, context: 401},
+		{name: "rotated session LAN", key: "new-secret", cookie: token, lan: true, admin: 401, self: 401, device: 401, context: 401},
 		{name: "keyed local socket", key: "secret", unix: true, admin: 200, self: 403, device: 403, context: 403},
 		{name: "keyless local socket", unix: true, admin: 200, self: 403, device: 403, context: 403},
 	} {
@@ -74,12 +71,12 @@ func TestDiagnosticAuthorizationMatrix(t *testing.T) {
 			if test.lan {
 				resolver = verified
 				if test.ipOnly {
-					resolver = func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
-						return ClientIdentity{LinkType: "ip", IfIndex: 5}, nil
+					resolver = func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+						return api.ClientIdentity{LinkType: "ip", IfIndex: 5}, nil
 					}
 				}
 			}
-			h := NewHandler(Options{APIKey: test.key, ResolveClient: resolver, Diagnostics: store, Devices: &gateDevices{}})
+			h := NewHandler(Options{AdminKey: test.key, AllowLANAnonymous: true, ResolveClient: resolver, Diagnostics: store, Devices: &gateDevices{}})
 			for _, route := range []struct {
 				method, path, body string
 				want               int
@@ -92,7 +89,7 @@ func TestDiagnosticAuthorizationMatrix(t *testing.T) {
 				{"GET", "/api/device/context", "", test.context, true},
 			} {
 				before := store.calls
-				r := httptest.NewRequestWithContext(t.Context(), route.method, "http://192.0.2.1:9080"+route.path, strings.NewReader(route.body))
+				r := httptest.NewRequestWithContext(t.Context(), route.method, "https://192.0.2.1:9080"+route.path, strings.NewReader(route.body))
 				r.RemoteAddr = "192.0.2.10:45000"
 				var local net.Addr = &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}
 				if test.unix {
@@ -102,6 +99,7 @@ func TestDiagnosticAuthorizationMatrix(t *testing.T) {
 				r.Header.Set("X-Dae-API", "1")
 				r.Header.Set("Content-Type", "application/json")
 				r.Header.Set("Cookie", test.cookie)
+				r.Header.Set("Sec-Fetch-Site", "same-origin")
 				if test.bearer != "" {
 					r.Header.Set("Authorization", "Bearer "+test.bearer)
 				}
@@ -132,8 +130,8 @@ func TestDiagnosticAuthorizationMatrix(t *testing.T) {
 
 func TestLANCannotQueryAnyDiagnosticKind(t *testing.T) {
 	store := &accessDiagnostics{}
-	h := NewHandler(Options{APIKey: "secret", Diagnostics: store, ResolveClient: func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
-		return ClientIdentity{LinkType: "ip", IfIndex: 5}, nil
+	h := NewHandler(Options{AdminKey: "secret", Diagnostics: store, ResolveClient: func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+		return api.ClientIdentity{LinkType: "ip", IfIndex: 5}, nil
 	}})
 	for _, kind := range []string{"flow", "dns", "domain", "outbound", "plugins"} {
 		w := sessionRequest(t, h, "POST", "/api/device/diagnostics/explain", `{"kind":"`+kind+`","compare":{"bindings":[{"ip":"203.0.113.77","domains":["other-device.example"]}]}}`, map[string]string{"X-Dae-API": "1", "Content-Type": "application/json"})

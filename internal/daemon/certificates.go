@@ -49,10 +49,8 @@ func prepareCertificates(conf *config.Config, current *certificates) (*certifica
 			return filepath.Join(common.CacheDirectory(), path)
 		}
 		authority, err = localca.Load(resolve(settings.CACert), resolve(settings.CAKey))
-	} else if conf.Global.APIPort != 0 || conf.MITM.Enabled {
-		authority, err = localca.Ensure(filepath.Join(common.CacheDirectory(), localca.ManagedDirectory))
 	} else {
-		return nil, nil
+		authority, err = localca.Ensure(filepath.Join(common.CacheDirectory(), localca.ManagedDirectory))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("certificate: %w", err)

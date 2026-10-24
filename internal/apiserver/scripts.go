@@ -11,7 +11,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func (s *handler) serveScript(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveScript(w http.ResponseWriter, r *http.Request, who caller) {
 	var request api.ScriptRunRequest
 	if !apiBody(w, r, &request) {
 		return

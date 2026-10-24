@@ -8,7 +8,7 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveDevice(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -16,7 +16,7 @@ func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request, who caller
 	writeAPI(w, s.options.Devices.DeviceState(ip, mac))
 }
 
-func (s *handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -24,7 +24,7 @@ func (s *handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request, who 
 	writeAPI(w, s.options.DeviceStatus(ip, mac))
 }
 
-func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveClientSet(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -42,7 +42,7 @@ func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request, who cal
 	writeAPI(w, state)
 }
 
-func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) {
 	ip, mac := who.ip, who.identity.MAC
 	device := s.options.Devices.DeviceState(ip, mac)
 	if device.MITM == nil {

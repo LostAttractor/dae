@@ -1,1 +1,1 @@
-declare const __DAE_DEV_API_URL__: string;
+declare const __DAE_API_URL__: string;

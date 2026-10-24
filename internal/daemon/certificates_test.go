@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,13 +25,11 @@ func TestCertificatePreparationLifecycle(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", base)
 	conf := mitmConfigForTest(t, "")
-	if got, err := prepareCertificates(conf, nil); err != nil || got != nil {
-		t.Fatalf("unused CA: %v, %v", got, err)
+	local, err := prepareCertificates(conf, nil)
+	if err != nil || local == nil {
+		t.Fatalf("Unix API CA unavailable: %v", err)
 	}
-	if entries, _ := os.ReadDir(base); len(entries) != 0 {
-		t.Fatal("unused TLS created state")
-	}
-	conf.Global.APIPort = 9080
+	conf.API.Listen = "0.0.0.0:9080"
 	first, err := prepareCertificates(conf, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +69,7 @@ func TestCertificatePreparationLifecycle(t *testing.T) {
 	if err != nil || restarted.Authority().Fingerprint() != fingerprint {
 		t.Fatal("restart replaced CA", err)
 	}
-	conf.Global.APIPort = 0
+	conf.API.Listen = ""
 	conf.MITM.Enabled = true
 	if got, err := prepareCertificates(conf, first); err != nil || got != first {
 		t.Fatal("MITM-only configuration lost identity", err)
@@ -107,7 +104,8 @@ func TestAPIOnlyHTTPSAndFailedCertificateReload(t *testing.T) {
 	}
 	defer server.Close()
 	conf := mitmConfigForTest(t, "")
-	conf.Global.APIPort = 9080
+	conf.API.Listen = "0.0.0.0:9080"
+	conf.API.AdminKey = "test-key"
 	certificates, err := prepareCertificates(conf, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -123,22 +121,18 @@ func TestAPIOnlyHTTPSAndFailedCertificateReload(t *testing.T) {
 	tlsConfig := &tls.Config{RootCAs: roots}
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}, Timeout: time.Second}
 	defer client.CloseIdleConnections()
-	page, err := client.Get("https://" + server.Addr().String() + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	page.Body.Close()
-	policy := page.Header.Get("Content-Security-Policy")
-	if !strings.Contains(policy, "https://"+server.Addr().String()+"/api/certificate") || strings.Contains(policy, "/test/") {
-		t.Fatalf("API-only page policy: %s", policy)
-	}
 	check := func() {
 		t.Helper()
-		response, err := client.Get("https://" + server.Addr().String() + "/api/certificate")
+		request, _ := http.NewRequestWithContext(t.Context(), "GET", "https://"+server.Addr().String()+"/api/certificate", nil)
+		request.Header.Set("Authorization", "Bearer test-key")
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("accepted API credentials rejected: %d", response.StatusCode)
+		}
 		var certificate api.Certificate
 		if err := json.UnmarshalRead(response.Body, &certificate); err != nil {
 			t.Fatal(err)
@@ -157,7 +151,7 @@ func TestAPIOnlyHTTPSAndFailedCertificateReload(t *testing.T) {
 	app.managementAPI.SetHandler(nil)
 	app.publishAPI()
 	conn.SetDeadline(time.Now().Add(time.Second))
-	fmt.Fprintf(conn, "GET /api/certificate HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", server.Addr())
+	fmt.Fprintf(conn, "GET /api/certificate HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer test-key\r\nConnection: close\r\n\r\n", server.Addr())
 	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatal(err)

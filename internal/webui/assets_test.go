@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+//go:build !no_webui
+
 package webui
 
 import (
@@ -17,6 +19,7 @@ import (
 
 func TestAssetRepresentations(t *testing.T) {
 	dir := t.TempDir()
+	writeMetadata(t, dir, "")
 	if err := os.Mkdir(filepath.Join(dir, "assets"), 0755); err != nil {
 		t.Fatal(err)
 	}

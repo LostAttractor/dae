@@ -21,10 +21,6 @@ var (
 type Global struct {
 	ResourceCache             bool                   `mapstructure:"resource_cache" default:"true" reload:"services"`
 	ResourceUpdateInterval    time.Duration          `mapstructure:"resource_update_interval" default:"24h" reload:"services"`
-	APIPort                   uint16                 `mapstructure:"api_port" default:"0" reload:"plane"`
-	APIMITMTestIPv4           string                 `mapstructure:"api_mitm_test_ipv4" default:"203.0.113.254" reload:"plane"`
-	APIMITMTestIPv6           string                 `mapstructure:"api_mitm_test_ipv6" default:"2001:db8:ffff::254" reload:"plane"`
-	APIKey                    string                 `mapstructure:"api_key" reload:"services"`
 	TproxyPort                uint16                 `mapstructure:"tproxy_port" default:"12345" reload:"restart"`
 	SoMarkFromDae             uint32                 `mapstructure:"so_mark_from_dae" default:"0x100" reload:"plane"`
 	LogLevel                  string                 `mapstructure:"log_level" default:"info" reload:"services"`
@@ -48,8 +44,6 @@ type Global struct {
 	TlsFragment               bool                   `mapstructure:"tls_fragment" default:"false" reload:"plane"`
 	TlsFragmentLength         string                 `mapstructure:"tls_fragment_length" default:"50-100" reload:"plane"`
 	TlsFragmentInterval       string                 `mapstructure:"tls_fragment_interval" default:"10-20" reload:"plane"`
-	PprofPort                 uint16                 `mapstructure:"pprof_port" default:"0" reload:"services"`
-	MetricsPort               uint16                 `mapstructure:"metrics_port" default:"0" reload:"services"`
 	Mptcp                     bool                   `mapstructure:"mptcp" default:"false" reload:"plane"`
 	TCPFastOpen               bool                   `mapstructure:"tcp_fast_open" default:"false" reload:"plane"`
 	BandwidthMaxTx            string                 `mapstructure:"bandwidth_max_tx" default:"0" reload:"plane"`
@@ -151,6 +145,7 @@ type RoutingInterface struct {
 }
 
 type Config struct {
+	API          API            `mapstructure:"api"`
 	Global       Global         `mapstructure:"global" required:""`
 	Certificate  Certificate    `mapstructure:"certificate"`
 	MITM         MITM           `mapstructure:"mitm"`
@@ -175,6 +170,9 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	conf = &Config{}
+	if _, present := nameToSection["api"]; !present {
+		nameToSection["api"] = &Section{Val: &config_parser.Section{Name: "api"}}
+	}
 
 	// Use specified parser to parse corresponding section.
 	_val := reflect.ValueOf(conf)
@@ -218,12 +216,11 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	if (conf.Certificate.CACert == "") != (conf.Certificate.CAKey == "") {
 		return nil, fmt.Errorf("certificate: ca_cert and ca_key must be configured together")
 	}
-	g := &conf.Global
-	if g.PprofPort != 0 && g.PprofPort == g.MetricsPort {
-		return nil, fmt.Errorf("global.pprof_port and metrics_port cannot share port %d", g.PprofPort)
+	if err = conf.API.Validate(); err != nil {
+		return nil, err
 	}
-	if g.APIPort != 0 && (g.APIPort == g.PprofPort || g.APIPort == g.MetricsPort) {
-		return nil, fmt.Errorf("global.api_port %d conflicts with a loopback service port", g.APIPort)
+	if _, _, lan, _ := conf.API.Endpoint(); lan && len(conf.Global.LanInterface) == 0 {
+		return nil, fmt.Errorf("a port-only api.listen requires global.lan_interface")
 	}
 
 	if err = validateClients(conf.Client); err != nil {

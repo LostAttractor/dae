@@ -4,15 +4,21 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
+	"github.com/daeuniverse/dae/component/network"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
@@ -23,7 +29,7 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	server.SetOperations(o)
+	server.SetLocalServices(apiserver.LocalServices{Operations: o})
 	remote, err := client.New(client.Options{Endpoint: "unix://" + path})
 	if err != nil {
 		t.Fatal(err)
@@ -62,20 +68,20 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 	if err := o.beginReplacement(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.SubmitOperation(api.OperationRequest{Kind: "reload"}); !errors.Is(err, apiserver.ErrOperationsBusy) {
+	if _, err := o.SubmitOperation(api.OperationRequest{Kind: "reload"}); !errors.Is(err, api.ErrOperationsBusy) {
 		t.Fatal(err)
 	}
 	o.endReplacement()
 	if _, err := o.SubmitOperation(api.OperationRequest{Kind: "reload"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := o.beginReplacement(); !errors.Is(err, apiserver.ErrOperationsBusy) {
+	if err := o.beginReplacement(); !errors.Is(err, api.ErrOperationsBusy) {
 		t.Fatalf("discarded queued operations: %v", err)
 	}
 
-	tcp := httptest.NewServer(apiserver.NewHandler(apiserver.Options{APIKey: "key", Operations: o}))
+	tcp := httptest.NewTLSServer(apiserver.NewHandler(apiserver.Options{AdminKey: "key", Operations: o}))
 	defer tcp.Close()
-	remoteTCP, err := client.New(client.Options{Endpoint: tcp.URL, APIKey: "key"})
+	remoteTCP, err := client.New(client.Options{Endpoint: tcp.URL, RootCAs: testutil.TLSRoots(tcp), APIKey: "key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,5 +90,77 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 	response, ok := errors.AsType[*client.Error](err)
 	if !ok || response.StatusCode != http.StatusForbidden {
 		t.Fatalf("remote replacement accepted: %v", err)
+	}
+}
+
+func TestReplacementPreservesAPISocketIdentity(t *testing.T) {
+	manager, err := network.NewInterfaceManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	for _, lan := range []bool{false, true} {
+		t.Run(fmt.Sprint("lan=", lan), func(t *testing.T) {
+			port := freeLocalPort(t)
+			policy := localAPIConfig(port)
+			if lan {
+				policy = config.API{Listen: fmt.Sprint(port)}
+			}
+			patterns := []string{"lo"}
+			server, update, err := prepareAPIServer(nil, policy, patterns, manager, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			update.Commit()
+			state := &replacementState{manifest: replacementManifest{ManagementBinding: server.Binding()}, files: make(map[string]*os.File)}
+			defer state.close()
+			get := func(s *apiserver.Server) (string, *os.File) {
+				t.Helper()
+				if lan {
+					data, err := s.InterfaceFiles()
+					if err != nil || len(data) != 1 {
+						t.Fatalf("exported LAN sockets: %v, %v", data, err)
+					}
+					for index, file := range data {
+						return fmt.Sprintf("management/%d", index), file
+					}
+				}
+				file, err := s.File()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "management", file
+			}
+			name, file := get(server)
+			old, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.files[name] = file
+			next, err := state.takeManagement(policy, patterns)
+			if err != nil || next == nil {
+				t.Fatalf("restore: %v", err)
+			}
+			defer next.Close()
+			server.Close()
+			current, update, err := prepareAPIServer(next, policy, patterns, manager, true)
+			if err != nil || current != next {
+				t.Fatalf("inherited listener was not reused: %v", err)
+			}
+			update.Commit()
+			next.Activate()
+			name2, file := get(next)
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil || name2 != name || !os.SameFile(old, info) {
+				t.Fatalf("API socket changed across handoff: %v", err)
+			}
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.Close()
+		})
 	}
 }

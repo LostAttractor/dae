@@ -151,7 +151,7 @@ func (c *Client) proof[T any](ctx context.Context, target string) (*T, error) {
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Origin", c.base)
+		req.Header.Set("Origin", c.origin)
 		response, err := client.Do(req)
 		if err != nil {
 			return nil, err

@@ -37,7 +37,7 @@ func (s rejectedDeviceMutations) UpdateMITM(netip.Addr, [6]byte, *bool) (api.Dev
 
 func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	const fingerprint = "current CA fingerprint"
-	options := Options{
+	options := Options{AllowLANAnonymous: true,
 		Devices: rejectedDeviceMutations{t: t, fingerprint: fingerprint},
 		Certificates: &Certificates{
 			Identity: api.Certificate{Name: "device API", Fingerprint: fingerprint},
@@ -54,14 +54,14 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 		{name: "foreign origin", method: "PUT", body: `{"enabled":true}`, contentType: "application/json", marker: fingerprint, origin: "http://evil.example", status: 403},
 		{name: "foreign status", method: "GET", origin: "http://evil.example", status: 403},
 		{name: "null origin", method: "GET", origin: "null", status: 403},
-		{name: "foreign scheme", method: "GET", origin: "https://192.0.2.1:8081", status: 403},
+		{name: "foreign scheme", method: "GET", origin: "http://192.0.2.1:8081", status: 403},
 		{name: "DNS rebinding", method: "GET", host: "evil.example:8081", origin: "http://evil.example:8081", status: 403},
 		{name: "wrong local IP", method: "GET", host: "192.0.2.2:8081", status: 403},
 		{name: "wrong local port", method: "GET", host: "192.0.2.1:9999", status: 403},
 		{name: "cross-site metadata", method: "GET", site: "cross-site", status: 403},
 		{name: "same-site metadata", method: "DELETE", marker: fingerprint, site: "same-site", status: 403},
 		{name: "form mutation", method: "POST", body: "enabled=true", status: 405},
-		{name: "preflight", method: "OPTIONS", status: 405},
+		{name: "preflight", method: "OPTIONS", status: 403},
 		{name: "missing fingerprint", method: "DELETE", status: 403},
 		{name: "stale fingerprint", method: "PUT", body: `{"enabled":true}`, contentType: "application/json", marker: "old CA", status: 409},
 		{name: "text JSON", method: "PUT", body: `{"enabled":true}`, contentType: "text/plain", marker: fingerprint, status: 415},
@@ -81,16 +81,16 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 				options.Devices = rejectedDeviceMutations{t: t}
 			}
 			called := false
-			options.ResolveClient = func(peer, _ netip.AddrPort) (ClientIdentity, error) {
+			options.ResolveClient = func(peer, _ netip.AddrPort) (api.ClientIdentity, error) {
 				ip := peer.Addr()
 				called = true
 				if ip != netip.MustParseAddr("192.0.2.10") {
 					t.Fatalf("untrusted peer identity: %s", ip)
 				}
-				return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}}, nil
+				return api.ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}}, nil
 			}
 			handler := NewHandler(options)
-			path := "http://192.0.2.1:8081/api/device"
+			path := "https://192.0.2.1:8081/api/device"
 			if test.method != http.MethodGet {
 				path += "/mitm"
 			}

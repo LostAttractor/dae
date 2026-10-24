@@ -4,6 +4,7 @@ package apiserver
 import (
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 
 	contract "github.com/daeuniverse/dae/api"
@@ -15,74 +16,128 @@ type Certificates struct {
 }
 
 // ClientResolver receives the actual TCP endpoints, including IPv6 zones.
-type ClientResolver func(source, destination netip.AddrPort) (ClientIdentity, error)
-
-// ClientIdentity is verified ingress evidence. IP links have no device MAC.
-type ClientIdentity struct {
-	LinkType        string
-	MAC             [6]byte
-	IfIndex         uint32
-	PhysicalIfIndex uint32
-}
+type ClientResolver func(source, destination netip.AddrPort) (contract.ClientIdentity, error)
 
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
 // Status, Selectors, Probes, Devices and ResolveClient are required dependencies.
 type Options struct {
-	Status        func() *contract.StatusSnapshot
-	Selectors     SelectorStore
-	Probes        ProbeStore
-	Scripts       ScriptStore
-	ScriptStorage ScriptStoreMigrator
-	Operations    OperationStore
-	Devices       DeviceStore
-	DeviceStatus  func(netip.Addr, [6]byte) contract.DeviceStatus
-	ResolveClient ClientResolver
-	Certificates  *Certificates
-	MITMTests     MITMTestStore
-	Diagnostics   DiagnosticStore
-	APIKey        string
+	Status            func() *contract.StatusSnapshot
+	Selectors         SelectorStore
+	Probes            ProbeStore
+	Scripts           ScriptStore
+	ScriptStorage     ScriptStoreMigrator
+	Operations        OperationStore
+	Devices           DeviceStore
+	DeviceStatus      func(netip.Addr, [6]byte) contract.DeviceStatus
+	ResolveClient     ClientResolver
+	Certificates      *Certificates
+	MITMTests         MITMTestStore
+	Diagnostics       DiagnosticStore
+	UserKey           string
+	AdminKey          string
+	AllowLANAnonymous bool
+	WebOrigins        []string
+	Metrics           http.Handler
+	Pprof             bool
 }
 
-type handler struct{ options Options }
+type Handler struct {
+	options  Options
+	routes   http.Handler
+	policies map[string]accessPolicy
+}
+
+// LocalServices configures daemon-owned routes served on the local Unix socket
+// without holding or requiring a control plane.
+type LocalServices struct {
+	Operations OperationStore
+	Metrics    http.Handler
+	Pprof      bool
+}
+
+func newLocalHandler(services LocalServices) *Handler {
+	s := &Handler{options: Options{Operations: services.Operations, Metrics: services.Metrics, Pprof: services.Pprof}}
+	mux := http.NewServeMux()
+	s.registerOperationRoutes(mux)
+	s.routes = mux
+	return s
+}
+
+func (s *Handler) registerOperationRoutes(mux *http.ServeMux) {
+	s.route(mux, "POST /api/resources/refresh", accessAdmin, s.serveResources)
+	s.route(mux, "GET /api/resources", accessAdmin, s.serveResources)
+	s.route(mux, "POST /api/operations", accessAdmin, s.serveOperations)
+	s.route(mux, "GET /api/operations/{id}", accessAdmin, s.serveOperations)
+}
+
+type webHandler struct {
+	*Handler
+	web http.Handler
+}
+
+func (h webHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") || monitoringPath(r.URL.Path) {
+		h.Handler.ServeHTTP(w, r)
+		return
+	}
+	h.web.ServeHTTP(w, r)
+}
+
+// WithWeb serves API and monitoring routes through s and delegates all other paths
+// to web while keeping monitoring preparation directly available to Server.
+func (s *Handler) WithWeb(web http.Handler) http.Handler {
+	if web == nil {
+		return s
+	}
+	return webHandler{Handler: s, web: web}
+}
 
 // NewHandler serves one plane's management API. The owner drains requests before
 // closing that plane and publishing its replacement.
-func NewHandler(options Options) http.Handler {
-	s := &handler{options: options}
+func NewHandler(options Options) *Handler {
+	s := &Handler{options: options}
 	mux := http.NewServeMux()
 	s.route(mux, "PUT /api/session", accessLogin, s.serveLogin)
 	s.route(mux, "DELETE /api/session", accessPublic, serveLogout)
-	s.route(mux, "GET /api/status", accessAdmin, func(w http.ResponseWriter, r *http.Request, _ caller) {
+	s.route(mux, "GET /api/status", accessUser, func(w http.ResponseWriter, r *http.Request, who caller) {
 		if apiBody(w, r, nil) {
-			writeAPI(w, options.Status())
+			snapshot := *options.Status()
+			if who.role != roleAdmin {
+				// Plugin reports can contain private script output; preserve the shared snapshot.
+				snapshot.Plugins = slices.Clone(snapshot.Plugins)
+				for i := range snapshot.Plugins {
+					snapshot.Plugins[i].Details = nil
+				}
+			}
+			writeAPI(w, &snapshot)
 		}
 	})
 	if options.Certificates != nil {
-		s.route(mux, "POST /api/certificate/tests", accessPublic, s.serveCertificateTest)
-		s.route(mux, "GET /api/certificate/tests/{id}", accessPublic, s.serveCertificateTest)
+		s.route(mux, "POST /api/certificate/tests", accessUser|accessDirect|accessBootstrap, s.serveCertificateTest)
+		s.route(mux, "GET /api/certificate/tests/{id}", accessPublic|accessDirect|accessBootstrap, s.serveCertificateTest)
 		certificates := options.Certificates.Handler
-		s.route(mux, "GET /api/certificate", accessPublic, func(w http.ResponseWriter, r *http.Request, _ caller) {
+		s.route(mux, "GET /api/certificate", accessUser|accessBootstrap, func(w http.ResponseWriter, r *http.Request, _ caller) {
 			if apiBody(w, r, nil) {
 				writeAPI(w, options.Certificates.Identity)
 			}
 		})
-		for _, path := range []string{"/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
-			s.route(mux, "GET "+path, accessPublic, func(w http.ResponseWriter, r *http.Request, _ caller) {
-				certificates.ServeHTTP(w, r)
+		for _, path := range []string{"/api/certificate/ca.pem", "/api/certificate/ca.cer", "/api/certificate/ca.mobileconfig"} {
+			s.route(mux, "GET "+path, accessUser|accessBootstrap, func(w http.ResponseWriter, r *http.Request, _ caller) {
+				copy := r.Clone(r.Context())
+				copy.URL = r.URL.Clone()
+				copy.URL.Path = strings.TrimPrefix(r.URL.Path, "/api/certificate")
+				certificates.ServeHTTP(w, copy)
 			})
 		}
 	}
-	s.route(mux, "GET /api/selectors", accessAdmin, s.serveSelectors)
+	s.route(mux, "GET /api/selectors", accessUser, s.serveSelectors)
 	s.route(mux, "PUT /api/selectors/{group}", accessAdmin, s.serveSelector)
 	s.route(mux, "DELETE /api/selectors/{group}", accessAdmin, s.serveSelector)
 	s.route(mux, "POST /api/probes", accessAdmin, s.serveProbe)
 	s.route(mux, "POST /api/plugins/{instance}/scripts/run", accessAdmin, s.serveScript)
 	s.route(mux, "POST /api/plugins/{instance}/store/migrate", accessAdmin, s.serveScriptStoreMigration)
-	s.route(mux, "POST /api/resources/refresh", accessAdmin, s.serveResources)
-	s.route(mux, "GET /api/resources", accessAdmin, s.serveResources)
-	s.route(mux, "POST /api/operations", accessAdmin, s.serveOperations)
-	s.route(mux, "GET /api/operations/{id}", accessAdmin, s.serveOperations)
+	s.registerOperationRoutes(mux)
 	s.route(mux, "GET /api/device", accessDevice, s.serveDevice)
 	s.route(mux, "GET /api/device/status", accessDevice, s.serveDeviceStatus)
 	s.route(mux, "GET /api/device/context", accessLAN, s.serveDiagnosticContext)
@@ -103,25 +158,33 @@ func NewHandler(options Options) http.Handler {
 		s.route(mux, method+" /api/device/sets/{name}", accessDevice, s.serveClientSet)
 		s.route(mux, method+" /api/device/mitm", accessDevice, s.serveMITM)
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if (!localAPISocket(r) && !localIPHost(r)) || (!sameOrigin(r) && !certificateBootstrap(w, r)) {
-				apiError(w, 403, "open the API directly using the router IP address and port; cross-origin access is not allowed")
-				return
-			}
-			if r.URL.RawQuery != "" {
-				apiError(w, 400, "API requests do not accept query parameters")
-				return
-			}
-			if (r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPost) && r.Header.Get("X-Dae-API") != "1" {
-				apiError(w, 403, "changes require X-Dae-API: 1")
-				return
-			}
+	s.routes = mux
+	return s
+}
+
+func (s *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if target, matched := s.PrepareMonitoring(w, r); matched {
+		if target != nil {
+			target.ServeHTTP(w, r)
 		}
-		mux.ServeHTTP(w, r)
-	})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !s.prepareRequest(w, r) {
+		return
+	}
+	if r.Method == http.MethodOptions {
+		s.preflight(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.URL.RawQuery != "" {
+			apiError(w, 400, "API requests do not accept query parameters")
+			return
+		}
+	}
+	s.routes.ServeHTTP(w, r)
 }

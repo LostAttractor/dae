@@ -10,6 +10,32 @@
 # explicit remote caches, relative Surge file: module sources, MITM certificate paths and plugin state.
 # The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md.
 
+# All HTTP services share this optional TCP endpoint. Unix API is always available.
+api {
+    # listen: '9080'          # Requires global.lan_interface; waits for matching interfaces.
+    # listen: '192.168.1.1:9080' # Bind and bypass only this IP; native clients use an IP literal.
+    # listen: '0.0.0.0:9080' # Wildcard; Go tcp may accept IPv4 AND IPv6.
+    # user_key: 'replace-with-a-private-user-key'
+    # admin_key: 'replace-with-a-different-admin-key'
+    # allow_lan_anonymous: true  # User privileges only; default false.
+    # web_origins: 'https://dae-ui.example.com' # Exact page origin, including key/Cookie requests.
+    # Same-origin is allowed by default. Cross-site management is rejected even when listed.
+    # Fixed frontend DAE_API_URL: same-site HTTPS direct access or same-origin HTTPS proxy.
+    # A proxy verifies dae CA, rewrites Host to API IP:port, preserves Origin and always
+    # sets X-Dae-Proxy: 1. No anonymous/self/CA-MITM verification through proxies.
+    # See docs/en/configuration/api-client.md for the TLS proxy example; never use Unix/HTTP upstreams.
+    web: true
+    # Block/mutex events are sampled only during captures with ?seconds=N; sampling stops afterward.
+    # Local example: dae pprof mutex --seconds 30 -o mutex.pprof
+    pprof: false
+    # Metrics have no switch and share the API's user authorization.
+    # Keys and sessions require HTTPS; HTTP pages only provide anonymous bootstrap.
+    # Raw-key login sets a Secure HttpOnly SameSite=Strict host-only Cookie; Unix needs no key.
+    # Cookies are not isolated by port: use a dedicated, trusted management hostname.
+    # mitm_test_ipv4: '203.0.113.254'
+    # mitm_test_ipv6: '2001:db8:ffff::254'
+}
+
 global {
     # Network-first cache for HTTP/HTTPS subscriptions, Surge modules and dependencies.
     # Failed downloads/validation reuse the last complete validated snapshot.
@@ -19,24 +45,6 @@ global {
 
     # Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.
     tproxy_port: 12345
-
-    # Set non-zero value to enable pprof. Block and mutex profiles record events only while a capture with
-    # ?seconds=N is in progress, e.g. go tool pprof 'http://localhost:6060/debug/pprof/mutex?seconds=30'.
-    pprof_port: 0
-
-    # Set non-zero value to enable the Prometheus metrics endpoint.
-    metrics_port: 0
-
-    # Device settings, selectors and certificate downloads. Zero disables the HTTP page/API.
-    api_port: 0
-    # api_port also serves HTTPS with the shared local CA. MITM tests answer virtual IP:443 locally.
-    # Choose unused addresses routed through dae, outside local subnets and other Fake IP pools.
-    # No extra listening ports, interface addresses, or upstream services are needed.
-    #api_mitm_test_ipv4: '203.0.113.254'
-    #api_mitm_test_ipv6: '2001:db8:ffff::254'
-    # Optional: when unset, verified direct LAN clients can view status and change selectors without login.
-    # When set, administration requires this key. Device settings always require direct LAN identification.
-    #api_key: 'replace-with-a-private-key'
 
     # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Defaults to
     # 0x100 and must be nonzero. Change it only when policy-routing rules require it, ensure no unrelated fwmark rule
@@ -477,7 +485,7 @@ routing {
             ### Write your rules below. Rules are evaluated in statement order.
 
             # A routing target may be a uniquely named node. Quote names containing spaces or non-ASCII text.
-            #domain(full: special.example) -> 'Hong Kong 01'(skip_while_noalive)
+            #domain(full: special.example) -> 'HK 1'(skip_while_noalive)
 
             # Devices join or leave this MAC set through the page/API. See docs/en/configuration/api.md.
             #client(proxy_devices) -> my_group

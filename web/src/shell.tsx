@@ -3,6 +3,7 @@ import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { createView } from "./react-view.ts";
+import { loginAvailable } from "./api.ts";
 import { CertificateDownload, CertificatePanel } from "./certificate-panel.tsx";
 import { InlineNotice } from "./notice.tsx";
 import { cardTitle, codeBlock, framed, groupLabel } from "./ui.ts";
@@ -30,11 +31,12 @@ function Shell() {
               </div>
               <p id="access-description" className="mt-0.5 text-xs text-kumo-subtle">Checking access…</p>
               <Button id="logout" type="button" variant="ghost" size="sm" className="mt-1" hidden>Logout</Button>
-              <form id="login-form" className="login-form mt-3 flex max-w-[480px] flex-wrap items-end gap-2">
+              {!loginAvailable && <p className="mt-3 text-sm text-kumo-subtle">Open this page over HTTPS to log in. HTTP only supports anonymous setup.</p>}
+              <form id="login-form" className="login-form mt-3 flex max-w-[480px] flex-wrap items-end gap-2" hidden={!loginAvailable}>
                 <div className="key-field min-w-0 flex-1">
-                  <Input id="api-key" name="api-key" type="password" label="API Key" autoComplete="current-password" spellCheck={false} placeholder="Enter your API key" required className="w-full" />
+                  <Input id="api-key" name="api-key" type="password" label="API Key" autoComplete="current-password" spellCheck={false} placeholder="Enter your API key" required disabled={!loginAvailable} className="w-full" />
                 </div>
-                <Button id="login" type="submit">Login</Button>
+                <Button id="login" type="submit" disabled={!loginAvailable}>Login</Button>
               </form>
             </div>
             <nav id="page-navigation" className="order-2 min-w-0 max-w-full md:order-none" aria-label="Pages"></nav>
@@ -104,16 +106,15 @@ function Shell() {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div className="grid min-w-0 flex-[1_1_16rem] gap-1">
                               <h4 id="certificate-test-title" className="text-base font-semibold">Browser verification</h4>
-                              {import.meta.env.DEV && <p className="text-sm text-kumo-subtle">Certificate and interception checks require this browser to connect directly to dae.</p>}
+                              <p className="text-sm text-kumo-subtle">Verification requires a direct API connection; a proxy’s TLS connection does not prove this browser trusts the dae CA.</p>
                             </div>
-                            <Button id="test-certificate" type="button" hidden={import.meta.env.DEV}>Test certificate</Button>
-                            {import.meta.env.DEV && <LinkButton variant="secondary" href={`${__DAE_DEV_API_URL__}/#overview`} external>Open dae to verify</LinkButton>}
+                            <Button id="test-certificate" type="button">Test certificate</Button>
                           </div>
-                          <dl className="certificate-results grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-x-6 gap-y-3" hidden={import.meta.env.DEV} aria-live="polite">
+                          <dl className="certificate-results grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-x-6 gap-y-3" aria-live="polite">
                             <div className="min-w-0"><dt className="text-sm text-kumo-subtle">CA trust</dt><dd className="mt-1.5"><span id="certificate-trust-result" className={result}>Not tested</span></dd></div>
                             <div className="min-w-0"><dt className="text-sm text-kumo-subtle">HTTPS interception</dt><dd className="mt-1.5"><span id="certificate-mitm-result" className={result}>Not tested</span></dd></div>
                           </dl>
-                          <p id="certificate-test-info" className="text-sm whitespace-pre-line text-kumo-subtle" hidden={import.meta.env.DEV}>Results apply to this browser only.</p>
+                          <p id="certificate-test-info" className="text-sm whitespace-pre-line text-kumo-subtle">Results apply to this browser only.</p>
                           <a id="certificate-http-setup" className="text-sm text-kumo-link" hidden>Return to HTTP setup to install and trust the CA</a>
                         </section>
                       </div>

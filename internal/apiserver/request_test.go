@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+
+	"github.com/daeuniverse/dae/api"
 )
 
 func TestAPIDeviceResolvesActualConnectionEndpoints(t *testing.T) {
@@ -15,19 +17,18 @@ func TestAPIDeviceResolvesActualConnectionEndpoints(t *testing.T) {
 		{"[fe80::2%br-lan]:12345", "[fe80::1%br-lan]:9080"},
 	} {
 		t.Run(test.remote, func(t *testing.T) {
-			r := httptest.NewRequest("GET", "http://192.0.2.99:9999/api/device", nil)
+			r := httptest.NewRequest("GET", "https://192.0.2.99:9999/api/device", nil)
 			r.RemoteAddr = test.remote
-			r.Header.Set("X-Forwarded-For", "192.0.2.99")
 			r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(test.local))))
 			w := httptest.NewRecorder()
 			mac := [6]byte{2, 0, 0, 0, 0, 1}
-			s := &handler{options: Options{ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
+			s := &Handler{options: Options{AllowLANAnonymous: true, ResolveClient: func(source, destination netip.AddrPort) (api.ClientIdentity, error) {
 				wantSource := netip.MustParseAddrPort(test.remote)
 				wantSource = netip.AddrPortFrom(wantSource.Addr().Unmap(), wantSource.Port())
 				if source != wantSource || destination != netip.MustParseAddrPort(test.local) {
 					t.Fatalf("resolved %v -> %v, want %v -> %v", source, destination, wantSource, test.local)
 				}
-				return ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
+				return api.ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
 			}}}
 			who, ok := s.authorize(w, r, accessDevice)
 			ip, gotMAC := who.ip, who.identity.MAC
@@ -62,22 +63,22 @@ func TestMITMOriginHandlesDefaultPortAndIPv6(t *testing.T) {
 	}
 }
 
-func TestHTTPSOriginAndCertificateBootstrap(t *testing.T) {
+func TestHTTPSOrigins(t *testing.T) {
 	for _, test := range []struct {
 		url, local, origin string
-		same, bootstrap    bool
+		same               bool
 	}{
-		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1:443", true, false},
-		{"https://192.0.2.1:443/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1", true, false},
-		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1:443", false, true},
-		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1", false, false},
-		{"https://192.0.2.1:80/api/certificate/tests/proof", "192.0.2.1:80", "http://192.0.2.1", false, true},
-		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "https://[2001:db8::1]:9080", true, false},
-		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "http://[2001:db8::1]:9080", false, true},
-		{"https://192.0.2.1:9080/api/status", "192.0.2.1:9080", "http://192.0.2.1:9080", false, false},
-		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://192.0.2.1:9081", false, false},
-		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://evil.example:9080", false, false},
-		{"http://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "https://192.0.2.1:9080", false, false},
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1:443", true},
+		{"https://192.0.2.1:443/api/certificate/tests/proof", "192.0.2.1:443", "https://192.0.2.1", true},
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1:443", false},
+		{"https://192.0.2.1/api/certificate/tests/proof", "192.0.2.1:443", "http://192.0.2.1", false},
+		{"https://192.0.2.1:80/api/certificate/tests/proof", "192.0.2.1:80", "http://192.0.2.1", false},
+		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "https://[2001:db8::1]:9080", true},
+		{"https://[2001:db8::1]:9080/api/certificate/tests/proof", "[2001:db8::1]:9080", "http://[2001:db8::1]:9080", false},
+		{"https://192.0.2.1:9080/api/status", "192.0.2.1:9080", "http://192.0.2.1:9080", false},
+		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://192.0.2.1:9081", false},
+		{"https://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "http://evil.example:9080", false},
+		{"http://192.0.2.1:9080/api/certificate/tests/proof", "192.0.2.1:9080", "https://192.0.2.1:9080", false},
 	} {
 		t.Run(test.url+"/"+test.origin, func(t *testing.T) {
 			r := httptest.NewRequest("GET", test.url, nil)
@@ -89,15 +90,7 @@ func TestHTTPSOriginAndCertificateBootstrap(t *testing.T) {
 			if sameOrigin(r) != test.same {
 				t.Fatal("incorrect same-origin decision")
 			}
-			if certificateBootstrap(httptest.NewRecorder(), r) != test.bootstrap {
-				t.Fatal("incorrect bootstrap decision")
-			}
-			if test.bootstrap {
-				r.Method = "POST"
-				if certificateBootstrap(httptest.NewRecorder(), r) {
-					t.Fatal("bootstrap allowed a mutation")
-				}
-			}
+
 		})
 	}
 }

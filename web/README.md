@@ -13,10 +13,10 @@ the root `package.json` selects the pnpm version for local builds, CI and Docker
 
 ## Local development
 
-Configure the running daemon's HTTP API address in `web/.env.local`:
+Set a fixed HTTPS API origin in `web/.env.local` when the page will not use same-origin `/api/`:
 
 ```dotenv
-DAE_API_URL=http://192.168.1.1:2023
+DAE_API_URL=https://192.168.1.1:9080
 ```
 
 From this directory, run:
@@ -32,22 +32,30 @@ application controllers reload the page. Editing frontend code does not rebuild
 or restart dae. `make dev` also installs the pinned dependencies before starting
 Vite. Use `pnpm run dev --port 5174` to select another local port.
 
-`DAE_API_URL` can also be set in the command environment, which takes precedence
-over `.env.local`. Use a literal IPv4 or bracketed IPv6 address, including the API
-port. The local file is ignored by Git. Changing it restarts the development
-server automatically. API keys belong in the page's existing login form.
+`DAE_API_URL` also accepts the command environment, taking precedence over
+`.env.local`. This is the same deployment setting for development and production
+builds, not a development-only default. An explicit value must be an HTTPS origin
+without userinfo, a path prefix, query or fragment. Native dae endpoints use literal
+IPv4 or bracketed IPv6 addresses; a domain name requires an HTTPS reverse proxy.
+The local file is ignored by Git. Changing it restarts the development server;
+production changes require rebuilding and redeploying the complete bundle. There
+is no runtime API selector or browser-storage override.
 
-The local server proxies `/api/`, `/ca.pem`, `/ca.cer` and `/ca.mobileconfig` to
-dae. It checks the local request origin, translates Host and Origin for the
-daemon, and preserves API headers and session cookies. It listens on loopback;
-the daemon sees the development server's network connection, so device identity
-and LAN permissions apply to the computer running Vite. Run Vite on the same
-LAN computer as the browser when using device self-service.
+Vite serves static development files only. The ordinary HTTP localhost page is
+the certificate setup page: it offers CA metadata, downloads and a trust test.
+It does not load the management application or poll status. For authenticated development, serve the page over trusted
+HTTPS and use either same-site direct access or a same-origin HTTPS API proxy.
+Same-origin means the same scheme, host and port; same-site is the browser's
+scheme/site boundary and can span ports. For example, HTTPS ports 8443 and 9080 on
+the same literal IP are same-site but cross-origin. Different LAN IPs are not
+same-site merely because they share a network.
 
-HTTPS acceptance and transparent MITM tests require a direct browser connection
-to dae. The development page links to the running instance for those checks;
-certificate downloads remain available locally. Development configuration is
-excluded from production bundles.
+List the exact cross-origin page origin in `api.web_origins`, including for key or
+cookie authentication. `Sec-Fetch-Site: cross-site` management requests remain
+rejected even when their origin is listed; HTTP-to-HTTPS is not a same-site login
+setup. A direct page retains LAN identity and can use CA/MITM verification when
+authorized. A proxy page cannot use self/device or verification capabilities.
+Development mode does not itself hide the verification action.
 
 Run `pnpm run typecheck` to check the browser and Node projects with TypeScript's
 strict mode. Vite handles transpilation and hot updates; production builds also
@@ -68,19 +76,46 @@ make
 
 `src/` contains the frontend source. Make runs `pnpm install --frozen-lockfile`
 against the root lockfile before each build, reusing already installed packages.
-The build replaces `dist/`
-with the public bundle, including `index.html`. Set `DIST=/absolute/output/path` to choose another
-build directory. Only deploy build output; development files stay outside it.
+The build replaces `dist/` with the public bundle, including `index.html` and
+`dae-web.json`. Set `DIST=/absolute/output/path` to choose another build directory.
+Only deploy build output; development files stay outside it. Unset `DAE_API_URL`
+for same-origin `/api/`, or fix an HTTPS target explicitly, for example
+`DAE_API_URL=https://192.168.1.1:9080 make`.
 
 In the dae repository, `make web` writes the bundle to `build/web/` by default.
 The daemon build copies that output into its embedding package. To update a
 running installation independently, deploy the bundle and set `DAE_WEB_ROOT` to
 its directory in the daemon's service environment.
 
-The page is served at `http://ROUTER_IP:<api_port>/`. Use root-relative API paths
-such as `/api/device`; `/api/`, `/ca.pem`, `/ca.cer` and `/ca.mobileconfig` belong
-to the daemon. Assets can use subdirectories. Missing paths return `404`; the
-server does not provide a single-page application routing fallback.
+The frontend constant and `dae-web.json` are generated by one API-target parser.
+The daemon reads metadata from the bundle it actually serves, including an
+external `DAE_WEB_ROOT`, and combines it with proof destinations to generate CSP.
+Missing or invalid metadata prevents serving the page rather than broadening
+`connect-src` to arbitrary HTTPS. Deploy metadata with the rest of the bundle;
+there is no separate daemon setting duplicating the frontend API target.
+
+Independent static hosting supports same-site direct access or a same-origin
+HTTPS reverse proxy. Same-site direct access still needs the exact page origin
+in `api.web_origins` and a CSP limited to the fixed API and required proof
+endpoints. For a same-origin proxy, build with no `DAE_API_URL` and use relative
+`/api/`; `connect-src 'self'` suffices for management. See the minimal nginx example
+in [API client deployment](../docs/en/configuration/api-client.md#same-origin-https-reverse-proxy).
+
+Both proxy hops must use TLS. Verify dae's CA on the upstream, rewrite Host to its
+actual IP:port, preserve Origin, and list that page origin in `web_origins`.
+Unconditionally overwrite `X-Dae-Proxy: 1`; never inject a long-lived API key,
+disable upstream verification, or use HTTP/Unix upstreams. The marker and the
+presence of forwarding headers only reduce privileges: no anonymous LAN or
+self/device access, and no browser CA/MITM verification. Key/cookie management,
+explicit-MAC administration and CA downloads remain available. A proxy handshake
+cannot prove browser trust in dae's CA; the page reports verification unavailable.
+Ordinary TCP cannot reliably identify an unmarked proxy, so the marker is part of
+the supported deployment contract.
+
+`api.web: false` disables daemon static serving; `make WEBUI=n` omits Web from the
+binary and skips frontend dependencies. API, certificate exports and verification,
+metrics and optional pprof remain available. All certificate download paths are
+under `/api/certificate/`; Unix serves APIs only.
 
 Deploy all generated chunks and `.gz` sidecars together. Content-hashed JS/CSS
 under `assets/` are cached for one year; HTML and unhashed files are not cached.
@@ -245,9 +280,10 @@ and verification failed. The Devices page shows the same amber banner for the
 looked-up device. While modules are on,
 the page runs the certificate test by itself when it finds them on, when they are
 turned on and when the device or CA changes; these runs report on the page without
-a toast. The development server cannot reach the test endpoints, so it keeps the
-warning. Certificate installation and
-browser verification occupy a separate subsection and remain available without MITM or a device MAC.
+a toast. Verification depends on direct API access and authorization, not on the
+development/production build mode. Certificate installation and browser verification
+occupy a separate subsection; direct CA verification needs neither MITM nor a
+MAC. Proxy deployments retain CA downloads but show verification as unavailable.
 They default to expanded in viewports at least 768px wide and 600px tall, and
 collapsed on smaller screens. Until the user toggles the section, this default
 adapts to viewport changes. A manual choice is retained until the page is reloaded;
@@ -297,7 +333,7 @@ its aggregate counters and nodes inside a height-limited, scrollable region.
 Polling preserves expanded groups, keyboard focus and the list's scroll position;
 collapsed groups do not retain their node rows.
 
-CA verification sends a same-origin `POST /api/certificate/tests` to issue a
+CA verification sends an authorized `POST /api/certificate/tests` to issue a
 temporary certificate and new key held only in memory. It then reads
 `/api/certificate/tests/{id}` over HTTPS on the same API port and checks the
 challenge ID and CA fingerprint. A proof requires this or a newer challenge
@@ -315,9 +351,8 @@ management certificate again. Clients sharing a source IP share this temporary
 selection; other source IPs are unaffected. The daemon initializes a persistent
 CA when needed. Management certificates and keys also persist; tests never
 rewrite them, and ordinary restarts reuse them while discarding all challenges.
-HTTP and HTTPS serve the same page and API; only the challenge's HTTPS GET permits
-the initiating HTTP setup page at the same IP and port to read across protocols.
-Ordinary `/api/certificate` metadata remains same-origin.
+Challenge proofs allow their initiating Origin, including an independent page.
+Ordinary metadata and CA downloads require user authorization.
 
 MITM challenges use virtual IP:443 origins advertised by the API. The page's CSP permits the test endpoints and paths, with exact IPv4 hosts. IPv6
 uses a CSP host wildcard because Chromium rejects literal IPv6 host sources;
@@ -333,14 +368,36 @@ uninstalled. Users relying on a management certificate exception may temporarily
 lose new HTTPS connections while a challenge is pending; the page offers an
 HTTP setup link to install and trust the CA.
 
-With `global.api_key` configured, the header login form exchanges the key for an
-HttpOnly, SameSite=Strict session cookie lasting seven days; the page never stores
-the key in browser storage. Logout clears the cookie. Without a configured key,
-verified direct LAN clients can read status and change selectors immediately.
-The header shows LAN Access, with no login/logout or session cookie; every API
-request revalidates LAN identity. The selectors response's `auth_mode` identifies
-`api_key`, `lan` or `unix` access. Device self-service always requires direct LAN
-identification. Public certificate downloads are available without login.
+Login accepts only the original `api.user_key` or `api.admin_key` over HTTPS and
+returns `{role, expires_at}`. `Set-Cookie` carries the signed seven-day session in
+`__Host-dae-session`, with `Secure; HttpOnly; SameSite=Strict; Path=/` and no Domain.
+The page does not save the original key or expose session credentials to JavaScript;
+management requests and CA downloads on HTTPS use `credentials: include`;
+HTTP setup requests and challenge proofs omit credentials. Existing cookies, anonymous LAN and implicit Unix administration
+cannot create or extend sessions. Logout calls `DELETE /api/session` to clear the
+cookie, including an expired one; copied sessions remain valid until their absolute
+expiry or rotation of the corresponding key. Signing binds the role and API
+Host/port, but browser cookies are not isolated by port: all HTTPS services on the
+same hostname/IP must be trusted. Prefer a dedicated management hostname. Tabs
+within the cookie scope share login state.
+
+All browser management and monitoring requests share the exact `web_origins`
+allowlist and Fetch Metadata checks; key authentication does not bypass them.
+Cookie writes require the allowed Origin and `X-Dae-API: 1`; without Origin,
+cookie requests require explicit same-origin Fetch Metadata. Preflight does not
+authenticate; actual requests do. Explicit Authorization wins over Cookie: an
+invalid key never falls back to a cookie, and an invalid cookie never falls back
+to anonymous LAN. A valid raw key can replace an expired session. HTTP pages only
+provide anonymous bootstrap and never accept login keys. CLI/SDK/Prometheus
+continue using explicit keys without browser cookies; raw-key calls without Origin
+are unaffected by the browser-origin checks.
+
+Anonymous LAN access, when enabled, grants user privileges without issuing a session.
+Users can read global status, metrics and all selector candidates, and manage their
+identified device. Administrator access additionally permits mutations affecting
+other devices, scripts, probes and diagnostics. Neither key supplies device identity.
+The selectors response exposes `user_key`, `admin_key`, `lan` or `unix` in `auth_mode`,
+and `admin_enabled` controls administrator actions.
 
 **Outbound Nodes** uses searchable dropdowns with per-node connectivity tests,
 a selected-node **Test** button and a one-shot **Test All** action. The group's
@@ -466,8 +523,8 @@ CHROMIUM=/path/to/chromium make test
 
 `make test` checks the API type generation and both TypeScript projects before
 running the development-server and browser checks.
-Development-server checks use a minimal local API fixture to verify proxy
-boundaries, login cookies, downloads and CSS updates over Vite's HMR connection.
+Development-server checks verify static-only serving, direct browser API requests
+and CSS updates over Vite's HMR connection. Browser checks exercise HttpOnly cookie sessions, fixed same-site API targets, downloads and role boundaries.
 Run these independently with `pnpm run test:dev`.
 
 The browser test builds the production bundle, then uses Node's built-ins, a local API

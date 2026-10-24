@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ type DefaultRouteInterface struct {
 // interface still wake connectivity checks.
 type HostNetworkSnapshot struct {
 	Interfaces           []DefaultRouteInterface
+	LocalAddresses       []netip.Addr
 	IPv4RouteFingerprint string
 	IPv6RouteFingerprint string
 	IPv4RuleFingerprint  string
@@ -66,6 +68,10 @@ func (s HostNetworkSnapshot) Ready() bool {
 }
 
 func (s HostNetworkSnapshot) Equal(other HostNetworkSnapshot) bool {
+	return slices.Equal(s.LocalAddresses, other.LocalAddresses) && s.sameConnectivity(other)
+}
+
+func (s HostNetworkSnapshot) sameConnectivity(other HostNetworkSnapshot) bool {
 	return s.IPv4RouteFingerprint == other.IPv4RouteFingerprint &&
 		s.IPv6RouteFingerprint == other.IPv6RouteFingerprint &&
 		s.IPv4RuleFingerprint == other.IPv4RuleFingerprint &&
@@ -79,7 +85,7 @@ func (s HostNetworkSnapshot) ConnectivityChanged(previous HostNetworkSnapshot) b
 	if !s.Ready() {
 		return false
 	}
-	return !previous.Ready() || !s.Equal(previous)
+	return !previous.Ready() || !s.sameConnectivity(previous)
 }
 
 type hostNetworkData struct {
@@ -258,6 +264,7 @@ func (m *HostNetworkMonitor) Snapshot() HostNetworkSnapshot {
 	defer m.mu.RUnlock()
 	snapshot := m.snapshot
 	snapshot.Interfaces = slices.Clone(snapshot.Interfaces)
+	snapshot.LocalAddresses = slices.Clone(snapshot.LocalAddresses)
 	return snapshot
 }
 
@@ -267,6 +274,7 @@ func (m *HostNetworkMonitor) reconcile() error {
 		return err
 	}
 	next.Interfaces = slices.Clone(next.Interfaces)
+	next.LocalAddresses = slices.Clone(next.LocalAddresses)
 	m.mu.Lock()
 	previous := m.snapshot
 	if previous.revision != 0 && next.Equal(previous) {
@@ -579,6 +587,16 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 	}
 	for _, link := range data.links {
 		attrs := link.Attrs()
+		for _, addresses := range [][]netlink.Addr{data.addrs4[attrs.Index], data.addrs6[attrs.Index]} {
+			for _, address := range addresses {
+				if address.IPNet == nil {
+					continue
+				}
+				if ip, ok := netip.AddrFromSlice(address.IP); ok {
+					snapshot.LocalAddresses = append(snapshot.LocalAddresses, ip.Unmap())
+				}
+			}
+		}
 		family, ok := families[attrs.Index]
 		if !ok {
 			continue
@@ -603,6 +621,8 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 	slices.SortFunc(snapshot.Interfaces, func(a, b DefaultRouteInterface) int {
 		return cmp.Compare(a.Index, b.Index)
 	})
+	slices.SortFunc(snapshot.LocalAddresses, netip.Addr.Compare)
+	snapshot.LocalAddresses = slices.Compact(snapshot.LocalAddresses)
 	return snapshot
 }
 

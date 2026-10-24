@@ -46,14 +46,7 @@ type sharedRoutingPrograms struct {
 func (c *routingCompiler) compileShared(p *preparedRules) error {
 	b := c.builder
 	start := uint32(len(b.rules))
-	if err := b.applyRules(p.bypass, "api_bypass"); err != nil {
-		return err
-	}
-	for i := start; i < uint32(len(b.rules)); i++ {
-		if b.rules[i].Action == uint8(consts.MatchActionRoute) {
-			b.rules[i].Flags |= matchFlagBypass
-		}
-	}
+	b.compileAPIBypass(p)
 	c.shared.bypass = routingSpan{Start: start, End: uint32(len(b.rules)), Phase: routingPhaseIngress, Global: true}
 	var err error
 	c.shared.destinations, err = c.compileDestinations(p.destinations, "destination", "", true)

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 package apiserver
 
 import (
@@ -8,7 +7,6 @@ import (
 	"encoding/json/v2"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
@@ -19,295 +17,194 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
-type sessionSelectors struct {
-	state api.SelectorState
-}
+type sessionSelectors struct{ state api.SelectorState }
 
-func (s *sessionSelectors) Selectors() []api.SelectorState {
-	return []api.SelectorState{s.state}
-}
-
+func (s *sessionSelectors) Selectors() []api.SelectorState { return []api.SelectorState{s.state} }
 func (s *sessionSelectors) Select(group, node, _ string) (api.SelectorState, error) {
 	s.state = api.SelectorState{Name: group, NodeID: node}
 	return s.state, nil
 }
-
-func rejectLANClient(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
-	return ClientIdentity{}, net.ErrClosed
+func rejectLANClient(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+	return api.ClientIdentity{}, net.ErrClosed
 }
-
-func TestBrowserSessionLoginPersistenceAndLogout(t *testing.T) {
-	store := &sessionSelectors{state: api.SelectorState{Name: "private-group"}}
-	server := httptest.NewServer(NewHandler(Options{
-		APIKey: "private-api-key", Selectors: store,
-		Status: func() *api.StatusSnapshot { return &api.StatusSnapshot{} },
-	}))
-	defer server.Close()
-	client := server.Client()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.Jar = jar
-	request := func(method, path, key, body string, want int) []*http.Cookie {
-		t.Helper()
-		r, err := http.NewRequestWithContext(t.Context(), method, server.URL+path, strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.Header.Set("X-Dae-API", "1")
-		r.Header.Set("Content-Type", "application/json")
-		if key != "" {
-			r.Header.Set("Authorization", "Bearer "+key)
-		}
-		response, err := client.Do(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != want {
-			t.Fatalf("%s %s: got %d, want %d", method, path, response.StatusCode, want)
-		}
-		cookies := response.Cookies()
-		if response.StatusCode >= 400 && len(cookies) != 0 {
-			t.Fatalf("rejected %s %s changed session cookies: %v", method, path, cookies)
-		}
-		return cookies
-	}
-	request("GET", "/api/selectors", "", "", 401)
-	request("PUT", "/api/session", "wrong", "", 401)
-	request("GET", "/api/selectors", "", "", 401)
-	cookies := request("PUT", "/api/session", "private-api-key", "", 204)
-	if len(cookies) != 1 {
-		t.Fatalf("login cookies = %v", cookies)
-	}
-	cookie := cookies[0]
-	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/api" || cookie.Domain != "" || cookie.MaxAge != int(sessionLifetime.Seconds()) || strings.Contains(cookie.Value, "private-api-key") {
-		t.Fatalf("unexpected session cookie: %+v", cookie)
-	}
-	// Subsequent page loads and mutations authenticate using only the cookie.
-	request("GET", "/api/selectors", "", "", 200)
-	request("GET", "/api/status", "", "", 200)
-	// A saved session grants administration, but cannot renew itself without the key.
-	request("PUT", "/api/session", "", "", 401)
-	request("PUT", "/api/session", "wrong", "", 401)
-	request("PUT", "/api/selectors/private-group", "", `{"node_id":"second"}`, 200)
-	request("GET", "/api/selectors", "wrong", "", 401)
-	request("DELETE", "/api/selectors/private-group", "", "", 200)
-	logout := request("DELETE", "/api/session", "", "", 204)
-	if len(logout) != 1 || logout[0].MaxAge != -1 || logout[0].Path != cookie.Path {
-		t.Fatalf("logout did not clear the session: %v", logout)
-	}
-	request("GET", "/api/selectors", "", "", 401)
-	request("GET", "/api/status", "", "", 401)
-	request("GET", "/api/selectors", "private-api-key", "", 200)
-}
-
 func sessionRequest(t *testing.T, handler http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequestWithContext(t.Context(), method, "http://192.0.2.1:9080"+path, strings.NewReader(body))
+	r := httptest.NewRequestWithContext(t.Context(), method, "https://192.0.2.1:9080"+path, strings.NewReader(body))
 	r.RemoteAddr = "192.0.2.10:45000"
 	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
-	for key, value := range headers {
-		if value != "" {
-			r.Header.Set(key, value)
-		}
+	for k, v := range headers {
+		r.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	return w
 }
 
-func TestSessionRejectsExpiredTamperedAndRotatedCredentials(t *testing.T) {
-	options := Options{APIKey: "secret", Selectors: &sessionSelectors{state: api.SelectorState{Name: "private-group"}}, ResolveClient: rejectLANClient}
-	login := sessionRequest(t, NewHandler(options), "PUT", "/api/session", "", map[string]string{"Authorization": "Bearer secret", "X-Dae-API": "1"})
-	if login.Code != 204 {
-		t.Fatal(login.Code, login.Body.String())
-	}
-	valid := login.Result().Cookies()[0].Value
-	signed := func(deadline time.Time, host string) string {
-		payload := strconv.FormatInt(deadline.Unix(), 10) + ".nonce"
-		signer := &handler{options: options}
-		return payload + "." + base64.RawURLEncoding.EncodeToString(signer.sessionSignature(payload, host))
-	}
-	for _, test := range []struct {
-		name, key, cookie string
-		want              int
-	}{
-		{"reload with same key", "secret", valid, 200},
-		{"missing session", "secret", "", 401},
-		{"API key is not a session", "secret", "secret", 401},
-		{"tampered", "secret", valid + "x", 401},
-		{"expired", "secret", signed(time.Now().Add(-time.Minute), "192.0.2.1:9080"), 401},
-		{"other listener", "secret", signed(time.Now().Add(time.Hour), "192.0.2.1:9081"), 401},
-		{"rotated key", "new-secret", valid, 401},
-		{"removed key without LAN identity", "", valid, 403},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			updated := options
-			updated.APIKey = test.key
-			w := sessionRequest(t, NewHandler(updated), "GET", "/api/selectors", "", map[string]string{"Cookie": sessionCookieName + "=" + test.cookie})
-			if w.Code != test.want || (w.Code != 200 && strings.Contains(w.Body.String(), "private-group")) {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-			}
-		})
-	}
-}
-
-func TestKeylessAdministrationRequiresCurrentLANIdentity(t *testing.T) {
-	store := &sessionSelectors{state: api.SelectorState{Name: "private-group"}}
-	allowed := true
-	options := Options{
-		Selectors: store,
-		Status:    func() *api.StatusSnapshot { return &api.StatusSnapshot{Version: "private-status"} },
-		ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
-			if source != netip.MustParseAddrPort("192.0.2.10:45000") || netip.AddrPortFrom(destination.Addr().Unmap(), destination.Port()) != netip.MustParseAddrPort("192.0.2.1:9080") {
-				t.Errorf("used untrusted connection identity: %v -> %v", source, destination)
-				return ClientIdentity{}, net.ErrClosed
-			}
-			if !allowed {
-				return ClientIdentity{}, net.ErrClosed
-			}
-			return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}}, nil
-		},
-	}
-	handler := NewHandler(options)
-	headers := map[string]string{
-		"X-Dae-API": "1", "Content-Type": "application/json",
-		"X-Forwarded-For": "127.0.0.1", "X-Dae-Local": "1",
-		"Authorization": "Bearer old-key", "Cookie": sessionCookieName + "=old-session",
-	}
-	for _, operation := range []struct{ method, path, body string }{
-		{"GET", "/api/status", ""},
-		{"GET", "/api/selectors", ""},
-		{"PUT", "/api/selectors/private-group", `{"node_id":"second"}`},
-		{"DELETE", "/api/selectors/private-group", ""},
-		{"PUT", "/api/session", ""},
-	} {
-		t.Run(operation.method+operation.path, func(t *testing.T) {
-			allowed = true
-			w := sessionRequest(t, handler, operation.method, operation.path, operation.body, headers)
-			want := 200
-			if operation.path == "/api/session" {
-				want = 204
-				cookies := w.Result().Cookies()
-				if len(cookies) != 1 || cookies[0].Value != "" || cookies[0].MaxAge != -1 {
-					t.Fatal("keyless LAN login did not clear the saved session")
-				}
-			}
-			if w.Code != want {
-				t.Fatalf("LAN request: status=%d body=%s", w.Code, w.Body.String())
-			}
-			if operation.path == "/api/selectors" {
-				var data api.SelectorsResponse
-				if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil || !data.AdminEnabled || data.AuthMode != "lan" {
-					t.Fatalf("LAN authentication mode: %+v, %v", data, err)
-				}
-			}
-			// A previously accepted connection must be rejected once its LAN
-			// observation/neighbor identity is no longer valid, even with credentials.
-			allowed = false
-			state := store.state
-			w = sessionRequest(t, handler, operation.method, operation.path, operation.body, headers)
-			if w.Code != 403 || strings.Contains(w.Body.String(), "private-") || store.state.NodeID != state.NodeID || len(w.Result().Cookies()) != 0 {
-				t.Fatalf("non-LAN request: status=%d body=%s", w.Code, w.Body.String())
-			}
-		})
-	}
-	// Enabling a key immediately requires credentials even for a verified LAN peer.
-	options.APIKey = "new-key"
-	handler = NewHandler(options)
-	allowed = true
-	for _, key := range []string{"", "old-key", "new-key"} {
-		w := sessionRequest(t, handler, "GET", "/api/selectors", "", map[string]string{"Authorization": "Bearer " + key})
-		want := 401
-		if key == "new-key" {
-			want = 200
-		}
-		if w.Code != want {
-			t.Fatalf("configured key: status=%d, want %d", w.Code, want)
-		}
-	}
-	// Key authentication does not depend on LAN identity.
-	allowed = false
-	w := sessionRequest(t, handler, "GET", "/api/selectors", "", map[string]string{"Authorization": "Bearer new-key"})
-	if w.Code != 200 {
+func loginCookie(t *testing.T, h http.Handler, key string) *http.Cookie {
+	t.Helper()
+	w := sessionRequest(t, h, "PUT", "/api/session", "", map[string]string{"Authorization": "Bearer " + key, "X-Dae-API": "1", "Origin": "https://192.0.2.1:9080"})
+	var session api.Session
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &session) != nil {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login cookies: %v", cookies)
+	}
+	cookie := cookies[0]
+	if cookie.Name != sessionCookieName || cookie.Value == "" || cookie.Path != "/" || cookie.Domain != "" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unsafe cookie: %+v", cookie)
+	}
+	if (key != session.Role && strings.Contains(cookie.Value, key)) || strings.Contains(w.Body.String(), cookie.Value) || strings.Contains(w.Body.String(), `"token"`) {
+		t.Fatal("login disclosed a credential to JavaScript")
+	}
+	if !cookie.Expires.Equal(session.ExpiresAt) || time.Until(cookie.Expires) > sessionLifetime || time.Until(cookie.Expires) < sessionLifetime-time.Minute {
+		t.Fatal("incorrect absolute session expiration")
+	}
+	return cookie
 }
 
-func TestKeylessAdministrationRejectsBrowserRequestBypasses(t *testing.T) {
-	for _, headers := range []map[string]string{
-		{"Origin": "http://evil.example", "X-Dae-API": "1"},
-		{"Sec-Fetch-Site": "cross-site", "X-Dae-API": "1"},
-		{},
-	} {
-		options := Options{ResolveClient: func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
-			t.Fatal("invalid browser request reached LAN identity resolution")
-			return ClientIdentity{}, nil
-		}}
-		w := sessionRequest(t, NewHandler(options), "PUT", "/api/selectors/private-group", `{"node_id":"second"}`, headers)
-		if w.Code != 403 {
+func TestScopedSessionsAndRotation(t *testing.T) {
+	options := Options{UserKey: "user-secret", AdminKey: "admin-secret", Selectors: &sessionSelectors{}}
+	for _, key := range []string{options.UserKey, options.AdminKey} {
+		cookie := loginCookie(t, NewHandler(options), key)
+		role, ok := NewHandler(options).sessionRole(cookie.Value, "192.0.2.1:9080")
+		if !ok || (role == roleAdmin) != (key == options.AdminKey) {
+			t.Fatal("session role lost")
+		}
+		for _, host := range []string{"192.0.2.2:9080", "192.0.2.1:9081"} {
+			if _, ok := NewHandler(options).sessionRole(cookie.Value, host); ok {
+				t.Fatal("session transferred between API origins")
+			}
+		}
+		updated := options
+		if role == roleAdmin {
+			updated.AdminKey = "rotated"
+		} else {
+			updated.UserKey = "rotated"
+		}
+		if _, ok := NewHandler(updated).sessionRole(cookie.Value, "192.0.2.1:9080"); ok {
+			t.Fatal("rotation retained old session")
+		}
+		updated = options
+		if role == roleAdmin {
+			updated.UserKey = "rotated"
+		} else {
+			updated.AdminKey = "rotated"
+		}
+		if _, ok := NewHandler(updated).sessionRole(cookie.Value, "192.0.2.1:9080"); !ok {
+			t.Fatal("unrelated role rotation invalidated session")
+		}
+		w := sessionRequest(t, NewHandler(options), "DELETE", "/api/selectors/proxy", "", map[string]string{"Cookie": cookie.Name + "=" + cookie.Value, "Sec-Fetch-Site": "same-origin", "X-Dae-API": "1"})
+		want := 200
+		if role == roleUser {
+			want = 403
+		}
+		if w.Code != want {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
 }
 
-func TestUnixAdministrationUsesSocketPermissions(t *testing.T) {
-	for _, key := range []string{"", "configured-key"} {
-		t.Run(key, func(t *testing.T) {
-			handler := NewHandler(Options{APIKey: key, Selectors: &sessionSelectors{}})
-			request := func(method, path string) *httptest.ResponseRecorder {
-				r := httptest.NewRequestWithContext(t.Context(), method, "http://unix"+path, nil)
-				r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.UnixAddr{Name: "dae.sock", Net: "unix"}))
-				r.Header.Set("X-Dae-API", "1")
-				w := httptest.NewRecorder()
-				handler.ServeHTTP(w, r)
-				return w
-			}
-			w := request("GET", "/api/selectors")
-			var data api.SelectorsResponse
-			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &data) != nil || data.AuthMode != "unix" {
-				t.Fatal(w.Code, w.Body.String())
-			}
-			// Local administration is not permission to mint a browser session
-			// without supplying the configured API key.
-			want := 204
-			if key != "" {
-				want = 401
-			}
-			if w := request("PUT", "/api/session"); w.Code != want {
-				t.Fatal(w.Code, w.Body.String())
-			}
-			for _, path := range []string{"/api/device", "/api/device/context", "/api/device/mitm-tests/unknown"} {
-				if w := request("GET", path); w.Code != http.StatusForbidden {
-					t.Fatalf("Unix self-service %s: %d %s", path, w.Code, w.Body.String())
-				}
-			}
-		})
+func TestSessionCannotRenewAndLogoutClearsExpiredCookie(t *testing.T) {
+	h := NewHandler(Options{AdminKey: "admin", AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, Selectors: &sessionSelectors{}})
+	payload := "dae1.admin." + strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10) + ".nonce"
+	token := payload + "." + base64.RawURLEncoding.EncodeToString(sessionSignature(payload, "192.0.2.1:9080", "admin"))
+	for _, headers := range []map[string]string{
+		{"Cookie": sessionCookieName + "=" + token},
+		{"Authorization": "Bearer " + token},
+		{},
+	} {
+		headers["Sec-Fetch-Site"], headers["X-Dae-API"] = "same-origin", "1"
+		w := sessionRequest(t, h, "PUT", "/api/session", "", headers)
+		if w.Code != 401 || w.Header().Get("Set-Cookie") != "" {
+			t.Fatal("login without raw key minted a session", w.Code, w.Body.String())
+		}
+	}
+	for _, cookie := range []string{token, "expired"} {
+		w := sessionRequest(t, h, "DELETE", "/api/session", "", map[string]string{"Cookie": sessionCookieName + "=" + cookie, "Sec-Fetch-Site": "same-origin", "X-Dae-API": "1"})
+		cookies := w.Result().Cookies()
+		if w.Code != 204 || len(cookies) != 1 || cookies[0].MaxAge != -1 || cookies[0].Value != "" || cookies[0].Path != "/" || !cookies[0].Secure || !cookies[0].HttpOnly {
+			t.Fatal("logout did not clear the cookie", w.Code, w.Header())
+		}
+	}
+	if w := accessRequest(t, h, "PUT", "/api/session", "", "", false, true); w.Code != 403 || w.Header().Get("Set-Cookie") != "" {
+		t.Fatal("Unix identity minted a browser session", w.Code)
 	}
 }
 
-func TestSessionRequiresSameOriginAndMutationHeader(t *testing.T) {
-	for _, method := range []string{"PUT", "DELETE"} {
-		for _, test := range []struct {
-			name, origin, site, marker, body string
-			want                             int
-		}{
-			{name: "missing marker", want: 403},
-			{name: "foreign origin", marker: "1", origin: "http://evil.example", want: 403},
-			{name: "cross-site metadata", marker: "1", site: "cross-site", want: 403},
-			{name: "unexpected body", marker: "1", body: "{}", want: 400},
-			{name: "valid", marker: "1", origin: "http://192.0.2.1:9080", site: "same-origin", want: 204},
-		} {
-			t.Run(method+"/"+test.name, func(t *testing.T) {
-				w := sessionRequest(t, NewHandler(Options{APIKey: "secret"}), method, "/api/session", test.body, map[string]string{
-					"Authorization": "Bearer secret", "X-Dae-API": test.marker, "Origin": test.origin, "Sec-Fetch-Site": test.site,
-				})
-				if w.Code != test.want || (w.Code != 204 && len(w.Result().Cookies()) != 0) {
-					t.Fatalf("status=%d cookies=%v", w.Code, w.Result().Cookies())
-				}
-			})
+func TestSessionCredentialPrecedenceAndBrowserBoundary(t *testing.T) {
+	h := NewHandler(Options{AdminKey: "admin", AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, Selectors: &sessionSelectors{}, WebOrigins: []string{"https://192.0.2.1:5173"}})
+	cookie := loginCookie(t, h, "admin")
+	value := cookie.Name + "=" + cookie.Value
+	for _, test := range []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"same-origin", map[string]string{"Cookie": value, "Sec-Fetch-Site": "same-origin"}, 200},
+		{"same-site", map[string]string{"Cookie": value, "Origin": "https://192.0.2.1:5173", "Sec-Fetch-Site": "same-site"}, 200},
+		{"cross-site", map[string]string{"Cookie": value, "Origin": "https://192.0.2.1:5173", "Sec-Fetch-Site": "cross-site"}, 403},
+		{"unlisted origin", map[string]string{"Cookie": value, "Origin": "https://other.example"}, 403},
+		{"missing origin", map[string]string{"Cookie": value}, 403},
+		{"bad cookie never LAN", map[string]string{"Cookie": cookie.Name + "=bad", "Sec-Fetch-Site": "same-origin"}, 401},
+		{"bad key never cookie", map[string]string{"Cookie": value, "Authorization": "Bearer bad", "Sec-Fetch-Site": "same-origin"}, 401},
+		{"empty key never cookie", map[string]string{"Cookie": value, "Authorization": "", "Sec-Fetch-Site": "same-origin"}, 401},
+		{"duplicate cookies", map[string]string{"Cookie": value + "; " + value, "Sec-Fetch-Site": "same-origin"}, 401},
+		{"key replaces bad cookie", map[string]string{"Cookie": cookie.Name + "=bad", "Authorization": "Bearer admin"}, 200},
+		{"Bearer session rejected", map[string]string{"Authorization": "Bearer " + cookie.Value}, 401},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			w := sessionRequest(t, h, "GET", "/api/selectors", "", test.headers)
+			if w.Code != test.want {
+				t.Fatal(w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, header := range []string{"Origin", "X-Dae-API"} {
+		headers := map[string]string{"Cookie": value, "Origin": "https://192.0.2.1:9080", "X-Dae-API": "1"}
+		delete(headers, header)
+		if w := sessionRequest(t, h, "DELETE", "/api/selectors/proxy", "", headers); w.Code != 403 {
+			t.Fatal("cookie mutation accepted without browser boundary", header, w.Code)
 		}
+	}
+}
+
+func TestSessionRejectsExpiredAndTamperedCookies(t *testing.T) {
+	h := NewHandler(Options{AdminKey: "admin"})
+	for _, expires := range []int64{time.Now().Unix() - 1, time.Now().Add(time.Hour).Unix()} {
+		payload := "dae1.admin." + strconv.FormatInt(expires, 10) + ".nonce"
+		token := payload + "." + base64.RawURLEncoding.EncodeToString(sessionSignature(payload, "192.0.2.1:9080", "admin"))
+		if expires > time.Now().Unix() {
+			token += "tampered"
+		}
+		if _, ok := h.sessionRole(token, "192.0.2.1:9080"); ok {
+			t.Fatal("accepted expired or tampered cookie")
+		}
+	}
+}
+
+func TestStaleSessionCanBeClearedWithoutAKey(t *testing.T) {
+	const origin = "https://192.0.2.1:8443"
+	options := Options{AdminKey: "admin", Selectors: &sessionSelectors{}, AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, WebOrigins: []string{origin}}
+	cookie := loginCookie(t, NewHandler(options), "admin")
+	options.AdminKey = ""
+	h := NewHandler(options)
+	headers := map[string]string{"Origin": origin, "Sec-Fetch-Site": "same-site", "Cookie": cookie.Name + "=" + cookie.Value}
+	w := sessionRequest(t, h, "GET", "/api/selectors", "", headers)
+	if w.Code != 401 || w.Header().Get("X-Dae-Session-Invalid") != "1" ||
+		w.Header().Get("Access-Control-Expose-Headers") != "X-Dae-Session-Invalid" || w.Header().Get("Set-Cookie") != "" {
+		t.Fatal("expired cookie must stay unauthorized and disclose only its invalidity", w.Code, w.Header())
+	}
+	headers["X-Dae-API"] = "1"
+	w = sessionRequest(t, h, "DELETE", "/api/session", "", headers)
+	cookies := w.Result().Cookies()
+	if w.Code != 204 || len(cookies) != 1 || cookies[0].Name != cookie.Name || cookies[0].MaxAge != -1 {
+		t.Fatal("explicit logout did not clear the stale cookie", w.Code, w.Header())
+	}
+	delete(headers, "Cookie")
+	w = sessionRequest(t, h, "GET", "/api/selectors", "", headers)
+	if w.Code != 200 || w.Header().Get("X-Dae-Session-Invalid") != "" {
+		t.Fatal("anonymous LAN access did not recover", w.Code, w.Header())
 	}
 }

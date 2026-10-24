@@ -28,12 +28,21 @@
     "schemas": {
       "NodeHealth": {
         "type": "string",
-        "enum": ["unknown", "healthy", "confirming", "unhealthy"],
+        "enum": [
+          "unknown",
+          "healthy",
+          "confirming",
+          "unhealthy"
+        ],
         "description": "Canonical observation state shared by status and selectors. Probe activity and physical dormancy are separate."
       },
       "GroupHealth": {
         "type": "string",
-        "enum": ["healthy", "warning", "degraded"]
+        "enum": [
+          "healthy",
+          "warning",
+          "degraded"
+        ]
       },
       "Availability": {
         "properties": {
@@ -136,7 +145,9 @@
           },
           "mitm_test_origins": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Exact virtual HTTPS origins allowed for MITM challenges. CA trust is checked independently with a fresh-leaf challenge on the current API socket."
           }
         },
@@ -150,58 +161,139 @@
         "type": "object",
         "description": "A one-minute CA trust challenge bound to the source IP, router IP and initiating page origin. A POST response is not proof; GET requires a TLS handshake using a leaf issued after challenge creation.",
         "properties": {
-          "id": { "type": "string" },
-          "ca_fingerprint": { "type": "string" },
-          "expires_at": { "type": "string", "format": "date-time" }
+          "id": {
+            "type": "string"
+          },
+          "ca_fingerprint": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         },
-        "required": ["id", "ca_fingerprint", "expires_at"]
+        "required": [
+          "id",
+          "ca_fingerprint",
+          "expires_at"
+        ]
       },
       "MITMTest": {
         "type": "object",
         "description": "A one-minute transparent MITM challenge bound to the verified caller and current interception configuration. At most 8 challenges and observations are retained per verified MAC and 256 globally; excess creation requests return 503. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification.",
         "properties": {
-          "id": { "type": "string" },
-          "ca_fingerprint": { "type": "string" },
-          "started_at": { "type": "string", "format": "date-time" },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "mitm_url": { "type": "string" },
-          "mitm_enabled": { "type": "boolean" },
-          "mitm_observed": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "ca_fingerprint": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mitm_url": {
+            "type": "string"
+          },
+          "mitm_enabled": {
+            "type": "boolean"
+          },
+          "mitm_observed": {
+            "type": "boolean"
+          }
         },
-        "required": ["id", "ca_fingerprint", "started_at", "expires_at", "mitm_url", "mitm_enabled", "mitm_observed"]
+        "required": [
+          "id",
+          "ca_fingerprint",
+          "started_at",
+          "expires_at",
+          "mitm_url",
+          "mitm_enabled",
+          "mitm_observed"
+        ]
       },
       "MITMTestProof": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "ca_fingerprint": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "ca_fingerprint": {
+            "type": "string"
+          }
         },
-        "required": ["id", "ca_fingerprint"]
+        "required": [
+          "id",
+          "ca_fingerprint"
+        ]
       },
       "DeviceStatus": {
         "type": "object",
         "description": "The requesting device's MAC-attributed upstream paths. IPv4 and IPv6 share the MAC identity. Counters survive reload and reset on daemon restart. Kernel passthrough, local HTTP/DNS responses and daemon-originated work are excluded; splice deltas are included.",
         "properties": {
-          "device": { "$ref": "#/components/schemas/DeviceState" },
-          "scope": { "type": "string", "enum": ["userspace_upstream"] },
-          "started_at": { "type": "string", "format": "date-time" },
-          "stats": { "$ref": "#/components/schemas/PathStats" },
-          "networks": {
-            "type": "array", "minItems": 4, "maxItems": 4,
-            "items": { "$ref": "#/components/schemas/PathStats" }
+          "device": {
+            "$ref": "#/components/schemas/DeviceState"
           },
-          "direct_fallback_connections": { "type": "integer", "format": "int64" },
-          "outbounds": { "type": "array", "items": { "$ref": "#/components/schemas/DeviceOutboundStatus" } }
+          "scope": {
+            "type": "string",
+            "enum": [
+              "userspace_upstream"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PathStats"
+          },
+          "networks": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/PathStats"
+            }
+          },
+          "direct_fallback_connections": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outbounds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceOutboundStatus"
+            }
+          }
         },
-        "required": ["device", "scope", "started_at", "stats", "networks", "direct_fallback_connections", "outbounds"]
+        "required": [
+          "device",
+          "scope",
+          "started_at",
+          "stats",
+          "networks",
+          "direct_fallback_connections",
+          "outbounds"
+        ]
       },
       "DeviceOutboundStatus": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "stats": { "$ref": "#/components/schemas/PathStats" }
+          "name": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PathStats"
+          }
         },
-        "required": ["name", "stats"]
+        "required": [
+          "name",
+          "stats"
+        ]
       },
       "ClientSetState": {
         "properties": {
@@ -345,7 +437,9 @@
       },
       "GroupStatus": {
         "properties": {
-          "health": { "$ref": "#/components/schemas/GroupHealth" },
+          "health": {
+            "$ref": "#/components/schemas/GroupHealth"
+          },
           "availability": {
             "$ref": "#/components/schemas/GroupAvailability"
           },
@@ -452,15 +546,49 @@
       "SelectionStatus": {
         "type": "object",
         "properties": {
-          "tracking": {"type": "string", "enum": ["selected", "monitoring", "standby"], "description": "Group-local scheduling role. Standby paths may still be monitored by another group; active operations are reported by recovery."},
-          "degraded": {"type": "boolean"},
-          "recovery_elapsed": {"type": "integer", "format": "int64", "description": "Successfully verified observation time, in nanoseconds."},
-          "failure_recovery": {"type": "integer", "format": "int64", "description": "Required recovery observation duration, in nanoseconds."},
-          "priority": {"type": "integer"},
-          "score": {"type": "integer", "format": "int64", "description": "Selection score in nanoseconds; may be negative."},
-          "measured_at": {"type": "string", "format": "date-time"}
+          "tracking": {
+            "type": "string",
+            "enum": [
+              "selected",
+              "monitoring",
+              "standby"
+            ],
+            "description": "Group-local scheduling role. Standby paths may still be monitored by another group; active operations are reported by recovery."
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "recovery_elapsed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Successfully verified observation time, in nanoseconds."
+          },
+          "failure_recovery": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Required recovery observation duration, in nanoseconds."
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "score": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Selection score in nanoseconds; may be negative."
+          },
+          "measured_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         },
-        "required": ["tracking", "degraded", "recovery_elapsed", "failure_recovery", "priority", "score"]
+        "required": [
+          "tracking",
+          "degraded",
+          "recovery_elapsed",
+          "failure_recovery",
+          "priority",
+          "score"
+        ]
       },
       "BufferMemoryStatus": {
         "description": "Process-wide MITM body buffer budget. Byte counters measure reserved buffer storage; denied counts rejected reservations.",
@@ -532,7 +660,7 @@
             "type": "string"
           },
           "details": {
-            "description": "Opaque plugin-defined JSON report. Its schema belongs to the plugin; reports exclude configuration credentials."
+            "description": "Administrator-only plugin-defined JSON report, omitted for user and anonymous LAN access. Its schema belongs to the plugin; reports exclude configuration credentials but can contain private script output."
           }
         },
         "required": [
@@ -582,99 +710,298 @@
       "Operation": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
-          "state": { "type": "string", "enum": ["queued", "running", "completed", "failed", "canceled"] },
-          "trigger": { "type": "string", "enum": ["api", "automatic"] },
-          "queued_at": { "type": "string", "format": "date-time" },
-          "started_at": { "type": "string", "format": "date-time" },
-          "finished_at": { "type": "string", "format": "date-time" },
-          "progress": { "type": "string" },
-          "result": { "type": "string" },
-          "error": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "reload",
+              "suspend",
+              "refresh"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "canceled"
+            ]
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "api",
+              "automatic"
+            ]
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
         },
-        "required": ["id", "kind", "state", "trigger", "queued_at"]
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "trigger",
+          "queued_at"
+        ]
       },
       "OperationRequest": {
         "type": "object",
         "properties": {
-          "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
-          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." },
-          "executable_pid": { "type": "integer", "minimum": 0, "description": "Local reload only. Must match the authenticated Unix peer PID. Compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload." },
-          "replace": { "type": "boolean", "description": "Force local process replacement even when the executable matches. Requires executable_pid. Replacement closes old connections before same-PID exec and rebuilds the runtime under blocking guards." }
+          "kind": {
+            "type": "string",
+            "enum": [
+              "reload",
+              "suspend",
+              "refresh"
+            ]
+          },
+          "abort": {
+            "type": "boolean",
+            "description": "Abort established connections during reload or suspend; invalid for refresh."
+          },
+          "executable_pid": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Local reload only. Must match the authenticated Unix peer PID. Compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload."
+          },
+          "replace": {
+            "type": "boolean",
+            "description": "Force local process replacement even when the executable matches. Requires executable_pid. Replacement closes old connections before same-PID exec and rebuilds the runtime under blocking guards."
+          }
         },
-        "required": ["kind"],
+        "required": [
+          "kind"
+        ],
         "additionalProperties": false
       },
       "ResourceRefreshStatus": {
         "type": "object",
         "properties": {
-          "operation": { "$ref": "#/components/schemas/Operation" },
-          "next_check": { "type": "string", "format": "date-time" }
+          "operation": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "next_check": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "ScriptRunRequest": {
         "type": "object",
         "properties": {
-          "module": { "type": "string", "description": "Required when the script name is not unique within the instance." },
-          "script": { "type": "string", "minLength": 1 },
-          "mac": { "type": "string", "description": "MITM-enabled target device MAC for a script with LAN isolation enabled. Omission always selects local execution. Scripts with LAN isolation disabled reject MAC selection; omit mac." }
+          "module": {
+            "type": "string",
+            "description": "Required when the script name is not unique within the instance."
+          },
+          "script": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mac": {
+            "type": "string",
+            "description": "MITM-enabled target device MAC for a script with LAN isolation enabled. Omission always selects local execution. Scripts with LAN isolation disabled reject MAC selection; omit mac."
+          }
         },
-        "required": ["script"],
+        "required": [
+          "script"
+        ],
         "additionalProperties": false
       },
       "ScriptRunResponse": {
         "type": "object",
         "properties": {
-          "instance": { "type": "string" },
-          "module": { "type": "string" },
-          "run": { "type": "integer", "minimum": 1 },
-          "status": { "$ref": "#/components/schemas/ScriptTaskStatus" }
+          "instance": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "run": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/ScriptTaskStatus"
+          }
         },
-        "required": ["instance", "module", "run", "status"]
+        "required": [
+          "instance",
+          "module",
+          "run",
+          "status"
+        ]
       },
       "ScriptStoreMigrateRequest": {
         "type": "object",
         "properties": {
-          "from_mac": { "type": "string", "description": "Source device: a nonzero unicast six-byte MAC, distinct from to_mac." },
-          "to_mac": { "type": "string", "description": "Destination device: a nonzero unicast six-byte MAC with no existing storage partition." }
+          "from_mac": {
+            "type": "string",
+            "description": "Source device: a nonzero unicast six-byte MAC, distinct from to_mac."
+          },
+          "to_mac": {
+            "type": "string",
+            "description": "Destination device: a nonzero unicast six-byte MAC with no existing storage partition."
+          }
         },
-        "required": ["from_mac", "to_mac"],
+        "required": [
+          "from_mac",
+          "to_mac"
+        ],
         "additionalProperties": false
       },
       "ScriptStoreMigrateResponse": {
         "type": "object",
         "properties": {
-          "instance": { "type": "string" },
-          "from_mac": { "type": "string", "description": "Canonical source MAC." },
-          "to_mac": { "type": "string", "description": "Canonical destination MAC." },
-          "keys_moved": { "type": "integer", "minimum": 0 }
+          "instance": {
+            "type": "string"
+          },
+          "from_mac": {
+            "type": "string",
+            "description": "Canonical source MAC."
+          },
+          "to_mac": {
+            "type": "string",
+            "description": "Canonical destination MAC."
+          },
+          "keys_moved": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
-        "required": ["instance", "from_mac", "to_mac", "keys_moved"]
+        "required": [
+          "instance",
+          "from_mac",
+          "to_mac",
+          "keys_moved"
+        ]
       },
       "ScriptTaskStatus": {
         "description": "One effective execution-scope row for a plugin-managed script definition. Surge always includes a local row and adds device rows only for scripts with LAN isolation enabled; unknown is not an executable target. Times and counters describe this scope's latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload.",
         "properties": {
-          "name": { "type": "string" },
-          "scope": { "type": "string", "description": "Effective execution scope, not original request origin. Surge reports local or device explicitly; shared LAN execution is local." },
-          "mac": { "type": "string", "description": "Host-confirmed target device MAC; present only when scope is device." },
-          "type": { "type": "string", "enum": ["cron", "generic"] },
-          "cronexp": { "type": "string" },
-          "timezone": { "type": "string" },
-          "timeout_seconds": { "type": "number" },
-          "state": { "type": "string", "enum": ["unavailable", "pending", "ready", "scheduled", "waiting", "running", "unscheduled", "stopped"] },
-          "next_run": { "type": "string", "format": "date-time" },
-          "last_started_at": { "type": "string", "format": "date-time" },
-          "last_finished_at": { "type": "string", "format": "date-time" },
-          "last_duration_ms": { "type": "integer", "format": "int64" },
-          "last_result": { "type": "string", "enum": ["success", "failed", "skipped"] },
-          "last_trigger": { "type": "string", "enum": ["cron", "http-api"] },
-          "last_error": { "type": "string", "description": "Stable failure or skip category, such as timeout, canceled, error, http_client_unavailable, device_disabled or device_query_failed. No raw script exceptions or response bodies." },
-          "runs": { "type": "integer", "minimum": 0 },
-          "failures": { "type": "integer", "minimum": 0 },
-          "skipped": { "type": "integer", "minimum": 0, "description": "Schedule ticks merged during pending discovery or while this task was waiting/running, plus admitted tasks skipped because device eligibility was revoked or device discovery failed." }
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Effective execution scope, not original request origin. Surge reports local or device explicitly; shared LAN execution is local."
+          },
+          "mac": {
+            "type": "string",
+            "description": "Host-confirmed target device MAC; present only when scope is device."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "generic"
+            ]
+          },
+          "cronexp": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "type": "number"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unavailable",
+              "pending",
+              "ready",
+              "scheduled",
+              "waiting",
+              "running",
+              "unscheduled",
+              "stopped"
+            ]
+          },
+          "next_run": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_result": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failed",
+              "skipped"
+            ]
+          },
+          "last_trigger": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "http-api"
+            ]
+          },
+          "last_error": {
+            "type": "string",
+            "description": "Stable failure or skip category, such as timeout, canceled, error, http_client_unavailable, device_disabled or device_query_failed. No raw script exceptions or response bodies."
+          },
+          "runs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Schedule ticks merged during pending discovery or while this task was waiting/running, plus admitted tasks skipped because device eligibility was revoked or device discovery failed."
+          }
         },
-        "required": ["name", "scope", "type", "timeout_seconds", "state", "last_duration_ms", "runs", "failures", "skipped"],
+        "required": [
+          "name",
+          "scope",
+          "type",
+          "timeout_seconds",
+          "state",
+          "last_duration_ms",
+          "runs",
+          "failures",
+          "skipped"
+        ],
         "type": "object"
       },
       "NodeAnnotationStatus": {
@@ -703,16 +1030,34 @@
       "NodeEgress": {
         "description": "Local connection to the first proxy, independent of destination network support.",
         "properties": {
-          "ipversion": { "type": "integer", "enum": [0, 4, 6] },
-          "mark": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-          "interface": { "type": "string" }
+          "ipversion": {
+            "type": "integer",
+            "enum": [
+              0,
+              4,
+              6
+            ]
+          },
+          "mark": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "interface": {
+            "type": "string"
+          }
         },
-        "required": ["ipversion", "mark"],
+        "required": [
+          "ipversion",
+          "mark"
+        ],
         "type": "object"
       },
       "NodeStatus": {
         "properties": {
-          "health": { "$ref": "#/components/schemas/NodeHealth" },
+          "health": {
+            "$ref": "#/components/schemas/NodeHealth"
+          },
           "dormant": {
             "type": "boolean",
             "description": "The physical transport has been released and is not being recreated. Omitted when false; independent of group-local selection tracking."
@@ -720,7 +1065,9 @@
           "selection": {
             "$ref": "#/components/schemas/SelectionStatus"
           },
-          "egress": { "$ref": "#/components/schemas/NodeEgress" },
+          "egress": {
+            "$ref": "#/components/schemas/NodeEgress"
+          },
           "address": {
             "type": "string"
           },
@@ -773,7 +1120,9 @@
           },
           "failing": {
             "description": "Confirmed networks whose latest probe failed; they serve no traffic until a probe succeeds. Capability stays in support. Network order: tcp4, tcp6, udp4, udp6. Omitted when no network fails.",
-            "items": { "type": "boolean" },
+            "items": {
+              "type": "boolean"
+            },
             "maxItems": 4,
             "minItems": 4,
             "type": "array"
@@ -877,8 +1226,12 @@
       },
       "SelectorNode": {
         "properties": {
-          "health": { "$ref": "#/components/schemas/NodeHealth" },
-          "egress": { "$ref": "#/components/schemas/NodeEgress" },
+          "health": {
+            "$ref": "#/components/schemas/NodeHealth"
+          },
+          "egress": {
+            "$ref": "#/components/schemas/NodeEgress"
+          },
           "checked_at": {
             "type": "string",
             "format": "date-time",
@@ -888,7 +1241,9 @@
             "description": "A test is queued/running, or the monitored node awaits its initial check. Untested dormant nodes are not checking.",
             "type": "boolean"
           },
-          "tested": { "type": "boolean" },
+          "tested": {
+            "type": "boolean"
+          },
           "tracking": {
             "type": "boolean",
             "description": "Automatic connectivity checks are enabled."
@@ -934,11 +1289,18 @@
           },
           "status": {
             "type": "string",
-            "enum": ["matched", "missing", "ambiguous"],
+            "enum": [
+              "matched",
+              "missing",
+              "ambiguous"
+            ],
             "description": "Missing or ambiguous preferences remain saved while the startup choice is used temporarily."
           }
         },
-        "required": ["name", "status"]
+        "required": [
+          "name",
+          "status"
+        ]
       },
       "SelectorState": {
         "properties": {
@@ -986,8 +1348,13 @@
           },
           "auth_mode": {
             "type": "string",
-            "enum": ["api_key", "lan", "unix"],
-            "description": "The request's administrative access mode: configured API key/session, verified LAN ingress with no configured key, or filesystem-authorized Unix socket. LAN access is revalidated for every request and creates no browser session."
+            "enum": [
+              "user_key",
+              "admin_key",
+              "lan",
+              "unix"
+            ],
+            "description": "User or administrator Bearer credentials, anonymous verified LAN user access, or local Unix administration."
           },
           "selectors": {
             "items": {
@@ -1007,21 +1374,38 @@
         "additionalProperties": false,
         "type": "object",
         "properties": {
-          "outbound": { "type": "string", "minLength": 1, "description": "Name of an instantiated, checked outbound. Applies to selector and automatic policies, and checked direct-node targets." },
+          "outbound": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Name of an instantiated, checked outbound. Applies to selector and automatic policies, and checked direct-node targets."
+          },
           "node_id": {
             "type": "string",
             "description": "Path ID within that outbound. Empty or omitted probes every path once."
           }
         },
-        "required": ["outbound"]
+        "required": [
+          "outbound"
+        ]
       },
       "ProbeResponse": {
         "type": "object",
         "properties": {
-          "outbound": { "type": "string" },
-          "node_ids": { "type": "array", "items": { "type": "string" }, "description": "Accepted targets, including requests coalesced with queued/running checks. Acceptance is not a health result." }
+          "outbound": {
+            "type": "string"
+          },
+          "node_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Accepted targets, including requests coalesced with queued/running checks. Acceptance is not a health result."
+          }
         },
-        "required": ["outbound", "node_ids"]
+        "required": [
+          "outbound",
+          "node_ids"
+        ]
       },
       "SetMITMRequest": {
         "additionalProperties": false,
@@ -1039,7 +1423,9 @@
         "properties": {
           "compiled_plugins": {
             "description": "Plugin types registered by the running daemon, sorted by name and independent of instance configuration. Excludes the system MITM diagnostic plugin.",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "type": "array"
           },
           "buffer_memory": {
@@ -1124,19 +1510,30 @@
         "properties": {
           "scope": {
             "type": "string",
-            "enum": ["kernel", "userspace"],
+            "enum": [
+              "kernel",
+              "userspace"
+            ],
             "description": "Where the table or resource pool is maintained."
           },
           "on_full": {
             "type": "string",
-            "enum": ["evict", "reject", "omit", "unlimited"],
+            "enum": [
+              "evict",
+              "reject",
+              "omit",
+              "unlimited"
+            ],
             "description": "Capacity behavior: evict existing entries (LRU), reject new entries, omit excess kernel projection candidates, or retain without a capacity limit."
           },
           "error": {
             "type": "string",
             "description": "When nonempty, used is unavailable and must not be rendered as zero usage or 0%."
           },
-          "pending": { "type": "integer", "description": "Pending kernel projection updates or removals." },
+          "pending": {
+            "type": "integer",
+            "description": "Pending kernel projection updates or removals."
+          },
           "candidates": {
             "description": "IP states with a nonzero domain bitmap before capacity selection. candidates - used is the number excluded by kernel capacity.",
             "format": "int64",
@@ -1410,68 +1807,171 @@
           "recovery_required"
         ],
         "type": "object"
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "admin"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "role",
+          "expires_at"
+        ]
       }
     },
     "securitySchemes": {
       "bearerAuth": {
-        "description": "The configured global.api_key, sent as a Bearer credential.",
+        "type": "http",
         "scheme": "bearer",
-        "type": "http"
+        "description": "The raw api.user_key or api.admin_key. TCP credentials require HTTPS."
       },
-      "sessionCookie": {
+      "browserSession": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "dae_session",
-        "description": "Signed seven-day browser session issued by PUT /api/session. HttpOnly, SameSite=Strict; scoped to /api and the listener host/port. Changing global.api_key invalidates it. An explicit Authorization header takes precedence."
+        "name": "__Host-dae-session",
+        "description": "Seven-day, host-bound signed session issued only by raw-key login. Secure, HttpOnly, Path=/, SameSite=Strict; no Domain. Browser origins must be same-site and approved by web_origins (same-origin by default)."
+      },
+      "pprofBasic": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "pprof only: username dae and password api.admin_key. Requires HTTPS."
       }
     }
   },
   "info": {
-    "description": "Status schema 15. Tables report kernel and userspace capacity, full-table behavior and optional usage errors; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests, except HTTPS certificate challenge proofs may be read by the initiating HTTP setup page on the same IP and port; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 15. Tables report kernel and userspace capacity, full-table behavior and optional usage errors; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. User and administrator APIs on api.listen, disabled by default. A port binds configured LAN interfaces; an explicit IP:port binds that address. The mode-0600 Unix socket always provides local administration. Administrator credentials include user privileges. Device identity is independent of privileges and requires verified LAN ingress. Mutations require X-Dae-API: 1. JSON APIs reject query parameters. web_origins restricts all browser origins, defaulting to same-origin; cross-site management requests are rejected. Browsers use HttpOnly session cookies, tools use raw keys. Reverse proxies require HTTPS upstream, the literal upstream Host, preserved Origin and X-Dae-Proxy: 1. Forwarding headers only remove LAN/self and browser-trust-proof capabilities; they never grant identity. Plain HTTP is limited to CA bootstrap operations. A challenge proof requires HTTPS. Unix peer credentials authorize local administration independently of TCP security schemes.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/device/context": {"$ref": "./diagnostics.json#/paths/~1api~1device~1context"},
-    "/api/device/diagnostics/explain": {"$ref": "./diagnostics.json#/paths/~1api~1device~1diagnostics~1explain"},
-    "/api/diagnostics/explain": {"$ref": "./diagnostics.json#/paths/~1api~1diagnostics~1explain"},
-    "/api/device/sets/{name}/impact": {"$ref": "./diagnostics.json#/paths/~1api~1device~1sets~1{name}~1impact"},
-    "/api/clients/{name}/impact": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1impact"},
-    "/api/clients": {"$ref": "./diagnostics.json#/paths/~1api~1clients"},
-    "/api/clients/{name}": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}"},
-    "/api/clients/{name}/members/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1members~1{mac}"},
-    "/api/devices/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}"},
-    "/api/devices/{mac}/mitm": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}~1mitm"},
+    "/api/device/context": {
+      "$ref": "./diagnostics.json#/paths/~1api~1device~1context"
+    },
+    "/api/device/diagnostics/explain": {
+      "$ref": "./diagnostics.json#/paths/~1api~1device~1diagnostics~1explain"
+    },
+    "/api/diagnostics/explain": {
+      "$ref": "./diagnostics.json#/paths/~1api~1diagnostics~1explain"
+    },
+    "/api/device/sets/{name}/impact": {
+      "$ref": "./diagnostics.json#/paths/~1api~1device~1sets~1{name}~1impact"
+    },
+    "/api/clients/{name}/impact": {
+      "$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1impact"
+    },
+    "/api/clients": {
+      "$ref": "./diagnostics.json#/paths/~1api~1clients"
+    },
+    "/api/clients/{name}": {
+      "$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}"
+    },
+    "/api/clients/{name}/members/{mac}": {
+      "$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1members~1{mac}"
+    },
+    "/api/devices/{mac}": {
+      "$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}"
+    },
+    "/api/devices/{mac}/mitm": {
+      "$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}~1mitm"
+    },
     "/api/certificate/tests": {
       "post": {
         "operationId": "startCertificateTest",
         "summary": "Start a browser CA trust test",
-        "description": "Public, same-origin, empty body, requires X-Dae-API: 1. Issues a fresh temporary leaf and key held only in memory. Challenges expire after one minute; certificate validity includes five additional minutes for client clock skew, capped by CA expiry. At most 8 pending challenges per source IP and 64 globally; excess requests return 429. Only new TLS connections from the initiating source IP to the connected router IP use pending challenge leaves; the persistent management leaf, CA and MITM cache stay unchanged. Clients sharing a source IP share this temporary selection. Does not require MITM or a device MAC. GET the returned id over HTTPS on the same socket with credentials omitted and redirects rejected.",
-        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
+        "description": "Create a short-lived trust challenge using user access. Requires a direct TCP connection; reverse proxies are rejected. A new temporary leaf proves trust independently of stored exceptions for the management certificate.",
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
         "responses": {
-          "201": { "description": "Test created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          "201": {
+            "description": "Test created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateTest"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "direct",
+        "x-dae-http-bootstrap": true
       }
     },
     "/api/certificate/tests/{id}": {
       "get": {
         "operationId": "verifyCertificateTest",
         "summary": "Prove browser trust using a fresh TLS handshake",
-        "description": "HTTPS only. Permits the initiating HTTP setup origin at the same literal IP and port. Requires a temporary leaf issued for this source/router IP pair at or after challenge creation. Connections using the management leaf or an older challenge leaf receive 409 and Connection: close; retry to establish a new handshake. Validate the returned id and ca_fingerprint. Success consumes the challenge. Completion or expiry discards its temporary leaf; after the last pending challenge for the pair, new connections use the persistent management leaf again. 404 means consumed, expired, replaced CA, or different source/router IP. Browser TLS failure does not distinguish an untrusted CA from network or browser-policy failure.",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "description": "Read a one-time trust proof over a fresh TLS connection. The unpredictable challenge ID, actual source/destination addresses and initiating Web origin bind the proof to its authorized creation.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": { "description": "Fresh-handshake proof", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
-          "409": { "description": "Retry on a new TLS connection" },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          "200": {
+            "description": "Fresh-handshake proof",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificateTest"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Retry on a new TLS connection"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [],
+        "x-dae-access": "challenge",
+        "x-dae-connection": "direct"
       }
     },
     "/api/certificate": {
       "get": {
         "operationId": "getCertificate",
-        "description": "Public same-origin CA metadata on HTTP and HTTPS. This endpoint is not a trust test: existing TLS connections and certificate exceptions can permit access. Use certificate/tests to verify browser CA trust. mitm_test_generation belongs only to interception tests.",
+        "description": "Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access.",
         "responses": {
           "200": {
             "content": {
@@ -1487,7 +1987,18 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Read public CA identity"
+        "summary": "Read public CA identity",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-http-bootstrap": true
       }
     },
     "/api/device": {
@@ -1508,7 +2019,18 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Read the direct LAN caller's device state (TCP only)"
+        "summary": "Read the direct LAN caller's device state (TCP only)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/device/status": {
@@ -1516,32 +2038,117 @@
         "operationId": "getDeviceStatus",
         "summary": "Read the direct LAN caller's identity and upstream runtime statistics",
         "responses": {
-          "200": { "description": "Success", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceStatus" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/device/mitm-tests": {
       "post": {
         "operationId": "startMITMTest",
         "summary": "Create a current-browser transparent MITM challenge (direct LAN only)",
-        "description": "Empty body. Does not change the device's MITM setting. Verify browser CA trust independently with a fresh-leaf certificate/tests challenge on the API socket. When MITM is enabled, GET mitm_url with credentials omitted and redirects rejected. Virtual IP:443 targets return MITMTestProof locally through interception, without an upstream service, and accept only the initiating page's exact HTTP or HTTPS Origin. A failed virtual-target request cannot distinguish bypass from unreachable traffic.",
-        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
+        "description": "Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access. Current-device requests additionally require verified LAN identity.",
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
         "responses": {
-          "201": { "description": "Challenge created, expires in one minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MITMTest" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          "201": {
+            "description": "Challenge created, expires in one minute",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MITMTest"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/device/mitm-tests/{id}": {
       "get": {
         "operationId": "getMITMTest",
         "summary": "Read this device's challenge observations",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": { "description": "Current observation; 404 for expired, replaced or foreign challenges", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MITMTest" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          "200": {
+            "description": "Current observation; 404 for expired, replaced or foreign challenges",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MITMTest"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/device/mitm": {
@@ -1582,7 +2189,18 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Restore this device's HTTPS configuration (TCP only)"
+        "summary": "Restore this device's HTTPS configuration (TCP only)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       },
       "put": {
         "operationId": "setMITM",
@@ -1631,7 +2249,18 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Set this device's HTTPS module override (TCP only)"
+        "summary": "Set this device's HTTPS module override (TCP only)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/device/sets/{name}": {
@@ -1672,7 +2301,18 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Leave a client set (TCP only)"
+        "summary": "Leave a client set (TCP only)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       },
       "put": {
         "operationId": "joinSet",
@@ -1711,12 +2351,23 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "Join a client set (TCP only)"
+        "summary": "Join a client set (TCP only)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-connection": "device"
       }
     },
     "/api/selectors": {
       "get": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access.",
         "operationId": "getSelectors",
         "responses": {
           "200": {
@@ -1734,16 +2385,21 @@
           }
         },
         "security": [
-          { "bearerAuth": [] },
-          { "sessionCookie": [] },
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
           {}
         ],
-        "summary": "List manual selectors (requires administration)"
+        "summary": "List manual selectors (requires administration)",
+        "x-dae-access": "user"
       }
     },
     "/api/selectors/{group}": {
       "delete": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "Unix uses local socket permissions. TCP requires administrator credentials over HTTPS. LAN access alone never grants administration.",
         "operationId": "resetSelector",
         "parameters": [
           {
@@ -1785,14 +2441,14 @@
             "bearerAuth": []
           },
           {
-            "sessionCookie": []
-          },
-          {}
+            "browserSession": []
+          }
         ],
-        "summary": "Restore an explicitly configured selector(n) default; 409 when none exists"
+        "summary": "Restore an explicitly configured selector(n) default; 409 when none exists",
+        "x-dae-access": "admin"
       },
       "put": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "Unix uses local socket permissions. TCP requires administrator credentials over HTTPS. LAN access alone never grants administration.",
         "operationId": "selectNode",
         "parameters": [
           {
@@ -1844,11 +2500,11 @@
             "bearerAuth": []
           },
           {
-            "sessionCookie": []
-          },
-          {}
+            "browserSession": []
+          }
         ],
-        "summary": "Override a selector"
+        "summary": "Override a selector",
+        "x-dae-access": "admin"
       }
     },
     "/api/plugins/{instance}/scripts/run": {
@@ -1857,18 +2513,58 @@
         "summary": "Trigger an existing cron or generic task",
         "description": "Requires administration. Returns 202 with an acceptance snapshot, status.scope, device-only status.mac and a per-scope task run number; execution uses daemon routing and continues after the HTTP response. Inspect plugin status for completion. Omitted mac always selects local execution without requiring LAN discovery, MITM or a CA. Explicit mac selects a currently MITM-enabled device only when the script isolates LAN clients; otherwise omit mac. Concurrent triggers for the same waiting/running scope or an explicitly selected disabled device return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name, invalid MAC or MAC selection on a non-isolated script: 400; inactive worker, unavailable device discovery, or canceled/timed-out admission: 503. Admission follows request and worker cancellation and has its own script-timeout budget, separate from accepted execution; discovery does not count as a run. Accepted tasks survive request cancellation. No inline scripts, source URLs, argument overrides or automatic retries.",
         "parameters": [
-          { "name": "instance", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptRunRequest" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScriptRunRequest"
+              }
+            }
+          }
         },
         "responses": {
-          "202": { "description": "Script execution accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptRunResponse" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+          "202": {
+            "description": "Script execution accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptRunResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/plugins/{instance}/store/migrate": {
@@ -1877,23 +2573,78 @@
         "summary": "Move one device script storage partition",
         "description": "Requires administration and a live plugin storage runtime. Synchronously moves all persistentStore keys from one device MAC to another in this instance, preserving keys and values and removing the source partition. No merging or overwriting: even an empty destination partition conflicts. Stop old-MAC traffic and background eligibility first. Device authorization, isolation, local storage, notifications and task counters are unchanged. A later execution for the old MAC can create a new partition. Source and destination need not be online or MITM-enabled. In-memory mode moves only current runtime data. The fixed five-second context bounds cancellable lock waits, not filesystem I/O. Busy protection covers this daemon and overlapping reload generations; stop script writers in other processes sharing the file. No automatic retries: timeout or connection loss does not prove the data was unchanged. A published-but-durability-unconfirmed error means the move already took effect.",
         "parameters": [
-          { "name": "instance", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptStoreMigrateRequest" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScriptStoreMigrateRequest"
+              }
+            }
+          }
         },
         "responses": {
-          "200": { "description": "Partition moved; no stored values are returned", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptStoreMigrateResponse" } } } },
-          "400": { "$ref": "#/components/responses/Error", "description": "Invalid JSON or MACs, including equal MACs" },
-          "404": { "$ref": "#/components/responses/Error", "description": "Instance or source partition not found" },
-          "409": { "$ref": "#/components/responses/Error", "description": "Destination partition exists or a source/destination script is executing" },
-          "500": { "$ref": "#/components/responses/Error", "description": "Migration failed, or was published but durability is unconfirmed; do not automatically retry" },
-          "503": { "$ref": "#/components/responses/Error", "description": "Storage capability/runtime unavailable, retired instance or canceled/timed-out lock wait" },
-          "default": { "$ref": "#/components/responses/Error" }
+          "200": {
+            "description": "Partition moved; no stored values are returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptStoreMigrateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error",
+            "description": "Invalid JSON or MACs, including equal MACs"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error",
+            "description": "Instance or source partition not found"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error",
+            "description": "Destination partition exists or a source/destination script is executing"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error",
+            "description": "Migration failed, or was published but durability is unconfirmed; do not automatically retry"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error",
+            "description": "Storage capability/runtime unavailable, retired instance or canceled/timed-out lock wait"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/probes": {
@@ -1902,17 +2653,50 @@
         "summary": "Request configured outbound connectivity probes",
         "description": "Requires administration. Uses the outbound's configured DNS probe, existing concurrency bounds and timeouts. No arbitrary URL, network, or timeout overrides are accepted. node_id selects one path; omission or an empty value selects all paths. Returns 202 immediately with accepted IDs; repeated requests for queued/running work coalesce. Selector results are available through GET /api/selectors (checking/tested/checked_at/healthy/latency_ms); other outbounds publish their runtime health and latency through GET /api/status. This is not a persistent probe job and does not change selection or monitoring configuration. Unknown outbound: 404; invalid node/body: 400; unchecked builtin: 409.",
         "parameters": [
-          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeRequest" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeRequest"
+              }
+            }
+          }
         },
         "responses": {
-          "202": { "description": "Probe targets accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeResponse" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+          "202": {
+            "description": "Probe targets accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/resources": {
@@ -1921,10 +2705,29 @@
         "summary": "Read the latest resource refresh and next automatic check",
         "description": "Requires administration. Reports the latest API or automatic refresh. History is reset on daemon restart. Empty request body.",
         "responses": {
-          "200": { "description": "Resource refresh status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceRefreshStatus" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+          "200": {
+            "description": "Resource refresh status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceRefreshStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/resources/refresh": {
@@ -1933,13 +2736,40 @@
         "summary": "Refresh subscriptions, modules and dependencies",
         "description": "Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; poll GET /api/operations/{id} for this request’s completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.",
         "parameters": [
-          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
         ],
         "responses": {
-          "202": { "description": "Resource refresh queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+          "202": {
+            "description": "Resource refresh queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/operations": {
@@ -1947,13 +2777,51 @@
         "operationId": "submitOperation",
         "summary": "Queue a daemon configuration operation",
         "description": "Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. Local Unix operation routes remain available throughout plane replacement.",
-        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationRequest" } } } },
-        "responses": {
-          "202": { "description": "Operation queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationRequest"
+              }
+            }
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "responses": {
+          "202": {
+            "description": "Operation queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/operations/{id}": {
@@ -1961,70 +2829,112 @@
         "operationId": "operation",
         "summary": "Read one daemon operation",
         "description": "Requires administration and an empty body. IDs are unique across restarts. The daemon retains the 64 most recently finished operations plus active and queued work; unknown or expired IDs return 404. A client timeout does not cancel accepted work.",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "200": { "description": "Operation status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
-          "default": { "$ref": "#/components/responses/Error" }
+          "200": {
+            "description": "Operation status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         },
-        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "x-dae-access": "admin"
       }
     },
     "/api/session": {
       "put": {
         "operationId": "login",
         "summary": "Create a browser session",
-        "description": "With a configured global.api_key, requires Authorization: Bearer <api_key>, including on Unix, and issues a signed seven-day session cookie without the API key. Missing/incorrect credentials return 401. Without a configured key, requires verified LAN ingress or filesystem-authorized Unix access, returns 204 and clears stale cookies without issuing a session; failed LAN identification returns 403. Empty request body.",
+        "description": "Exchange a raw user or administrator key over HTTPS for a seven-day HttpOnly Cookie session scoped to the API host and role. The response never exposes the credential to JavaScript. Existing sessions, anonymous LAN access and Unix socket identity cannot issue or renew a session. Key rotation invalidates sessions for that role.",
         "parameters": [
           {
             "name": "X-Dae-API",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "const": "1" }
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
           }
         ],
-        "security": [ { "bearerAuth": [] }, {} ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "responses": {
-          "204": {
-            "description": "Access verified; no response body",
+          "200": {
+            "description": "Session metadata with the credential in Set-Cookie only.",
             "headers": {
               "Set-Cookie": {
-                "description": "With a configured key: dae_session; Path=/api; HttpOnly; SameSite=Strict; Max-Age=604800. Without a key: expires any stale dae_session cookie instead.",
-                "schema": { "type": "string" }
+                "schema": {
+                  "type": "string"
+                },
+                "description": "__Host-dae-session; Path=/; Secure; HttpOnly; SameSite=Strict; Expires set to the absolute session deadline."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
               }
             }
-          },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+          }
+        },
+        "x-dae-access": "user"
       },
       "delete": {
         "operationId": "logout",
         "summary": "Clear the browser session cookie",
-        "description": "Empty request body. Clears the caller's cookie even if its session is expired. Does not require authentication.",
+        "description": "Clears the host-only cookie even when expired. Origin and mutation-header checks still apply. Other copies remain valid until expiry or key rotation; logout is not server-side revocation.",
         "parameters": [
           {
             "name": "X-Dae-API",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "const": "1" }
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Cookie cleared; no response body",
-            "headers": {
-              "Set-Cookie": {
-                "description": "Expires the dae_session cookie at Path=/api",
-                "schema": { "type": "string" }
-              }
-            }
-          },
-          "default": { "$ref": "#/components/responses/Error" }
-        }
+            "description": "Session cookie expired with Set-Cookie"
+          }
+        },
+        "security": [],
+        "x-dae-access": "public"
       }
     },
     "/api/status": {
       "get": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "Unix uses local socket permissions. TCP requires user or administrator credentials over HTTPS, or explicitly enabled anonymous verified LAN access. User and anonymous LAN responses omit plugins[].details; full plugin reports and script notifications require administration.",
         "operationId": "getStatus",
         "responses": {
           "200": {
@@ -2046,56 +2956,15 @@
             "bearerAuth": []
           },
           {
-            "sessionCookie": []
+            "browserSession": []
           },
           {}
         ],
-        "summary": "Read the runtime snapshot"
+        "summary": "Read the runtime snapshot",
+        "x-dae-access": "user"
       }
     },
-    "/ca.cer": {
-      "get": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/pkix-cert": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Certificate download"
-          },
-          "404": {
-            "description": "Certificate unavailable"
-          }
-        },
-        "summary": "Download public CA material; 404 when unavailable"
-      }
-    },
-    "/ca.mobileconfig": {
-      "get": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/x-apple-aspen-config": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Certificate download"
-          },
-          "404": {
-            "description": "Certificate unavailable"
-          }
-        },
-        "summary": "Download public CA material; 404 when unavailable"
-      }
-    },
-    "/ca.pem": {
+    "/api/certificate/ca.pem": {
       "get": {
         "responses": {
           "200": {
@@ -2113,14 +2982,750 @@
             "description": "Certificate unavailable"
           }
         },
-        "summary": "Download public CA material; 404 when unavailable"
+        "summary": "Download public CA material; 404 when unavailable",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-http-bootstrap": true
+      }
+    },
+    "/api/certificate/ca.cer": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/pkix-cert": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Certificate download"
+          },
+          "404": {
+            "description": "Certificate unavailable"
+          }
+        },
+        "summary": "Download public CA material; 404 when unavailable",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-http-bootstrap": true
+      }
+    },
+    "/api/certificate/ca.mobileconfig": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-apple-aspen-config": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Certificate download"
+          },
+          "404": {
+            "description": "Certificate unavailable"
+          }
+        },
+        "summary": "Download public CA material; 404 when unavailable",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "x-dae-access": "user",
+        "x-dae-http-bootstrap": true
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "summary": "Prometheus metrics",
+        "x-dae-access": "user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "Existing process and plugin metrics.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/": {
+      "get": {
+        "operationId": "pprofIndex",
+        "summary": "Standard Go pprof index",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/profile": {
+      "get": {
+        "operationId": "pprofProfile",
+        "summary": "Standard Go pprof profile",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/heap": {
+      "get": {
+        "operationId": "pprofHeap",
+        "summary": "Standard Go pprof heap",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/allocs": {
+      "get": {
+        "operationId": "pprofAllocs",
+        "summary": "Standard Go pprof allocs",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/goroutine": {
+      "get": {
+        "operationId": "pprofGoroutine",
+        "summary": "Standard Go pprof goroutine",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/block": {
+      "get": {
+        "operationId": "pprofBlock",
+        "summary": "Standard Go pprof block",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/mutex": {
+      "get": {
+        "operationId": "pprofMutex",
+        "summary": "Standard Go pprof mutex",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/threadcreate": {
+      "get": {
+        "operationId": "pprofThreadcreate",
+        "summary": "Standard Go pprof threadcreate",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/trace": {
+      "get": {
+        "operationId": "pprofTrace",
+        "summary": "Standard Go pprof trace",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/cmdline": {
+      "get": {
+        "operationId": "pprofCmdline",
+        "summary": "Standard Go pprof cmdline",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Unix requires no key. HTTPS requires the administrator Bearer credential or Basic username dae and administrator key as password. Standard pprof query parameters are accepted.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "seconds",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gc",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standard Go profiling output.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug/pprof/symbol": {
+      "get": {
+        "operationId": "pprofSymbol",
+        "summary": "Standard Go pprof symbol",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Accepts plus-separated program counters in the raw query.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Symbol count and resolved names.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "pprofSymbolLookup",
+        "summary": "Resolve Go program counters",
+        "x-dae-access": "admin",
+        "description": "Enabled by api.pprof. Browser sessions require X-Dae-API: 1.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "browserSession": []
+          },
+          {
+            "pprofBasic": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "description": "Required with a session cookie.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              },
+              "example": "0x1+0x2"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Symbol count and resolved names.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
   "servers": [
     {
-      "description": "Replace with the router's actual literal IP and api_port",
-      "url": "http://192.168.1.1:9080"
+      "description": "Replace with the router's actual literal IP and api.listen port",
+      "url": "https://192.168.1.1:9080"
     }
   ]
 }

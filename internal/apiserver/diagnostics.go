@@ -24,7 +24,7 @@ type DiagnosticStore interface {
 	ClientImpact(context.Context, string, api.ClientImpactRequest, bool) (*api.ClientImpact, error)
 }
 
-func (s *handler) diagnosticsAvailable(w http.ResponseWriter) bool {
+func (s *Handler) diagnosticsAvailable(w http.ResponseWriter) bool {
 	if s.options.Diagnostics == nil {
 		apiError(w, 503, "diagnostics unavailable")
 		return false
@@ -47,7 +47,7 @@ func inheritDiagnosticContext(w http.ResponseWriter, who caller, target *api.Dia
 	return true
 }
 
-func (s *handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -58,7 +58,7 @@ func (s *handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request,
 	writeAPI(w, s.options.Diagnostics.DiagnosticDeviceContext(input))
 }
 
-func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveExplain(w http.ResponseWriter, r *http.Request, who caller) {
 	self := who.self
 	if !s.diagnosticsAvailable(w) {
 		return
@@ -89,7 +89,7 @@ func managedMAC(w http.ResponseWriter, r *http.Request) ([6]byte, bool) {
 	return parsed, true
 }
 
-func (s *handler) serveClients(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveClients(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -107,7 +107,7 @@ func (s *handler) serveClients(w http.ResponseWriter, r *http.Request, who calle
 	writeAPI(w, groups)
 }
 
-func (s *handler) serveManagedDevice(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveManagedDevice(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -118,7 +118,7 @@ func (s *handler) serveManagedDevice(w http.ResponseWriter, r *http.Request, who
 	writeAPI(w, s.options.Diagnostics.ManagedDevice(mac))
 }
 
-func (s *handler) serveManagedMembership(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveManagedMembership(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -138,7 +138,7 @@ func (s *handler) serveManagedMembership(w http.ResponseWriter, r *http.Request,
 	writeAPI(w, state)
 }
 
-func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) {
 		return
 	}
@@ -177,7 +177,7 @@ func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who c
 	writeAPI(w, state)
 }
 
-func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request, who caller) {
+func (s *Handler) serveClientImpact(w http.ResponseWriter, r *http.Request, who caller) {
 	self := who.self
 	if !s.diagnosticsAvailable(w) {
 		return

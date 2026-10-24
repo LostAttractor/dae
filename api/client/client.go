@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ type Options struct {
 
 type Client struct {
 	base            string
+	origin          string
 	apiKey          string
 	local           bool
 	http            *http.Client
@@ -65,6 +67,7 @@ func New(options Options) (*Client, error) {
 	}
 	// Own the transport: process-wide wrappers and proxies must not affect LAN identity.
 	transport := &http.Transport{IdleConnTimeout: 90 * time.Second, ForceAttemptHTTP2: true}
+	var origin string
 	switch u.Scheme {
 	case "unix":
 		if u.Host != "" || !strings.HasPrefix(u.Path, "/") || u.Path == "/" {
@@ -76,6 +79,7 @@ func New(options Options) (*Client, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}
 		endpoint = "http://localhost"
+		origin = endpoint
 	case "http", "https":
 		if u.Scheme == "http" && options.APIKey != "" {
 			return nil, fmt.Errorf("API credentials require an HTTPS endpoint")
@@ -85,10 +89,26 @@ func New(options Options) (*Client, error) {
 			return nil, fmt.Errorf("HTTP endpoint must be an origin without a path")
 		}
 		u.Path = ""
-		// The request base also identifies the initiating origin in challenge proofs.
-		endpoint, err = api.NormalizeOriginURL(u)
+		ip, _ := netip.ParseAddr(u.Hostname())
+		scoped := strings.HasPrefix(u.Host, "[") && ip.Zone() != "" && ip.Is6() && ip.IsLinkLocalUnicast()
+		if scoped {
+			// A zone selects the local interface for dialing, not an HTTP origin.
+			_, portSuffix, _ := strings.CutLast(u.Host, "]")
+			u.Host = "[" + ip.WithZone("").String() + "]" + portSuffix
+		}
+		origin, err = api.NormalizeOriginURL(u)
 		if err != nil {
 			return nil, fmt.Errorf("API endpoint: %w", err)
+		}
+		endpoint = origin
+		if scoped {
+			u, _ = url.Parse(origin)
+			host := "[" + ip.String() + "]"
+			if port := u.Port(); port != "" {
+				host += ":" + port
+			}
+			u.Host = host
+			endpoint = u.String()
 		}
 	default:
 		return nil, fmt.Errorf("API endpoint requires unix, http, or https scheme")
@@ -97,7 +117,7 @@ func New(options Options) (*Client, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}
-	return &Client{base: endpoint, apiKey: options.APIKey, local: u.Scheme == "unix", timeoutExplicit: options.Timeout != 0, http: &http.Client{
+	return &Client{base: endpoint, origin: origin, apiKey: options.APIKey, local: u.Scheme == "unix", timeoutExplicit: options.Timeout != 0, http: &http.Client{
 		Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil

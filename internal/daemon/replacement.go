@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"slices"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/apiserver"
 	"github.com/daeuniverse/dae/internal/handoff"
@@ -31,6 +31,7 @@ type replacementManifest struct {
 	Protocol             int
 	PID                  int
 	ProcessName          string
+	ManagementBinding    string
 	Deadline             time.Time
 	CutoverAt            time.Time
 	Operation            api.Operation
@@ -112,7 +113,7 @@ func replacementResource(name string, links int) bool {
 		return false
 	}
 	n, err := strconv.Atoi(value)
-	return err == nil && strconv.Itoa(n) == value && (kind == "link" && n >= 0 && n < links || kind == "observe" && n > 0 && n <= 65535)
+	return err == nil && strconv.Itoa(n) == value && (kind == "link" && n >= 0 && n < links || kind == "management" && n > 0 && n <= 1<<31-1)
 }
 
 func validateReplacementResource(name string, file *os.File) error {
@@ -126,7 +127,7 @@ func validateReplacementResource(name string, file *os.File) error {
 		if err != nil || kind != unix.CLONE_NEWNET {
 			return errors.Join(errors.New("not a network namespace"), err)
 		}
-	case name == "local" || name == "management" || strings.HasPrefix(name, "observe/"):
+	case name == "local" || name == "management" || strings.HasPrefix(name, "management/"):
 		kind, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TYPE)
 		if err != nil || kind != unix.SOCK_STREAM {
 			return errors.Join(errors.New("not a stream listener"), err)
@@ -181,53 +182,39 @@ func (s *replacementState) takeLinks(count int) ([]*os.File, error) {
 	return files, nil
 }
 
-func (s *replacementState) takeObservability() (map[uint16]*os.File, error) {
-	inherited := make(map[uint16]*os.File)
-	var firstErr error
+func (s *replacementState) takeManagement(policy config.API, patterns []string) (*apiserver.Server, error) {
+	single := s.take("management")
+	if single != nil {
+		defer single.Close()
+	}
+	files := make(map[int]*os.File)
 	for name, file := range s.files {
-		value, ok := strings.CutPrefix(name, "observe/")
+		val, ok := strings.CutPrefix(name, "management/")
 		if !ok {
 			continue
 		}
 		delete(s.files, name)
-		if firstErr != nil {
-			_ = file.Close()
-			continue
+		defer file.Close()
+		index, err := strconv.Atoi(val)
+		if err != nil || index <= 0 {
+			return nil, fmt.Errorf("invalid management interface %q", val)
 		}
-		port, err := strconv.ParseUint(value, 10, 16)
-		if err != nil {
-			_ = file.Close()
-			firstErr = err
-			continue
-		}
-		inherited[uint16(port)] = file
+		files[index] = file
 	}
-	if firstErr != nil {
-		closeObservabilityFiles(inherited)
-		return nil, firstErr
-	}
-	return inherited, nil
-}
-
-// Release a retired wildcard binding before observability binds any loopback port.
-func (s *replacementState) takeManagement(port uint16) (*apiserver.Server, error) {
-	file := s.take("management")
-	if file == nil {
-		return nil, nil
-	}
-	defer file.Close()
-	if port == 0 {
-		return nil, nil
-	}
-	server, err := apiserver.FromFile(file, "tcp")
-	if err != nil {
+	address, _, lan, err := policy.Endpoint()
+	if err != nil || address == "" {
 		return nil, err
 	}
-	if server.Addr().(*net.TCPAddr).Port != int(port) {
-		server.Close()
+	if lan {
+		if len(files) == 0 || s.manifest.ManagementBinding != apiserver.InterfaceBinding(address, patterns) {
+			return nil, nil
+		}
+		return apiserver.RestoreInterfaces(address, files)
+	}
+	if single == nil || s.manifest.ManagementBinding != "tcp "+address {
 		return nil, nil
 	}
-	return server, nil
+	return apiserver.FromTCPFile(single, address)
 }
 
 func (a *application) replace(ctx context.Context, id string, executable *os.File) (_ string, resultErr error) {
@@ -292,22 +279,28 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 	if err := duplicate("daens", dae); err != nil {
 		return "", err
 	}
-	for name, server := range map[string]*apiserver.Server{"local": a.localAPI, "management": a.managementAPI} {
-		if server == nil {
-			continue
-		}
-		file, err := server.File()
-		if err != nil {
-			return "", err
-		}
-		add(name, file)
-	}
-	observability, err := exportObservability()
+	local, err := a.localAPI.File()
 	if err != nil {
 		return "", err
 	}
-	for port, file := range observability {
-		add(fmt.Sprintf("observe/%d", port), file)
+	add("local", local)
+	if server := a.managementAPI; server != nil {
+		manifest.ManagementBinding = server.Binding()
+		lan, err := server.InterfaceFiles()
+		if err != nil {
+			return "", err
+		}
+		if lan == nil {
+			file, err := server.File()
+			if err != nil {
+				return "", err
+			}
+			add("management", file)
+		} else {
+			for index, file := range lan {
+				add(fmt.Sprintf("management/%d", index), file)
+			}
+		}
 	}
 	for i, file := range snapshot.TakeFiles() {
 		add(fmt.Sprintf("link/%d", i), file)

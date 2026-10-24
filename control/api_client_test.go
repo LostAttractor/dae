@@ -18,7 +18,9 @@ import (
 	apiclient "github.com/daeuniverse/dae/api/client"
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
@@ -37,8 +39,8 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("socket permissions", info, err)
 	}
-	local.SetHandler(plane.APIHandler("integration-test", nil, nil))
-	server := httptest.NewServer(plane.apiHandler("integration-test", testClientIngress, nil, nil))
+	local.SetHandler(plane.apiHandler("integration-test", nil, nil, nil))
+	server := httptest.NewTLSServer(plane.apiHandler("integration-test", testClientIngress, nil, nil))
 	defer server.Close()
 	for _, endpoint := range []string{server.URL, "unix://" + socket} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -46,7 +48,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 			if strings.HasPrefix(endpoint, "unix:") {
 				token = ""
 			}
-			client, err := apiclient.New(apiclient.Options{Endpoint: endpoint, APIKey: token})
+			client, err := apiclient.New(apiclient.Options{RootCAs: testutil.TLSRoots(server), Endpoint: endpoint, APIKey: token})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +89,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 				if unavailable, ok := errors.AsType[*apiclient.Error](err); !ok || unavailable.StatusCode != 503 {
 					t.Fatalf("reload: %v", err)
 				}
-				local.SetHandler(plane.APIHandler("integration-test", nil, nil))
+				local.SetHandler(plane.apiHandler("integration-test", nil, nil, nil))
 				if _, err := client.Status(ctx); err != nil {
 					t.Fatal("client did not recover after reload", err)
 				}
@@ -120,30 +122,29 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 	for _, test := range []struct {
 		token string
 		want  int
-	}{{"", 401}, {"wrong", 401}, {"test-secret", 200}} {
+	}{{"", 200}, {"wrong", 401}, {"test-secret", 200}} {
 		w := apiTestRequest(handler, "GET", "/api/status", "", test.token)
 		if w.Code != test.want {
 			t.Fatalf("status: %d %s", w.Code, w.Body.String())
 		}
 	}
-	plane.apiKey = ""
-	handler = plane.apiHandler("test", testClientIngress, nil, nil)
+	handler = plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", testClientIngress, nil, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 200 {
 		t.Fatal("verified LAN client could not read status without an API key", w.Code, w.Body.String())
 	}
-	handler = plane.APIHandler("test", nil, nil)
+	handler = plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", nil, nil, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 403 {
 		t.Fatal("status exposed without configured API key or LAN identity")
 	}
 	// Forwarding headers never grant the Unix socket's local administration privilege.
-	r := httptest.NewRequest("GET", "http://192.0.2.1:9080/api/status", nil)
+	r := httptest.NewRequest("GET", "https://192.0.2.1:9080/api/status", nil)
 	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
 	r.Header.Set("X-Forwarded-For", "127.0.0.1")
 	r.Header.Set("X-Dae-Local", "1")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
-	if w.Code != 403 {
-		t.Fatal("forwarded headers granted local privileges")
+	if w.Code != 401 {
+		t.Fatal("proxy request did not require explicit authentication", w.Code, w.Body.String())
 	}
 	for _, path := range []string{"/", "/app.js"} {
 		if w := apiTestRequest(handler, "GET", path, "", ""); w.Code != 404 {
@@ -163,10 +164,10 @@ func TestCertificateAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := &ControlPlane{}
-	handler := plane.APIHandler("test", nil, &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()})
-	server := httptest.NewServer(handler)
+	handler := plane.apiHandlerWithPolicy(config.API{AllowLANAnonymous: true}, "test", testClientIngress, nil, &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()})
+	server := httptest.NewTLSServer(handler)
 	defer server.Close()
-	client, err := apiclient.New(apiclient.Options{Endpoint: server.URL})
+	client, err := apiclient.New(apiclient.Options{RootCAs: testutil.TLSRoots(server), Endpoint: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}

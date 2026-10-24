@@ -1,46 +1,78 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 package daemon
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
-	"strconv"
 
+	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/component/network"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
 	"github.com/daeuniverse/dae/internal/webui"
 )
 
-// Reserve a changed TCP port before retiring the active plane.
-func prepareAPIServer(current *apiserver.Server, port uint16, held bool) (*apiserver.Server, error) {
-	if port == 0 {
-		return nil, nil
-	}
-	if current != nil && current.Addr().(*net.TCPAddr).Port == int(port) {
-		return current, nil
-	}
-	listen := apiserver.Listen
-	if held {
-		listen = apiserver.ListenHeld
-	}
-	server, err := listen("tcp", net.JoinHostPort("", strconv.Itoa(int(port))))
+func prepareAPIServer(current *apiserver.Server, api config.API, interfaces []string, manager *network.InterfaceManager, hold bool) (*apiserver.Server, *apiserver.InterfaceUpdate, error) {
+	address, _, lan, err := api.Endpoint()
 	if err != nil {
-		return nil, fmt.Errorf("global.api_port: %w", err)
+		return nil, nil, err
 	}
-	return server, nil
+	if address == "" {
+		return nil, nil, nil
+	}
+	binding := "tcp " + address
+	if lan {
+		binding = apiserver.InterfaceBinding(address, interfaces)
+	}
+	if current != nil && current.Binding() == binding {
+		return current, nil, nil
+	}
+	var server *apiserver.Server
+	var update *apiserver.InterfaceUpdate
+	if lan {
+		server, update, err = apiserver.PrepareInterfaces(current, address, interfaces, manager)
+	} else {
+		listen := apiserver.Listen
+		if hold {
+			listen = apiserver.ListenHeld
+		}
+		server, err = listen("tcp", address)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("api.listen: %w", err)
+	}
+	return server, update, nil
 }
 
-// The same api_port serves the API and Web application. Reserve API and
-// certificate routes before the static file handler, including external bundles.
-func daemonAPIHandler(api http.Handler, testTargets ...netip.AddrPort) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/api/", api)
-	for _, path := range []string{"/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
-		mux.Handle(path, api)
+func daemonAPIHandler(api *apiserver.Handler, enabled bool, testTargets ...netip.AddrPort) http.Handler {
+	if !enabled {
+		return api.WithWeb(http.NotFoundHandler())
 	}
-	mux.Handle("/", webui.Handler(os.Getenv("DAE_WEB_ROOT"), testTargets...))
-	return mux
+	return api.WithWeb(webui.Handler(os.Getenv("DAE_WEB_ROOT"), testTargets...))
+}
+
+func (a *application) apiHandler() *apiserver.Handler {
+	c, policy := a.plane, a.conf.API
+	options := apiserver.Options{
+		Status:    func() *api.StatusSnapshot { return c.StatusSnapshot(a.options.Version) },
+		Selectors: c, Probes: c, Devices: c, DeviceStatus: c.DeviceStatus,
+		ResolveClient: c.ResolveAPIClient, Diagnostics: c, Operations: a.operations,
+		UserKey: policy.UserKey, AdminKey: policy.AdminKey,
+		AllowLANAnonymous: policy.AllowLANAnonymous, WebOrigins: policy.WebOrigins,
+		Certificates: a.certificates.Public(), Metrics: metricsHandler, Pprof: policy.Pprof,
+	}
+	if host := c.MITMHost(); host != nil {
+		options.Scripts = host
+		options.ScriptStorage = host
+	}
+	if tests := c.MITMTests(); tests != nil {
+		options.MITMTests = tests
+		if options.Certificates != nil {
+			options.Certificates.Identity.MITMTestGeneration = tests.Generation()
+			options.Certificates.Identity.MITMTestOrigins = tests.Origins()
+		}
+	}
+	return apiserver.NewHandler(options)
 }

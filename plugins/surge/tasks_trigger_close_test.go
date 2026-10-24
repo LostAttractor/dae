@@ -66,18 +66,21 @@ func TestScriptAPIAdmissionCancellationReleasesGeneration(t *testing.T) {
 				e.options.Devices = devices
 				host := startCronTestHost(t, e, http.DefaultClient)
 				server := new(apiserver.Server)
-				server.SetHandler(apiserver.NewHandler(apiserver.Options{APIKey: "secret", Scripts: host}))
+				server.SetHandler(apiserver.NewHandler(apiserver.Options{Scripts: host}))
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				r := httptest.NewRequest("POST", "http://192.0.2.1:8081/api/plugins/test/scripts/run", strings.NewReader(`{"script":"job","mac":"`+testDeviceName+`"}`))
-				r = r.WithContext(context.WithValue(ctx, http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 8081}))
+				r := httptest.NewRequest("POST", "http://localhost/api/plugins/test/scripts/run", strings.NewReader(`{"script":"job","mac":"`+testDeviceName+`"}`))
+				r = r.WithContext(context.WithValue(ctx, http.LocalAddrContextKey, &net.UnixAddr{Name: "api.sock", Net: "unix"}))
 				r.Header.Set("Content-Type", "application/json")
 				r.Header.Set("X-Dae-API", "1")
-				r.Header.Set("Authorization", "Bearer secret")
 				response := httptest.NewRecorder()
 				returned := make(chan struct{})
 				go func() { server.ServeHTTP(response, r); close(returned) }()
-				<-entered
+				select {
+				case <-entered:
+				case <-returned:
+					t.Fatalf("request did not reach admission: %d %s", response.Code, response.Body)
+				}
 				if timeout {
 					time.Sleep(time.Second)
 				} else {

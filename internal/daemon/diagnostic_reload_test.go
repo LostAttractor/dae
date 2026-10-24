@@ -31,7 +31,7 @@ func TestReloadRetainsDiagnosticAndDNSCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := mitmConfigForTest(t, "mitm { enabled:true } plugins { cache { type:dns-cache } }")
-	conf.Global.APIPort = 9080
+	conf.API.Listen = "0.0.0.0:9080"
 	plugins, err := configurePlugins(conf, map[string]plugin.Definition{"dns-cache": cache.Plugin})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestReloadRetainsDiagnosticAndDNSCache(t *testing.T) {
 	if service.Generation() != generation || !lookup(first) {
 		t.Fatal("discarding a candidate changed the running host")
 	}
-	conf.Global.APIMITMTestIPv4 = "203.0.113.253"
+	conf.API.MITMTestIPv4 = "203.0.113.253"
 	changed := load(first)
 	if changed.SameRuntime(first) {
 		t.Fatal("changed diagnostic targets reused the old runtime")

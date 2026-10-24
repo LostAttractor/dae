@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -21,10 +22,10 @@ type preparedRules struct {
 	// Validation-only IDs for targets in inactive definitions. These never
 	// enter the active matcher or kernel maps.
 	validationOutbounds map[string]uint8
-	apiBypass           []bpfIpPort
+	apiBypass           []netip.AddrPort
+	apiPort             uint16
 	destinations        routing.DestinationRewrites
 	routing             *config.Routing
-	bypass              []*config_parser.RoutingRule
 	earlyRoutes         []*config_parser.RoutingRule
 	lateRoutes          []*config_parser.RoutingRule
 	capture             *routingCapture

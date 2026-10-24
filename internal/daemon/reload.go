@@ -63,16 +63,17 @@ func (a *application) publishAPI() {
 	if tests := a.plane.MITMTests(); tests != nil {
 		tests.Invalidate()
 	}
-	handler := a.plane.APIHandler(a.options.Version, a.operations, a.certificates.Public())
+	handler := a.apiHandler()
+	a.localAPI.SetLocalServices(apiserver.LocalServices{Operations: a.operations, Metrics: metricsHandler, Pprof: a.conf.API.Pprof})
 	a.localAPI.SetHandler(handler)
 	var targets []netip.AddrPort
 	if tests := a.plane.MITMTests(); tests != nil {
 		targets = tests.Targets()
 	}
-	a.managementAPI.Configure(daemonAPIHandler(handler, targets...), a.certificates.Authority(), filepath.Join(common.CacheDirectory(), "api-tls"))
+	a.managementAPI.Configure(daemonAPIHandler(handler, a.conf.API.Web, targets...), a.certificates.Authority(), filepath.Join(common.CacheDirectory(), "api-tls"))
 }
 
-func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool, observability *observabilityUpdate) {
+func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool) {
 	a.datapath.RefreshTCPIdleTimeouts()
 	if routingChanged || a.conf.Global.DNSResolver != conf.Global.DNSResolver {
 		a.resolver.Configure(server, a.plane.DNSResolverDialer())
@@ -80,10 +81,6 @@ func (a *application) accept(conf *config.Config, inputs *controlInputs, server 
 	if a.conf.Global.LogLevel != conf.Global.LogLevel {
 		logger.SetLogger(conf.Global.LogLevel, a.options.DisableTimestamp, nil)
 	}
-	if a.conf.Global.APIKey != conf.Global.APIKey {
-		a.plane.SetAPIKey(conf.Global.APIKey)
-	}
-	observability.Commit()
 	a.plane.SetPluginConfiguration(conf.Plugins, slices.Sorted(maps.Keys(a.definitions)))
 	a.conf, a.inputs = conf, inputs
 	pruneSubscriptions(conf, filepath.Dir(a.options.ConfigFile))
@@ -130,11 +127,6 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 			return "", err
 		}
 	}
-	observability, err := prepareObservabilityServers(next.Global.PprofPort, next.Global.MetricsPort)
-	if err != nil {
-		return "", err
-	}
-	defer observability.Close()
 	certificates := a.certificates
 	if !suspend {
 		certificates, err = prepareCertificates(next, a.certificates)
@@ -187,8 +179,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	}
 	routingUnchanged := !suspend && !abort && sameControlConfig(a.conf, next) && a.inputs.equal(inputs)
 	if routingUnchanged {
-		routingUnchanged, err = a.plane.APIRoutingCurrent()
-		if err != nil {
+		if err := a.plane.RefreshAPIRouting(ctx); err != nil {
 			return "", fmt.Errorf("refresh API routing: %w", err)
 		}
 	}
@@ -202,7 +193,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if result, err := a.replaceServices(ctx, next, inputs, server, certificates, &prepared, pauseAPI, observability); result != "" || err != nil {
+		if result, err := a.replaceServices(ctx, next, inputs, server, certificates, &prepared, pauseAPI); result != "" || err != nil {
 			if err == nil {
 				refresh.Commit()
 			}
@@ -216,13 +207,18 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	if err != nil {
 		return "", err
 	}
+	if err := ctx.Err(); err != nil {
+		return "", errors.Join(err, candidate.discard())
+	}
 	a.report("Publishing replacement routing...")
-	pauseAPI()
+	if !paused {
+		pauseAPI()
+	}
 	if err := a.publishPlane(candidate, abort); err != nil {
 		return "", err
 	}
 	a.setCertificates(certificates)
-	a.accept(next, inputs, server, true, observability)
+	a.accept(next, inputs, server, true)
 	if !suspend {
 		refresh.Commit()
 	}
@@ -235,7 +231,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 
 // replaceServices returns an empty result when changed plugin capture rules
 // require a new control plane. Otherwise it commits the in-place service update.
-func (a *application) replaceServices(ctx context.Context, next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func(), observability *observabilityUpdate) (string, error) {
+func (a *application) replaceServices(ctx context.Context, next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func()) (string, error) {
 	if !a.plane.CanReplaceMITM(*prepared) {
 		return "", nil
 	}
@@ -243,7 +239,7 @@ func (a *application) replaceServices(ctx context.Context, next *config.Config, 
 		return "", err
 	}
 	unchanged := a.plane.MITMHost().SameRuntime(prepared.Host)
-	if !unchanged || a.certificates != certificates || a.conf.Global.APIKey != next.Global.APIKey {
+	if !unchanged || a.certificates != certificates || !reflect.DeepEqual(a.conf.API, next.API) {
 		pauseAPI()
 	}
 	if !unchanged {
@@ -260,7 +256,7 @@ func (a *application) replaceServices(ctx context.Context, next *config.Config, 
 		result = "No changes"
 	}
 	a.setCertificates(certificates)
-	a.accept(next, inputs, server, false, observability)
+	a.accept(next, inputs, server, false)
 	if unchanged {
 		prepared.Host.CommitResources()
 	}

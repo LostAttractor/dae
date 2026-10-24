@@ -98,9 +98,6 @@ func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM, plugins config.Plugins
 	return nil
 }
 
-// SetAPIKey is called after both API transports have drained.
-func (c *planeAPI) SetAPIKey(key string) { c.apiKey = key }
-
 func (c *planeHTTP) useDNSAddress(name string) bool {
 	c.mitmMu.RLock()
 	defer c.mitmMu.RUnlock()

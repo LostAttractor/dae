@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-
 package apiserver
 
 import (
@@ -11,69 +10,78 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/daeuniverse/dae/api"
 )
 
-const sessionCookieName = "dae_session"
-const sessionLifetime = 7 * 24 * time.Hour
+const (
+	sessionLifetime   = 7 * 24 * time.Hour
+	sessionCookieName = "__Host-dae-session"
+)
 
-func (s *handler) sessionSignature(payload, host string) []byte {
-	mac := hmac.New(sha256.New, []byte(s.options.APIKey))
-	_, _ = mac.Write([]byte("dae-browser-session\x00" + host + "\x00" + payload))
+func sessionCookie(value string, expires time.Time) *http.Cookie {
+	return &http.Cookie{
+		Name: sessionCookieName, Value: value, Path: "/", Expires: expires,
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode,
+	}
+}
+
+func (s *Handler) sessionKey(role accessRole) string {
+	if role == roleAdmin {
+		return s.options.AdminKey
+	}
+	if role == roleUser {
+		return s.options.UserKey
+	}
+	return ""
+}
+func sessionSignature(payload, host, key string) []byte {
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte("dae-session\x00" + host + "\x00" + payload))
 	return mac.Sum(nil)
 }
-
-func (s *handler) validSession(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return false
-	}
-	payload, encoded, ok := strings.CutLast(cookie.Value, ".")
+func (s *Handler) sessionRole(token, host string) (accessRole, bool) {
+	payload, signature, ok := strings.CutLast(token, ".")
 	if !ok {
-		return false
+		return 0, false
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || !hmac.Equal(signature, s.sessionSignature(payload, r.Host)) {
-		return false
+	parts := strings.Split(payload, ".")
+	if len(parts) != 4 || parts[0] != "dae1" {
+		return 0, false
 	}
-	deadline, _, ok := strings.Cut(payload, ".")
-	expires, err := strconv.ParseInt(deadline, 10, 64)
-	return ok && err == nil && time.Now().Unix() < expires
+	role := roleUser
+	if parts[1] == "admin" {
+		role = roleAdmin
+	} else if parts[1] != "user" {
+		return 0, false
+	}
+	key := s.sessionKey(role)
+	expires, err := strconv.ParseInt(parts[2], 10, 64)
+	if key == "" || err != nil || time.Now().Unix() >= expires {
+		return 0, false
+	}
+	signatureBytes, err := base64.RawURLEncoding.DecodeString(signature)
+	return role, err == nil && hmac.Equal(signatureBytes, sessionSignature(payload, host, key))
 }
-
-func (s *handler) serveLogin(w http.ResponseWriter, r *http.Request, who caller) {
-	if s.options.APIKey == "" {
-		// Keyless access clears stale cookies without creating a portable session.
-		serveLogout(w, r, who)
-		return
-	}
+func (s *Handler) serveLogin(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	cookie := newSessionCookie(r)
-	cookie.Expires = time.Now().Add(sessionLifetime)
-	cookie.MaxAge = int(sessionLifetime.Seconds())
-	payload := strconv.FormatInt(cookie.Expires.Unix(), 10) + "." + rand.Text()
-	cookie.Value = payload + "." + base64.RawURLEncoding.EncodeToString(s.sessionSignature(payload, r.Host))
-	// The cookie contains a signed, expiring session, never the API key. Signing
-	// with the configured key preserves reloads and invalidates sessions on rotation.
-	http.SetCookie(w, cookie)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func serveLogout(w http.ResponseWriter, r *http.Request, who caller) {
-	if !apiBody(w, r, nil) {
-		return
+	result := api.Session{Role: "user"}
+	if who.role == roleAdmin {
+		result.Role = "admin"
 	}
-	cookie := newSessionCookie(r)
-	cookie.MaxAge = -1
-	cookie.Expires = time.Unix(1, 0)
-	http.SetCookie(w, cookie)
-	w.WriteHeader(http.StatusNoContent)
+	result.ExpiresAt = time.Now().Add(sessionLifetime).Truncate(time.Second)
+	payload := "dae1." + result.Role + "." + strconv.FormatInt(result.ExpiresAt.Unix(), 10) + "." + rand.Text()
+	token := payload + "." + base64.RawURLEncoding.EncodeToString(sessionSignature(payload, r.Host, s.sessionKey(who.role)))
+	http.SetCookie(w, sessionCookie(token, result.ExpiresAt))
+	writeAPI(w, result)
 }
-
-func newSessionCookie(r *http.Request) *http.Cookie {
-	return &http.Cookie{
-		Name: sessionCookieName, Path: "/api", HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+func serveLogout(w http.ResponseWriter, r *http.Request, _ caller) {
+	if apiBody(w, r, nil) {
+		cookie := sessionCookie("", time.Unix(1, 0))
+		cookie.MaxAge = -1
+		http.SetCookie(w, cookie)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

@@ -332,9 +332,6 @@ routing {
 	if g.UtlsImitate != "chrome_auto" {
 		t.Errorf("UtlsImitate: got %v", g.UtlsImitate)
 	}
-	if g.MetricsPort != 0 {
-		t.Errorf("MetricsPort: got %v", g.MetricsPort)
-	}
 	if g.NoConnectivityBehavior != "block" {
 		t.Errorf("NoConnectivityBehavior: got %v", g.NoConnectivityBehavior)
 	}
@@ -357,8 +354,6 @@ global {
 	check_interval_max: 10m
 	udphop_interval: 5s
 	tcp_fast_open: true
-	metrics_port: 9090
-	pprof_port: 6060
 }
 routing {
 	fallback: direct
@@ -388,12 +383,6 @@ routing {
 	}
 	if !g.TCPFastOpen {
 		t.Errorf("TCPFastOpen should be true")
-	}
-	if g.MetricsPort != 9090 {
-		t.Errorf("MetricsPort: got %v", g.MetricsPort)
-	}
-	if g.PprofPort != 6060 {
-		t.Errorf("PprofPort: got %v", g.PprofPort)
 	}
 }
 

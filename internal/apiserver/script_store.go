@@ -15,7 +15,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func (s *handler) serveScriptStoreMigration(w http.ResponseWriter, r *http.Request, _ caller) {
+func (s *Handler) serveScriptStoreMigration(w http.ResponseWriter, r *http.Request, _ caller) {
 	var request api.ScriptStoreMigrateRequest
 	if !apiBody(w, r, &request) {
 		return

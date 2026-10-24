@@ -67,8 +67,8 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		{Host: "192.0.2.10", Ports: []uint16{8443}},
 		{Host: "2001:db8::10", Ports: []uint16{443}},
 	}, PreserveRoute: !requestRouting}}})
-	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
 	addresses := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("10.0.0.2"), Mask: net.CIDRMask(24, 32)},
 		&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)},
 		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
 	}
@@ -81,7 +81,7 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		t.Fatal(err)
 	}
 	prepared.enableMITMPlan(diagnostics.Plan())
-	prepared.bypassAPI(9080, addresses)
+	prepared.bypassAPI(443, addresses)
 	matcher, _ := routingMatcherForTest(t, prepared)
 	matcher.bpf = state
 	if err := matcher.BuildKernspace(); err != nil {
@@ -114,13 +114,13 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		{"literal IPv6 wrong port", "[2001:db8::10]:8443", "", false, false},
 		{"certificate MITM IPv4", "203.0.113.254:443", "", false, true},
 		{"certificate MITM IPv6", "[2001:db8:ffff::254]:443", "", false, true},
-		{"certificate trust IPv4", "10.0.0.1:9080", "", false, false},
-		{"certificate trust IPv6", "[fd00::1]:9080", "", false, false},
+		{"certificate trust IPv4", "10.0.0.2:443", "", false, false},
+		{"certificate trust IPv6", "[fd00::1]:443", "", false, false},
 		{"certificate wrong IP", "203.0.113.253:443", "", false, false},
 		{"certificate wrong IPv6", "[2001:db8:ffff::253]:443", "", false, false},
 		{"certificate wrong port", "203.0.113.254:80", "", false, false},
 		{"certificate wrong IPv6 port", "[2001:db8:ffff::254]:8443", "", false, false},
-		{"certificate API", "10.0.0.1:9080", "", false, false},
+		{"certificate API", "10.0.0.2:443", "", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {

@@ -49,7 +49,7 @@ func TestCertificateChallengeRequiresFreshHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	handler := NewHandler(Options{Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}})
+	handler := NewHandler(Options{AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}})
 	certificateDirectory := t.TempDir()
 	server.Configure(handler, authority, certificateDirectory)
 	address := server.Addr().String()
@@ -206,7 +206,7 @@ func TestAPICertificateSurvivesRestartAndChallenge(t *testing.T) {
 			t.Fatal(err)
 		}
 		address = server.Addr().String()
-		server.Configure(NewHandler(Options{Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}}), authority, certificateDirectory)
+		server.Configure(NewHandler(Options{AllowLANAnonymous: true, ResolveClient: verifiedTestLAN, Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}}), authority, certificateDirectory)
 	}
 	restart()
 	t.Cleanup(func() { server.Close() })
@@ -343,7 +343,9 @@ func newCertificateTestServer(t *testing.T) (*Server, *tls.Config, string) {
 	t.Cleanup(server.Close)
 	directory := t.TempDir()
 	// Trust setup remains public even when administration requires a key.
-	server.Configure(NewHandler(Options{APIKey: "configured-key", Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}}), authority, directory)
+	server.Configure(NewHandler(Options{AdminKey: "configured-key", AllowLANAnonymous: true, ResolveClient: func(netip.AddrPort, netip.AddrPort) (api.ClientIdentity, error) {
+		return api.ClientIdentity{LinkType: "ip"}, nil
+	}, Certificates: &Certificates{Identity: authority.Identity(), Handler: authority.Handler()}}), authority, directory)
 	return server, &tls.Config{RootCAs: roots}, directory
 }
 
@@ -493,5 +495,101 @@ func TestRetiredTLSConfigRejectsDelayedHandshake(t *testing.T) {
 				t.Fatalf("retired identity published a certificate: %v, %v", entries, err)
 			}
 		})
+	}
+}
+
+func TestCertificateChallengeCORSNormalizationAndHead(t *testing.T) {
+	directory := t.TempDir()
+	certPath, keyPath := filepath.Join(directory, "ca.pem"), filepath.Join(directory, "ca.key")
+	if err := ca.Generate(certPath, keyPath, "test CA", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := ca.Load(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := ca.ReadCertificate(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	server, err := Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handler := NewHandler(Options{
+		AllowLANAnonymous: true,
+		ResolveClient:     verifiedTestLAN,
+		WebOrigins:        []string{"https://web.example"},
+		Certificates:      &Certificates{Identity: authority.Identity(), Handler: authority.Handler()},
+	})
+	server.Configure(handler, authority, t.TempDir())
+	address := server.Addr().String()
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}, Timeout: time.Second}
+	defer client.CloseIdleConnections()
+
+	// Initiate over HTTP with an uncanonical Origin (:80); verify GET accepts canonicalized equivalent.
+	post, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+address+"/api/certificate/tests", nil)
+	post.Header.Set("X-Dae-API", "1")
+	post.Header.Set("Origin", "https://WEB.Example:443")
+	postResp, err := client.Do(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var test api.CertificateTest
+	if err := json.UnmarshalRead(postResp.Body, &test); err != nil {
+		t.Fatal(err)
+	}
+	postResp.Body.Close()
+
+	// Warm a fresh TLS handshake on this transport before sending HEAD/GET proofs.
+	_, port, _ := net.SplitHostPort(address)
+	proofURL := "https://" + net.JoinHostPort("127.0.0.1", port) + "/api/certificate/tests/" + test.ID
+
+	// HEAD must not consume the one-shot challenge, and 403/404 responses expose CORS headers.
+	head, _ := http.NewRequestWithContext(t.Context(), http.MethodHead, proofURL, nil)
+	head.Header.Set("Origin", "https://web.example")
+	headResp, err := client.Do(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headResp.Body.Close()
+	if headResp.StatusCode != http.StatusMethodNotAllowed || headResp.Header.Get("Access-Control-Allow-Origin") != "https://web.example" {
+		t.Fatalf("HEAD = %d, ACAO=%q", headResp.StatusCode, headResp.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	wrongOrigin, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, proofURL, nil)
+	wrongOrigin.Header.Set("Origin", "https://other.example")
+	wrongResp, err := client.Do(wrongOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongResp.Body.Close()
+	if wrongResp.StatusCode != http.StatusForbidden || wrongResp.Header.Get("Access-Control-Allow-Origin") != "https://other.example" {
+		t.Fatalf("403 CORS = %d, ACAO=%q", wrongResp.StatusCode, wrongResp.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	get, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, proofURL, nil)
+	get.Header.Set("Origin", "https://web.example:00443")
+	getResp, err := client.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK || getResp.Header.Get("Access-Control-Allow-Origin") != "https://web.example:00443" {
+		t.Fatalf("normalized proof = %d, ACAO=%q", getResp.StatusCode, getResp.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	missing, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, proofURL, nil)
+	missing.Header.Set("Origin", "https://web.example")
+	missingResp, err := client.Do(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingResp.Body.Close()
+	if missingResp.StatusCode != http.StatusNotFound || missingResp.Header.Get("Access-Control-Allow-Origin") != "https://web.example" {
+		t.Fatalf("404 CORS = %d, ACAO=%q", missingResp.StatusCode, missingResp.Header.Get("Access-Control-Allow-Origin"))
 	}
 }
