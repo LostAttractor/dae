@@ -241,6 +241,34 @@ int test_expire_udp_conn_state(struct __sk_buff *skb)
 	return 0;
 }
 
+/* A redirect whose return path is unchanged keeps its redirect_track element:
+ * an update would replace the LRU node. Returns the failed step, or 0. */
+SEC("tc/test_redirect_track_unchanged")
+int test_redirect_track_unchanged(struct __sk_buff *skb)
+{
+	struct tuples tuples = {};
+	struct ethhdr ethh = { .h_source = { 2, 0, 0, 0, 0, 1 }, .h_dest = { 2, 0, 0, 0, 0, 2 } };
+	struct redirect_tuple key = {};
+	struct redirect_entry *first, *entry;
+
+	tuples.five.sip.u6_addr32[3] = key.sip.u6_addr32[3] = bpf_htonl(0xc0a80102);
+	tuples.five.dip.u6_addr32[3] = key.dip.u6_addr32[3] = bpf_htonl(0xcb007101);
+	if (skb->protocol != bpf_htons(ETH_P_IP) ||
+	    prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+		return 1;
+	first = bpf_map_lookup_elem(&redirect_track, &key);
+	if (!first || prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+		return 2;
+	entry = bpf_map_lookup_elem(&redirect_track, &key);
+	if (entry != first)
+		return 3;
+	ethh.h_source[5] = 3;
+	if (prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+		return 4;
+	entry = bpf_map_lookup_elem(&redirect_track, &key);
+	return entry && entry->smac[5] == 3 ? 0 : 5;
+}
+
 SEC("tc/benchmark/parser")
 int test_parser_benchmark(struct __sk_buff *skb)
 {

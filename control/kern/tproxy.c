@@ -157,12 +157,16 @@ struct redirect_tuple {
 	union ip6 dip;
 };
 
+/* Explicit padding: entries are compared as whole words. */
 struct redirect_entry {
 	__u32 ifindex;
 	__u8 smac[6];
 	__u8 dmac[6];
 	__u8 from_wan;
+	__u8 padding[3];
 };
+
+_Static_assert(sizeof(struct redirect_entry) == 20, "redirect entry has no implicit padding");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1047,6 +1051,19 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 	return read_udp_route(key, result, true) == 1 ? 0 : -1;
 }
 
+static __always_inline bool redirect_entry_changed(const struct redirect_entry *stored,
+						   const struct redirect_entry *entry)
+{
+	const __u32 *a = (const void *)stored, *b = (const void *)entry;
+
+	if (!stored)
+		return true;
+	for (int i = 0; i < sizeof(*entry) / sizeof(__u32); i++)
+		if (a[i] != b[i])
+			return true;
+	return false;
+}
+
 static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len,
 	struct tuples *tuples, struct ethhdr *ethh)
@@ -1085,7 +1102,11 @@ static __always_inline int prep_redirect_to_control_plane(
 			 sizeof(ethh->h_source));
 	__builtin_memcpy(redirect_entry.dmac, ethh->h_dest,
 			 sizeof(ethh->h_dest));
-	if (bpf_map_update_elem(&redirect_track, &redirect_tuple,
+	/* An update replaces the LRU node even when nothing changed. The lookup
+	 * keeps an unchanged entry recent as well. */
+	if (redirect_entry_changed(bpf_map_lookup_elem(&redirect_track, &redirect_tuple),
+				   &redirect_entry) &&
+	    bpf_map_update_elem(&redirect_track, &redirect_tuple,
 				&redirect_entry, BPF_ANY))
 		return -1;
 
