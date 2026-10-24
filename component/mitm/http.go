@@ -86,9 +86,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		if r.ProtoMajor == 1 {
 			_ = controller.EnableFullDuplex()
 			if r.Body != nil && r.Body != http.NoBody {
-				body := &http1RequestBody{ReadCloser: r.Body, deadline: controller.SetReadDeadline}
+				body := &http1RequestBody{ReadCloser: r.Body, deadline: controller.SetReadDeadline, done: make(chan struct{})}
 				upload = body
 				r.Body = body
+				r = r.WithContext(context.WithValue(r.Context(), http1RequestBodyKey{}, body))
 				source.Body = body
 				setReadDeadline = body.setReadDeadline
 				stopBody := context.AfterFunc(ctx, func() { _ = body.Close() })
@@ -163,6 +164,9 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				}
 				if requestFlow.Host == flow.Host || scoped {
 					h.filterAltSvc(response.Header, scheme, requestFlow)
+				}
+				if upload != nil && response.StatusCode >= 200 {
+					upload.responseStarted.Store(true)
 				}
 				return nil
 			},

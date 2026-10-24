@@ -5,6 +5,7 @@ package mitm
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -35,21 +36,35 @@ func (c *httpTransportConn) CloseWrite() error { return netproxy.CloseWrite(c.Co
 // Closing it at GotConn time would poison that otherwise safe retry.
 type httpUploadBody struct {
 	io.ReadCloser
-	mu   sync.Mutex
-	conn context.Context
-	stop func() bool
+	mu          sync.Mutex
+	conn        context.Context
+	stop        func() bool
+	requestBody *http1RequestBody
+	done        chan struct{}
+	closeOnce   sync.Once
 }
 
 func (b *httpUploadBody) Read(p []byte) (int, error) {
 	b.mu.Lock()
-	if b.stop == nil && b.conn != nil {
-		b.stop = context.AfterFunc(b.conn, func() { _ = b.ReadCloser.Close() })
+	conn := b.conn
+	if b.stop == nil && conn != nil {
+		b.stop = context.AfterFunc(conn, func() { _ = b.Close() })
 	}
 	b.mu.Unlock()
-	return b.ReadCloser.Read(p)
+	n, err := b.ReadCloser.Read(p)
+	if conn != nil && b.requestBody != nil && errors.Is(err, http.ErrBodyReadAfterClose) && b.requestBody.responseStarted.Load() {
+		// Only the HTTP/1 upload writer must defer this error; local response readers must not wait on themselves.
+		select {
+		case <-b.done:
+		case <-b.requestBody.done:
+		}
+	}
+	return n, err
 }
 
 func (b *httpUploadBody) Close() error {
+	// Release the writer before the underlying Close can wait for its Read.
+	b.closeOnce.Do(func() { close(b.done) })
 	b.mu.Lock()
 	if b.stop != nil {
 		b.stop()
@@ -63,22 +78,24 @@ func watchHTTP1Upload(request *http.Request) *http.Request {
 		return request
 	}
 	var mu sync.Mutex
-	body := &httpUploadBody{ReadCloser: request.Body}
+	requestBody, _ := request.Context().Value(http1RequestBodyKey{}).(*http1RequestBody)
+	body := &httpUploadBody{ReadCloser: request.Body, requestBody: requestBody, done: make(chan struct{})}
 	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
 		conn := info.Conn
 		if secured, ok := conn.(*tls.Conn); ok {
 			if secured.ConnectionState().NegotiatedProtocol == "h2" {
-				return
+				conn = nil
+			} else {
+				conn = secured.NetConn()
 			}
-			conn = secured.NetConn()
 		}
-		upstream, ok := conn.(*httpTransportConn)
-		if !ok {
-			return
+		var upstreamContext context.Context
+		if upstream, ok := conn.(*httpTransportConn); ok {
+			upstreamContext = upstream.ctx
 		}
 		mu.Lock()
 		body.mu.Lock()
-		body.conn = upstream.ctx
+		body.conn = upstreamContext
 		body.mu.Unlock()
 		mu.Unlock()
 	}}
@@ -90,7 +107,7 @@ func watchHTTP1Upload(request *http.Request) *http.Request {
 			if err != nil {
 				return nil, err
 			}
-			next := &httpUploadBody{ReadCloser: replay}
+			next := &httpUploadBody{ReadCloser: replay, requestBody: requestBody, done: make(chan struct{})}
 			mu.Lock()
 			body = next
 			mu.Unlock()

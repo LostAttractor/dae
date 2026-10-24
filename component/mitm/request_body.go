@@ -9,17 +9,21 @@ import (
 	"time"
 )
 
+type http1RequestBodyKey struct{}
+
 // net/http's HTTP/1 Body.Close drains unread input and waits for active Reads.
 // Interrupt those reads only when the upload owner closes it, or the request
 // ends. Receiving response headers alone must not stop a duplex upload.
 type http1RequestBody struct {
 	io.ReadCloser
-	deadline func(time.Time) error
-	eof      atomic.Bool
-	mu       sync.Mutex
-	closing  bool
-	once     sync.Once
-	err      error
+	deadline        func(time.Time) error
+	eof             atomic.Bool
+	responseStarted atomic.Bool
+	done            chan struct{}
+	mu              sync.Mutex
+	closing         bool
+	once            sync.Once
+	err             error
 }
 
 func (b *http1RequestBody) Read(p []byte) (int, error) {
@@ -55,6 +59,9 @@ func (b *http1RequestBody) setReadDeadline(deadline time.Time) error {
 
 func (b *http1RequestBody) Close() error {
 	b.once.Do(func() {
+		// Release a deferred Read error before the underlying Close can wait
+		// for that reader; cancellation and explicit Close must also unblock it.
+		close(b.done)
 		b.mu.Lock()
 		b.closing = true
 		if !b.eof.Load() {
