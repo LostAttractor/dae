@@ -117,6 +117,32 @@ func TestHTTPObfsBufferedDataBeforeError(t *testing.T) {
 	}
 }
 
+// The response and the first payload bytes may share one segment: they are
+// served from the reader before reads pass through to the connection.
+func TestHTTPObfsPassesReadsThroughAfterDrain(t *testing.T) {
+	raw := &httpObfsScriptedConn{steps: []httpObfsReadStep{
+		{httpObfsResponseHeader + "data", nil}, {"more", nil},
+	}}
+	conn := NewHTTPObfs(raw, "example.org", "80", "/").(*HTTPObfs)
+	defer conn.Close()
+	buf := make([]byte, 2)
+	for _, want := range []string{"da", "ta"} {
+		if n, err := conn.Read(buf); err != nil || string(buf[:n]) != want {
+			t.Fatalf("buffered Read = %q, %v; want %q", buf[:n], err, want)
+		}
+		if conn.ReadPassthrough() != nil {
+			t.Fatal("reads passed through while response bytes were buffered")
+		}
+	}
+	got, err := io.ReadAll(conn)
+	if err != nil || string(got) != "more" {
+		t.Fatalf("read after drain = %q, %v", got, err)
+	}
+	if conn.ReadPassthrough() != raw || conn.reader != nil {
+		t.Fatal("drained reader was kept")
+	}
+}
+
 type httpObfsReadSignalConn struct {
 	net.Conn
 	started chan struct{}

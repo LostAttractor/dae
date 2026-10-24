@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
@@ -26,6 +27,7 @@ type HTTPObfs struct {
 	host, port, path            string
 	header                      bytes.Buffer
 	firstRequest, firstResponse bool
+	passthrough                 atomic.Bool // set once reader is drained and returned
 	rMu, wMu                    sync.Mutex
 	readErr, writeErr           error
 }
@@ -38,6 +40,9 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 	}
 	if c.readErr != nil {
 		return 0, c.readErr
+	}
+	if c.passthrough.Load() {
+		return c.Conn.Read(p)
 	}
 	if c.reader == nil {
 		c.reader = httpReaderPool.Get(c.Conn)
@@ -79,12 +84,34 @@ func (c *HTTPObfs) Read(p []byte) (int, error) {
 		c.header = bytes.Buffer{}
 		c.firstResponse = false
 	}
-	return c.reader.Read(p)
+	if n := c.reader.Buffered(); n > 0 {
+		// Bytes read ahead of the response end; this does no I/O.
+		return c.reader.Read(p[:min(len(p), n)])
+	}
+	// Drained: report an error that came with the last bytes, then read the
+	// connection directly.
+	_, err := c.reader.Read(nil)
+	httpReaderPool.Put(c.reader)
+	c.reader = nil
+	c.passthrough.Store(true)
+	if err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(p)
+}
+
+// ReadPassthrough exposes the connection once the handshake response and the
+// bytes read ahead of it are consumed; reads then pass straight through.
+func (c *HTTPObfs) ReadPassthrough() net.Conn {
+	if c.passthrough.Load() {
+		return c.Conn
+	}
+	return nil
 }
 
 func (c *HTTPObfs) Close() error {
-	// Interrupt a blocked Read before taking its lock. The reader remains owned
-	// by this connection until Close, including any prefetched data and errors.
+	// Interrupt a blocked Read before taking its lock. Until drained, the
+	// reader belongs to this connection, with any prefetched data and errors.
 	err := c.Conn.Close()
 	c.rMu.Lock()
 	c.readErr = net.ErrClosed
