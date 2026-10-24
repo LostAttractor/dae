@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	dns "github.com/miekg/dns"
 )
 
@@ -60,7 +61,7 @@ func TestCheckDNSRefreshesOnlyRequestedFamily(t *testing.T) {
 	}
 }
 
-func TestConnectivityProbesPreserveFailureCause(t *testing.T) {
+func TestConnectivityProbesAreMarkedAndPreserveFailureCause(t *testing.T) {
 	for _, selection := range []bool{false, true} {
 		name := "background"
 		if selection {
@@ -69,7 +70,11 @@ func TestConnectivityProbesPreserveFailureCause(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d := newTestDialer(t, testTransport{})
 			cause := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ENETUNREACH}
-			checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+			checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
+				// Pooled transports must not grow for check traffic.
+				if !netproxy.IsConnectivityCheck(ctx) {
+					t.Error("probe context is not marked as a connectivity check")
+				}
 				return cause
 			})
 			defer checker.stopRetries()

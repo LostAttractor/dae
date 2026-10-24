@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -92,20 +90,21 @@ func waitForSmuxSessions(t *testing.T, accepted <-chan *xtacismux.Session, count
 
 var errOpenStreamWrite = errors.New("open stream write failed")
 
-type failAfterFirstWriteConn struct {
+// failingWriteConn fails every write once fail is set.
+type failingWriteConn struct {
 	net.Conn
-	writes atomic.Int32
+	fail   atomic.Bool
 	closed atomic.Bool
 }
 
-func (c *failAfterFirstWriteConn) Write(p []byte) (int, error) {
-	if c.writes.Add(1) > 1 {
+func (c *failingWriteConn) Write(p []byte) (int, error) {
+	if c.fail.Load() {
 		return 0, errOpenStreamWrite
 	}
 	return c.Conn.Write(p)
 }
 
-func (c *failAfterFirstWriteConn) Close() error {
+func (c *failingWriteConn) Close() error {
 	c.closed.Store(true)
 	return c.Conn.Close()
 }
@@ -162,18 +161,7 @@ func TestUDPPassthroughUsesParentDialer(t *testing.T) {
 }
 
 func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
-	// smux pools result channels globally. Run the virtual-time scenario in
-	// its own process so channels never cross a synctest bubble boundary.
-	const child = "DAE_SMUX_IDLE_TEST_CHILD"
-	if os.Getenv(child) != "1" {
-		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestIdleSessionRemainsUsableWithoutPeerHeartbeats$", "-test.timeout=30s")
-		cmd.Env = append(os.Environ(), child+"=1")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("isolated idle-session test: %v\n%s", err, output)
-		}
-		return
-	}
-	synctest.Test(t, func(t *testing.T) {
+	isolatedSynctest(t, func(t *testing.T) {
 		parent := &pipeDialer{server: make(chan net.Conn)}
 		accepted := acceptSmuxSessions(parent, 1)
 		dialer := &Smux{Dialer: parent, MaxConnections: 1}
@@ -217,124 +205,32 @@ func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
 	})
 }
 
-func TestPoolExpandsAndDistributesConcurrentStreams(t *testing.T) {
-	const (
-		maxConnections = 4
-		streamCount    = 8
-	)
-	parent := &pipeDialer{server: make(chan net.Conn)}
-	accepted := acceptSmuxSessions(parent, maxConnections)
-	dialer := &Smux{Dialer: parent, MaxConnections: maxConnections}
-	t.Cleanup(func() { _ = dialer.Close() })
-
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// Provision the requested pool through the same Connect entry point used
-	// by the recovery coordinator before distributing business streams.
-	p := dialer.pool()
-	p.mu.Lock()
-	for _, slot := range p.slots[1:] {
-		p.activateLocked(slot)
-	}
-	p.publishStateLocked(nil)
-	p.mu.Unlock()
-	for range maxConnections - 1 {
-		if err := dialer.Connect(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	connections := make([]net.Conn, streamCount)
-	errs := make([]error, streamCount)
-	var wg sync.WaitGroup
-	for i := range streamCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			connections[i], errs[i] = dialer.DialContext(context.Background(), "tcp", "speed.example:443")
-		}()
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("DialContext %d: %v", i, err)
-		}
-		defer connections[i].Close()
-	}
-	serverSessions := waitForSmuxSessions(t, accepted, maxConnections)
-	defer func() {
-		for _, session := range serverSessions {
-			_ = session.Close()
-		}
-	}()
-
-	pool := dialer.pool()
-	loads := make([]int, len(pool.slots))
-	minLoad, total := streamCount, 0
-	for i, slot := range pool.slots {
-		resource, err := slot.lifecycle.Current()
-		if err != nil {
-			t.Fatalf("session %d is not connected: %v", i, err)
-		}
-		loads[i] = resource.session.NumStreams()
-		minLoad = min(minLoad, loads[i])
-		total += loads[i]
-	}
-	if total != streamCount || minLoad == 0 {
-		t.Fatalf("session stream loads = %v, want %d streams using every session", loads, streamCount)
-	}
-}
-
 func TestOpenStreamFailureUsesAnotherSession(t *testing.T) {
-	var failedConn *failAfterFirstWriteConn
-	parent := &pipeDialer{
-		server: make(chan net.Conn),
-		wrapClient: func(index int, conn net.Conn) net.Conn {
-			if index != 0 {
-				return conn
-			}
-			failedConn = &failAfterFirstWriteConn{Conn: conn}
-			return failedConn
-		},
-	}
-	accepted := acceptSmuxSessions(parent, 2)
-	dialer := &Smux{Dialer: parent, MaxConnections: 2}
-	t.Cleanup(func() { _ = dialer.Close() })
-
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	p := dialer.pool()
-	p.mu.Lock()
-	p.activateLocked(p.slots[1])
-	p.publishStateLocked(nil)
-	p.mu.Unlock()
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := dialer.DialContext(context.Background(), "tcp", "failover.example:443")
-	if err != nil {
-		t.Fatalf("DialContext did not fail over: %v", err)
-	}
-	defer conn.Close()
-	serverSessions := waitForSmuxSessions(t, accepted, 2)
-	defer func() {
-		for _, session := range serverSessions {
-			_ = session.Close()
+	var failing *failingWriteConn
+	h := newPoolHarness(t, 2, func(index int, conn net.Conn) net.Conn {
+		if index != 0 {
+			return conn
 		}
-	}()
+		failing = &failingWriteConn{Conn: conn}
+		return failing
+	})
+	ctx := t.Context()
+	base := h.openN(ctx, expandStreams+1)
+	h.replenish()
+	h.openN(ctx, expandStreams)
+	// The emptied base session is now preferred and fails to open.
+	closeAll(base)
+	failing.fail.Store(true)
+	h.open(ctx)
 	deadline := time.Now().Add(time.Second)
-	for failedConn != nil && !failedConn.closed.Load() && time.Now().Before(deadline) {
+	for !failing.closed.Load() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if failedConn == nil || !failedConn.closed.Load() {
+	if !failing.closed.Load() {
 		t.Fatal("session with failed OpenStream was not closed")
 	}
-	parent.mu.Lock()
-	dialCount := parent.dialCount
-	parent.mu.Unlock()
-	if dialCount != 2 {
-		t.Fatalf("outer connection count = %d, want 2", dialCount)
+	if dials := h.dials(); dials != 2 {
+		t.Fatalf("outer connection count = %d, want 2", dials)
 	}
 }
 
@@ -348,12 +244,14 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 			}
 			return nil
 		},
-		wrapClient: func(index int, conn net.Conn) net.Conn {
-			if index == 0 {
-				return &failAfterFirstWriteConn{Conn: conn}
-			}
-			return conn
-		},
+	}
+	failing := new(failingWriteConn)
+	parent.wrapClient = func(index int, conn net.Conn) net.Conn {
+		if index == 0 {
+			failing.Conn = conn
+			return failing
+		}
+		return conn
 	}
 	accepted := acceptSmuxSessions(parent, 2)
 	dialer := &Smux{Dialer: parent, MaxConnections: 3}
@@ -362,6 +260,7 @@ func TestBusinessDialDoesNotRetryFailedConnections(t *testing.T) {
 	if err := dialer.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	failing.fail.Store(true)
 	if _, err := dialer.DialContext(context.Background(), "tcp", "failover.example:443"); err == nil {
 		t.Fatal("failed stream unexpectedly succeeded")
 	}
@@ -481,75 +380,6 @@ func TestFastConnectFailurePublishesTransitions(t *testing.T) {
 		case <-deadline.C:
 			t.Fatal("timed out waiting for connecting and disconnected transitions")
 		}
-	}
-}
-
-func TestPoolStaysConnectedWhenOneSessionFails(t *testing.T) {
-	parent := &pipeDialer{server: make(chan net.Conn)}
-	accepted := acceptSmuxSessions(parent, 3)
-	dialer := &Smux{Dialer: parent, MaxConnections: 2}
-	t.Cleanup(func() { _ = dialer.Close() })
-
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	first, err := dialer.DialContext(context.Background(), "tcp", "first.example:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer first.Close()
-	// Request the second slot, then let the owner establish it.
-	requested, err := dialer.DialContext(context.Background(), "tcp", "request-expansion.example:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer requested.Close()
-	if !dialer.Snapshot().RecoveryRequired {
-		t.Fatal("pool did not request expansion")
-	}
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	second, err := dialer.DialContext(context.Background(), "tcp", "second.example:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	serverSessions := waitForSmuxSessions(t, accepted, 2)
-	defer serverSessions[0].Close()
-	if err := serverSessions[1].Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	deadline := time.Now().Add(time.Second)
-	for dialer.pool().slots[1].lifecycle.Snapshot().State != netproxy.SessionDisconnected && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if state := dialer.Snapshot().State; state != netproxy.SessionConnected {
-		t.Fatalf("pool state after one session failed = %s, want connected", state)
-	}
-
-	if !dialer.Snapshot().RecoveryRequired {
-		t.Fatal("degraded pool did not request replenishment")
-	}
-	parent.mu.Lock()
-	attempts := parent.dialCount
-	parent.mu.Unlock()
-	if attempts != 2 {
-		t.Fatalf("unexpected data-plane connection attempts: %d", attempts)
-	}
-	if err := dialer.Connect(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	replacement, err := dialer.DialContext(context.Background(), "tcp", "replacement.example:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer replacement.Close()
-	replacementServer := waitForSmuxSessions(t, accepted, 1)[0]
-	defer replacementServer.Close()
-	if state := dialer.Snapshot().State; state != netproxy.SessionConnected {
-		t.Fatalf("pool state after replacement = %s, want connected", state)
 	}
 }
 

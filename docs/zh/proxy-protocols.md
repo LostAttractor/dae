@@ -72,7 +72,7 @@
   }
   ```
 
-  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。启用 smux 后，每个节点默认按需建立最多 4 个 session（即 4 条独立的外层 TCP）；可通过 `multiplex_max_connections` 设置为 1 到 16。多 session 可以让多个并发连接分散到不同的 TCP 拥塞窗口，但不会提高单个内层 TCP 连接的吞吐量。
+  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。启用 smux 后，每个节点保持一个 session（即一条独立的外层 TCP），并按需增加，默认最多 4 个；可通过 `multiplex_max_connections` 设置为 1 到 16。只有每个 session 都已承载至少 4 个流时才请求新 session，同一时间只请求一个，连通性检查不会增加 session。额外的 session 连续 60 秒没有用户流且另有可用 session 时关闭，空闲时断开的额外 session 不再重建。多 session 可以让多个并发连接分散到不同的 TCP 拥塞窗口，但不会提高单个内层 TCP 连接的吞吐量。
 
 - [x] ShadowsocksR
 

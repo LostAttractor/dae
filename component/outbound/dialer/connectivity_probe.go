@@ -270,7 +270,7 @@ func (c *connectivityChecker) runProbe(ctx context.Context, network common.Netwo
 
 func (c *connectivityChecker) measureProbe(ctx context.Context, network common.NetworkIndex) probeResult {
 	start := time.Now()
-	err := c.probe(ctx, network.NetworkType())
+	err := c.probe(netproxy.WithConnectivityCheck(ctx), network.NetworkType())
 	return probeResult{network: network, latency: time.Since(start), err: err}
 }
 

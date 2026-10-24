@@ -104,6 +104,8 @@ type leasedStream struct {
 	*smux.Stream
 	handle *netproxy.SingleSessionHandle[*smuxResource]
 	lease  *netproxy.Lease
+	// release returns the stream's pool reservation once.
+	release func()
 }
 
 func (c *leasedStream) DependencyLease() *netproxy.Lease { return c.lease }
@@ -148,6 +150,7 @@ func (c *leasedStream) Write(p []byte) (int, error) {
 	return n, c.failure(err, netproxy.OpWrite)
 }
 func (c *leasedStream) Close() error {
+	defer c.release()
 	c.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: c.handle.Ref(), Stream: c.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerSMUX, Origin: netproxy.OriginLocalCleanup}))
 	return c.Stream.Close()
 }

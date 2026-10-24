@@ -211,7 +211,7 @@ func (s *Smux) establish(ctx context.Context) (*smuxResource, error) {
 	return &smuxResource{session: session, monitor: monitored}, nil
 }
 
-func openStream(ctx context.Context, session *smux.Session, done func()) (*smux.Stream, error) {
+func openStream(ctx context.Context, session *smux.Session) (*smux.Stream, error) {
 	type result struct {
 		stream *smux.Stream
 		err    error
@@ -219,7 +219,6 @@ func openStream(ctx context.Context, session *smux.Session, done func()) (*smux.
 	results := make(chan result)
 	go func() {
 		stream, err := session.OpenStream()
-		done()
 		select {
 		case results <- result{stream: stream, err: err}:
 		case <-ctx.Done():
