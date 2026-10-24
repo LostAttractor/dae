@@ -11,10 +11,6 @@ type ReaderPool struct {
 	pool sync.Pool
 }
 
-// FrameReaders serves AEAD stream protocols. Their size limits read-ahead
-// copying for large frames while coalescing short frames.
-var FrameReaders = NewReaderPool(1024)
-
 func NewReaderPool(size int) *ReaderPool {
 	return &ReaderPool{pool: sync.Pool{
 		New: func() any { return bufio.NewReaderSize(nil, size) },

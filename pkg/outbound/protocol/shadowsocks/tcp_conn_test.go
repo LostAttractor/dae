@@ -95,48 +95,12 @@ func (g *fixedSaltGenerator) Get() []byte {
 	return salt
 }
 
-func TestTCPConnBufferedPayloadLifecycle(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	conn := &TCPConn{
-		Conn:    client,
-		readBuf: pool.GetBuffer(16),
-	}
-	copy(conn.readBuf, "0123456789abcdef")
-
-	buf := make([]byte, 10)
-	if n, err := conn.Read(buf); err != nil || n != len(buf) {
-		t.Fatalf("first Read() = %d, %v", n, err)
-	}
-	if conn.readBuf == nil {
-		t.Fatal("partial read released its payload")
-	}
-	if n, err := conn.Read(buf); err != nil || n != 6 {
-		t.Fatalf("second Read() = %d, %v", n, err)
-	}
-	if conn.readBuf != nil || conn.readOffset != 0 {
-		t.Fatal("completed read retained its payload")
-	}
-	conn.readBuf = pool.GetBuffer(16)
-	conn.readOffset = 4
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if conn.readBuf != nil || conn.readOffset != 0 {
-		t.Fatal("Close retained its payload")
-	}
-
-}
-
 func TestTCPConnCloseUnblocksRead(t *testing.T) {
 	underlay := &interruptingCloseConn{
 		readStarted: make(chan struct{}),
 		closed:      make(chan struct{}),
 	}
-	conn := &TCPConn{
-		Conn:       underlay,
-		cipherConf: &ciphers.CipherConf{SaltLen: 1},
-	}
+	conn := NewTCPConn(underlay, &ciphers.CipherConf{SaltLen: 1}, nil, nil, nil)
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
@@ -303,39 +267,29 @@ func (c *interruptedReader) Read(b []byte) (int, error) {
 	return copy(b, step.data), step.err
 }
 
-func TestTCPConnPartialSaltTimeoutIsSticky(t *testing.T) {
+// Buffered ciphertext survives a timeout anywhere, so a retry resumes the
+// salt, a length chunk or a payload chunk whose length is already opened.
+func TestTCPConnTimeoutResumesInsideFrames(t *testing.T) {
+	payload := []byte("resumed after timeout")
+	key, wire := responseStream(t, "aes-128-gcm", payload, 2)
 	timeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
-	for _, received := range []int{0, 5} {
-		t.Run(strconv.Itoa(received), func(t *testing.T) {
-			raw := &interruptedReader{steps: []readStep{{make([]byte, received), timeout}}}
-			c := &TCPConn{Conn: raw, cipherConf: ciphers.AeadCiphersConf["aes-128-gcm"]}
-			if _, err := c.Read(make([]byte, 1)); err != timeout {
-				t.Fatal(err)
-			}
-			_, err := c.Read(make([]byte, 1))
-			if received > 0 {
-				if err != timeout || raw.reads != 1 {
-					t.Fatal("partial salt was read twice")
+	for _, cut := range []int{0, 5, 16, 16 + 7, 16 + 18, 16 + 18 + 9, len(wire) - 3} {
+		t.Run(strconv.Itoa(cut), func(t *testing.T) {
+			raw := &interruptedReader{steps: []readStep{{wire[:cut], timeout}, {wire[cut:], nil}}}
+			c := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+			got := make([]byte, 0, 2*len(payload))
+			buf := make([]byte, len(payload))
+			for len(got) < cap(got) {
+				n, err := c.Read(buf)
+				got = append(got, buf[:n]...)
+				if err != nil && err != timeout {
+					t.Fatal(err)
 				}
-			} else if raw.reads != 2 {
-				t.Fatal("zero-byte timeout made aligned reader unusable")
+			}
+			if !bytes.Equal(got, bytes.Repeat(payload, 2)) || raw.reads != 2 {
+				t.Fatalf("resumed stream = %q after %d reads", got, raw.reads)
 			}
 		})
-	}
-}
-
-func TestTCPConnPayloadTimeoutAfterLengthIsSticky(t *testing.T) {
-	block, _ := aes.NewCipher(make([]byte, 16))
-	aead, _ := cipher.NewGCM(block)
-	header := aead.Seal(nil, make([]byte, 12), []byte{0, 1}, nil)
-	raw := &interruptedReader{steps: []readStep{{header, nil}, {nil, os.ErrDeadlineExceeded}}}
-	c := &TCPConn{Conn: raw, cipherConf: ciphers.AeadCiphersConf["aes-128-gcm"], cipherRead: aead, nonceRead: make([]byte, 12), onceRead: true}
-	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatal(err)
-	}
-	calls := raw.reads
-	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) || raw.reads != calls {
-		t.Fatal("payload timeout retried as a length frame")
 	}
 }
 

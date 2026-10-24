@@ -90,3 +90,27 @@ func NativeTCPConn(conn net.Conn) *net.TCPConn {
 		return nil
 	}
 }
+
+// PassthroughReader is implemented by adapters whose reads may become a
+// verbatim pass-through. ReadPassthrough returns the wrapped connection once
+// every later read is served from it unchanged, and nil before then.
+type PassthroughReader interface{ ReadPassthrough() net.Conn }
+
+// ReadSocket returns the TCP socket whose receive queue holds conn's next
+// bytes unchanged, or nil. Unlike NativeTCPConn it also looks through
+// pass-through readers, so the socket only suits receive tuning.
+func ReadSocket(conn net.Conn) *net.TCPConn {
+	switch c := conn.(type) {
+	case *net.TCPConn:
+		return c
+	case *trackedSyscallConn:
+		return ReadSocket(c.Conn)
+	case *trackedConn:
+		return ReadSocket(c.Conn)
+	case PassthroughReader:
+		if inner := c.ReadPassthrough(); inner != nil {
+			return ReadSocket(inner)
+		}
+	}
+	return nil
+}

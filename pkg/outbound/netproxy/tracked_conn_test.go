@@ -83,3 +83,31 @@ func TestTrackedPacketReleasesEachOwnerOnce(t *testing.T) {
 		t.Fatalf("packet references released %d/%d times", a.Load(), b.Load())
 	}
 }
+
+type passthroughTestConn struct {
+	net.Conn
+	open bool
+}
+
+func (c *passthroughTestConn) ReadPassthrough() net.Conn {
+	if c.open {
+		return c.Conn
+	}
+	return nil
+}
+
+func TestReadSocketFollowsOnlyTransparentReads(t *testing.T) {
+	native := new(net.TCPConn)
+	adapter := &passthroughTestConn{Conn: TrackConn(native, func() {})}
+	conn := TrackConn(adapter, func() {})
+	if ReadSocket(conn) != nil {
+		t.Fatal("socket exposed while the adapter still transforms reads")
+	}
+	adapter.open = true
+	if ReadSocket(conn) != native || NativeTCPConn(conn) != nil {
+		t.Fatal("pass-through reads must expose the socket for receive tuning only")
+	}
+	if ReadSocket(&trackedTestConn{Conn: native}) != nil {
+		t.Fatal("protocol adapter unwrapped")
+	}
+}

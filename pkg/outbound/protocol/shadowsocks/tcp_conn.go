@@ -1,7 +1,6 @@
 package shadowsocks
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/cipher"
 	"encoding/binary"
@@ -15,7 +14,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
-	"github.com/daeuniverse/dae/pkg/outbound/protocol"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/internal/aeadframe"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 )
 
@@ -31,21 +30,16 @@ type TCPConn struct {
 	masterKey  []byte
 	sg         SaltGenerator
 
-	cipherRead  cipher.AEAD
 	cipherWrite cipher.AEAD
 	onceRead    bool
 	onceWrite   bool
-	nonceRead   []byte
 	nonceWrite  []byte
 	writeErr    error // Sticky after an incomplete ciphertext write.
-	readErr     error
 
 	readMutex  sync.Mutex
 	writeMutex sync.Mutex
 
-	reader     *bufio.Reader
-	readBuf    []byte
-	readOffset int
+	reader aeadframe.Reader
 }
 
 type Key struct {
@@ -61,116 +55,35 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg Sa
 		cipherConf: conf,
 		masterKey:  masterKey,
 		sg:         sg,
-		nonceRead:  make([]byte, conf.NonceLen),
 		nonceWrite: make([]byte, conf.NonceLen),
+		reader:     aeadframe.Reader{Conn: conn},
 	}
 	return tcpConn
 }
 
-func (c *TCPConn) Read(b []byte) (n int, err error) {
+func (c *TCPConn) Read(b []byte) (int, error) {
 	c.readMutex.Lock()
 	defer c.readMutex.Unlock()
-	if c.readErr != nil {
-		return 0, c.readErr
-	}
-	if len(b) == 0 {
-		return 0, nil
-	}
-
-	if c.readBuf != nil {
-		n = copy(b, c.readBuf[c.readOffset:])
-		c.readOffset += n
-		if c.readOffset == len(c.readBuf) {
-			pool.PutBuffer(c.readBuf)
-			c.readBuf = nil
-			c.readOffset = 0
-		}
-		return n, nil
-	}
-
-	if c.reader == nil {
-		c.reader = pool.FrameReaders.Get(c.Conn)
-	}
-	if !c.onceRead {
-		var salt = pool.GetBuffer(c.cipherConf.SaltLen)
-		defer pool.PutBuffer(salt)
-
-		n, err = io.ReadFull(c.reader, salt)
+	if !c.onceRead && len(b) > 0 {
+		salt, err := c.reader.Peek(c.cipherConf.SaltLen)
 		if err != nil {
-			if n > 0 {
-				c.readErr = err
-			}
 			return 0, err
 		}
-		c.cipherRead, err = CreateCipher(c.masterKey, salt, c.cipherConf)
+		aead, err := CreateCipher(c.masterKey, salt, c.cipherConf)
 		if err != nil {
-			c.readErr = fmt.Errorf("fail to initiate cipher: %w", err)
-			return 0, c.readErr
+			return 0, c.reader.Fail(fmt.Errorf("fail to initiate cipher: %w", err))
 		}
-
+		c.reader.Discard(len(salt))
+		c.reader.Start(aead, make([]byte, c.cipherConf.NonceLen), -1)
 		c.onceRead = true
 	}
-
-	// Chunk
-	payload, err := c.readChunk()
-	if err != nil {
-		return 0, err
-	}
-	n = copy(b, payload)
-	if len(payload) > n {
-		c.readBuf = payload
-		c.readOffset = n
-	} else {
-		pool.PutBuffer(payload)
-	}
-	return n, nil
-}
-
-func (c *TCPConn) readChunk() ([]byte, error) {
-	payloadLength := pool.GetBuffer(2 + c.cipherConf.TagLen)
-	defer pool.PutBuffer(payloadLength)
-	if n, err := io.ReadFull(c.reader, payloadLength); err != nil {
-		if n > 0 {
-			c.readErr = err
-		}
-		return nil, err
-	}
-	_, err := c.cipherRead.Open(payloadLength[:0], c.nonceRead, payloadLength, nil)
-	if err != nil {
-		c.readErr = responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream)
-		return nil, c.readErr
-	}
-	common.BytesIncLittleEndian(c.nonceRead)
-	l := binary.BigEndian.Uint16(payloadLength)
-	payload := pool.GetBuffer(int(l) + c.cipherConf.TagLen)
-	if _, err = io.ReadFull(c.reader, payload); err != nil {
-		pool.PutBuffer(payload)
-		c.readErr = err
-		return nil, err
-	}
-	plaintext, err := c.cipherRead.Open(payload[:0], c.nonceRead, payload, nil)
-	if err != nil {
-		pool.PutBuffer(payload)
-		c.readErr = responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream)
-		return nil, c.readErr
-	}
-	common.BytesIncLittleEndian(c.nonceRead)
-	return plaintext, nil
+	return c.reader.Read(b)
 }
 
 func (c *TCPConn) Close() error {
-	err := c.Conn.Close()
+	err := c.Conn.Close() // Interrupt Read before acquiring its mutex.
 	c.readMutex.Lock()
-	c.readErr = net.ErrClosed
-	if c.reader != nil {
-		pool.FrameReaders.Put(c.reader)
-		c.reader = nil
-	}
-	if c.readBuf != nil {
-		pool.PutBuffer(c.readBuf)
-		c.readBuf = nil
-		c.readOffset = 0
-	}
+	c.reader.Close()
 	c.readMutex.Unlock()
 	return err
 }

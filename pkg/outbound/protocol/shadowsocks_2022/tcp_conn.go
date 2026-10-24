@@ -1,7 +1,6 @@
 package shadowsocks_2022
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -21,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/internal/aeadframe"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 	"lukechampine.com/blake3"
@@ -35,26 +35,24 @@ const (
 
 type TCPConn struct {
 	net.Conn
-	addr                    *socks5.AddressInfo
-	cipherConf              *ciphers.CipherConf2022
-	pskList                 [][]byte
-	uPSK                    []byte
-	requestSalt             []byte // Immutable after construction; shared by reader and writer.
-	cipherRead, cipherWrite cipher.AEAD
-	onceRead, onceWrite     bool
-	nonceRead, nonceWrite   []byte
-	readErr, writeErr       error
-	readMutex, writeMutex   sync.Mutex
-	reader                  *bufio.Reader
-	readBuf                 []byte
-	readOffset              int
-	closeOnce               sync.Once
-	closeErr                error
+	addr                  *socks5.AddressInfo
+	cipherConf            *ciphers.CipherConf2022
+	pskList               [][]byte
+	uPSK                  []byte
+	requestSalt           []byte // Immutable after construction; shared by reader and writer.
+	cipherWrite           cipher.AEAD
+	onceRead, onceWrite   bool
+	nonceWrite            []byte
+	writeErr              error
+	readMutex, writeMutex sync.Mutex
+	reader                aeadframe.Reader
+	closeOnce             sync.Once
+	closeErr              error
 }
 
 func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf2022, pskList [][]byte, uPSK []byte, sg shadowsocks.SaltGenerator, addr *socks5.AddressInfo) net.Conn {
 	salt := sg.Get()
-	c := &TCPConn{Conn: conn, addr: addr, cipherConf: conf, pskList: pskList, uPSK: uPSK, requestSalt: append([]byte(nil), salt...), nonceRead: make([]byte, conf.NonceLen), nonceWrite: make([]byte, conf.NonceLen)}
+	c := &TCPConn{Conn: conn, addr: addr, cipherConf: conf, pskList: pskList, uPSK: uPSK, requestSalt: append([]byte(nil), salt...), nonceWrite: make([]byte, conf.NonceLen), reader: aeadframe.Reader{Conn: conn}}
 	pool.PutBuffer(salt)
 	return c
 }
@@ -62,99 +60,47 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf2022, pskList [][]byte, u
 func (c *TCPConn) Read(b []byte) (int, error) {
 	c.readMutex.Lock()
 	defer c.readMutex.Unlock()
-	if c.readErr != nil {
-		return 0, c.readErr
-	}
-	if len(b) == 0 {
-		return 0, nil
-	}
-	if c.reader == nil {
-		// Read frame headers and payloads together when already available.
-		c.reader = pool.FrameReaders.Get(c.Conn)
-	}
-	if c.readBuf == nil {
-		payload, err := c.readChunk()
-		if err != nil {
+	if !c.onceRead && len(b) > 0 {
+		if err := c.readResponseHeader(); err != nil {
 			return 0, err
 		}
-		c.readBuf = payload
 	}
-	n := copy(b, c.readBuf[c.readOffset:])
-	c.readOffset += n
-	if c.readOffset == len(c.readBuf) {
-		pool.PutBuffer(c.readBuf)
-		c.readBuf = nil
-		c.readOffset = 0
-	}
-	return n, nil
+	return c.reader.Read(b)
 }
 
-func (c *TCPConn) readChunk() (payload []byte, err error) {
-	// At a chunk boundary a zero-byte timeout may be retried. Once framing
-	// bytes or a nonce are consumed, any failure belongs to this stream forever.
-	started := false
-	defer func() {
-		if err != nil && started {
-			c.readErr = err
-		}
-	}()
-	var length uint16
-	if !c.onceRead {
-		header := pool.GetBuffer(c.cipherConf.SaltLen + 11 + c.cipherConf.SaltLen + c.cipherConf.TagLen)
-		defer pool.PutBuffer(header)
-		n, readErr := io.ReadFull(c.reader, header)
-		started = n > 0
-		if readErr != nil {
-			return nil, readErr
-		}
-		c.cipherRead, err = CreateCipher(c.uPSK, header[:c.cipherConf.SaltLen], c.cipherConf)
-		if err != nil {
-			return nil, err
-		}
-		ciphertext := header[c.cipherConf.SaltLen:]
-		response, openErr := c.cipherRead.Open(ciphertext[:0], c.nonceRead, ciphertext, nil)
-		if openErr != nil {
-			return nil, responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream)
-		}
-		if response[0] != HeaderTypeServerStream {
-			return nil, responseFailure(fmt.Errorf("unexpected response header type: %d", response[0]), netproxy.ScopeStream)
-		}
-		if !validTimestamp(binary.BigEndian.Uint64(response[1:9]), time.Now()) {
-			return nil, responseFailure(protocol.ErrReplayAttack, netproxy.ScopeStream)
-		}
-		if subtle.ConstantTimeCompare(response[9:9+c.cipherConf.SaltLen], c.requestSalt) != 1 {
-			return nil, responseFailure(protocol.ErrReplayAttack, netproxy.ScopeStream)
-		}
-		common.BytesIncLittleEndian(c.nonceRead)
-		length = binary.BigEndian.Uint16(response[9+c.cipherConf.SaltLen:])
-		c.onceRead = true
-	} else {
-		header := pool.GetBuffer(2 + c.cipherConf.TagLen)
-		defer pool.PutBuffer(header)
-		n, readErr := io.ReadFull(c.reader, header)
-		started = n > 0
-		if readErr != nil {
-			return nil, readErr
-		}
-		plaintext, openErr := c.cipherRead.Open(header[:0], c.nonceRead, header, nil)
-		if openErr != nil {
-			return nil, responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream)
-		}
-		common.BytesIncLittleEndian(c.nonceRead)
-		length = binary.BigEndian.Uint16(plaintext)
-	}
-	ciphertext := pool.GetBuffer(int(length) + c.cipherConf.TagLen)
-	if _, err = io.ReadFull(c.reader, ciphertext); err != nil {
-		pool.PutBuffer(ciphertext)
-		return nil, err
-	}
-	payload, err = c.cipherRead.Open(ciphertext[:0], c.nonceRead, ciphertext, nil)
+// readResponseHeader authenticates the salt and fixed response header, which
+// announces the first payload chunk's length.
+func (c *TCPConn) readResponseHeader() error {
+	saltLen := c.cipherConf.SaltLen
+	size := saltLen + 11 + saltLen + c.cipherConf.TagLen
+	header, err := c.reader.Peek(size)
 	if err != nil {
-		pool.PutBuffer(ciphertext)
-		return nil, responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream)
+		return err
 	}
-	common.BytesIncLittleEndian(c.nonceRead)
-	return payload, nil
+	aead, err := CreateCipher(c.uPSK, header[:saltLen], c.cipherConf)
+	if err != nil {
+		return c.reader.Fail(err)
+	}
+	nonce := make([]byte, c.cipherConf.NonceLen)
+	ciphertext := header[saltLen:]
+	response, err := aead.Open(ciphertext[:0], nonce, ciphertext, nil)
+	if err != nil {
+		return c.reader.Fail(responseFailure(protocol.ErrFailAuth, netproxy.ScopeStream))
+	}
+	if response[0] != HeaderTypeServerStream {
+		return c.reader.Fail(responseFailure(fmt.Errorf("unexpected response header type: %d", response[0]), netproxy.ScopeStream))
+	}
+	if !validTimestamp(binary.BigEndian.Uint64(response[1:9]), time.Now()) {
+		return c.reader.Fail(responseFailure(protocol.ErrReplayAttack, netproxy.ScopeStream))
+	}
+	if subtle.ConstantTimeCompare(response[9:9+saltLen], c.requestSalt) != 1 {
+		return c.reader.Fail(responseFailure(protocol.ErrReplayAttack, netproxy.ScopeStream))
+	}
+	common.BytesIncLittleEndian(nonce)
+	c.reader.Discard(size)
+	c.reader.Start(aead, nonce, int(binary.BigEndian.Uint16(response[9+saltLen:])))
+	c.onceRead = true
+	return nil
 }
 
 func validTimestamp(seconds uint64, now time.Time) bool {
@@ -167,17 +113,8 @@ func (c *TCPConn) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = c.Conn.Close() // Interrupt Read before acquiring its mutex.
 		c.readMutex.Lock()
-		defer c.readMutex.Unlock()
-		if c.reader != nil {
-			pool.FrameReaders.Put(c.reader)
-			c.reader = nil
-		}
-		if c.readBuf != nil {
-			pool.PutBuffer(c.readBuf)
-			c.readBuf = nil
-			c.readOffset = 0
-		}
-		c.readErr = net.ErrClosed
+		c.reader.Close()
+		c.readMutex.Unlock()
 	})
 	return c.closeErr
 }

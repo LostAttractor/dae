@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -118,20 +119,18 @@ func TestClientTCPResponseBufferOwnership(t *testing.T) {
 			if n, err := c.Read(first); err != nil || n != 3 {
 				t.Fatalf("Read=%d %v", n, err)
 			}
-			if c.readBuf == nil {
-				t.Fatal("partial response released its storage")
+			// A receive buffer released before its payload is consumed would be
+			// handed out and overwritten here.
+			for i := range 18 {
+				scratch := pool.GetBuffer(1 << i)
+				for j := range scratch {
+					scratch[j] = 0xcc
+				}
+				defer pool.PutBuffer(scratch)
 			}
-			scratch := pool.GetBuffer(len(payload) + c.cipherConf.TagLen)
-			for i := range scratch {
-				scratch[i] = 0xcc
-			}
-			defer pool.PutBuffer(scratch)
 			rest, err := io.ReadAll(c)
 			if err != nil || string(append(first, rest...)) != string(payload) {
 				t.Fatalf("response=%q err=%v", append(first, rest...), err)
-			}
-			if c.readBuf != nil || c.readOffset != 0 {
-				t.Fatal("fully read payload retained storage")
 			}
 			raw.reader = bytes.NewReader(responseFrame(t, key, c.requestSalt, payload, uint64(time.Now().Unix())))
 			fresh := newClientForTest(t, raw, key)
@@ -141,8 +140,8 @@ func TestClientTCPResponseBufferOwnership(t *testing.T) {
 			if err := fresh.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if fresh.readBuf != nil || fresh.readOffset != 0 || fresh.reader != nil {
-				t.Fatal("Close retained read storage")
+			if _, err := fresh.Read(first); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("Read after Close = %v", err)
 			}
 		})
 	}
@@ -291,6 +290,56 @@ func TestClientTCPReadBoundaryTimeoutRetry(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// stallConn returns head with a read timeout, then memoryConn's data.
+type stallConn struct {
+	memoryConn
+	head    []byte
+	stalled bool
+}
+
+func (c *stallConn) Read(b []byte) (int, error) {
+	if c.stalled {
+		return c.memoryConn.Read(b)
+	}
+	n := copy(b, c.head)
+	if c.head = c.head[n:]; len(c.head) > 0 {
+		return n, nil
+	}
+	c.stalled = true
+	return n, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+}
+
+// The response header announces the first payload's length: a timeout
+// anywhere, including between the header and that payload, must resume
+// without opening payload as a length chunk.
+func TestClientTCPTimeoutResumesAnywhere(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	payload := []byte("resumed after a timeout")
+	wire := responseStream(t, key, newClientForTest(t, new(memoryConn), key).requestSalt, payload, 2)
+	for cut := range len(wire) {
+		raw := &stallConn{memoryConn: memoryConn{reader: bytes.NewReader(wire[cut:])}, head: wire[:cut]}
+		c := newClientForTest(t, raw, key)
+		var got []byte
+		timeouts := 0
+		buf := make([]byte, 7)
+		for {
+			n, err := c.Read(buf)
+			got = append(got, buf[:n]...)
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				timeouts++
+				continue
+			}
+			if err != io.EOF || timeouts != 1 || !bytes.Equal(got, bytes.Repeat(payload, 2)) {
+				t.Fatalf("cut %d: %q after %d timeouts, %v", cut, got, timeouts, err)
+			}
+			break
+		}
 	}
 }
 

@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	// number of pools.
-	num     = 17
+	// number of pools; the largest holds one 65535-byte AEAD chunk with its tag.
+	num     = 18
 	maxsize = 1 << (num - 1)
 )
 
@@ -30,7 +30,7 @@ func init() {
 	}
 }
 
-// GetBuffer gets a buffer from pool, size should in range: [1, 65536],
+// GetBuffer gets a buffer from pool, size should in range: [1, maxsize],
 // otherwise, this function will call make([]byte, size) directly.
 func GetBuffer(size int) []byte {
 	if size >= 1 && size <= maxsize {
