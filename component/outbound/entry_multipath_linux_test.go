@@ -13,15 +13,39 @@ import (
 )
 
 func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
-	address := net.JoinHostPort("127.0.0.1", entryAddressListener(t))
+	var listen net.ListenConfig
+	listen.SetMultipathTCP(false)
+	listener, err := listen.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan string, 4)
+	go func() {
+		defer close(accepted)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn.RemoteAddr().String()
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		for range accepted {
+		}
+	})
 	global := &config.Global{Mptcp: true}
 	option := dialer.NewGlobalOption(global)
 	spec := &PathSpec{IPVersion: 4}
 	resources := new(Resources)
 	pool := &resources.Paths
-	protocol := func(base netproxy.Dialer) int {
+	// dial reports the protocol of the dialed socket and the connections the
+	// TCP-only listener accepted for it: a probe falls back and is replaced.
+	dial := func(base netproxy.Dialer) (protocol, connections int) {
 		t.Helper()
-		conn, err := base.DialContext(t.Context(), "tcp", address)
+		conn, err := base.DialContext(t.Context(), "tcp", listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,11 +54,24 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		protocol := -1
 		_ = raw.Control(func(fd uintptr) {
 			protocol, _ = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PROTOCOL)
 		})
-		return protocol
+		for connections = 1; ; connections++ {
+			addr, ok := <-accepted
+			if !ok {
+				t.Fatal("listener stopped accepting")
+			}
+			if addr == conn.LocalAddr().String() {
+				return protocol, connections
+			}
+		}
+	}
+	expect := func(base netproxy.Dialer, protocol, connections int, why string) {
+		t.Helper()
+		if got, made := dial(base); got != protocol || made != connections {
+			t.Fatalf("%s: protocol %d after %d connections, want %d after %d", why, got, made, protocol, connections)
+		}
 	}
 	entry := func(pool *PathPool) netproxy.Dialer {
 		t.Helper()
@@ -44,16 +81,17 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 		}
 		return base
 	}
-	first := entry(pool)
-	if got := protocol(first); got != 262 {
+	// Node validation has no pool and keeps MPTCP for every dial.
+	unpooled := entry(nil)
+	if got, _ := dial(unpooled); got != 262 {
 		t.Skipf("MPTCP unavailable: protocol %d", got)
 	}
+	expect(unpooled, 262, 1, "entry dialer without a pool")
+	first := entry(pool)
+	expect(first, syscall.IPPROTO_TCP, 2, "probe")
 	// The TCP-only listener made the probe fall back, also for a woken runtime.
-	for _, base := range []netproxy.Dialer{first, entry(pool)} {
-		if got := protocol(base); got != syscall.IPPROTO_TCP {
-			t.Fatalf("known fallback dialed with protocol %d", got)
-		}
-	}
+	expect(first, syscall.IPPROTO_TCP, 1, "known fallback")
+	expect(entry(pool), syscall.IPPROTO_TCP, 1, "known fallback in a woken runtime")
 	// A rebuilt configuration, as for a resource refresh, keeps it.
 	set, err := NewDialerSet(nil)
 	if err != nil {
@@ -64,18 +102,7 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 		t.Fatal(err)
 	}
 	NewGroupMaterializer(compiler, resources, global)
-	if got := protocol(first); got != syscall.IPPROTO_TCP {
-		t.Fatalf("rebuilt configuration forgot the fallback; protocol %d", got)
-	}
+	expect(first, syscall.IPPROTO_TCP, 1, "rebuilt configuration")
 	pool.Relearn()
-	if got := protocol(first); got != 262 {
-		t.Fatalf("Relearn kept the fallback; protocol %d", got)
-	}
-	// Node validation has no pool and keeps MPTCP for every dial.
-	unpooled := entry(nil)
-	for range 2 {
-		if got := protocol(unpooled); got != 262 {
-			t.Fatalf("entry dialer without a pool used protocol %d", got)
-		}
-	}
+	expect(first, syscall.IPPROTO_TCP, 2, "probe after Relearn")
 }

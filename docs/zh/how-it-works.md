@@ -39,7 +39,7 @@ Runtime 共用一个监控器，利用 `TCP_INFO.bytes_acked` 和 `SIOCOUTQ` 统
 
 对端不可达由两侧 socket 的 TCP keepalive 和重传超时发现。对端仍可达但连接不再结束时（例如远端静默的代理流，或半关闭后对端不再关闭），普通与原生 TCP 转发共用双向有效载荷空闲回收，超时沿用启动网络命名空间的 conntrack 策略：双向打开时使用 `net.netfilter.nf_conntrack_tcp_timeout_established`，任一方向半关闭后使用 `net.netfilter.nf_conntrack_tcp_timeout_close_wait`；缺失、非法或溢出时分别使用 7440 秒和 60 秒。启动和成功 reload 时重新读取，并同时作用于存量连接。监控器每五秒检查一次，关闭前再次确认。有效载荷和半关闭续期，纯 ACK、keepalive 和重传不续期。DNS、MITM 保留各自的协议生命周期。
 
-`mptcp: true` 时，连接节点只对协商成功过 MPTCP 的地址使用 MPTCP。Linux 不记录哪些目的地支持 MPTCP，对端以普通 TCP 应答的连接终身保留 MPTCP socket。因此 dae 按 mark 和 interface 分别对每个节点地址用 MPTCP 拨号，直到有一次这样的连接完成：协商成功的地址继续使用 MPTCP，其余地址改用普通 TCP。探测进行期间发起的连接使用普通 TCP，失败或被取消的探测不记录结果。每次 `dae reload` 都会清空记录，配置未变时也是如此；资源刷新保留记录。直连始终尝试 MPTCP。
+`mptcp: true` 时，连接节点只对协商成功过 MPTCP 的地址使用 MPTCP。Linux 不记录哪些目的地支持 MPTCP，对端以普通 TCP 应答的连接终身保留 MPTCP socket。因此 dae 按 mark 和 interface 分别对每个节点地址用 MPTCP 拨号，直到有一次这样的连接完成：协商成功的地址继续使用 MPTCP，其余地址改用普通 TCP。回落的探测连接在同一地址的普通 TCP 连接建立后关闭，代价是每次 reload 后每个地址多一次握手，由健康检查发起这次拨号时，测得的延迟也包含这次握手；普通 TCP 拨号失败或超过重拨预算时，保留探测连接。重拨预算为一秒加探测连接握手时间的两倍；调用方有截止时间时，还限制为其剩余时间的一半，为保留连接上的 TLS 或协议握手留出时间。探测进行期间发起的连接使用普通 TCP，失败或被取消的探测不记录结果。每次 `dae reload` 都会清空记录，配置未变时也是如此；资源刷新保留记录。直连始终尝试 MPTCP。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 

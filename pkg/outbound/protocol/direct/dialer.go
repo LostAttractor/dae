@@ -15,6 +15,10 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
+// synRetransmitTimeout is Linux's initial SYN retransmission timeout
+// (TCP_TIMEOUT_INIT); a plain TCP redial gets room for one retransmission.
+const synRetransmitTimeout = time.Second
+
 type Option struct {
 	// Resolver is supplied by the owner; nil uses net.DefaultResolver.
 	// Socket marks apply to data sockets. DNS transport policy belongs to Resolver.
@@ -92,6 +96,7 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 	if !multipath {
 		return d.dialer.DialContext(ctx, network, address)
 	}
+	start := time.Now()
 	conn, err := d.multipath.DialContext(ctx, network, address)
 	result := multipathUnknown
 	if err == nil {
@@ -101,6 +106,22 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 		}
 	}
 	d.memory.settle(table, key, result)
+	if result == multipathIncapable && mptcpSocket(conn.(*net.TCPConn)) {
+		// A fallen-back MPTCP socket stays one for life; keep it only if
+		// plain TCP cannot replace it within about the probe's handshake.
+		timeout := synRetransmitTimeout + 2*time.Since(start)
+		if deadline, ok := ctx.Deadline(); ok {
+			// Leave time for TLS or protocol handshakes on the retained probe.
+			timeout = min(timeout, time.Until(deadline)/2)
+		}
+		redial, cancel := context.WithTimeout(ctx, timeout)
+		plain, err := d.dialer.DialContext(redial, network, address)
+		cancel()
+		if err == nil {
+			_ = conn.Close()
+			return plain, nil
+		}
+	}
 	return conn, err
 }
 
