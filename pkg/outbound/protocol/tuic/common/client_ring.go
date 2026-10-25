@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
@@ -38,12 +37,14 @@ type ClientRing[C RingMember] struct {
 }
 
 type clientRingNode[C RingMember] struct {
-	cli C
-	// capability tracks only bidirectional stream credit, independently of authentication and UDP streams.
-	capability atomic.Int64
-	resource   netproxy.ResourceRef
+	cli      C
+	resource netproxy.ResourceRef
+	credit   StreamCredit
 }
 
+// NewClientRing admits a new reserving stream only while a member's
+// bidirectional credit exceeds reserved, or half of what the peer granted if
+// that is less: a peer granting no more than reserved still gets streams.
 func NewClientRing[C RingMember](newClient func(capabilityCallback func(streamType quic.StreamType, n int64)) C, reserved int64) *ClientRing[C] {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClientRing[C]{
@@ -70,7 +71,8 @@ func (r *ClientRing[C]) Allocate(ctx context.Context, reserveStreams bool, alloc
 		return netproxy.ErrNotConnected
 	}
 	return r.tryNext(func(node *clientRingNode[C]) error {
-		if capacity := node.capability.Load(); reserveStreams && capacity != -1 && capacity <= r.reserved {
+		// Credit the peer has not reported yet is left for quic-go to wait for.
+		if current, highest := node.credit.Credit(quic.StreamTypeBidi); reserveStreams && highest > 0 && current <= min(r.reserved, highest/2) {
 			return ErrHoldOn
 		}
 		return allocate(ctx, node.cli)
@@ -216,12 +218,7 @@ func (r *ClientRing[C]) Connect(ctx context.Context, dialer netproxy.Dialer, dia
 			return nil
 		}
 		node := &clientRingNode[C]{}
-		node.capability.Store(-1)
-		node.cli = r.newClient(func(streamType quic.StreamType, n int64) {
-			if streamType == quic.StreamTypeBidi {
-				node.capability.Store(n)
-			}
-		})
+		node.cli = r.newClient(node.credit.Report)
 		elem := r.insertAfterCurrent(node)
 		r.current = elem
 		r.state.BeginConnect()
