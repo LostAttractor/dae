@@ -124,6 +124,34 @@ func (c *monitoredConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func (c *monitoredConn) CloseWrite() error { return netproxy.CloseWrite(c.Conn) }
+
+// lingerCarrier half-closes the carrier of a closing session whose queued
+// frames are written, then waits until its receive loop ends on the peer's
+// EOF (done) or ctx ends. The peer has then read every frame, and closing
+// the drained carrier cannot reset it. A carrier that cannot half-close
+// returns at once, and a failed one ends the session, closing done.
+func lingerCarrier(ctx context.Context, carrier *monitoredConn, done <-chan struct{}) {
+	// CloseWrite may wait behind a blocked carrier write until the caller
+	// closes the carrier.
+	halfClosed := make(chan error, 1)
+	go func() { halfClosed <- carrier.CloseWrite() }()
+	select {
+	case err := <-halfClosed:
+		if err != nil {
+			return
+		}
+	case <-done:
+		return
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
 func (c *monitoredConn) cause() error {
 	c.failureMu.Lock()
 	defer c.failureMu.Unlock()

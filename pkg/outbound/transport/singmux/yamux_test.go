@@ -357,7 +357,8 @@ func TestYamuxSessionCloseWritesQueuedFrames(t *testing.T) {
 	}
 }
 
-// Close waits only until the carrier took the GoAway. A peer that reads the
+// Close waits until the carrier took the GoAway, then half-closes the
+// carrier; a pipe cannot, so Close returns at once. A peer that reads the
 // carrier but keeps the session after a GoAway, as hashicorp/yamux does,
 // does not hold Close: Close sees the GoAway being written.
 func TestYamuxCloseDetectsGoAway(t *testing.T) {

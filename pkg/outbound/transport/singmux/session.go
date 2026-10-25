@@ -92,19 +92,27 @@ func (w *streamWriters) list() []*yamux.Stream {
 }
 
 // goAwayWriter is the session's carrier; it reports when the GoAway is
-// written, a 12-byte frame header of version 0 and type 3.
+// written, a 12-byte frame header of version 0 and type 3, and drops every
+// later frame.
 // shortcut: relies on go-yamux writing one frame per Write;
 // TestYamuxCloseDetectsGoAway pins it, an in-tree yamux client removes it.
 type goAwayWriter struct {
 	*monitoredConn
-	once    sync.Once
 	written chan struct{}
+	// sent needs no lock: only the send loop writes.
+	sent bool
 }
 
 func (c *goAwayWriter) Write(p []byte) (int, error) {
+	// Close half-closes the carrier after the GoAway: a later ping, pong or
+	// reset would fail the carrier and end the wait for the peer's EOF.
+	if c.sent {
+		return len(p), nil
+	}
 	n, err := c.monitoredConn.Write(p)
 	if err == nil && len(p) == 12 && p[0] == 0 && p[1] == 3 {
-		c.once.Do(func() { close(c.written) })
+		c.sent = true
+		close(c.written)
 	}
 	return n, err
 }
@@ -112,14 +120,15 @@ func (c *goAwayWriter) Write(p []byte) (int, error) {
 // Close writes the frames already queued, such as the last data and FIN of
 // a stream closed just before, then closes the session: yamux queues every
 // frame in one FIFO, and its own Close drops what is still queued. The
-// GoAway queued behind them is written last, so Close waits until the
-// carrier took it, the session ends or netproxy.CloseLinger passes. A
-// stream that may still write is reset first, as smux fails its writes
-// while closing: what it queued after the GoAway would not reach the peer.
-// Streams opened later fail on their lease, invalidated before any Close.
+// GoAway queued behind them is written last; once the carrier took it, the
+// carrier is half-closed until the peer's EOF, all within
+// netproxy.CloseLinger. A stream that may still write is reset first, as
+// smux fails its writes while closing: what it queued after the GoAway
+// would not reach the peer. Streams opened later fail on their lease,
+// invalidated before any Close.
 func (s yamuxSession) Close() error {
-	timer := time.NewTimer(netproxy.CloseLinger)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), netproxy.CloseLinger)
+	defer cancel()
 	writers := s.writers.list()
 	// Resets and GoAway wait for room in the queue; the session's end
 	// releases them.
@@ -131,8 +140,9 @@ func (s yamuxSession) Close() error {
 	}()
 	select {
 	case <-s.goAway:
+		lingerCarrier(ctx, s.carrier, s.CloseChan())
 	case <-s.CloseChan():
-	case <-timer.C:
+	case <-ctx.Done():
 	}
 	return s.Session.Close()
 }

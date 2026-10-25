@@ -328,9 +328,10 @@ type leasedConn struct {
 
 func (c leasedConn) DependencyLease() *netproxy.Lease { return c.lease }
 
-// Replacing a session whose peer stopped reading takes no time, whether it
-// was aborted, and closes at once, or its carrier's lease ended without an
-// abort (as an h2 GOAWAY ends it), and it closes in the background.
+// Replacing a session whose peer stopped reading and never answers a
+// half-close takes no time, whether it was aborted, and closes at once, or
+// its carrier's lease ended without an abort (as an h2 GOAWAY ends it), and
+// it closes in the background.
 func TestLostSessionReplacedAtOnce(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
 		for _, loss := range []string{"abort", "parent"} {
@@ -340,9 +341,9 @@ func TestLostSessionReplacedAtOnce(t *testing.T) {
 					stop := make(chan struct{})
 					parent := &pipeDialer{server: make(chan net.Conn), wrapClient: func(i int, conn net.Conn) net.Conn {
 						if i == 0 {
-							return leasedConn{conn, parentLease}
+							return silentPeerConn{leasedConn{conn, parentLease}}
 						}
-						return conn
+						return silentPeerConn{conn}
 					}}
 					go func() {
 						for conn := range parent.server {
