@@ -14,11 +14,13 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/internal/testutil"
 	"github.com/daeuniverse/dae/pkg/dnscache"
 	dns "github.com/miekg/dns"
 )
 
 func TestMain(m *testing.M) {
+	testutil.InstallOfflineResolver()
 	// net initializes its resolver configuration on the first lookup. Inside a
 	// synctest bubble that would bind it to the bubble for the whole process.
 	_, _ = (&net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {

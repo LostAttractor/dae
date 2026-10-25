@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"testing"
+
+	"github.com/daeuniverse/dae/internal/testutil"
 )
 
 func init() {
@@ -19,6 +21,7 @@ func init() {
 }
 
 func TestMain(m *testing.M) {
+	testutil.InstallOfflineResolver()
 	if os.Getenv("DAE_QEMU_TEST_WORKER") != "1" {
 		os.Exit(m.Run())
 	}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package testutil contains shared contract checks for host and plugin APIs.
+// Package testutil contains shared test helpers and contract checks for host
+// and plugin APIs.
 package testutil
 
 import (
