@@ -79,8 +79,9 @@ func (p *HttpProxy) connectHTTP2(ctx context.Context, raw net.Conn, client *http
 	lifetime, cancel := context.WithCancel(context.Background())
 	stop := context.AfterFunc(ctx, cancel)
 	requestBody, in := net.Pipe()
+	body := &requestBodyConn{Conn: requestBody, done: make(chan struct{})}
 	request := p.request(lifetime, target)
-	request.Body = requestBody
+	request.Body = body
 	response, err := client.RoundTrip(request)
 	stop()
 	if cause := ctx.Err(); cause != nil {
@@ -104,20 +105,46 @@ func (p *HttpProxy) connectHTTP2(ctx context.Context, raw net.Conn, client *http
 		return nil, err
 	}
 	read, receive := net.Pipe()
-	tunnel := &http2Conn{Conn: raw, in: in, read: read, receive: receive, out: response.Body, cancel: cancel, slot: slot, lease: lease}
+	tunnel := &http2Conn{Conn: raw, in: in, read: read, receive: receive, out: response.Body, body: body, cancel: cancel, slot: slot, lease: lease}
 	go tunnel.receiveLoop()
 	return tunnel, nil
+}
+
+// requestBodyConn reports when x/net is done with the request body: it
+// closes the body once it has written END_STREAM and the peer ended its
+// side, or once the stream is aborted. Once reset, the end of the body reads
+// as an error, so that x/net resets the stream instead of ending it.
+type requestBodyConn struct {
+	net.Conn
+	done      chan struct{}
+	closeOnce sync.Once
+	reset     atomic.Bool
+}
+
+func (b *requestBodyConn) Read(p []byte) (int, error) {
+	n, err := b.Conn.Read(p)
+	if err == io.EOF && b.reset.Load() {
+		err = net.ErrClosed
+	}
+	return n, err
+}
+
+func (b *requestBodyConn) Close() error {
+	defer b.closeOnce.Do(func() { close(b.done) })
+	return b.Conn.Close()
 }
 
 type http2Conn struct {
 	net.Conn          // addresses only; deadlines and closure belong to this stream
 	in, read, receive net.Conn
 	out               io.ReadCloser
+	body              *requestBodyConn
 	cancel            context.CancelFunc
 	slot              *h2Conn
 	lease             *netproxy.Lease
 	readMu            sync.Mutex
 	readErr           error
+	wroteFIN          atomic.Bool
 	closeOnce         sync.Once
 	closed            atomic.Bool
 	closeErr          error
@@ -148,15 +175,40 @@ func (h *http2Conn) Write(p []byte) (n int, err error) {
 	return n, wrapH2StreamError(err, h.slot, h.lease, netproxy.OpWrite, h.closed.Load())
 }
 func (h *http2Conn) CloseWrite() error {
-	return wrapH2StreamError(h.in.Close(), h.slot, h.lease, netproxy.OpCloseWrite, h.closed.Load())
+	err := h.in.Close()
+	if err == nil {
+		h.wroteFIN.Store(true)
+	}
+	return wrapH2StreamError(err, h.slot, h.lease, netproxy.OpCloseWrite, h.closed.Load())
 }
 func (h *http2Conn) SetDeadline(t time.Time) error {
 	return errors.Join(h.SetReadDeadline(t), h.SetWriteDeadline(t))
 }
 func (h *http2Conn) SetReadDeadline(t time.Time) error  { return h.read.SetReadDeadline(t) }
 func (h *http2Conn) SetWriteDeadline(t time.Time) error { return h.in.SetWriteDeadline(t) }
+
+// Close cancels the stream, which resets it unless both sides have ended.
+// Once both have, it first waits, up to netproxy.CloseLinger, until x/net
+// is done with the request body: the data written before CloseWrite and
+// END_STREAM are out. x/net closes the body right after writing them when
+// the response has ended, and not before it otherwise, so an exchange torn
+// down earlier, or without CloseWrite, is reset at once: its upload is cut,
+// even if x/net reads the body's end first.
 func (h *http2Conn) Close() error {
 	h.closeOnce.Do(func() {
+		h.readMu.Lock()
+		responseEnded := h.readErr == io.EOF
+		h.readMu.Unlock()
+		if h.wroteFIN.Load() && responseEnded {
+			timer := time.NewTimer(netproxy.CloseLinger)
+			select {
+			case <-h.body.done:
+			case <-timer.C:
+			}
+			timer.Stop()
+		} else {
+			h.body.reset.Store(true)
+		}
 		h.closed.Store(true)
 		h.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: h.lease.Resource(), Stream: h.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerH2, Origin: netproxy.OriginLocalCleanup, Reason: netproxy.ReasonClosed}))
 		h.cancel()
