@@ -29,6 +29,8 @@ var ErrCheckSuperseded = errors.New("connectivity check superseded")
 
 var errSharedCheckTimeout = errors.New("shared connectivity check exhausted another caller's budget")
 
+var errPathProven = errors.New("path proven before discovery")
+
 // A pinned check resolver with no address for this family cannot check the
 // path. Do not wake proxy sessions just to rediscover this local fact.
 func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
@@ -58,7 +60,8 @@ func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
 
 // Check makes the path alive for the network, probing only if it is not
 // already: an alive path is its own proof. Known capabilities share the
-// representative probe; unknown capabilities require discovery first.
+// representative probe; unknown capabilities require discovery, after the
+// representative probe proves a path that is not alive.
 // Queueing, connection establishment and verification share the same deadline.
 // A caller can stop waiting without canceling checks needed by other groups.
 // On success, release keeps the transport awake until the caller has acted
@@ -83,7 +86,7 @@ func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout
 		err = d.checkOnce(ctx, network)
 		// A shared operation may have been created by a shorter-budget caller.
 		// Retry within this caller's original deadline, never restarting its budget.
-		if !errors.Is(err, errSharedCheckTimeout) {
+		if !errors.Is(err, errSharedCheckTimeout) && !errors.Is(err, errPathProven) {
 			break
 		}
 	}
@@ -120,7 +123,14 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) err
 		d.mu.Unlock()
 		return nil
 	}
-	flight := d.queueSelectionCheckLocked(network, deadline)
+	probe := d.selectionProbeNetworkLocked(network)
+	// Connecting and the representative probe belong to the path: a discovery
+	// must not delay, or be blamed for, proving a path that is not alive.
+	proving := false
+	if canonical := firstSupportedNetwork(d.health.networks); canonical.Valid() && probe != canonical && !d.aliveLocked(canonical) {
+		probe, proving = canonical, true
+	}
+	flight := d.queueSelectionCheckLocked(probe, deadline)
 	flight.waiters++
 	d.updateTransportDemandLocked()
 	d.mu.Unlock()
@@ -159,7 +169,17 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) err
 		}
 	case <-flight.done:
 	}
-	return checkError(flight.err)
+	if err := checkError(flight.err); err != nil || !proving {
+		return err
+	}
+	// Discover only on the path the proof left alive, so retries stay bounded.
+	d.mu.RLock()
+	alive := d.aliveLocked(probe)
+	d.mu.RUnlock()
+	if !alive {
+		return ErrCheckSuperseded
+	}
+	return errPathProven
 }
 
 func (d *pathRuntime) selectionProbeNetworkLocked(network common.NetworkIndex) common.NetworkIndex {
