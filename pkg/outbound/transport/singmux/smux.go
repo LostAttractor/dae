@@ -148,6 +148,7 @@ type smuxSession struct {
 	writing   bool          // sendLoop is busy; enqueuers wake it otherwise
 	closing   bool          // Close is writing the queue; only FIN may join
 	flushed   chan struct{} // closed once sendLoop idles while closing
+	sealed    bool          // flushed while closing; not even a FIN joins
 	dead      bool
 	err       error // why the session died; set before die closes
 	wake      chan struct{}
@@ -227,28 +228,32 @@ func (s *smuxSession) CloseChan() <-chan struct{} { return s.die }
 
 // Close ends the session; its streams fail with io.ErrClosedPipe. Frames
 // already queued, such as the last data and FIN of a stream closed just
-// before, are written first, for up to netproxy.CloseLinger: Write and Close
-// return once queued, and the peer would otherwise see a clean but cut
-// stream. Meanwhile streams accept no data and no stream opens.
+// before, are written first: Write and Close return once queued, and the
+// peer would otherwise see a clean but cut stream. Meanwhile streams accept
+// no data and no stream opens. The carrier is then half-closed until the
+// peer's EOF, all within netproxy.CloseLinger.
 func (s *smuxSession) Close() error {
 	s.mu.Lock()
 	if !s.dead && !s.closing {
 		s.closing = true
 		if s.writing {
 			s.flushed = make(chan struct{})
+		} else {
+			s.sealed = true
 		}
 	}
 	flushed := s.flushed
 	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), netproxy.CloseLinger)
+	defer cancel()
 	if flushed != nil {
-		timer := time.NewTimer(netproxy.CloseLinger)
 		select {
 		case <-flushed:
 		case <-s.die:
-		case <-timer.C:
+		case <-ctx.Done():
 		}
-		timer.Stop()
 	}
+	lingerCarrier(ctx, s.conn, s.die)
 	return s.abort()
 }
 
@@ -381,6 +386,7 @@ func (s *smuxSession) sendLoop() {
 			batch = s.takeLocked(batch[:0])
 			if len(batch) == 0 {
 				s.writing = false
+				s.sealed = s.closing
 				if s.flushed != nil {
 					close(s.flushed)
 					s.flushed = nil
@@ -820,7 +826,10 @@ func (st *smuxStream) Close() error {
 	}
 	st.closed = true
 	delete(s.streams, st.id)
-	if !s.dead {
+	// After a closing session's flush the carrier is half-closed: a FIN
+	// would fail it and end the wait for the peer's EOF. The stream then
+	// ends with the session.
+	if !s.dead && !s.sealed {
 		st.enqueueLocked(smuxControl(smuxCmdFIN, st.id))
 	}
 	s.mu.Unlock()

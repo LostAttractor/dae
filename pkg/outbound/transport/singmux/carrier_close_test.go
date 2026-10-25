@@ -114,7 +114,7 @@ func serveGun(t *testing.T, protocol Protocol, handle func(muxRequest, net.Conn)
 // session after its carrier is half-closed is local cleanup, not a failure.
 func TestSessionCloseDeliversLastUpload(t *testing.T) {
 	const size = 256 << 10
-	for _, protocol := range []Protocol{ProtocolYAMux} {
+	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
 		for _, carrier := range []string{"pipe", "grpc"} {
 			t.Run(protocol.String()+"/"+carrier, func(t *testing.T) {
 				results := make(chan error, 1)
@@ -193,7 +193,7 @@ func (c silentPeerConn) DependencyLease() *netproxy.Lease { return netproxy.Depe
 // A session whose peer reads but never answers closes after
 // netproxy.CloseLinger.
 func TestSessionCloseWaitIsBounded(t *testing.T) {
-	for _, protocol := range []Protocol{ProtocolYAMux} {
+	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
 		synctest.Test(t, func(t *testing.T) {
 			parent := &pipeDialer{server: make(chan net.Conn), wrapClient: func(_ int, conn net.Conn) net.Conn { return silentPeerConn{conn} }}
 			go func() {
@@ -281,4 +281,49 @@ func TestYamuxCloseIgnoresPingAfterHalfClose(t *testing.T) {
 		leave()
 		<-closed
 	})
+}
+
+// A stream closed after a closing session half-closed its carrier, as a
+// relay does once its writes fail on the closing session, does not end the
+// wait for the peer's EOF: its FIN would fail the carrier, and closing a
+// gRPC carrier then cancels what it still queues.
+func TestSessionCloseIgnoresStreamCloseAfterHalfClose(t *testing.T) {
+	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
+		synctest.Test(t, func(t *testing.T) {
+			halfClosed, peerDone := make(chan struct{}), make(chan struct{})
+			parent := &pipeDialer{server: make(chan net.Conn), wrapClient: func(_ int, conn net.Conn) net.Conn { return halfClosingConn{conn, halfClosed} }}
+			go func() {
+				conn := <-parent.server
+				defer conn.Close()
+				go func() { _, _ = io.Copy(io.Discard, conn) }()
+				<-peerDone
+			}()
+			mux := &Mux{Dialer: parent, Protocol: protocol, MaxConnections: 1}
+			if err := mux.Connect(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			open, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := open.Write([]byte{0}); err != nil {
+				t.Fatal(err)
+			}
+			closed := make(chan struct{})
+			go func() { defer close(closed); _ = mux.Close() }()
+			// The peer leaves on failure too, so that the bubble can end.
+			leave := sync.OnceFunc(func() { close(peerDone) })
+			defer leave()
+			<-halfClosed
+			_ = open.Close()
+			synctest.Wait()
+			select {
+			case <-closed:
+				t.Fatalf("%s: a stream closed after the half-close ended the wait for the peer's EOF", protocol)
+			default:
+			}
+			leave()
+			<-closed
+		})
+	}
 }

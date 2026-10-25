@@ -30,7 +30,9 @@ type Layer struct {
 	// carrier has already failed or its owner aborted it. Closing the carrier
 	// right after can still drop frames the peer has not read where the
 	// carrier resets on Close, such as a stream of an earlier hop or a TCP
-	// connection with unread data.
+	// connection with unread data. sing-mux sessions therefore half-close
+	// the carrier and wait for the peer's EOF within the same CloseLinger;
+	// anytls sessions and HTTP/2 CONNECT pools still close it at once.
 	Resources []io.Closer
 }
 
