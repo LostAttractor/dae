@@ -3,6 +3,7 @@ package common
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
@@ -15,9 +16,21 @@ type safeStreamConn struct {
 	rAddr net.Addr
 
 	closeOnce sync.Once
-	closeErr  error
+	wroteFIN  atomic.Bool
 	lease     *netproxy.Lease
 	fail      func(error)
+}
+
+// CloseStream ends both directions of a stream that is no longer used. It
+// resets the send side only if CloseWrite never sent the FIN: that wakes a
+// Write blocked on flow control, and the upload is incomplete anyway. After
+// the FIN, quic-go keeps retransmitting the data before it while the
+// connection lives, so the peer still reads all of it.
+func CloseStream(stream *quic.Stream, wroteFIN bool) {
+	stream.CancelRead(0)
+	if !wroteFIN {
+		stream.CancelWrite(0)
+	}
 }
 
 func (q *safeStreamConn) BindRecovery(lease *netproxy.Lease, fail func(error)) {
@@ -47,9 +60,9 @@ func (q *safeStreamConn) Close() error {
 		if q.lease != nil {
 			q.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: q.lease.Resource(), Stream: q.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerQUIC, Phase: netproxy.OpClose, Origin: netproxy.OriginLocalCleanup, Reason: netproxy.ReasonClosed}))
 		}
-		q.closeErr = q.close()
+		CloseStream(q.Stream, q.wroteFIN.Load())
 	})
-	return q.closeErr
+	return nil
 }
 
 func (s *safeStreamConn) CloseWrite() error {
@@ -60,13 +73,11 @@ func (s *safeStreamConn) CloseWrite() error {
 	// It prevents further writes, which in turn will result in an EOF signal being sent the other side of stream when
 	// reading.
 	// We can still read from this stream.
-	return s.wrap(s.Stream.Close(), netproxy.OpCloseWrite)
-}
-
-func (q *safeStreamConn) close() error {
-	q.Stream.CancelRead(0)
-	q.Stream.CancelWrite(0)
-	return nil
+	err := s.Stream.Close()
+	if err == nil {
+		s.wroteFIN.Store(true)
+	}
+	return s.wrap(err, netproxy.OpCloseWrite)
 }
 
 func (q *safeStreamConn) LocalAddr() net.Addr {

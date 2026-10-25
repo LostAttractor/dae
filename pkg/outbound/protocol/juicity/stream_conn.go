@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -20,7 +21,7 @@ type Conn struct {
 	onceWrite  bool
 
 	closeOnce sync.Once
-	closeErr  error
+	wroteFIN  atomic.Bool
 	lease     *netproxy.Lease
 	fail      func(error)
 }
@@ -74,9 +75,9 @@ func (c *Conn) Close() error {
 		if c.lease != nil {
 			c.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: c.lease.Resource(), Stream: c.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerQUIC, Phase: netproxy.OpClose, Origin: netproxy.OriginLocalCleanup, Reason: netproxy.ReasonClosed}))
 		}
-		c.closeErr = c.close()
+		common.CloseStream(c.Stream, c.wroteFIN.Load())
 	})
-	return c.closeErr
+	return nil
 }
 
 func (c *Conn) CloseWrite() error {
@@ -87,13 +88,11 @@ func (c *Conn) CloseWrite() error {
 	// It prevents further writes, which in turn will result in an EOF signal being sent the other side of stream when
 	// reading.
 	// We can still read from this stream.
-	return c.wrap(c.Stream.Close(), netproxy.OpCloseWrite)
-}
-
-func (c *Conn) close() error {
-	c.Stream.CancelRead(0)
-	c.Stream.CancelWrite(0)
-	return nil
+	err := c.Stream.Close()
+	if err == nil {
+		c.wroteFIN.Store(true)
+	}
+	return c.wrap(err, netproxy.OpCloseWrite)
 }
 
 var _ net.Conn = &Conn{}

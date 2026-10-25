@@ -2,6 +2,7 @@ package utils
 
 import (
 	"net"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
@@ -23,6 +24,8 @@ type QStream struct {
 	RAddr net.Addr
 	Lease *netproxy.Lease
 	Fail  func(error)
+
+	wroteFIN atomic.Bool
 }
 
 func (s *QStream) DependencyLease() *netproxy.Lease { return s.Lease }
@@ -59,7 +62,11 @@ func (s *QStream) CloseWrite() error {
 	if cause := s.Lease.AbortCause(); cause != nil {
 		return cause
 	}
-	return s.WrapError(s.Stream.Close(), netproxy.OpCloseWrite)
+	err := s.Stream.Close()
+	if err == nil {
+		s.wroteFIN.Store(true)
+	}
+	return s.WrapError(err, netproxy.OpCloseWrite)
 }
 
 func (s *QStream) Abort(cause error) {
@@ -72,8 +79,7 @@ func (s *QStream) Close() error {
 	if s.Lease != nil {
 		s.Lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: s.Lease.Resource(), Stream: s.Lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerQUIC, Phase: netproxy.OpClose, Origin: netproxy.OriginLocalCleanup, Reason: netproxy.ReasonClosed}))
 	}
-	s.Stream.CancelRead(0) // Close read
-	s.Stream.CancelWrite(0)
+	common.CloseStream(s.Stream, s.wroteFIN.Load())
 	return nil
 }
 
