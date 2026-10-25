@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -22,9 +23,15 @@ type session struct {
 	conn       net.Conn
 	writeGate  chan struct{}
 	pendingFIN chan uint32
+	// finsWritten is closed once flushFIN reached the marker Close queues
+	// behind the FINs of streams closed before it.
+	finsWritten chan struct{}
 
 	streams    map[uint32]*stream
 	streamLock sync.RWMutex
+	// draining holds locally closed streams whose writer has yet to queue
+	// their FIN; guarded by streamLock.
+	draining map[*stream]struct{}
 
 	padding      *atomic.Pointer[paddingFactory]
 	sendPadding  bool
@@ -41,8 +48,9 @@ type session struct {
 func newSession(conn net.Conn, onIdle func(*session), dependency *netproxy.Lease) *session {
 	s := &session{
 		lease: netproxy.NewLease(netproxy.NewResourceRef(), dependency),
-		conn:  conn, writeGate: make(chan struct{}, 1), pendingFIN: make(chan uint32, 256),
+		conn:  conn, writeGate: make(chan struct{}, 1), pendingFIN: make(chan uint32, 256), finsWritten: make(chan struct{}),
 		streams:     map[uint32]*stream{},
+		draining:    map[*stream]struct{}{},
 		onIdle:      onIdle,
 		sendPadding: true,
 	}
@@ -176,9 +184,15 @@ func protocolError(detail string) error {
 	return netproxy.WrapFailure(errors.New(detail), netproxy.Failure{Layer: netproxy.LayerAnyTLS, Scope: netproxy.ScopeSharedResource, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonProtocol})
 }
 
+// Close ends the session. A local Close, not one after a failure, first
+// writes the FINs of streams closed before it, for up to netproxy.CloseLinger:
+// the peer would otherwise see those streams end only with the session.
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
+		if s.lease.Valid() {
+			s.writeFINs()
+		}
 		if s.lease != nil {
 			cause := s.failure(net.ErrClosed, netproxy.OpClose)
 			if netproxy.ClassifyFailure(cause).Scope != netproxy.ScopeSharedResource {
@@ -332,10 +346,46 @@ func (s *session) failure(err error, phase netproxy.Operation) error {
 	return netproxy.WrapFailure(err, fact)
 }
 
+// writeFINs waits until the writers of locally closed streams have queued
+// their FINs, then queues a marker (stream 0) behind them and waits until
+// flushFIN reaches it, all within netproxy.CloseLinger.
+func (s *session) writeFINs() {
+	timer := time.NewTimer(netproxy.CloseLinger)
+	defer timer.Stop()
+	s.streamLock.RLock()
+	writers := make([]<-chan struct{}, 0, len(s.draining))
+	for stream := range s.draining {
+		writers = append(writers, stream.writeDone)
+	}
+	s.streamLock.RUnlock()
+	for _, done := range writers {
+		select {
+		case <-done:
+		case <-s.lease.Done():
+			return
+		case <-timer.C:
+			return
+		}
+	}
+	select {
+	case s.pendingFIN <- 0:
+	case <-s.lease.Done():
+		return
+	case <-timer.C:
+		return
+	}
+	select {
+	case <-s.finsWritten:
+	case <-s.lease.Done():
+	case <-timer.C:
+	}
+}
+
 // A single bounded control queue prevents closed streams from leaving one
-// goroutine each waiting behind a blocked shared write.
+// goroutine each waiting behind a blocked shared write. A closing session
+// still queues FINs until Close invalidates its lease.
 func (s *session) scheduleFIN(id uint32) {
-	if s.closed.Load() || !s.lease.Valid() {
+	if !s.lease.Valid() {
 		return
 	}
 	select {
@@ -354,6 +404,10 @@ func (s *session) flushFIN() {
 		case <-s.lease.Done():
 			return
 		case id := <-s.pendingFIN:
+			if id == 0 { // Close's marker: the FINs queued before it are written
+				close(s.finsWritten)
+				return
+			}
 			if _, err := s.writeFrame(cmdFIN, id, nil, s.lease.Done(), nil); err != nil {
 				return
 			}

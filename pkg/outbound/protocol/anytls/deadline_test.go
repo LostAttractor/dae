@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -75,142 +76,151 @@ func (c *blockedOwnedWriteConn) Close() error {
 }
 
 func TestStreamWriteDeadlineBoundsPendingWorkAndOwnsBuffer(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
-	s := newSession(carrier, nil, nil)
-	s.sendPadding = false
-	c := newStream(s, 1)
-	s.streams[1] = c
-	defer s.Close()
-	payload := []byte("hello")
-	_ = c.SetWriteDeadline(time.Now().Add(30 * time.Millisecond))
-	result := make(chan error, 1)
-	go func() { _, err := c.Write(payload); result <- err }()
-	<-carrier.entered
-	if err := <-result; !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("write deadline=%v", err)
-	}
-	copy(payload, []byte("XXXXX"))
-	for range 3 {
-		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-		if _, err := c.Write([]byte("queued")); !errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("queued deadline=%v", err)
+	// A local Close waits CloseLinger for FINs the blocked carrier cannot take.
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer server.Close()
+		carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
+		s := newSession(carrier, nil, nil)
+		s.sendPadding = false
+		c := newStream(s, 1)
+		s.streams[1] = c
+		defer s.Close()
+		payload := []byte("hello")
+		_ = c.SetWriteDeadline(time.Now().Add(30 * time.Millisecond))
+		result := make(chan error, 1)
+		go func() { _, err := c.Write(payload); result <- err }()
+		<-carrier.entered
+		if err := <-result; !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("write deadline=%v", err)
 		}
-	}
-	if carrier.writes.Load() != 1 {
-		t.Fatalf("timed-out writes created %d pending carrier writes", carrier.writes.Load())
-	}
-	closed := make(chan error, 1)
-	go func() { closed <- c.Close() }()
-	select {
-	case <-closed:
-	case <-time.After(time.Second):
-		t.Fatal("stream Close waited for shared write")
-	}
-	if carrier.writeDeadlines.Load() != 0 {
-		t.Fatal("stream write deadline modified carrier")
-	}
-	_ = s.Close()
-	select {
-	case actual := <-carrier.captured:
-		if !bytes.Equal(actual[len(actual)-5:], []byte("hello")) {
-			t.Fatalf("caller buffer reused during pending write: %q", actual)
+		copy(payload, []byte("XXXXX"))
+		for range 3 {
+			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+			if _, err := c.Write([]byte("queued")); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("queued deadline=%v", err)
+			}
 		}
-	case <-time.After(time.Second):
-		t.Fatal("pending write did not finish after carrier close")
-	}
-	select {
-	case <-c.writeDone:
-	case <-time.After(time.Second):
-		t.Fatal("stream writer leaked after carrier close")
-	}
+		if carrier.writes.Load() != 1 {
+			t.Fatalf("timed-out writes created %d pending carrier writes", carrier.writes.Load())
+		}
+		closed := make(chan error, 1)
+		go func() { closed <- c.Close() }()
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatal("stream Close waited for shared write")
+		}
+		if carrier.writeDeadlines.Load() != 0 {
+			t.Fatal("stream write deadline modified carrier")
+		}
+		_ = s.Close()
+		select {
+		case actual := <-carrier.captured:
+			if !bytes.Equal(actual[len(actual)-5:], []byte("hello")) {
+				t.Fatalf("caller buffer reused during pending write: %q", actual)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("pending write did not finish after carrier close")
+		}
+		select {
+		case <-c.writeDone:
+		case <-time.After(time.Second):
+			t.Fatal("stream writer leaked after carrier close")
+		}
+	})
 }
 
 func TestClosedStreamsDoNotAccumulateWorkersBehindCarrierWrite(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
-	s := newSession(carrier, nil, nil)
-	s.sendPadding = false
-	defer s.Close()
-	first := newStream(s, 1)
-	s.streams[1] = first
-	_ = first.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-	if _, err := first.Write([]byte("held")); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("initial deadline=%v", err)
-	}
-	_ = first.Close()
-	for id := uint32(2); id < 32; id++ {
-		stream := newStream(s, id)
-		s.streamLock.Lock()
-		s.streams[id] = stream
-		s.streamLock.Unlock()
-		_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Millisecond))
-		if _, err := stream.Write([]byte("queued")); !errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("stream %d deadline=%v", id, err)
+	// A local Close waits CloseLinger for FINs the blocked carrier cannot take.
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer server.Close()
+		carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
+		s := newSession(carrier, nil, nil)
+		s.sendPadding = false
+		defer s.Close()
+		first := newStream(s, 1)
+		s.streams[1] = first
+		_ = first.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+		if _, err := first.Write([]byte("held")); !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("initial deadline=%v", err)
 		}
-		_ = stream.Close()
+		_ = first.Close()
+		for id := uint32(2); id < 32; id++ {
+			stream := newStream(s, id)
+			s.streamLock.Lock()
+			s.streams[id] = stream
+			s.streamLock.Unlock()
+			_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Millisecond))
+			if _, err := stream.Write([]byte("queued")); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("stream %d deadline=%v", id, err)
+			}
+			_ = stream.Close()
+			select {
+			case <-stream.writeDone:
+			case <-time.After(time.Second):
+				t.Fatalf("closed stream %d retained its blocked writer", id)
+			}
+		}
+		if carrier.writes.Load() != 1 {
+			t.Fatalf("carrier writers=%d", carrier.writes.Load())
+		}
+		if !s.lease.Valid() {
+			t.Fatal("ordinary operation deadlines killed carrier")
+		}
+		_ = s.Close()
 		select {
-		case <-stream.writeDone:
+		case <-first.writeDone:
 		case <-time.After(time.Second):
-			t.Fatalf("closed stream %d retained its blocked writer", id)
+			t.Fatal("active carrier writer survived carrier Close")
 		}
-	}
-	if carrier.writes.Load() != 1 {
-		t.Fatalf("carrier writers=%d", carrier.writes.Load())
-	}
-	if !s.lease.Valid() {
-		t.Fatal("ordinary operation deadlines killed carrier")
-	}
-	_ = s.Close()
-	select {
-	case <-first.writeDone:
-	case <-time.After(time.Second):
-		t.Fatal("active carrier writer survived carrier Close")
-	}
+	})
 }
 
 func TestCanceledOpenStreamsLeaveNoWorkBehindSharedWriter(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
-	s := newSession(carrier, nil, nil)
-	s.sendPadding = false
-	defer s.Close()
-	first := newStream(s, 1)
-	s.streams[1] = first
-	_ = first.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-	if _, err := first.Write([]byte("held")); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatal(err)
-	}
-	_ = first.Close()
-	for range 30 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
-		done := make(chan error, 1)
-		go func() { _, err := s.newStreamContext(ctx, "target.example:443"); done <- err }()
-		select {
-		case err := <-done:
-			if err == nil {
-				t.Fatal("canceled open succeeded")
+	// A local Close waits CloseLinger for FINs the blocked carrier cannot take.
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer server.Close()
+		carrier := &blockedOwnedWriteConn{deadlineSpyConn: &deadlineSpyConn{Conn: client}, entered: make(chan struct{}), release: make(chan struct{}), captured: make(chan []byte, 8)}
+		s := newSession(carrier, nil, nil)
+		s.sendPadding = false
+		defer s.Close()
+		first := newStream(s, 1)
+		s.streams[1] = first
+		_ = first.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+		if _, err := first.Write([]byte("held")); !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatal(err)
+		}
+		_ = first.Close()
+		for range 30 {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			done := make(chan error, 1)
+			go func() { _, err := s.newStreamContext(ctx, "target.example:443"); done <- err }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("canceled open succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled open remained behind shared writer")
 			}
-		case <-time.After(time.Second):
-			t.Fatal("canceled open remained behind shared writer")
+			cancel()
+			s.streamLock.RLock()
+			count := len(s.streams)
+			s.streamLock.RUnlock()
+			if count != 0 {
+				t.Fatalf("canceled open retained %d streams", count)
+			}
 		}
-		cancel()
-		s.streamLock.RLock()
-		count := len(s.streams)
-		s.streamLock.RUnlock()
-		if count != 0 {
-			t.Fatalf("canceled open retained %d streams", count)
+		if carrier.writes.Load() != 1 {
+			t.Fatalf("carrier writers=%d", carrier.writes.Load())
 		}
-	}
-	if carrier.writes.Load() != 1 {
-		t.Fatalf("carrier writers=%d", carrier.writes.Load())
-	}
-	if !s.lease.Valid() {
-		t.Fatal("open cancellation killed shared carrier")
-	}
+		if !s.lease.Valid() {
+			t.Fatal("open cancellation killed shared carrier")
+		}
+	})
 }
 
 type capturedFrameConn struct {

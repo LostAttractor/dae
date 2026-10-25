@@ -15,6 +15,8 @@ import (
 
 func TestSlowReaderDoesNotBlockSibling(t *testing.T) {
 	carrier, peer := net.Pipe()
+	// The peer reads, so closing the session can write the closed stream's FIN.
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 	s := newSession(carrier, nil, nil)
 	a, b := newStream(s, 1), newStream(s, 2)
 	s.streams[1], s.streams[2] = a, b
@@ -87,6 +89,8 @@ func TestListenPacketSharesLifetimeAcrossDestinations(t *testing.T) {
 func TestReceiveOverflowClosesOnlyStalledStream(t *testing.T) {
 	carrier, peer := net.Pipe()
 	defer peer.Close()
+	// The peer reads, so closing the session can write the stalled stream's FIN.
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 	s := newSession(carrier, nil, nil)
 	defer s.Close()
 	a, b := newStream(s, 1), newStream(s, 2)

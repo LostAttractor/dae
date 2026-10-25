@@ -74,11 +74,15 @@ func (c *stream) Write(b []byte) (n int, err error) {
 // One worker per stream owns all writes, including FIN. A timed-out caller
 // never starts a second blocked writer or retains ownership of its input bytes.
 func (c *stream) writeLoop() {
-	defer close(c.writeDone)
 	finish := func() {
-		if c.sendFIN.Load() && !c.session.closed.Load() && c.session.lease.Valid() {
+		if c.sendFIN.Load() && c.session.lease.Valid() {
 			c.session.scheduleFIN(c.id)
 		}
+		// Under the lock Close checks writeDone with.
+		c.session.streamLock.Lock()
+		delete(c.session.draining, c)
+		close(c.writeDone)
+		c.session.streamLock.Unlock()
 	}
 	for {
 		if c.closed.Load() {
@@ -194,6 +198,14 @@ func (c *stream) Close() error {
 	c.localClosed.Store(true)
 	c.stopReads(net.ErrClosed, true)
 	c.sendFIN.Store(true)
+	// Until its writer queues the FIN, a closing session waits for it.
+	c.session.streamLock.Lock()
+	select {
+	case <-c.writeDone:
+	default:
+		c.session.draining[c] = struct{}{}
+	}
+	c.session.streamLock.Unlock()
 	c.lease.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Resource: c.lease.Resource(), Stream: c.lease.Stream(), Scope: netproxy.ScopeStream, Layer: netproxy.LayerAnyTLS, Origin: netproxy.OriginLocalCleanup}))
 	if c.closed.CompareAndSwap(false, true) {
 		c.session.removeStream(c.id)

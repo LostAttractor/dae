@@ -2,11 +2,13 @@ package anytls
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -148,6 +150,8 @@ func (testParentDialer) ListenPacket(context.Context, string) (net.PacketConn, e
 
 func TestClosedStreamDoesNotKillSessionReader(t *testing.T) {
 	client, server := net.Pipe()
+	// The peer reads, so the closed stream's FIN can be written.
+	go func() { _, _ = io.Copy(io.Discard, server) }()
 	s := newSession(client, nil, nil)
 	first, second := newStream(s, 1), newStream(s, 2)
 	s.streams[1], s.streams[2] = first, second
@@ -315,4 +319,94 @@ func TestPoolResourceAndEpisodesStayStableAcrossMemberFailures(t *testing.T) {
 			t.Fatalf("member diagnostic changed pool identity/readiness: %+v", snapshot)
 		}
 	}
+}
+
+// finPeer reads a session's frames and reports a stream's data length and
+// whether its FIN arrived, once the session ends.
+type finPeer struct {
+	data int
+	fin  bool
+}
+
+func serveFINPeer(conn net.Conn, result chan<- finPeer) {
+	defer conn.Close()
+	var peer finPeer
+	var header [headerOverHeadSize]byte
+	target := false
+	for {
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
+			result <- peer
+			return
+		}
+		body := make([]byte, binary.BigEndian.Uint16(header[5:]))
+		if _, err := io.ReadFull(conn, body); err != nil {
+			result <- peer
+			return
+		}
+		switch header[0] {
+		case cmdPSH:
+			if !target { // the first PSH carries the target address
+				target = true
+				continue
+			}
+			peer.data += len(body)
+		case cmdFIN:
+			peer.fin = true
+		}
+	}
+}
+
+// Closing a stream and then its session at once, as a retired path does,
+// still delivers the stream's data and then its FIN.
+func TestSessionCloseWritesClosedStreamFIN(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	const size = 16 << 10
+	for range 50 {
+		result := make(chan finPeer, 1)
+		go func() {
+			if conn, err := listener.Accept(); err == nil {
+				serveFINPeer(conn, result)
+			}
+		}()
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := newSession(conn, nil, nil)
+		s.sendPadding = false
+		stream, err := s.newStreamContext(t.Context(), "example.com:80")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Write(make([]byte, size)); err != nil {
+			t.Fatal(err)
+		}
+		_ = stream.Close()
+		_ = s.Close()
+		if peer := <-result; peer.data != size || !peer.fin {
+			t.Fatalf("peer saw %d of %d bytes, FIN %v", peer.data, size, peer.fin)
+		}
+	}
+}
+
+// A carrier that takes no more writes holds a local Close for CloseLinger.
+func TestSessionCloseWaitIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		defer server.Close()
+		s := newSession(client, nil, nil)
+		s.sendPadding = false
+		stream := newStream(s, 1)
+		s.streams[1] = stream
+		_ = stream.Close() // its FIN waits for a peer that never reads
+		start := time.Now()
+		_ = s.Close()
+		if waited := time.Since(start); waited != netproxy.CloseLinger {
+			t.Fatalf("Close took %v, want %v", waited, netproxy.CloseLinger)
+		}
+	})
 }

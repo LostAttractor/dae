@@ -411,9 +411,14 @@ func (d *Dialer) Close() error {
 		clear(d.sessions)
 		d.state.Close()
 		d.idleSessionLock.Unlock()
-		for _, session := range sessions {
-			d.closeErr = errors.Join(d.closeErr, session.Close())
+		// In parallel: each may write its closed streams' FINs for a while.
+		errs := make([]error, len(sessions))
+		var closing sync.WaitGroup
+		for i, session := range sessions {
+			closing.Go(func() { errs[i] = session.Close() })
 		}
+		closing.Wait()
+		d.closeErr = errors.Join(errs...)
 		d.operations.Wait()
 		d.workers.Wait()
 	})

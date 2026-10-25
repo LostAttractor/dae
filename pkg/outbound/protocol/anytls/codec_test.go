@@ -119,6 +119,8 @@ func TestPaddingUpdateBelongsToOneClient(t *testing.T) {
 func TestDatagramFramingSurvivesReadDeadlineAndShortBuffer(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
+	// The peer reads, so closing the session can write the stream's FIN.
+	go func() { _, _ = io.Copy(io.Discard, server) }()
 	s := newSession(client, nil, nil)
 	defer s.Close()
 	stream := newStream(s, 1)
