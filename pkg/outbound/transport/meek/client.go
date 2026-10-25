@@ -37,6 +37,9 @@ type clientSession struct {
 	pending                     []byte
 	readDeadline, writeDeadline protocol.Deadline
 	closed                      bool
+	// closing is canceled by Close: run posts what it collected and returns.
+	closing      context.Context
+	startClosing context.CancelFunc
 }
 
 func newClientSession(ctx context.Context, transport http.RoundTripper, url string, workers *sync.WaitGroup) *clientSession {
@@ -49,6 +52,7 @@ func newClientSession(ctx context.Context, transport http.RoundTripper, url stri
 		writerChan: make(chan []byte), readerChan: make(chan []byte, 16),
 		readDeadline: protocol.MakeDeadline(), writeDeadline: protocol.MakeDeadline(),
 	}
+	s.closing, s.startClosing = context.WithCancel(context.Background())
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
@@ -87,6 +91,11 @@ func (s *clientSession) run() error {
 			select {
 			case <-s.ctx.Done():
 				return context.Cause(s.ctx)
+			case <-s.closing.Done():
+				if buf.Len() == 0 {
+					return nil
+				}
+				break collect
 			case data := <-s.writerChan:
 				first := buf.Len() == 0
 				buf.Write(data)
@@ -104,20 +113,27 @@ func (s *clientSession) run() error {
 		idle := buf.Len() == 0
 		for first := true; first || buf.Len() > 0; first = false {
 			data := buf.Next(min(buf.Len(), maxWriteSize))
-			ctx, cancel := netproxy.NewDialTimeoutContextFrom(s.ctx)
-			response, err := s.roundTrip(ctx, data)
-			cancel()
+			response, err := s.post(data)
 			if err != nil {
+				if len(data) == 0 && s.closing.Err() != nil {
+					return nil
+				}
 				return err
 			}
 			if len(response) > 0 {
 				idle = false
 				select {
 				case s.readerChan <- response:
+				case <-s.closing.Done(): // nobody reads a closed session
 				case <-s.ctx.Done():
 					return context.Cause(s.ctx)
 				}
 			}
+		}
+		select {
+		case <-s.closing.Done():
+			return nil
+		default:
 		}
 		if idle {
 			wait = min(max(wait*3/2, 10*time.Millisecond), time.Second)
@@ -125,6 +141,17 @@ func (s *clientSession) run() error {
 			wait = 0
 		}
 	}
+}
+
+// post sends one batch. Close interrupts an empty poll, which holds no
+// accepted bytes, but lets a batch finish.
+func (s *clientSession) post(data []byte) ([]byte, error) {
+	ctx, cancel := netproxy.NewDialTimeoutContextFrom(s.ctx)
+	defer cancel()
+	if len(data) == 0 {
+		defer context.AfterFunc(s.closing, cancel)()
+	}
+	return s.roundTrip(ctx, data)
 }
 
 func (s *clientSession) roundTrip(ctx context.Context, data []byte) ([]byte, error) {
@@ -171,6 +198,8 @@ func (s *clientSession) Read(p []byte) (int, error) {
 		select {
 		case <-s.ctx.Done():
 			return 0, context.Cause(s.ctx)
+		case <-s.closing.Done():
+			return 0, context.Canceled
 		case <-s.readDeadline.Wait():
 			return 0, os.ErrDeadlineExceeded
 		case s.pending = <-s.readerChan:
@@ -202,6 +231,8 @@ func (s *clientSession) Write(p []byte) (int, error) {
 		select {
 		case <-s.ctx.Done():
 			return written, context.Cause(s.ctx)
+		case <-s.closing.Done():
+			return written, context.Canceled
 		case <-s.writeDeadline.Wait():
 			return written, os.ErrDeadlineExceeded
 		case s.writerChan <- data:
@@ -212,7 +243,18 @@ func (s *clientSession) Write(p []byte) (int, error) {
 	return written, nil
 }
 
+// Close first lets run post every byte Write accepted, finishing a POST in
+// flight, for up to netproxy.CloseLinger: Write returns once run collected
+// the bytes, not once they were posted. An idle session posts nothing, and
+// an empty poll in flight is canceled.
 func (s *clientSession) Close() error {
+	s.startClosing()
+	timer := time.NewTimer(netproxy.CloseLinger)
+	select {
+	case <-s.done:
+	case <-timer.C:
+	}
+	timer.Stop()
 	s.terminate(context.Canceled)
 	<-s.done
 	s.readMu.Lock()
