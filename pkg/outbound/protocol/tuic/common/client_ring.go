@@ -40,6 +40,8 @@ type clientRingNode[C RingMember] struct {
 	cli      C
 	resource netproxy.ResourceRef
 	credit   StreamCredit
+	// done is the connection's end, once established; guarded by mu.
+	done <-chan struct{}
 }
 
 // NewClientRing admits a new reserving stream only while a member's
@@ -164,6 +166,10 @@ func (r *ClientRing[C]) passiveRemove(elem *list.Element) {
 	r.ring.Remove(elem)
 }
 
+// Close first lets each member's peer finish the streams it was sent, which
+// returns their credit, for up to netproxy.CloseLinger in all: closing a QUIC
+// connection discards what the peer has not read yet. A failed member closes
+// itself at once.
 func (r *ClientRing[C]) Close() error {
 	r.cancel() // Interrupt handshakes and in-flight allocations.
 	r.mu.Lock()
@@ -174,19 +180,29 @@ func (r *ClientRing[C]) Close() error {
 	r.closed = true
 	r.cancel()
 	r.state.Close()
-	var clients []C
+	type member struct {
+		node *clientRingNode[C]
+		done <-chan struct{}
+	}
+	var members []member
 	for elem := r.ring.Front(); elem != nil; elem = elem.Next() {
 		if elem.Value != nil {
-			clients = append(clients, elem.Value.(*clientRingNode[C]).cli)
+			node := elem.Value.(*clientRingNode[C])
+			members = append(members, member{node, node.done})
 			elem.Value = nil
 		}
 	}
 	r.ring.Init()
 	r.current = nil
 	r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), netproxy.CloseLinger)
+	defer cancel()
+	for _, m := range members {
+		m.node.credit.WaitReleased(ctx, m.done)
+	}
 	var err error
-	for _, client := range clients {
-		err = errors.Join(err, client.Close())
+	for _, m := range members {
+		err = errors.Join(err, m.node.cli.Close())
 	}
 	return err
 }
@@ -223,10 +239,15 @@ func (r *ClientRing[C]) Connect(ctx context.Context, dialer netproxy.Dialer, dia
 		r.current = elem
 		r.state.BeginConnect()
 		r.mu.Unlock()
-		_, err = node.cli.ConnectQUIC(connectCtx, dialer, dialFn)
+		var conn *quic.Conn
+		conn, err = node.cli.ConnectQUIC(connectCtx, dialer, dialFn)
 		if err != nil {
 			r.passiveRemove(elem)
 			_ = node.cli.Close()
+		} else if conn != nil {
+			r.mu.Lock()
+			node.done = conn.Context().Done()
+			r.mu.Unlock()
 		}
 		r.state.EndConnect(err)
 		if err != nil {

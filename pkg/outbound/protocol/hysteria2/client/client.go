@@ -37,6 +37,7 @@ type clientResource struct {
 	udpSM   *udpSessionManager
 	ctx     context.Context
 	cancel  context.CancelFunc
+	credit  tuiccommon.StreamCredit
 }
 
 func (r *clientResource) close() error {
@@ -245,9 +246,11 @@ func (c *Client) establish(ctx context.Context) (resource *clientResource, err e
 	netproxy.CaptureDependency(ctx, resource.pktConn)
 
 	// Prepare Transport
+	quicConfig := c.config.QUICConfig
+	quicConfig.CapabilityCallback = resource.credit.Report
 	rt := &http3.Transport{
 		TLSClientConfig: &c.config.TLSConfig,
-		QUICConfig:      &c.config.QUICConfig,
+		QUICConfig:      &quicConfig,
 		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 			qc, err := quic.DialEarly(ctx, resource.pktConn, addr, tlsCfg, cfg)
 			if err != nil {
@@ -353,6 +356,15 @@ func (c *Client) observe(ctx context.Context, handle *netproxy.SingleSessionHand
 	handle.Abort(cause)
 }
 
+// Close first lets the peer finish the streams it was sent, which returns
+// their credit, for up to netproxy.CloseLinger: closing the QUIC connection
+// discards what the peer has not read yet. A failed connection is cleaned
+// up at once, without this wait.
 func (c *Client) Close() error {
+	if resource, err := c.lifecycle.Current(); err == nil && resource.conn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), netproxy.CloseLinger)
+		resource.credit.WaitReleased(ctx, resource.conn.Context().Done())
+		cancel()
+	}
 	return c.lifecycle.Close()
 }

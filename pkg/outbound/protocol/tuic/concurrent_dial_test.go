@@ -33,6 +33,8 @@ func TestConcurrentHealthyDials(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	// The peer leaves first; closing the dialer then waits for no stream.
+	defer cancel()
 	if err := d.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}

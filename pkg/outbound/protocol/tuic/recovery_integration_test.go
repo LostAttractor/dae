@@ -183,6 +183,13 @@ func TestRecoveryStreamResetDoesNotKillSharedQUICConnection(t *testing.T) {
 	if after := d.Snapshot(); after.State != netproxy.SessionConnected || after.Seq != before.Seq {
 		t.Fatalf("old resource invalidated replacement: %+v", after)
 	}
+	// The peer leaves first; closing the dialer then waits for no stream.
+	select {
+	case replacement := <-accepted:
+		_ = replacement.CloseWithError(0, "")
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
 
 func readConnectFixture(r io.Reader) (*address, error) {

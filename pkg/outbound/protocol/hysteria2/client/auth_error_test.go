@@ -28,7 +28,9 @@ func (authTestDialer) ListenPacket(context.Context, string) (net.PacketConn, err
 	return net.ListenPacket("udp", "127.0.0.1:0")
 }
 
-func TestRecoveryAuthResponsePreservesStatusAndEvidence(t *testing.T) {
+// serveH3 serves handler over HTTP/3 on loopback until the test ends.
+func serveH3(t *testing.T, handler http.HandlerFunc) net.Addr {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +40,18 @@ func TestRecoveryAuthResponsePreservesStatusAndEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http3.Server{TLSConfig: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}}}, EnableDatagrams: true, Handler: handler}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = server.Serve(packet) }()
+	t.Cleanup(func() { _ = server.Close(); <-done; _ = packet.Close() })
+	return packet.LocalAddr()
+}
+
+func TestRecoveryAuthResponsePreservesStatusAndEvidence(t *testing.T) {
 	type authCase struct {
 		status           int
 		rx               string
@@ -53,19 +67,11 @@ func TestRecoveryAuthResponsePreservesStatusAndEvidence(t *testing.T) {
 	for _, tc := range tests {
 		status := tc.status
 		t.Run(strconv.Itoa(status)+"/"+tc.rx, func(t *testing.T) {
-			packet, err := net.ListenPacket("udp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer packet.Close()
-			server := &http3.Server{TLSConfig: &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}}}, EnableDatagrams: true, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			addr := serveH3(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set(protocol.CommonHeaderCCRX, tc.rx)
 				w.WriteHeader(status)
-			})}
-			done := make(chan struct{})
-			go func() { defer close(done); _ = server.Serve(packet) }()
-			defer func() { _ = server.Close(); <-done }()
-			client, err := NewClient(&Config{Addr: packet.LocalAddr(), NextDialer: authTestDialer{}, TLSConfig: tls.Config{InsecureSkipVerify: true}, BandwidthConfig: BandwidthConfig{MaxTx: 125_000_000, MaxRx: 250_000_000}})
+			})
+			client, err := NewClient(&Config{Addr: addr, NextDialer: authTestDialer{}, TLSConfig: tls.Config{InsecureSkipVerify: true}, BandwidthConfig: BandwidthConfig{MaxTx: 125_000_000, MaxRx: 250_000_000}})
 			if err != nil {
 				t.Fatal(err)
 			}

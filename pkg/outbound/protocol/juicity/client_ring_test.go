@@ -71,7 +71,9 @@ func TestRingReservesPeerStreamCredit(t *testing.T) {
 			defer next.Close()
 			for i := range 2 {
 				select {
-				case <-accepted:
+				case server := <-accepted:
+					// The peer leaves first; closing the dialer then waits for no stream.
+					defer server.CloseWithError(0, "")
 				case <-ctx.Done():
 					t.Fatalf("server accepted %d connections, want 2", i)
 				}

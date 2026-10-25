@@ -17,16 +17,19 @@ import (
 	"github.com/daeuniverse/quic-go"
 )
 
-// closeFixture is one tuic connection to a loopback QUIC peer, owned by a
-// Runtime as an outbound chain is.
+// closeFixture is one tuic connection to a loopback QUIC peer configured by
+// peer, owned by a Runtime as an outbound chain is. Like a tuic server, the
+// peer reads every unidirectional stream.
 type closeFixture struct {
 	runtime *netproxy.Runtime
+	dialer  *Dialer
 	server  *quic.Conn
 }
 
-func newCloseFixture(t *testing.T, ctx context.Context) *closeFixture {
+func newCloseFixture(t *testing.T, ctx context.Context, peer quic.Config) *closeFixture {
 	t.Helper()
-	listener, err := quic.ListenAddr("127.0.0.1:0", recoveryTLS(t), &quic.Config{EnableDatagrams: true})
+	peer.EnableDatagrams = true
+	listener, err := quic.ListenAddr("127.0.0.1:0", recoveryTLS(t), &peer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,13 +56,22 @@ func newCloseFixture(t *testing.T, ctx context.Context) *closeFixture {
 	if err := runtime.Session().Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	f := &closeFixture{runtime: runtime}
+	f := &closeFixture{runtime: runtime, dialer: d}
 	select {
 	case f.server = <-accepted:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
 	t.Cleanup(func() { _ = f.server.CloseWithError(0, "") })
+	go func() {
+		for {
+			stream, err := f.server.AcceptUniStream(context.Background())
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(io.Discard, stream) }()
+		}
+	}()
 	return f
 }
 
@@ -86,46 +98,52 @@ func (f *closeFixture) open(t *testing.T, ctx context.Context) (net.Conn, *quic.
 
 // The relay's order when the target closes first: the client reads EOF, then
 // sends its last upload, CloseWrite and Close. The peer must read all of it,
-// whether it reads at once or only after the stream is closed.
+// whether it reads at once or only after the stream is closed, also when the
+// path was retired and closing the stream closes the connection.
 func TestCloseAfterCloseWriteKeepsUpload(t *testing.T) {
 	payload := bytes.Repeat([]byte{'x'}, 256<<10)
-	for _, delay := range []time.Duration{0, 300 * time.Millisecond} {
-		t.Run(fmt.Sprintf("reader after %v", delay), func(t *testing.T) {
-			for i := range 20 {
-				t.Run(fmt.Sprint(i), func(t *testing.T) {
-					t.Parallel()
-					ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-					defer cancel()
-					f := newCloseFixture(t, ctx)
-					client, remote, request := f.open(t, ctx)
-					if err := remote.Close(); err != nil {
-						t.Fatal(err)
-					}
-					got := make(chan error, 1)
-					go func() {
-						time.Sleep(delay)
-						data, err := io.ReadAll(request)
-						if err == nil && len(data) != len(payload) {
-							err = fmt.Errorf("peer read %d of %d bytes", len(data), len(payload))
+	for _, retire := range []bool{false, true} {
+		for _, delay := range []time.Duration{0, 300 * time.Millisecond} {
+			t.Run(fmt.Sprintf("retired %v, reader after %v", retire, delay), func(t *testing.T) {
+				for i := range 20 {
+					t.Run(fmt.Sprint(i), func(t *testing.T) {
+						t.Parallel()
+						ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+						defer cancel()
+						f := newCloseFixture(t, ctx, quic.Config{})
+						client, remote, request := f.open(t, ctx)
+						if retire {
+							f.runtime.Retire()
 						}
-						got <- err
-					}()
-					if _, err := io.ReadAll(client); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := client.Write(payload); err != nil {
-						t.Fatal(err)
-					}
-					if err := netproxy.CloseWrite(client); err != nil {
-						t.Fatal(err)
-					}
-					_ = client.Close()
-					if err := <-got; err != nil {
-						t.Fatal(err)
-					}
-				})
-			}
-		})
+						if err := remote.Close(); err != nil {
+							t.Fatal(err)
+						}
+						got := make(chan error, 1)
+						go func() {
+							time.Sleep(delay)
+							data, err := io.ReadAll(request)
+							if err == nil && len(data) != len(payload) {
+								err = fmt.Errorf("peer read %d of %d bytes", len(data), len(payload))
+							}
+							got <- err
+						}()
+						if _, err := io.ReadAll(client); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := client.Write(payload); err != nil {
+							t.Fatal(err)
+						}
+						if err := netproxy.CloseWrite(client); err != nil {
+							t.Fatal(err)
+						}
+						_ = client.Close()
+						if err := <-got; err != nil {
+							t.Fatal(err)
+						}
+					})
+				}
+			})
+		}
 	}
 }
 
@@ -134,7 +152,7 @@ func TestCloseAfterCloseWriteKeepsUpload(t *testing.T) {
 func TestCloseWithoutCloseWriteResets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	f := newCloseFixture(t, ctx)
+	f := newCloseFixture(t, ctx, quic.Config{})
 	client, _, request := f.open(t, ctx)
 	written := make(chan error, 1)
 	go func() {
@@ -159,5 +177,91 @@ func TestCloseWithoutCloseWriteResets(t *testing.T) {
 	_, err := io.ReadAll(request)
 	if reset, ok := errors.AsType[*quic.StreamError](err); !ok || !reset.Remote {
 		t.Fatalf("peer read error = %v, want a reset", err)
+	}
+}
+
+// A retired path whose peer never reads its last stream closes the
+// connection after netproxy.CloseLinger.
+func TestRetiredCloseWaitIsBounded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*netproxy.CloseLinger)
+	defer cancel()
+	f := newCloseFixture(t, ctx, quic.Config{})
+	client, _, _ := f.open(t, ctx)
+	if _, err := client.Write([]byte("unread")); err != nil {
+		t.Fatal(err)
+	}
+	if err := netproxy.CloseWrite(client); err != nil {
+		t.Fatal(err)
+	}
+	f.runtime.Retire()
+	start := time.Now()
+	_ = client.Close()
+	if err := f.runtime.Wait(ctx); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("runtime did not close")
+	}
+	if waited := time.Since(start); waited < netproxy.CloseLinger || waited > netproxy.CloseLinger+time.Second {
+		t.Fatalf("closing took %v, want about %v", waited, netproxy.CloseLinger)
+	}
+}
+
+// A peer granting about QUIC's cap of 2^60 streams, as sing-box's tuic
+// server does, cannot raise its limit once a stream ended, so its credit
+// never returns to the highest grant; a retired path still closes at once.
+func TestRetiredCloseSkipsUnlimitedCredit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*netproxy.CloseLinger)
+	defer cancel()
+	f := newCloseFixture(t, ctx, quic.Config{MaxIncomingStreams: 1 << 60, MaxIncomingUniStreams: 1 << 60})
+	client, remote, request := f.open(t, ctx)
+	if err := remote.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(client); err != nil {
+		t.Fatal(err)
+	}
+	if err := netproxy.CloseWrite(client); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(request); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	f.runtime.Retire()
+	start := time.Now()
+	if err := f.runtime.Wait(ctx); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("runtime did not close")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("closing took %v", waited)
+	}
+}
+
+// A failed member closes its connection at once, even with a stream the peer
+// has not finished, and the retired ring then waits for nothing.
+func TestFailedMemberClosesAtOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	f := newCloseFixture(t, ctx, quic.Config{})
+	client, _, _ := f.open(t, ctx)
+	var member *clientImpl
+	if err := f.dialer.clientRing.Allocate(ctx, false, func(_ context.Context, c *clientImpl) error {
+		member = c
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	member.failConnection(errors.New("member failed"))
+	select {
+	case <-f.server.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("failed member kept its connection open")
+	}
+	f.runtime.Retire()
+	start := time.Now()
+	_ = client.Close()
+	if err := f.runtime.Wait(ctx); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("runtime did not close")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("closing a failed ring took %v", waited)
 	}
 }

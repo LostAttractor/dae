@@ -46,6 +46,12 @@ func TestDialerHonorsUDPRelayMode(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		// The peer leaves first; closing the dialer then waits for no stream.
+		server, err := listener.Accept(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = server.CloseWithError(0, "")
 		if err := dialer.Close(); err != nil {
 			t.Fatal(err)
 		}
