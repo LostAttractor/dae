@@ -87,15 +87,12 @@ func (s yamuxSession) saturated() bool {
 	return s.budget.grown.Load() > yamuxSessionWindow-yamuxStreamWindow
 }
 
-// yamuxCloseTimeout is how long a closed stream waits for the peer's FIN
-// before it is reset (sing-box's yamux client uses the same).
-const yamuxCloseTimeout = 5 * time.Second
-
 // yamuxStream closes like sing-box's yamux client. yamux's own Close also
 // stops reading without telling the peer and then drops its data without
 // window updates, so a sing-mux server writing into the stream blocks until
 // the session ends. Close sends FIN instead, keeps the stream registered and
-// resets it unless the peer has closed its half by yamuxCloseTimeout.
+// resets it unless the peer has closed its half by netproxy.CloseLinger
+// (sing-box's yamux client waits as long).
 type yamuxStream struct{ *yamux.Stream }
 
 func (s yamuxStream) Close() error {
@@ -103,7 +100,7 @@ func (s yamuxStream) Close() error {
 	_ = s.SetReadDeadline(time.Now())
 	err := s.CloseWrite()
 	// A no-op once both halves are closed.
-	time.AfterFunc(yamuxCloseTimeout, func() { _ = s.Reset() })
+	time.AfterFunc(netproxy.CloseLinger, func() { _ = s.Reset() })
 	return err
 }
 

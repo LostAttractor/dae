@@ -3,15 +3,34 @@ package netproxy
 import (
 	"errors"
 	"io"
+	"time"
 )
 
 var ErrMissingDialer = errors.New("layer has no dialer")
 
+// CloseLinger bounds each graceful close: how long one closing connection or
+// resource waits to hand the peer what it already accepted. The bound is per
+// layer: a resource whose carrier lingers as well waits for both in turn.
+//
+// Closing a connection keeps the bytes its Write accepted and the FIN its
+// CloseWrite sent. Where they still wait in a process-local queue, Close
+// either waits up to CloseLinger for them to leave or leaves them to the
+// resource that owns the queue. A Runtime closes its Layer as soon as the
+// last connection of a retired chain is closed.
+const CloseLinger = 5 * time.Second
+
 // Layer is the explicit result of building one or more outbound layers.
 // Sessions and Resources are ordered from the inner layer to the outer layer.
 type Layer struct {
-	Data      Dialer
-	Sessions  []Session
+	Data     Dialer
+	Sessions []Session
+	// Resources are closed only once every lease on them is released. A
+	// resource that carries streams over a carrier first hands its queued
+	// frames to the carrier, within CloseLinger, and closes at once when the
+	// carrier has already failed or its owner aborted it. Closing the carrier
+	// right after can still drop frames the peer has not read where the
+	// carrier resets on Close, such as a stream of an earlier hop or a TCP
+	// connection with unread data.
 	Resources []io.Closer
 }
 

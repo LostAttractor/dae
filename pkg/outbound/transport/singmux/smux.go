@@ -46,8 +46,6 @@ const (
 	// that has room, and its own frame has room for more, so that small
 	// writes behind a busy carrier share frames.
 	smuxCoalesce = 2 << 10
-	// smuxCloseFlush bounds how long Close writes the frames already queued.
-	smuxCloseFlush = 5 * time.Second
 	// A datagram is dropped rather than queued beyond smuxDatagramQueue bytes
 	// of its stream or smuxSessionDatagramQueue bytes of its session.
 	smuxDatagramQueue        = 64 << 10
@@ -229,7 +227,7 @@ func (s *smuxSession) CloseChan() <-chan struct{} { return s.die }
 
 // Close ends the session; its streams fail with io.ErrClosedPipe. Frames
 // already queued, such as the last data and FIN of a stream closed just
-// before, are written first, for up to smuxCloseFlush: Write and Close
+// before, are written first, for up to netproxy.CloseLinger: Write and Close
 // return once queued, and the peer would otherwise see a clean but cut
 // stream. Meanwhile streams accept no data and no stream opens.
 func (s *smuxSession) Close() error {
@@ -243,7 +241,7 @@ func (s *smuxSession) Close() error {
 	flushed := s.flushed
 	s.mu.Unlock()
 	if flushed != nil {
-		timer := time.NewTimer(smuxCloseFlush)
+		timer := time.NewTimer(netproxy.CloseLinger)
 		select {
 		case <-flushed:
 		case <-s.die:

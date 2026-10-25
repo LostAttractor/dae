@@ -236,7 +236,7 @@ func TestStalledStreamDoesNotBlockSession(t *testing.T) {
 }
 
 // A closed stream must not leave a server blocked writing into it until the
-// session ends: it is reset unless the peer has closed by yamuxCloseTimeout.
+// session ends: it is reset unless the peer has closed by netproxy.CloseLinger.
 func TestYamuxClosedStreamReleasesServerWriter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		released := make(chan struct{})
@@ -263,10 +263,10 @@ func TestYamuxClosedStreamReleasesServerWriter(t *testing.T) {
 		_ = conn.Close()
 		select {
 		case <-released:
-		case <-time.After(2 * yamuxCloseTimeout):
+		case <-time.After(2 * netproxy.CloseLinger):
 			t.Fatal("server is still writing into the closed stream")
 		}
-		if waited := time.Since(closed); waited > yamuxCloseTimeout {
+		if waited := time.Since(closed); waited > netproxy.CloseLinger {
 			t.Fatalf("server writer released %v after Close", waited)
 		}
 	})
