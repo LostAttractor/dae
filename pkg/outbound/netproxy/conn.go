@@ -32,14 +32,19 @@ type BuffersWriter interface {
 }
 
 // ErrPacketDropped reports a datagram that NonBlockingWriter.TryWriteTo
-// dropped because its queue was full. It is returned unwrapped.
+// dropped because its queue or its socket's send buffer was full. It is
+// returned unwrapped.
 var ErrPacketDropped = errors.New("datagram dropped: transport queue full")
 
 // NonBlockingWriter is a packet connection whose writes never wait: TryWriteTo
-// queues the datagram or drops it with ErrPacketDropped, for callers that
-// account for sent datagrams, and WriteTo drops it without an error, as a
-// congested link would. The transport counts its drops in a Drop; callers do
-// not. Write deadlines have nothing to bound.
+// queues or sends the datagram or drops it with ErrPacketDropped, for callers
+// that account for sent datagrams, and WriteTo drops it without an error, as
+// a congested link would. The transport counts its drops in a Drop; callers do
+// not. Write deadlines have nothing to bound. A layer over a connection that
+// can only wait returns errors.ErrUnsupported from TryWriteTo, unwrapped and
+// having sent nothing, and its WriteTo waits; callers then use WriteTo.
+// Such layers implement CanTryWrite() bool so outer layers can check the
+// carrier before framing, encrypting or consuming send state.
 type NonBlockingWriter interface {
 	TryWriteTo(b []byte, addr net.Addr) (int, error)
 }

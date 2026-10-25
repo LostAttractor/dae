@@ -194,8 +194,6 @@ func (d *directDialer) ListenPacket(ctx context.Context, _ string) (net.PacketCo
 	if err != nil {
 		return nil, err
 	}
-	return &PacketConn{
-		UDPConn: c.(*net.UDPConn),
-		dialer:  d,
-	}, nil
+	udp := c.(*net.UDPConn)
+	return &PacketConn{UDPConn: udp, dialer: d, socket: netproxy.NewUDPSocket(udp)}, nil
 }

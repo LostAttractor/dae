@@ -44,6 +44,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `mitm_bridge_full` | both | MITM HTTP/3 bridge queue full |
 | `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
 | `flow_queue_full`, `carrier_queue_full` | `upload` | smux per-stream or per-session datagram queue full |
+| `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
 | `transport_receive_full` | `download` | hysteria2 or TUIC datagram receive queue, or fragment reassembly table, full |
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
 | `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |

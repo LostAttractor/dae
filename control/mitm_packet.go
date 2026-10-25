@@ -101,7 +101,18 @@ func (c *mitmPacketConn) ReadFrom(buf []byte) (int, net.Addr, error) {
 	}
 }
 
+// WriteTo reports a datagram the bridge drops as written.
 func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
+	n, err := c.TryWriteTo(buf, addr)
+	if err == netproxy.ErrPacketDropped {
+		return len(buf), nil
+	}
+	return n, err
+}
+
+// TryWriteTo queues buf for the peer, or drops it with
+// netproxy.ErrPacketDropped if the peer's queue or the packet memory is full.
+func (c *mitmPacketConn) TryWriteTo(buf []byte, addr net.Addr) (int, error) {
 	c.pair.mu.Lock()
 	defer c.pair.mu.Unlock()
 	if c.pair.closed {
@@ -126,7 +137,7 @@ func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 		} else {
 			dropDownloadMITM.Add(1)
 		}
-		return len(buf), nil
+		return 0, netproxy.ErrPacketDropped
 	}
 	index := (c.peer.head + c.peer.count) % mitmPacketQueueSize
 	packet, ok := copyUDPPacket(buf, c.pair.memory)
@@ -136,7 +147,7 @@ func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 		} else {
 			dropDownloadMemory.Add(1)
 		}
-		return len(buf), nil
+		return 0, netproxy.ErrPacketDropped
 	}
 	c.peer.packets[index] = packet
 	c.peer.count++

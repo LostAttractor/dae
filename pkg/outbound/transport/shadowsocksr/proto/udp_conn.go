@@ -9,20 +9,21 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/infra/socks"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks_stream"
 )
 
 type PacketConn struct {
-	net.Conn
+	*shadowsocks_stream.UdpConn
 	codec   IProtocol
 	codecMu sync.Mutex
 }
 
-func (c *PacketConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
+func (c *PacketConn) DependencyLease() *netproxy.Lease { return c.UdpConn.DependencyLease() }
 
 func (c *PacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	buf := pool.GetBuffer(65535)
 	defer pool.PutBuffer(buf)
-	n, err := c.Conn.Read(buf)
+	n, err := c.UdpConn.Read(buf)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -45,6 +46,19 @@ func (c *PacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (c *PacketConn) WriteTo(p []byte, target net.Addr) (int, error) {
+	return c.writeTo(p, target, c.UdpConn.Write)
+}
+
+// TryWriteTo sends the encoded datagram without waiting; see
+// netproxy.NonBlockingWriter.
+func (c *PacketConn) TryWriteTo(p []byte, target net.Addr) (int, error) {
+	if !c.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	return c.writeTo(p, target, c.UdpConn.TryWrite)
+}
+
+func (c *PacketConn) writeTo(p []byte, target net.Addr, write func([]byte) (int, error)) (int, error) {
 	if target == nil {
 		return 0, errors.New("SSR packet has no target address")
 	}
@@ -65,7 +79,7 @@ func (c *PacketConn) WriteTo(p []byte, target net.Addr) (int, error) {
 	if buf.Len() > 65507 {
 		return 0, errors.New("SSR packet exceeds maximum size")
 	}
-	n, err := c.Conn.Write(buf.Bytes())
+	n, err := write(buf.Bytes())
 	if n == buf.Len() {
 		return len(p), err
 	}

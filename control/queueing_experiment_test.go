@@ -57,6 +57,7 @@ const (
 	qexpTTFBPort        = 5203 // TCP first-byte responder
 	qexpInteractivePort = 5204 // TCP probes, reflected
 	qexpProbeSize       = 100
+	qexpFloodSize       = 1200
 	qexpProbeInterval   = 16 * time.Millisecond
 	qexpReportInterval  = 100 * time.Millisecond
 	qexpChunk           = 32 << 10 // as the relay's copy buffer
@@ -319,9 +320,9 @@ func qexpReceiveBuffer(conn *net.UDPConn) error {
 }
 
 // qexpReflect counts datagrams by source. It reflects a probe with its
-// receive time and that count, and answers a report request with the count.
+// receive time and packet count; reports also count the received probes.
 func qexpReflect(conn *net.UDPConn) {
-	counts := make(map[netip.AddrPort]uint64)
+	counts := make(map[netip.AddrPort]struct{ packets, probes uint64 })
 	buf := make([]byte, 65535)
 	for {
 		n, from, err := conn.ReadFromUDPAddrPort(buf)
@@ -332,19 +333,25 @@ func qexpReflect(conn *net.UDPConn) {
 			continue
 		}
 		var reply []byte
+		count := counts[from]
 		switch buf[0] {
 		case 'R':
-			reply = binary.BigEndian.AppendUint64([]byte{'R'}, counts[from])
+			reply = []byte{'R'}
 		case 'P':
-			counts[from]++
+			count.packets++
 			if n >= 13 {
+				count.probes++
 				reply = binary.BigEndian.AppendUint64(buf[:13:13], uint64(qexpNow()))
-				reply = binary.BigEndian.AppendUint64(reply, counts[from])
 			}
 		default:
-			counts[from]++
+			count.packets++
 		}
+		counts[from] = count
 		if reply != nil {
+			reply = binary.BigEndian.AppendUint64(reply, count.packets)
+			if reply[0] == 'R' {
+				reply = binary.BigEndian.AppendUint64(reply, count.probes)
+			}
 			_, _ = conn.WriteToUDPAddrPort(reply, from)
 		}
 	}
@@ -496,6 +503,8 @@ type qexpFlow struct {
 	src, dst netip.AddrPort
 	replies  chan []byte
 	sent     atomic.Uint64
+	received atomic.Uint64 // all datagrams received by the reflector
+	probes   atomic.Uint64 // received probes, the only datagrams reflected
 	echoed   atomic.Uint64 // probes reflected back
 	dropped  atomic.Uint64 // replies the LAN reader was too slow for
 }
@@ -512,6 +521,16 @@ func (f *qexpFlow) trySend(data []byte, _ netip.AddrPort) bool {
 func (f *qexpFlow) send(data []byte, from netip.AddrPort) error {
 	f.trySend(data, from)
 	return nil
+}
+
+func (f *qexpFlow) reportLoss(report map[string]any, name string) (upload, download int64) {
+	sent, received, probes := f.sent.Load(), f.received.Load(), f.probes.Load()
+	echoed, dropped := f.echoed.Load(), f.dropped.Load()
+	upload = int64(sent) - int64(received)
+	download = int64(probes) - int64(echoed) - int64(dropped)
+	report[name+"_sent"], report[name+"_received"], report[name+"_probes_received"] = sent, received, probes
+	report[name+"_lost"], report[name+"_echoed"], report[name+"_lan_dropped"] = upload, echoed, dropped
+	return upload, download
 }
 
 // qexpLANConn is a LAN client's UDP socket: writes enter the task pool as
@@ -579,6 +598,7 @@ type qexpRecorder struct {
 	stopped atomic.Int64 // when the load stopped; 0 before
 	samples map[string][]float64
 	late    map[string]int
+	settled []*atomic.Bool // registered before waiting; each reader marks its own
 }
 
 func (r *qexpRecorder) add(name string, at int64, value float64) {
@@ -602,6 +622,50 @@ func (r *qexpRecorder) add(name string, at int64, value float64) {
 	}
 }
 
+func (r *qexpRecorder) settle() *atomic.Bool {
+	answered := new(atomic.Bool)
+	r.settled = append(r.settled, answered)
+	return answered
+}
+
+// Bounded: a stream whose later probes are all lost never settles.
+func (r *qexpRecorder) waitSettled(timeout time.Duration) bool {
+	limit := time.Now().Add(timeout)
+	for slices.ContainsFunc(r.settled, func(s *atomic.Bool) bool { return !s.Load() }) {
+		if !time.Now().Before(limit) {
+			return false
+		}
+		time.Sleep(qexpProbeInterval)
+	}
+	return true
+}
+
+// Every probe stream, including a flood without game traffic, holds the load.
+func (r *qexpRecorder) followProbes(flow *qexpFlow, name string, returnDelay time.Duration, counter *qexpCounter) {
+	answered := r.settle()
+	go func() {
+		for reply := range flow.replies {
+			switch {
+			case len(reply) >= 17 && reply[0] == 'R':
+				flow.received.Store(max(flow.received.Load(), binary.BigEndian.Uint64(reply[1:])))
+				flow.probes.Store(max(flow.probes.Load(), binary.BigEndian.Uint64(reply[9:])))
+			case len(reply) >= 29 && reply[0] == 'P':
+				sentAt, receivedAt := int64(binary.BigEndian.Uint64(reply[5:])), int64(binary.BigEndian.Uint64(reply[13:]))
+				flow.received.Store(max(flow.received.Load(), binary.BigEndian.Uint64(reply[21:])))
+				flow.echoed.Add(1)
+				r.add(name+"_up_ms", sentAt, float64(receivedAt-sentAt)/1e6)
+				r.add(name+"_down_ms", sentAt, float64(qexpNow()-receivedAt-returnDelay.Nanoseconds())/1e6)
+				if sentAt >= r.to {
+					answered.Store(true)
+				}
+			}
+			if counter != nil {
+				counter.latest.Store(flow.received.Load() * qexpFloodSize)
+			}
+		}
+	}()
+}
+
 // qexpCounter follows a cumulative count the server reports and remembers
 // it at the edges of the window.
 type qexpCounter struct {
@@ -620,6 +684,50 @@ func (c *qexpCounter) follow(r io.Reader) {
 
 func (c *qexpCounter) mbit(window time.Duration) float64 {
 	return float64(c.last.Load()-c.first.Load()) * 8 / window.Seconds() / 1e6
+}
+
+// qexpReportUploads uses only received bytes sampled at the CPU window's edges.
+func qexpReportUploads(report map[string]any, counters map[string][]*qexpCounter, duration, cpuUsed time.Duration, includeCPU bool) {
+	var uploaded uint64
+	for name, list := range counters {
+		var total, squares float64
+		flows := make([]float64, 0, len(list))
+		for _, c := range list {
+			rate := c.mbit(duration)
+			flows = append(flows, rate)
+			total, squares = total+rate, squares+rate*rate
+			uploaded += c.last.Load() - c.first.Load()
+		}
+		report[name+"_mbit"] = total
+		report[name+"_flows_mbit"] = flows
+		if squares > 0 {
+			report[name+"_jain"] = total * total / (float64(len(list)) * squares)
+		}
+	}
+	if bulk, ok := report["bulk_mbit"].(float64); ok {
+		if quicRate, ok := report["quic_mbit"].(float64); ok && bulk+quicRate > 0 {
+			report["quic_share"] = quicRate / (bulk + quicRate)
+		}
+	}
+	cpuMS := float64(cpuUsed) / float64(time.Millisecond)
+	report["uploaded_bytes"], report["cpu_ms"] = uploaded, cpuMS
+	if uploaded > 0 && includeCPU {
+		report["cpu_ms_per_gb"] = cpuMS / (float64(uploaded) / 1e9)
+	}
+}
+
+func qexpReportLoss(report map[string]any, workload map[string]int, udp string, tcpDownload bool, lostUpload, lostDownload, droppedUpload, droppedDownload, qdiscDropped int64) {
+	// QUIC's drops are counted, but its datagrams are not in lostUpload.
+	if workload["quic"] > 0 {
+		return
+	}
+	report["download_unaccounted"] = lostDownload - droppedDownload
+	if udp == "mux" {
+		qdiscDropped = 0 // Lost TCP segments are retransmitted, not lost datagrams.
+	} else if workload["bulk"] > 0 || workload["itcp"] > 0 || workload["ttfb"] > 0 || tcpDownload {
+		return // The shared qdisc cannot attribute its drops to UDP.
+	}
+	report["upload_unaccounted"] = lostUpload - droppedUpload - qdiscDropped
 }
 
 // TestQueueingExperimentClient plays the LAN and dae: it runs the workload
@@ -686,22 +794,27 @@ func TestQueueingExperimentClient(t *testing.T) {
 	// each probe stream settles: once a probe sent after the window is
 	// answered, every window probe ahead of it was answered or lost under
 	// load, not after it stopped.
-	var settled []*atomic.Bool
-	settle := func() *atomic.Bool {
-		s := new(atomic.Bool)
-		settled = append(settled, s)
-		return s
-	}
 	var workers sync.WaitGroup
 	ms := func(ns int64) float64 { return float64(ns) / 1e6 }
 
 	var lanPort atomic.Uint32
 	lanPort.Store(40000)
+	// UDP flows go through the mux, or through sockets of their own, as
+	// direct and Shadowsocks UDP do.
+	packets := netproxy.Dialer(mux)
+	udp := qexpEnv(t, "QEXP_UDP", "mux")
+	switch udp {
+	case "mux":
+	case "direct":
+		packets = carriers
+	default:
+		t.Fatalf("QEXP_UDP=%s", udp)
+	}
 	openFlow := func(port int) *qexpFlow {
 		flow := &qexpFlow{src: netip.AddrPortFrom(netip.MustParseAddr("192.168.77.10"), uint16(lanPort.Add(1))), dst: qexpAddr(host, port), replies: make(chan []byte, 1024)}
 		// Setup is skipped: the dial gets none of the context setup would
 		// give it, such as the sniffed protocol.
-		conn, err := mux.ListenPacket(ctx, flow.dst.String())
+		conn, err := packets.ListenPacket(ctx, flow.dst.String())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -738,8 +851,20 @@ func TestQueueingExperimentClient(t *testing.T) {
 		}
 		return counts
 	}
+	// The uplink qdisc drops what sockets of their own hand it.
+	uplink, err := netlink.LinkByName(qexpEnv(t, "QEXP_CAKE_DEV", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	qdiscDrops := func() uint32 {
+		qdiscs, err := netlink.QdiscList(uplink)
+		if err != nil || len(qdiscs) == 0 || qdiscs[0].Attrs().Statistics == nil {
+			t.Fatalf("uplink qdisc: %v", err)
+		}
+		return qdiscs[0].Attrs().Statistics.Queue.Drops
+	}
 	// From before the first UDP flow, as the flows' sent counts.
-	dropsBefore := drops()
+	dropsBefore, qdiscBefore := drops(), qdiscDrops()
 	// counters are read at the window's edges; reported holds the final
 	// counts of the UDP flows.
 	counters := make(map[string][]*qexpCounter)
@@ -771,7 +896,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 	if workload["itcp"] > 0 {
 		conn := dial(qexpInteractivePort)
 		defer conn.Close()
-		answered := settle()
+		answered := rec.settle()
 		var seq uint32
 		every(qexpProbeInterval, func() {
 			seq++
@@ -835,6 +960,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 
 	var game, flood *qexpFlow
 	var windowProbes atomic.Uint64 // sent inside the window
+	var floodBytes qexpCounter
 	if workload["game"] > 0 {
 		game = openFlow(qexpGamePort)
 		var seq uint32
@@ -854,11 +980,14 @@ func TestQueueingExperimentClient(t *testing.T) {
 	}
 	if rate := workload["flood"]; rate > 0 {
 		flood = openFlow(qexpFloodPort)
-		const size = 1200
-		interval := time.Duration(float64(time.Second) * size * 8 / (float64(rate) * 1e6))
+		counters["flood"] = []*qexpCounter{&floodBytes}
+		interval := time.Duration(float64(time.Second) * qexpFloodSize * 8 / (float64(rate) * 1e6))
 		workers.Go(func() {
-			packet := bytes.Repeat([]byte{'F'}, size)
+			packet, probe := bytes.Repeat([]byte{'F'}, qexpFloodSize), make([]byte, qexpFloodSize)
+			probe[0] = 'P'
+			var seq uint32
 			next := time.Now()
+			nextProbe := next
 			for {
 				select {
 				case <-stopped:
@@ -868,6 +997,15 @@ func TestQueueingExperimentClient(t *testing.T) {
 				next = next.Add(interval)
 				time.Sleep(time.Until(next))
 				flood.sent.Add(1)
+				// A probe among the flood times the flood's own queues.
+				if now := time.Now(); !now.Before(nextProbe) {
+					nextProbe = nextProbe.Add(qexpProbeInterval)
+					seq++
+					binary.BigEndian.PutUint32(probe[1:], seq)
+					binary.BigEndian.PutUint64(probe[5:], uint64(now.UnixNano()))
+					plane.enqueueUDPPacket(probe, flood.src, flood.dst, nil)
+					continue
+				}
 				plane.enqueueUDPPacket(packet, flood.src, flood.dst, nil)
 			}
 		})
@@ -889,7 +1027,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 		upload("quic", stream)
 	}
 	if workload["ttfb"] > 0 {
-		answered := settle()
+		answered := rec.settle()
 		every(500*time.Millisecond, func() {
 			began := qexpNow()
 			if began >= rec.to { // the window's attempts, earlier ticks, are done
@@ -909,34 +1047,15 @@ func TestQueueingExperimentClient(t *testing.T) {
 			}
 		})
 	}
-	reported := make(map[*qexpFlow]*atomic.Uint64)
 	for _, flow := range []*qexpFlow{game, flood} {
 		if flow == nil {
 			continue
 		}
-		count := new(atomic.Uint64)
-		reported[flow] = count
-		var answered *atomic.Bool
-		if flow == game {
-			answered = settle()
+		name, counter := "game", (*qexpCounter)(nil)
+		if flow == flood {
+			name, counter = "flood", &floodBytes
 		}
-		go func() {
-			for reply := range flow.replies {
-				switch {
-				case reply[0] == 'R' && len(reply) >= 9:
-					count.Store(binary.BigEndian.Uint64(reply[1:]))
-				case reply[0] == 'P' && len(reply) >= 29:
-					sentAt, receivedAt := int64(binary.BigEndian.Uint64(reply[5:])), int64(binary.BigEndian.Uint64(reply[13:]))
-					count.Store(max(count.Load(), binary.BigEndian.Uint64(reply[21:])))
-					flow.echoed.Add(1)
-					rec.add("game_up_ms", sentAt, ms(receivedAt-sentAt))
-					rec.add("game_down_ms", sentAt, ms(qexpNow()-receivedAt-returnDelay.Nanoseconds()))
-					if sentAt >= rec.to {
-						answered.Store(true)
-					}
-				}
-			}
-		}()
+		rec.followProbes(flow, name, returnDelay, counter)
 	}
 	// The fullest carrier: idle ones would dilute its percentiles.
 	every(10*time.Millisecond, func() {
@@ -966,11 +1085,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 			c.last.Store(c.latest.Load())
 		}
 	}
-	// Bounded: a stream whose later probes are all lost never settles.
-	for limit := time.Now().Add(duration); time.Now().Before(limit) &&
-		slices.ContainsFunc(settled, func(s *atomic.Bool) bool { return !s.Load() }); {
-		time.Sleep(qexpProbeInterval)
-	}
+	settleTimeout := !rec.waitSettled(duration)
 	rec.stopped.Store(qexpNow())
 	close(stopped)
 	workers.Wait()
@@ -980,7 +1095,10 @@ func TestQueueingExperimentClient(t *testing.T) {
 	}
 	// Let queues drain, then ask the reflectors for their final counts.
 	time.Sleep(time.Second)
-	for flow := range reported {
+	for _, flow := range []*qexpFlow{game, flood} {
+		if flow == nil {
+			continue
+		}
 		for range 5 {
 			plane.enqueueUDPPacket([]byte{'R'}, flow.src, flow.dst, nil)
 			time.Sleep(200 * time.Millisecond)
@@ -992,10 +1110,10 @@ func TestQueueingExperimentClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := map[string]any{
-		"elapsed_s": time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(),
+		"elapsed_s": time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
 		"carriers": len(carriers.notsent()), "datagram_memory_peak": udpPacketMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
 	}
-	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "RETURN_DELAY", "LABEL", "BINARY"} {
+	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "RETURN_DELAY", "LABEL", "BINARY"} {
 		report[strings.ToLower(name)] = os.Getenv("QEXP_" + name)
 	}
 	rec.mu.Lock()
@@ -1005,45 +1123,21 @@ func TestQueueingExperimentClient(t *testing.T) {
 	report["late"] = rec.late
 	windowEchoed := len(rec.samples["game_up_ms"])
 	rec.mu.Unlock()
-	var uploaded float64
-	for name, list := range counters {
-		var total, squares float64
-		flows := make([]float64, 0, len(list))
-		for _, c := range list {
-			rate := c.mbit(duration)
-			flows = append(flows, rate)
-			total, squares = total+rate, squares+rate*rate
-		}
-		report[name+"_mbit"] = total
-		report[name+"_flows_mbit"] = flows
-		if squares > 0 {
-			report[name+"_jain"] = total * total / (float64(len(list)) * squares)
-		}
-		uploaded += total * duration.Seconds() / 8 * 1e6
-	}
-	if bulk, ok := report["bulk_mbit"].(float64); ok {
-		if quicRate, ok := report["quic_mbit"].(float64); ok && bulk+quicRate > 0 {
-			report["quic_share"] = quicRate / (bulk + quicRate)
-		}
-	}
 	// The process also runs the LAN's QUIC client and the writer's spin.
-	if uploaded > 0 && workload["quic"] == 0 && writerDelay == 0 {
-		report["cpu_ms_per_gb"] = float64(cpuUsed.Milliseconds()) / (uploaded / 1e9)
-	}
+	qexpReportUploads(report, counters, duration, cpuUsed, workload["quic"] == 0 && writerDelay == 0)
 	var lostUpload, lostDownload int64
-	for flow, count := range reported {
+	for _, flow := range []*qexpFlow{game, flood} {
+		if flow == nil {
+			continue
+		}
 		name := "game"
 		if flow == flood {
 			name = "flood"
 		}
-		sent, received := flow.sent.Load(), count.Load()
-		report[name+"_sent"], report[name+"_received"] = sent, received
-		report[name+"_lost"] = int64(sent) - int64(received)
-		lostUpload += int64(sent) - int64(received)
+		up, down := flow.reportLoss(report, name)
+		lostUpload += up
+		lostDownload += down
 		if name == "game" {
-			echoed := flow.echoed.Load()
-			report["game_echoed"], report["game_lan_dropped"] = echoed, flow.dropped.Load()
-			lostDownload += int64(received) - int64(echoed) - int64(flow.dropped.Load())
 			report["game_window_unechoed"] = int64(windowProbes.Load()) - int64(windowEchoed)
 		}
 	}
@@ -1057,12 +1151,9 @@ func TestQueueingExperimentClient(t *testing.T) {
 		}
 	}
 	report["drops"], report["drops_upload"], report["drops_download"] = counted, totals[netproxy.DropUpload], totals[netproxy.DropDownload]
-	// Lost probes not matched by drop counters. A LAN QUIC flow's drops are
-	// counted too, but its datagrams are not, so it has no check.
-	if workload["quic"] == 0 {
-		report["upload_unaccounted"] = lostUpload - totals[netproxy.DropUpload]
-		report["download_unaccounted"] = lostDownload - totals[netproxy.DropDownload]
-	}
+	qdiscDropped := int64(qdiscDrops() - qdiscBefore)
+	report["qdisc_drops"] = qdiscDropped
+	qexpReportLoss(report, workload, udp, download != nil, lostUpload, lostDownload, totals[netproxy.DropUpload], totals[netproxy.DropDownload], qdiscDropped)
 	out, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)

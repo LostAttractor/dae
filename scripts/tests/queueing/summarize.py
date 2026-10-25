@@ -22,14 +22,17 @@ COLUMNS = [
     ("itcp_up_ms", "P50"), ("ttfb_ms", "P50"), ("bulk_mbit", None),
     ("bulk_jain", None), ("quic_share", None), ("notsent_bytes", "P99"),
     ("cpu_ms_per_gb", None), ("datagram_memory_peak", None), ("maxrss_kb", None),
-    ("drops_upload", None), ("drops_download", None), ("flood_lost", None),
+    ("flood_up_ms", "P50"), ("flood_up_ms", "P99"), ("flood_mbit", None), ("drops_upload", None),
+    ("drops_download", None), ("qdisc_drops", None), ("flood_lost", None),
     ("game_echoed", None), ("game_sent", None), ("game_window_unechoed", None),
-    ("settle_s", None), ("late", "game_up_ms"), ("late", "itcp_up_ms"),
+    ("settle_s", None), ("settle_timeout", None),
+    ("late", "game_up_ms"), ("late", "game_down_ms"), ("late", "itcp_up_ms"),
+    ("late", "flood_up_ms"), ("late", "flood_down_ms"),
     ("late", "ttfb_ms"), ("upload_unaccounted", None),
     ("download_unaccounted", None),
 ]
 # Checks that should be 0: the worst run is shown, not the median.
-WORST = {"upload_unaccounted", "download_unaccounted", "late"}
+WORST = {"upload_unaccounted", "download_unaccounted", "late", "settle_timeout"}
 
 
 def value(run, key, field):

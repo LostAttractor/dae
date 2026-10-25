@@ -3,6 +3,7 @@ package juicity
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -92,5 +93,54 @@ func TestUnderlayUDPShortReadAndInitialSaltRetry(t *testing.T) {
 	tiny := make([]byte, 4)
 	if n, _, err := client.ReadFrom(tiny); err != nil || n != 4 || string(tiny) != "long" {
 		t.Fatalf("short ReadFrom=%q n=%d err=%v", tiny, n, err)
+	}
+}
+
+// droppingSocket never waits: it drops while drop is set, as a socket with a
+// full send buffer does.
+type droppingSocket struct {
+	net.PacketConn
+	drop bool
+	sent int
+}
+
+func (s *droppingSocket) TryWriteTo(b []byte, _ net.Addr) (int, error) {
+	if s.drop {
+		return 0, netproxy.ErrPacketDropped
+	}
+	s.sent++
+	return len(b), nil
+}
+
+// The underlay encrypts and sends without waiting, and the authentication
+// salt goes with the first datagram the socket takes, not one it drops.
+func TestUnderlayUDPKeepsInitialSaltAcrossDrops(t *testing.T) {
+	socket := &droppingSocket{drop: true}
+	key := &shadowsocks.Key{CipherConf: CipherConf, MasterKey: bytes.Repeat([]byte{7}, CipherConf.KeyLen)}
+	salt := bytes.Repeat([]byte{9}, CipherConf.SaltLen)
+	client := &TransportPacketConn{PacketConn: socket, proxyAddr: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}, key: key, firstIv: salt}
+	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](client); !ok || writer != netproxy.NonBlockingWriter(client) {
+		t.Fatalf("lookup found %T, want the underlay itself", writer)
+	}
+	if _, err := client.TryWriteTo([]byte("request"), nil); err != netproxy.ErrPacketDropped || client.firstIv == nil {
+		t.Fatalf("dropped TryWriteTo = %v, salt kept %v", err, client.firstIv != nil)
+	}
+	if n, err := client.Write([]byte("request")); n != 7 || err != nil || client.firstIv == nil {
+		t.Fatalf("dropped Write = %d, %v, salt kept %v", n, err, client.firstIv != nil)
+	}
+	socket.drop = false
+	if _, err := client.TryWriteTo([]byte("request"), nil); err != nil || socket.sent != 1 || client.firstIv != nil {
+		t.Fatalf("TryWriteTo = %v with %d sent, salt kept %v", err, socket.sent, client.firstIv != nil)
+	}
+}
+
+func TestUnderlayUDPChecksCarrierBeforeEncryption(t *testing.T) {
+	// No key: attempting encryption before rejecting this carrier would panic.
+	client := &TransportPacketConn{PacketConn: new(net.UDPConn)}
+	if client.CanTryWrite() {
+		t.Fatal("waiting carrier reported nonblocking capability")
+	}
+	if _, err := client.TryWriteTo([]byte("request"), nil); err != errors.ErrUnsupported {
+		t.Fatalf("TryWriteTo = %v", err)
 	}
 }

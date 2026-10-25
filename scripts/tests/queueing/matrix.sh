@@ -50,6 +50,8 @@ declare -A scenarios=(
 	[w7_200_d4]="QEXP_WORKLOAD=bulk:4 RATE=200mbit RETURN_DELAY=20ms QEXP_WRITER_DELAY=4ms"
 	[w7_1g]="QEXP_WORKLOAD=bulk:4 RATE=1gbit RETURN_DELAY=2ms"
 	[s4]="QEXP_WORKLOAD=game,flood:60 QEXP_MAX_CONNECTIONS=1"
+	[s4_direct]="QEXP_WORKLOAD=game,flood:60 QEXP_UDP=direct"
+	[s4_direct_30]="QEXP_WORKLOAD=game,flood:30 QEXP_UDP=direct"
 )
 names=("$@")
 [ ${#names[@]} -gt 0 ] || mapfile -t names < <(printf '%s\n' "${!scenarios[@]}" | sort)

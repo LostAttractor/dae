@@ -124,7 +124,7 @@ func TestUDPSniffingTimeoutCountsBufferedDatagrams(t *testing.T) {
 }
 
 // Each end of a MITM bridge counts the datagrams its full peer queue drops,
-// in the direction they travel.
+// in the direction they travel; WriteTo reports them as written.
 func TestMITMBridgeDropsAreCountedByDirection(t *testing.T) {
 	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("198.51.100.1:443"), nil)
 	t.Cleanup(func() { _ = ingress.Close() })
@@ -142,8 +142,11 @@ func TestMITMBridgeDropsAreCountedByDirection(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if tc.drop.Load()-dropped != 1 || tc.other.Load() != other {
-			t.Fatalf("%s: counted %d drops and %d in the other direction, want 1 and 0", tc.name, tc.drop.Load()-dropped, tc.other.Load()-other)
+		if _, err := tc.writer.(netproxy.NonBlockingWriter).TryWriteTo([]byte("packet"), tc.reader.LocalAddr()); err != netproxy.ErrPacketDropped {
+			t.Fatalf("%s: TryWriteTo to a full queue = %v", tc.name, err)
+		}
+		if tc.drop.Load()-dropped != 2 || tc.other.Load() != other {
+			t.Fatalf("%s: counted %d drops and %d in the other direction, want 2 and 0", tc.name, tc.drop.Load()-dropped, tc.other.Load()-other)
 		}
 	}
 }

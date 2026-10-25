@@ -95,3 +95,20 @@ func TestUDPWriteCipherCreationFailureCanRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestUDPUnsupportedWritePreservesPacketID(t *testing.T) {
+	conn, raw := newUDPForTest(t)
+	to := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 53}
+	if _, err := conn.TryWriteTo([]byte("packet"), to); err != errors.ErrUnsupported {
+		t.Fatalf("TryWriteTo = %v", err)
+	}
+	if conn.packetID != 0 || conn.cipherWrite != nil || raw.writes != 0 {
+		t.Fatal("unsupported write consumed cipher state")
+	}
+	if _, err := conn.WriteTo([]byte("packet"), to); err != nil {
+		t.Fatal(err)
+	}
+	if conn.packetID != 1 || raw.writes != 1 {
+		t.Fatalf("packet ID = %d, writes = %d; want one each", conn.packetID, raw.writes)
+	}
+}

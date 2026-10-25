@@ -101,5 +101,5 @@ func (d *Dialer) ListenPacket(ctx context.Context, _ string) (net.PacketConn, er
 		_ = conn.Close()
 		return nil, err
 	}
-	return &PacketConn{Conn: conn, codec: codec}, nil
+	return &PacketConn{UdpConn: conn, codec: codec}, nil
 }

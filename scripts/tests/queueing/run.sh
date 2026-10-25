@@ -21,6 +21,7 @@
 #   QEXP_WORKLOAD=game,bulk:4  game, bulk:N, quic, itcp, ttfb, flood:MBIT
 #   QEXP_DOWNLOAD=stall|slow   a TCP download that stalls or reads 1 MiB/s
 #   QEXP_MAX_CONNECTIONS=0     smux sessions (0: the default)
+#   QEXP_UDP=mux               UDP flows through smux, or direct: a socket each
 #   QEXP_WRITER_DELAY=0s       CPU spin before each carrier write
 #   QEXP_MPTCP=0               dial carriers with MPTCP, remembered per server
 #   QEXP_WARMUP=3s QEXP_DURATION=20s
@@ -98,7 +99,7 @@ for _ in $(seq 50); do
 	sleep 0.1
 done
 
-env DAE_QUEUE_EXP=1 QEXP_SERVER=10.77.0.2 QEXP_OUT="$report.tmp" QEXP_RETURN_DELAY="$RETURN_DELAY" QEXP_LABEL="$LABEL" \
+env DAE_QUEUE_EXP=1 QEXP_SERVER=10.77.0.2 QEXP_CAKE_DEV=qexpa QEXP_OUT="$report.tmp" QEXP_RETURN_DELAY="$RETURN_DELAY" QEXP_LABEL="$LABEL" \
 	QEXP_BINARY="$(sha256sum "$BIN" | cut -d' ' -f1)" ip netns exec "$client" taskset -c "$client_cpus" \
 	"$BIN" -test.run '^TestQueueingExperimentClient$' -test.timeout=${minutes}m >"$OUT/$LABEL.client.log" 2>&1 &
 pids+=($!)

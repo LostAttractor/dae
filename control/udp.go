@@ -103,7 +103,8 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 // writePacketUntil bounds a write with the socket's own deadline and leaves no
 // deadline behind. Cancellation reaches the write only through a worker slot,
 // so a packet arms no timer or context. Only transports without deadline
-// support need a timer, and transports that never block need neither.
+// support need a timer, and transports that never block, including kernel
+// UDP sockets, need neither.
 func writePacketUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -111,8 +112,8 @@ func writePacketUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlo
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		return 0, context.DeadlineExceeded
 	}
-	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn); ok {
-		return writer.TryWriteTo(data, dst)
+	if n, err := netproxy.TryWriteTo(conn, data, dst); !errors.Is(err, errors.ErrUnsupported) {
+		return n, err
 	}
 	if !deadline.IsZero() {
 		if conn.SetWriteDeadline(deadline) != nil {

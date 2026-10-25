@@ -296,6 +296,27 @@ func TestPacketWriteSkipsDeadlinesForNonBlockingTransport(t *testing.T) {
 	}
 }
 
+// waitingLayerPacketConn is a layer that never waits over a socket that
+// can only wait: TryWriteTo leaves the datagram to WriteTo.
+type waitingLayerPacketConn struct{ deadlineRecordingPacketConn }
+
+func (*waitingLayerPacketConn) TryWriteTo([]byte, net.Addr) (int, error) {
+	return 0, errors.ErrUnsupported
+}
+
+// Such a layer is written as a transport that blocks: bounded by its deadline,
+// which the write leaves behind cleared.
+func TestPacketWriteWaitsWhereTheLayerCannotTry(t *testing.T) {
+	conn := &waitingLayerPacketConn{deadlineRecordingPacketConn{testPacketConn: newTestPacketConn(false)}}
+	deadline := time.Now().Add(time.Hour)
+	if n, err := writePacketUntil(t.Context(), deadline, new(udpWriteSlot), conn, []byte("packet"), nil); n != 6 || err != nil {
+		t.Fatalf("writePacketUntil = %d, %v", n, err)
+	}
+	if want := []time.Time{deadline, {}}; !slices.Equal(conn.deadlines, want) {
+		t.Fatalf("write deadlines = %v, want %v", conn.deadlines, want)
+	}
+}
+
 // countedDrops sums the drop counters of the reasons, or of all if none.
 func countedDrops(reasons ...string) (n uint64) {
 	for drop := range netproxy.Drops() {

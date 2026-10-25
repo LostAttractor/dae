@@ -2,6 +2,7 @@ package juicity
 
 import (
 	"crypto/rand"
+	"errors"
 	"net"
 	"sync"
 
@@ -25,7 +26,22 @@ type TransportPacketConn struct {
 	closeErr  error
 }
 
-func (c *TransportPacketConn) Write(b []byte) (int, error) {
+// Write reports a datagram dropped beneath as written, as a
+// netproxy.NonBlockingWriter's WriteTo does.
+func (c *TransportPacketConn) Write(b []byte) (int, error) { return c.write(b, true) }
+
+// TryWriteTo sends the encrypted datagram to the proxy without waiting; see
+// netproxy.NonBlockingWriter.
+func (c *TransportPacketConn) TryWriteTo(b []byte, _ net.Addr) (int, error) {
+	if !c.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	return c.write(b, false)
+}
+
+// Without wait, write returns errors.ErrUnsupported if the socket beneath can
+// only wait.
+func (c *TransportPacketConn) write(b []byte, wait bool) (int, error) {
 	if c.lease != nil && !c.lease.Valid() {
 		return 0, c.lease.Cause()
 	}
@@ -46,8 +62,20 @@ func (c *TransportPacketConn) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	defer pool.PutBuffer(toWrite)
-	_, err = c.PacketConn.WriteTo(toWrite, c.proxyAddr)
-	if err != nil {
+	_, err = netproxy.TryWriteTo(c.PacketConn, toWrite, c.proxyAddr)
+	if wait && errors.Is(err, errors.ErrUnsupported) {
+		_, err = c.PacketConn.WriteTo(toWrite, c.proxyAddr)
+	}
+	switch {
+	case errors.Is(err, netproxy.ErrPacketDropped):
+		// The next datagram carries firstIv instead.
+		if wait {
+			return len(b), nil
+		}
+		return 0, err
+	case errors.Is(err, errors.ErrUnsupported):
+		return 0, err
+	case err != nil:
 		return 0, c.wrap(err)
 	}
 	c.firstIv = nil
@@ -102,3 +130,6 @@ func (c *TransportPacketConn) wrap(err error) error {
 
 func (c *TransportPacketConn) LocalAddr() net.Addr  { return c.PacketConn.LocalAddr() }
 func (c *TransportPacketConn) RemoteAddr() net.Addr { return c.target }
+
+// CanTryWrite reports the carrier capability without bypassing this layer.
+func (c *TransportPacketConn) CanTryWrite() bool { return netproxy.CanTryWriteTo(c.PacketConn) }

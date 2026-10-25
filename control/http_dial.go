@@ -75,7 +75,13 @@ func (c *mitmUpstreamConn) Read(p []byte) (int, error) {
 }
 
 func (c *mitmUpstreamConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
+	n, err := netproxy.TryWrite(c.Conn, p)
+	switch {
+	case errors.Is(err, netproxy.ErrPacketDropped):
+		return len(p), nil
+	case errors.Is(err, errors.ErrUnsupported):
+		n, err = c.Conn.Write(p)
+	}
 	c.traffic.RecordUpload(uint64(n))
 	return n, c.failure(err, netproxy.OpWrite)
 }
@@ -107,12 +113,12 @@ func (c *mitmUpstreamPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 }
 
 func (c *mitmUpstreamPacketConn) WriteTo(data []byte, to net.Addr) (n int, err error) {
-	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](c.PacketConn); ok {
-		if n, err = writer.TryWriteTo(data, to); err == netproxy.ErrPacketDropped {
-			// Lost on the way to quic-go or a DNS client, and not uploaded.
-			return len(data), nil
-		}
-	} else {
+	n, err = netproxy.TryWriteTo(c.PacketConn, data, to)
+	switch {
+	case errors.Is(err, netproxy.ErrPacketDropped):
+		// Lost on the way to quic-go or a DNS client, and not uploaded.
+		return len(data), nil
+	case errors.Is(err, errors.ErrUnsupported):
 		n, err = c.PacketConn.WriteTo(data, to)
 	}
 	c.traffic.RecordUpload(uint64(n))

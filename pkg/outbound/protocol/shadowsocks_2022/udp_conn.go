@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -93,7 +94,22 @@ func (c *UdpConn) writeIdentityHeader(buf *bytes.Buffer, separate []byte) error 
 	return nil
 }
 
+// WriteTo reports a datagram dropped beneath as written, as a
+// netproxy.NonBlockingWriter does.
 func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
+	return c.writeTo(payload, addr, netproxy.WriteDatagram)
+}
+
+// TryWriteTo sends the encrypted datagram without waiting; see
+// netproxy.NonBlockingWriter.
+func (c *UdpConn) TryWriteTo(payload []byte, addr net.Addr) (int, error) {
+	if !c.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	return c.writeTo(payload, addr, netproxy.TryWrite)
+}
+
+func (c *UdpConn) writeTo(payload []byte, addr net.Addr, send func(net.Conn, []byte) (int, error)) (int, error) {
 	if addr == nil {
 		return 0, fmt.Errorf("nil packet destination")
 	}
@@ -141,7 +157,7 @@ func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	}
 	buf.Grow(message.Len() + c.cipherWrite.Overhead())
 	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), separate[4:], message.Bytes(), nil))
-	n, err := c.Conn.Write(buf.Bytes())
+	n, err := send(c.Conn, buf.Bytes())
 	if n == buf.Len() {
 		return len(payload), err
 	}
@@ -246,3 +262,6 @@ func (c *UdpConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 	return n, addr, nil
 }
+
+// CanTryWrite reports the carrier capability without bypassing this layer.
+func (c *UdpConn) CanTryWrite() bool { return netproxy.CanTryWrite(c.Conn) }

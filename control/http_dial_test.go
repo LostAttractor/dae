@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -76,5 +77,31 @@ func TestMITMUpstreamHalfCloseUnsupported(t *testing.T) {
 	conn := &mitmUpstreamConn{Conn: client}
 	if err := netproxy.CloseWrite(conn); err != errors.ErrUnsupported {
 		t.Fatalf("unsupported half-close=%v", err)
+	}
+}
+
+func TestMITMUpstreamWriteAccountsTCP(t *testing.T) {
+	client, server := relayTestTCPPair(t)
+	defer server.Close()
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	group := downloadTestGroup(t, t.Name(), func(context.Context, string, string) (net.Conn, error) { return client, nil })
+	option := &DialOption{Dialer: group.Dialers[0], Outbound: group, NetworkType: *common.NetworkTCP4.NetworkType()}
+	upstream, err := dialHTTPUpstream(t.Context(), option)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	path, _ := option.trafficAttribution()
+	before := stats.DefaultStore.Snapshot()[path].UploadBytes
+	if n, err := upstream.Write([]byte("query")); n != 5 || err != nil {
+		t.Fatalf("TCP write = %d, %v", n, err)
+	}
+	var b [5]byte
+	if _, err := io.ReadFull(server, b[:]); err != nil || string(b[:]) != "query" {
+		t.Fatalf("TCP delivery = %q, %v", b, err)
+	}
+	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes - before; uploaded != 5 {
+		t.Fatalf("TCP upload = %d, want 5", uploaded)
 	}
 }

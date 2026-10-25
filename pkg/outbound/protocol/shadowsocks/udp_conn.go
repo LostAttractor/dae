@@ -2,11 +2,13 @@ package shadowsocks
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 )
@@ -28,7 +30,22 @@ func NewUdpConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg Sa
 	}
 }
 
+// WriteTo reports a datagram dropped beneath as written, as a
+// netproxy.NonBlockingWriter does.
 func (c *UdpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	return c.writeTo(b, addr, netproxy.WriteDatagram)
+}
+
+// TryWriteTo sends the encrypted datagram without waiting; see
+// netproxy.NonBlockingWriter.
+func (c *UdpConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
+	if !c.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	return c.writeTo(b, addr, netproxy.TryWrite)
+}
+
+func (c *UdpConn) writeTo(b []byte, addr net.Addr, send func(net.Conn, []byte) (int, error)) (int, error) {
 	if addr == nil {
 		return 0, fmt.Errorf("nil packet destination")
 	}
@@ -55,7 +72,7 @@ func (c *UdpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	buf.Grow(payload.Len() + cipher.Overhead())
 	buf.Write(cipher.Seal(buf.AvailableBuffer(), ciphers.ZeroNonce[:c.cipherConf.NonceLen], payload.Bytes(), nil))
 
-	written, err := c.Conn.Write(buf.Bytes())
+	written, err := send(c.Conn, buf.Bytes())
 	if written == buf.Len() {
 		return len(b), err
 	}
@@ -97,3 +114,6 @@ func (c *UdpConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 
 	return copy(b, payload[len(payload)-reader.Len():]), addr, nil
 }
+
+// CanTryWrite reports the carrier capability without bypassing this layer.
+func (c *UdpConn) CanTryWrite() bool { return netproxy.CanTryWrite(c.Conn) }

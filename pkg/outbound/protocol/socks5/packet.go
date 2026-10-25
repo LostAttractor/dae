@@ -103,6 +103,21 @@ func (pc *PktConn) ReadFrom(b []byte) (int, net.Addr, error) {
 }
 
 func (pc *PktConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	return pc.writeTo(b, addr, pc.PacketConn.WriteTo)
+}
+
+// TryWriteTo relays the datagram without waiting; see
+// netproxy.NonBlockingWriter.
+func (pc *PktConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
+	if !pc.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	return pc.writeTo(b, addr, func(b []byte, server net.Addr) (int, error) {
+		return netproxy.TryWriteTo(pc.PacketConn, b, server)
+	})
+}
+
+func (pc *PktConn) writeTo(b []byte, addr net.Addr, writeTo func([]byte, net.Addr) (int, error)) (int, error) {
 	if !pc.lease.Valid() {
 		return 0, pc.lease.Cause()
 	}
@@ -116,10 +131,13 @@ func (pc *PktConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 		return 0, fmt.Errorf("SOCKS5 UDP datagram exceeds 65507 bytes")
 	}
 	buf.Write(b)
-	n, err := pc.PacketConn.WriteTo(buf.Bytes(), pc.server)
+	n, err := writeTo(buf.Bytes(), pc.server)
 	if n != buf.Len() {
-		if err == nil {
+		switch {
+		case err == nil:
 			err = io.ErrShortWrite
+		case errors.Is(err, netproxy.ErrPacketDropped), errors.Is(err, errors.ErrUnsupported):
+			return 0, err
 		}
 		return 0, errors.Join(err, pc.lease.Cause())
 	}
@@ -141,3 +159,6 @@ func (pc *PktConn) Close() error {
 }
 
 func (pc *PktConn) DependencyLease() *netproxy.Lease { return pc.lease }
+
+// CanTryWrite reports the carrier capability without bypassing this layer.
+func (pc *PktConn) CanTryWrite() bool { return netproxy.CanTryWriteTo(pc.PacketConn) }
