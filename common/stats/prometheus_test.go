@@ -8,10 +8,12 @@ package stats
 import (
 	"errors"
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -129,4 +131,36 @@ func TestStoreCollectorSurvivesExternalReadFailure(t *testing.T) {
 		t.Fatal("external counter error was not recorded")
 	}
 	_ = connection.Close()
+}
+
+// Every UDP drop counter is exported, also before its first drop.
+func TestStoreExportsUDPPacketDrops(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(newStoreAt(time.Now()))
+	before := netproxy.DropReceiveFull.Load()
+	netproxy.DropReceiveFull.Add(1)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported := 0
+	for _, family := range families {
+		if family.GetName() != "dae_udp_packet_drops_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			exported++
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["direction"] == netproxy.DropReceiveFull.Direction() && labels["reason"] == netproxy.DropReceiveFull.Reason() &&
+				metric.GetCounter().GetValue() != float64(before+1) {
+				t.Fatalf("exported %v, want %d", metric.GetCounter().GetValue(), before+1)
+			}
+		}
+	}
+	if want := len(slices.Collect(netproxy.Drops())); exported != want {
+		t.Fatalf("exported %d drop counters, want %d", exported, want)
+	}
 }

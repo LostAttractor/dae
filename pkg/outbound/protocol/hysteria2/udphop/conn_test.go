@@ -107,9 +107,12 @@ func TestCloseUnblocksWriteAndJoinsReceivers(t *testing.T) {
 	closePromptly(t, conn)
 	waitClosed(t, done)
 }
+
+// A packet beyond the full receive queue is dropped and counted.
 func TestCloseDrainsFullReceiveQueueAfterSocketTimeout(t *testing.T) {
+	dropped := dropCarrierReceiveFull.Load()
 	raw := newControlledConn()
-	raw.remaining = packetQueueSize
+	raw.remaining = packetQueueSize + 1
 	returned := make(chan struct{})
 	raw.timeoutReturned = returned
 	conn, err := NewUDPHopPacketConn(context.Background(), testHopAddr(), time.Hour, func(context.Context, net.Addr) (net.Conn, error) { return raw, nil })
@@ -117,6 +120,9 @@ func TestCloseDrainsFullReceiveQueueAfterSocketTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitClosed(t, returned)
+	if n := dropCarrierReceiveFull.Load() - dropped; n != 1 {
+		t.Fatalf("counted %d drops, want 1", n)
+	}
 	closePromptly(t, conn)
 	if n := len(conn.(*udpHopPacketConn).recvQueue); n != 0 {
 		t.Fatalf("retained %d pooled packets after Close", n)

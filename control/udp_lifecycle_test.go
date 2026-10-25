@@ -45,24 +45,31 @@ func (d *udpLifecycleDialer) ListenPacket(context.Context, string) (net.PacketCo
 	return p, nil
 }
 
+// newTestUDPCore holds the BPF maps UDP source setup binds in. Creating them
+// requires privileges; the test is skipped without.
+func newTestUDPCore(t *testing.T) *controlPlaneCore {
+	mapOf := func(name string, valueSize uint32) *ebpf.Map {
+		m, err := ebpf.NewMap(&ebpf.MapSpec{Name: name, Type: ebpf.Hash,
+			KeySize: uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})), ValueSize: valueSize, MaxEntries: 16})
+		if errors.Is(err, unix.EPERM) {
+			t.Skip("creating a BPF map requires privileges")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.Close() })
+		return m
+	}
+	bindings := mapOf("udp_bind_test", uint32(unsafe.Sizeof(uint64(0))))
+	decisions := mapOf("udp_route_test", uint32(unsafe.Sizeof(bpfUdpRoutingCacheValue{})))
+	return &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UdpBindingsMap: bindings, UdpRoutingCacheMap: decisions}}}}
+}
+
 func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 	for _, device := range []bool{false, true} {
 		t.Run(map[bool]string{false: "resource", true: "device"}[device], func(t *testing.T) {
-
-			mapOf := func(name string, valueSize uint32) *ebpf.Map {
-				m, err := ebpf.NewMap(&ebpf.MapSpec{Name: name, Type: ebpf.Hash,
-					KeySize: uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})), ValueSize: valueSize, MaxEntries: 16})
-				if errors.Is(err, unix.EPERM) {
-					t.Skip("creating a BPF map requires privileges")
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = m.Close() })
-				return m
-			}
-			bindings := mapOf("udp_bind_test", uint32(unsafe.Sizeof(uint64(0))))
-			decisions := mapOf("udp_route_test", uint32(unsafe.Sizeof(bpfUdpRoutingCacheValue{})))
+			core := newTestUDPCore(t)
+			bindings := core.bpf.UdpBindingsMap
 			newGroup := func(name string) (*outbound.DialerGroup, *udpLifecycleDialer) {
 				data := &udpLifecycleDialer{opened: make(chan *udpLifecyclePacket, 8)}
 				option := new(dialer.GlobalOption)
@@ -76,8 +83,7 @@ func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 			b, dataB := newGroup("b")
 			p := new(UdpEndpointPool)
 			t.Cleanup(p.closeAll)
-			c := &ControlPlane{deviceRoutes: newTestDeviceRoutes(t), udpEndpoints: p, outbounds: []*outbound.DialerGroup{nil, nil, a, b},
-				core: &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UdpBindingsMap: bindings, UdpRoutingCacheMap: decisions}}}}}
+			c := &ControlPlane{deviceRoutes: newTestDeviceRoutes(t), udpEndpoints: p, outbounds: []*outbound.DialerGroup{nil, nil, a, b}, core: core}
 			src := netip.MustParseAddrPort("192.0.2.2:30000")
 			first := netip.MustParseAddrPort("192.0.2.3:443")
 			second := netip.MustParseAddrPort("192.0.2.4:8443")

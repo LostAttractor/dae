@@ -20,6 +20,10 @@ const (
 	defaultHopInterval = 30 * time.Second
 )
 
+// The receive queue holds the QUIC packets hysteria2 is carried in, not the
+// datagrams it delivers: what it drops QUIC may retransmit.
+var dropCarrierReceiveFull = netproxy.NewDrop(netproxy.DropDownload, "carrier_queue_full")
+
 type udpHopPacketConn struct {
 	HopInterval                     time.Duration
 	addrs                           []net.Addr
@@ -157,6 +161,7 @@ func (u *udpHopPacketConn) recvLoop(conn net.Conn) {
 		select {
 		case u.recvQueue <- packet:
 		default:
+			dropCarrierReceiveFull.Add(1)
 			pool.PutBuffer(buf)
 		}
 	}

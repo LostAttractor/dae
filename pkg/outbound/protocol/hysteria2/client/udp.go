@@ -91,6 +91,8 @@ func (u *udpConn) feedDefrag(msg *protocol.UDPMessage) *protocol.UDPMessage {
 	defer u.receiveMu.Unlock()
 
 	if now.Sub(u.lastSweep) >= defraggerTimeout {
+		// An expired entry's datagram lost a fragment before it got here;
+		// the layer that dropped the fragment counted it.
 		u.lastSweep = now
 		for packetID, entry := range u.defraggers {
 			if !now.Before(entry.expiresAt) {
@@ -105,6 +107,7 @@ func (u *udpConn) feedDefrag(msg *protocol.UDPMessage) *protocol.UDPMessage {
 	entry := u.defraggers[msg.PacketID]
 	if entry == nil || !now.Before(entry.expiresAt) {
 		if len(u.defraggers) >= udpMessageChanSize {
+			netproxy.DropReceiveFull.Add(1)
 			return nil
 		}
 		if u.defraggers == nil {
@@ -283,15 +286,14 @@ func (m *udpSessionManager) run() error {
 func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 	conn, ok := m.connMap.Load(msg.SessionID)
 	if !ok {
-		// Ignore message from unknown session
+		netproxy.DropClosedStream.Add(1)
 		return
 	}
 
 	select {
 	case conn.(*udpConn).ReceiveCh <- msg:
-		// OK
 	default:
-		// Channel full, drop the message
+		netproxy.DropReceiveFull.Add(1)
 	}
 }
 

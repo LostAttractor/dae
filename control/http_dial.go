@@ -110,7 +110,6 @@ func (c *mitmUpstreamPacketConn) WriteTo(data []byte, to net.Addr) (n int, err e
 	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](c.PacketConn); ok {
 		if n, err = writer.TryWriteTo(data, to); err == netproxy.ErrPacketDropped {
 			// Lost on the way to quic-go or a DNS client, and not uploaded.
-			mitmPacketDrops.report("transport_queue_full")
 			return len(data), nil
 		}
 	} else {

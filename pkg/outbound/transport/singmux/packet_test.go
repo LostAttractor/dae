@@ -120,11 +120,12 @@ func testSmuxPacketConn(t testing.TB, s *smuxSession) *smuxPacketConn {
 }
 
 // Datagrams queue without waiting, even while the carrier is stuck, up to
-// the stream's queue; beyond it they are dropped, and later ones queue again
-// once the writer caught up. The request precedes the first datagram. Only
-// TryWriteTo reports a drop: to other callers it is a datagram lost on the
-// way.
+// the stream's queue; beyond it they are dropped and counted, and later ones
+// queue again once the writer caught up. The request precedes the first
+// datagram. Only TryWriteTo reports a drop: to other callers it is a
+// datagram lost on the way.
 func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
+	dropped := dropFlowQueueFull.Load()
 	local, remote := net.Pipe()
 	carrier := newGatedConn(local)
 	s := newTestSmuxSession(carrier)
@@ -147,6 +148,9 @@ func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
 	bound := &netproxy.BindPacketConn{PacketConn: conn, Address: target}
 	if n, err := bound.Write(payload); n != len(payload) || err != nil {
 		t.Fatalf("dropped Write = %d, %v; want it written", n, err)
+	}
+	if n := dropFlowQueueFull.Load() - dropped; n != 2 {
+		t.Fatalf("counted %d stream queue drops, want 2", n)
 	}
 	s.mu.Lock()
 	backlog := conn.stream.queued
@@ -188,6 +192,7 @@ func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
 
 // The datagram streams of a session share one queue bound.
 func TestSmuxSessionDatagramQueue(t *testing.T) {
+	dropped := dropCarrierQueueFull.Load()
 	local, remote := net.Pipe()
 	defer remote.Close()
 	carrier := newGatedConn(local)
@@ -217,6 +222,9 @@ func TestSmuxSessionDatagramQueue(t *testing.T) {
 	// The last stream dropped below its own bound, at the session's.
 	if size := smuxHeaderSize + 7 + 2 + len(payload); queued > smuxSessionDatagramQueue || queued+size <= smuxSessionDatagramQueue {
 		t.Fatalf("session dropped with %d datagram bytes queued (%d datagrams), bound %d", queued, accepted, smuxSessionDatagramQueue)
+	}
+	if n := dropCarrierQueueFull.Load() - dropped; n != 1 {
+		t.Fatalf("counted %d session queue drops, want 1", n)
 	}
 	// Let Close write the queue.
 	go io.Copy(io.Discard, remote)

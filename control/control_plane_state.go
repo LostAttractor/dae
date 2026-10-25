@@ -32,7 +32,6 @@ type planeTraffic struct {
 	tcpConnections   *tcpConnectionTracker
 	udpTaskPool      *udpTaskPool
 	udpSetups        atomic.Int32
-	udpSetupDrops    udpPacketDrops
 	udpEndpoints     *UdpEndpointPool
 	tcpSetupCtx      context.Context
 	cancelTCPSetups  context.CancelFunc

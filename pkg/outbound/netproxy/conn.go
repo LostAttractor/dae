@@ -37,8 +37,9 @@ var ErrPacketDropped = errors.New("datagram dropped: transport queue full")
 
 // NonBlockingWriter is a packet connection whose writes never wait: TryWriteTo
 // queues the datagram or drops it with ErrPacketDropped, for callers that
-// account for drops, and WriteTo drops it without an error, as a congested
-// link would. Write deadlines have nothing to bound.
+// account for sent datagrams, and WriteTo drops it without an error, as a
+// congested link would. The transport counts its drops in a Drop; callers do
+// not. Write deadlines have nothing to bound.
 type NonBlockingWriter interface {
 	TryWriteTo(b []byte, addr net.Addr) (int, error)
 }

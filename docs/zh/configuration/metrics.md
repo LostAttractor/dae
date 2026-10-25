@@ -15,9 +15,6 @@ global {
 关闭实例后移除其序列，`dae_plugin_instance_start_time_seconds` 表示实例激活时间。关闭或更改指标监听端口不会重置运行中插件的统计。
 累计指标使用 `rate`、`increase` 查询以处理重置。
 
-以下指标名称均省略 **`dae_plugin_`** 前缀。Histogram 包含 `_bucket`、`_sum`、`_count`，耗时单位为秒，内存单位为字节。
-部分有界 Counter 标签组合在首次事件发生后出现。采集只读取内存状态，与日志级别无关。
-
 ## 核心流量统计
 
 `dae_process_connections_total{network}` 和 `dae_process_traffic_bytes_total{network,direction}`
@@ -29,6 +26,37 @@ global {
 路径级连接、流量、拨号耗时和错误序列保留当前配置中的节点；移除路径在连接结束且最近一分钟历史过期后回收。
 路径重新出现时明细从零开始，查询历史趋势使用 `rate` 或 `increase`。设备统计不作为 Prometheus 标签导出。
 端口变更会先准备全部监听；任一端口绑定失败时拒绝配置，保留现有服务。
+
+## UDP 丢包
+
+`dae_udp_packet_drops_total{direction,reason}` 是核心指标，名称不带 `dae_plugin_` 前缀。它由丢弃数据报的那一层计数，按进程生命周期累计，重载不清零；全部组合在首次丢包前即以 0 导出。
+`direction` 为 `upload`（LAN 到外网）或 `download`。被告知丢包的调用方不重复计数。每个组合每分钟最多输出一条 Warn 日志；`route_missing`、`filtered`、`closed_stream` 属于正常运行中的丢弃，只计数不输出日志。
+
+| `reason` | `direction` | 含义 |
+| --- | --- | --- |
+| `socket_overflow` | `upload` | tproxy UDP socket 接收队列溢出，随下一个入队的数据报上报 |
+| `truncated` | `upload` | 截断的数据报 |
+| `route_missing` | `upload` | 内核路由记录已不存在，或数据报排队期间其端点已移除 |
+| `source_queue_full`、`task_limit`、`source_limit` | `upload` | 每源队列、全局任务数或积压源数已满 |
+| `packet_memory_limit` | 两者 | 共享数据报内存已满 |
+| `expired` | `upload` | 截止前未能发出，包括排队、建立、嗅探超时和阻塞写入；配置换代取消的数据报不计 |
+| `setup_capacity`、`endpoint_limit` | `upload` | 并发建立的关联或 UDP 源端点数已满 |
+| `packet_resource_limit` | `upload` | 无法打开 UDP 关联或 socket：进程级数据包资源数或单个源的 socket 数已满 |
+| `dns_admission` | `upload` | 并发 DNS 查询数已满 |
+| `mitm_bridge_full` | 两者 | MITM HTTP/3 桥队列已满 |
+| `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
+| `flow_queue_full`、`carrier_queue_full` | `upload` | smux 单流或单会话的数据报队列已满 |
+| `transport_receive_full` | `download` | hysteria2、TUIC 的数据报接收队列或分片重组表已满 |
+| `carrier_queue_full` | `download` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
+| `closed_stream` | `download` | 回包所属的关联已被 dae 关闭或正在关闭。smux 为已被 dae 关闭的流收到的数据不计：会话已无法判断该流是否承载数据报 |
+| `reply_queue_full` | `download` | 推送回包的积压队列已满 |
+
+该指标不包含 quic-go 内部 DATAGRAM 接收队列和封包器丢弃的数据报。
+
+## 插件指标名称
+
+以下指标名称均省略 **`dae_plugin_`** 前缀。Histogram 包含 `_bucket`、`_sum`、`_count`，耗时单位为秒，内存单位为字节。
+部分有界 Counter 标签组合在首次事件发生后出现。采集只读取内存状态，与日志级别无关。
 
 ## DNS 缓存
 

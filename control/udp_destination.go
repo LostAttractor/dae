@@ -41,6 +41,7 @@ func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 		if common.ConvergeAddrPort(address) == c.target {
 			return n, net.UDPAddrFromAddrPort(c.original), nil
 		}
+		dropDownloadFiltered.Add(1)
 	}
 }
 
@@ -51,6 +52,8 @@ func (c *destinationPacketConn) SetPacketHandler(onPacket func([]byte, netip.Add
 	return ok && pusher.SetPacketHandler(func(payload []byte, from netip.AddrPort) {
 		if common.ConvergeAddrPort(from) == c.target {
 			onPacket(payload, c.original)
+		} else {
+			dropDownloadFiltered.Add(1)
 		}
 	}, onClose)
 }
@@ -243,7 +246,11 @@ type udpPushedReply struct {
 func (r *udpPushReceiver) onPacket(payload []byte, from netip.AddrPort) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.done || r.closed {
+	if r.done {
+		netproxy.DropClosedStream.Add(1)
+		return
+	}
+	if r.closed {
 		return
 	}
 	if !r.draining {
@@ -259,12 +266,12 @@ func (r *udpPushReceiver) onPacket(payload []byte, from netip.AddrPort) {
 		}
 	}
 	if len(r.backlog) == udpTaskQueueLength {
-		r.p.drops.report("reply_queue_full")
+		dropReplyQueue.Add(1)
 		return
 	}
 	packet, ok := copyUDPPacket(payload, udpPacketMemory)
 	if !ok {
-		r.p.drops.report("packet_memory_limit")
+		dropDownloadMemory.Add(1)
 		return
 	}
 	r.backlog = append(r.backlog, udpPushedReply{packet, from})
@@ -293,6 +300,7 @@ func (r *udpPushReceiver) drainLocked() {
 // endLocked ends delivery in the background and drops queued replies.
 func (r *udpPushReceiver) endLocked(err error) {
 	r.done = true
+	netproxy.DropClosedStream.Add(uint64(len(r.backlog)))
 	for _, reply := range r.backlog {
 		reply.packet.release()
 	}

@@ -55,6 +55,9 @@ const (
 var (
 	errSmuxProtocol  = errors.New("smux: invalid frame")
 	errSmuxStreamIDs = errors.New("smux: stream IDs exhausted")
+
+	dropFlowQueueFull    = netproxy.NewDrop(netproxy.DropUpload, "flow_queue_full")
+	dropCarrierQueueFull = netproxy.NewDrop(netproxy.DropUpload, "carrier_queue_full")
 )
 
 // fifo is a slice-backed queue that reuses its storage.
@@ -675,7 +678,11 @@ func (st *smuxStream) writeDatagram(data []byte, force bool) error {
 		err = s.err
 	case s.closing:
 		err = io.ErrClosedPipe
-	case !force && (st.queued > 0 && st.queued+n > smuxDatagramQueue || s.datagrams > 0 && s.datagrams+n > smuxSessionDatagramQueue):
+	case !force && st.queued > 0 && st.queued+n > smuxDatagramQueue:
+		dropFlowQueueFull.Add(1)
+		err = netproxy.ErrPacketDropped
+	case !force && s.datagrams > 0 && s.datagrams+n > smuxSessionDatagramQueue:
+		dropCarrierQueueFull.Add(1)
 		err = netproxy.ErrPacketDropped
 	default:
 		st.queued += n

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 const (
@@ -94,7 +95,6 @@ type udpTaskPool struct {
 	closed                           bool
 	tasks                            int // Accepted tasks, including those currently running.
 	memory                           *membuffer.Budget
-	drops                            udpPacketDrops
 	maxWorkers, maxSources, maxTasks int
 }
 
@@ -121,24 +121,24 @@ func (p *udpTaskPool) emit(data []byte, work udpPacketWork) bool {
 		return false
 	}
 	q := p.queues[key]
-	reason := ""
+	var drop *netproxy.Drop
 	switch {
 	case q != nil && q.pending == udpTaskQueueLength:
-		reason = "source_queue_full"
+		drop = dropSourceQueue
 	case p.tasks == p.maxTasks:
-		reason = "task_limit"
+		drop = dropTaskLimit
 	case q == nil && len(p.queues) == p.maxSources:
-		reason = "source_limit"
+		drop = dropSourceLimit
 	}
-	if reason != "" {
+	if drop != nil {
 		p.mu.Unlock()
-		p.drops.report(reason)
+		drop.Add(1)
 		return false
 	}
 	packet, ok := copyUDPPacket(data, p.memory)
 	if !ok {
 		p.mu.Unlock()
-		p.drops.report("packet_memory_limit")
+		dropUploadMemory.Add(1)
 		return false
 	}
 	task := queuedUDPTasks.Get().(*queuedUDPTask)

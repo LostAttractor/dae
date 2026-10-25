@@ -22,8 +22,6 @@ const (
 	mitmPacketMaxSize   = 65535
 )
 
-var mitmPacketDrops udpPacketDrops
-
 type mitmPacketPair struct {
 	mu     sync.Mutex
 	closed bool
@@ -35,6 +33,7 @@ type mitmPacketConn struct {
 	pair          *mitmPacketPair
 	peer          *mitmPacketConn
 	local         netip.AddrPort
+	upload        bool // writes go from the client to the server
 	readDeadline  time.Time
 	writeDeadline time.Time
 	readChanged   chan struct{}
@@ -50,7 +49,7 @@ type mitmPacketConn struct {
 // connection cannot block the transparent packet worker.
 func newMITMPacketPair(client, destination netip.AddrPort, route *netproxy.Lease) (ingress, server net.PacketConn) {
 	pair := &mitmPacketPair{memory: udpPacketMemory, lease: netproxy.NewLease(netproxy.NewResourceRef(), route)}
-	a := &mitmPacketConn{pair: pair, local: client, readChanged: make(chan struct{})}
+	a := &mitmPacketConn{pair: pair, local: client, upload: true, readChanged: make(chan struct{})}
 	b := &mitmPacketConn{pair: pair, local: destination, readChanged: make(chan struct{})}
 	a.peer, b.peer = b, a
 	return a, b
@@ -122,12 +121,21 @@ func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 		return 0, &net.OpError{Op: "write", Net: "udp", Source: c.LocalAddr(), Addr: addr, Err: syscall.EMSGSIZE}
 	}
 	if c.peer.count == mitmPacketQueueSize {
+		if c.upload {
+			dropUploadMITM.Add(1)
+		} else {
+			dropDownloadMITM.Add(1)
+		}
 		return len(buf), nil
 	}
 	index := (c.peer.head + c.peer.count) % mitmPacketQueueSize
 	packet, ok := copyUDPPacket(buf, c.pair.memory)
 	if !ok {
-		mitmPacketDrops.report("packet_memory_limit")
+		if c.upload {
+			dropUploadMemory.Add(1)
+		} else {
+			dropDownloadMemory.Add(1)
+		}
 		return len(buf), nil
 	}
 	c.peer.packets[index] = packet

@@ -163,15 +163,27 @@ type udpPacketWork struct {
 	deadline      time.Time
 }
 
+// A packet whose deadline passes before it is handled, or while its handling
+// fails, is counted as expired; one its retired generation cancels is not.
 func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
 	c := w.plane
-	if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(w.deadline) {
+	ctx := c.udpTaskPool.ctx
+	if c.ctx.Err() != nil || ctx.Err() != nil {
 		return
 	}
-	ctx := c.udpTaskPool.ctx
-	if err := c.handlePktUntil(ctx, w.deadline, slot, data, w.src, w.dst, w.routingResult); err != nil && ctx.Err() == nil && time.Now().Before(w.deadline) {
-		log.WithError(err).WithFields(log.Fields{"source": w.src, "destination": w.dst}).Debug("UDP packet handling failed")
+	if !time.Now().Before(w.deadline) {
+		dropExpired.Add(1)
+		return
 	}
+	err := c.handlePktUntil(ctx, w.deadline, slot, data, w.src, w.dst, w.routingResult)
+	if err == nil || c.ctx.Err() != nil || ctx.Err() != nil {
+		return
+	}
+	if !time.Now().Before(w.deadline) {
+		dropExpired.Add(1)
+		return
+	}
+	log.WithError(err).WithFields(log.Fields{"source": w.src, "destination": w.dst}).Debug("UDP packet handling failed")
 }
 
 // enqueueUDPPacket copies borrowed data into a pooled typed task. Deadlines
@@ -231,7 +243,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 	if !exists || ue.conn == nil {
 		if c.udpSetups.Add(1) > maxConcurrentUDPSetups {
 			c.udpSetups.Add(-1)
-			c.udpSetupDrops.report("setup capacity")
+			dropSetupCapacity.Add(1)
 			return nil
 		}
 		defer c.udpSetups.Add(-1)
@@ -240,6 +252,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 		// A queued packet may outlive the endpoint whose kernel binding sent
 		// it here. Drop it; the next ingress packet will carry a fresh route.
 		if routingResult == nil {
+			dropRouteMissing.Add(1)
 			return nil
 		}
 		routeLease, err := c.deviceRoutes.acquire(routingResult)
@@ -266,7 +279,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 		ue.setupOwner.Store(c)
 		if !p.addLocked(src, ue) {
 			_ = ue.Close()
-			c.udpSetupDrops.report("source capacity")
+			dropEndpointLimit.Add(1)
 			return nil
 		}
 		ue.stopWatching = append(ue.stopWatching, watchAbort(nil, nil, routeLease, func() {
@@ -344,6 +357,22 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	} else {
 		option, err = c.RouteDialOption(ctx, param)
 	}
+	// A failed setup discards the packets buffered for sniffing and the
+	// current one; execute does not see them.
+	discard := func(drop *netproxy.Drop) {
+		n := len(pending.sniffer.Data()) - 1 // Data()[0] is the empty seed
+		if dst != ue.firstDst {
+			n++
+		}
+		drop.Add(uint64(n))
+	}
+	expired := func() bool {
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false
+		}
+		discard(dropExpired)
+		return true
+	}
 	// Activity renews the destination's DNS evidence; failed attempts count.
 	pending.observedAt = time.Time{}
 	ue.activity.observe(ue.firstDst.Addr(), domain, observedAt)
@@ -354,7 +383,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 		p.removeInBackgroundLocked(src, ue)
 		// A blocked flow has no association to preserve. A later packet can
 		// try again after the group recovers.
-		if _, blocked := errors.AsType[*routeBlocked](err); blocked {
+		if _, blocked := errors.AsType[*routeBlocked](err); blocked || expired() {
 			return nil
 		}
 		return err
@@ -378,6 +407,10 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 				release()
 			}
 			p.removeInBackgroundLocked(src, ue)
+			if errors.Is(err, netproxy.ErrPacketCapacity) {
+				discard(dropResourceLimit)
+				return nil
+			}
 			return err
 		}
 	} else {
@@ -404,7 +437,11 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			if cause := connectionAbortCause(option.PolicyLease, ue.routeLease); cause != nil {
 				return cause
 			}
-			if !recordDataPlaneError(ue.dialer, path, err) {
+			if errors.Is(err, netproxy.ErrPacketCapacity) {
+				discard(dropResourceLimit) // establishUpstream recorded the error
+				return nil
+			}
+			if expired() || !recordDataPlaneError(ue.dialer, path, err) {
 				return nil
 			}
 			return fmt.Errorf("open UDP association via outbound %q node %q: %w", path.Outbound, ue.dialer.Name, err)
@@ -473,6 +510,7 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, sl
 	// Request-routing HTTP/3 has no connection-wide outbound. Its source
 	// lifetime is scoped to the admitted destination; it cannot migrate.
 	if ue.mitm && ue.packetDialer == nil && dst != ue.firstDst {
+		dropUploadFiltered.Add(1)
 		return nil
 	}
 	if cause := connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease); cause != nil {
@@ -490,8 +528,7 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, sl
 		}
 		n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
 		if err == netproxy.ErrPacketDropped {
-			// A full transport queue, as when this pool's own queues are full.
-			c.udpEndpoints.drops.report("transport_queue_full")
+			// Counted by the transport; not uploaded, not a failure.
 			return nil
 		}
 	}
@@ -512,7 +549,16 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, sl
 	if !temporaryUDPError(err) || connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease) != nil {
 		c.udpEndpoints.removeInBackgroundLocked(src, ue)
 	}
+	if errors.Is(err, netproxy.ErrPacketCapacity) {
+		// Counted here; execute could count a returned error as expired.
+		recordDataPlaneError(ue.dialer, ue.statsPath, err)
+		dropResourceLimit.Add(1)
+		return nil
+	}
 	if ue.mitm && conn == ue.conn || !recordDataPlaneError(ue.dialer, ue.statsPath, err) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			dropExpired.Add(1) // A returned error would be counted by execute.
+		}
 		return nil
 	}
 	return fmt.Errorf("send UDP packet via outbound %q node %q: %w", ue.statsPath.Outbound, ue.dialer.Name, err)

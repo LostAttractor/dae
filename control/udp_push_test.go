@@ -130,7 +130,8 @@ func waitReplies(t *testing.T, r *testReplies, want ...string) {
 // might block goes to a goroutine, and the replies after it follow it there
 // in order while the receive loop moves on.
 func TestUDPPushedRepliesNeverBlockTheReceiveLoop(t *testing.T) {
-	p, ue, conn, replies, _ := pushEndpoint(t)
+	_, ue, conn, replies, _ := pushEndpoint(t)
+	dropped := dropReplyQueue.Load()
 	from := netip.MustParseAddrPort("192.0.2.1:443")
 	replies.set(true, nil)
 	conn.onPacket([]byte("a"), from)
@@ -154,7 +155,7 @@ func TestUDPPushedRepliesNeverBlockTheReceiveLoop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("a blocked reply held the receive loop")
 	}
-	if drops := p.drops.total.Load(); drops < 2 {
+	if drops := dropReplyQueue.Load() - dropped; drops < 2 {
 		t.Fatalf("%d replies beyond the queue dropped, want at least 2", drops)
 	}
 	close(gate)
@@ -166,7 +167,7 @@ func TestUDPPushedRepliesNeverBlockTheReceiveLoop(t *testing.T) {
 		t.Fatalf("reply order %q", got[:3])
 	}
 	// Dropped replies are not downloaded.
-	sent := 3 + udpTaskQueueLength + 1 - int(p.drops.total.Load())
+	sent := 3 + udpTaskQueueLength + 1 - int(dropReplyQueue.Load()-dropped)
 	waitDownload(t, ue, uint64(sent)) // one byte each
 	if got := replies.replies(); len(got) != sent {
 		t.Fatalf("%d replies sent, want %d", len(got), sent)
@@ -176,7 +177,8 @@ func TestUDPPushedRepliesNeverBlockTheReceiveLoop(t *testing.T) {
 // A reply the slow path cannot copy within the shared UDP packet memory is
 // dropped, not downloaded, and the replies after it keep their order.
 func TestUDPPushReplyBeyondPacketMemoryIsDropped(t *testing.T) {
-	p, ue, conn, replies, _ := pushEndpoint(t)
+	_, ue, conn, replies, _ := pushEndpoint(t)
+	dropped := dropDownloadMemory.Load()
 	from := netip.MustParseAddrPort("192.0.2.1:443")
 	gate := make(chan struct{})
 	replies.set(false, gate)
@@ -188,7 +190,7 @@ func TestUDPPushReplyBeyondPacketMemoryIsDropped(t *testing.T) {
 	close(gate)
 	waitReplies(t, replies, "first", "last")
 	waitDownload(t, ue, uint64(len("first")+len("last")))
-	if drops := p.drops.total.Load(); drops != 1 {
+	if drops := dropDownloadMemory.Load() - dropped; drops != 1 {
 		t.Fatalf("%d replies dropped, want 1", drops)
 	}
 }
@@ -228,16 +230,21 @@ func TestUDPPushCloseEndsDeliveryInBackground(t *testing.T) {
 	if _, exists := p.pool.Load(src); exists || !ue.IsClosed() {
 		t.Fatal("end of delivery kept the endpoint")
 	}
+	closed := netproxy.DropClosedStream.Load()
 	conn.onPacket([]byte("late"), netip.MustParseAddrPort("192.0.2.1:443"))
 	time.Sleep(10 * time.Millisecond)
 	if got := replies.replies(); len(got) != 1 {
 		t.Fatalf("reply delivered after the end: %q", got)
 	}
+	if n := netproxy.DropClosedStream.Load() - closed; n != 1 {
+		t.Fatalf("%d replies after the end counted, want 1", n)
+	}
 }
 
 // A rewritten destination pushes only replies from its target, as from the
-// original destination.
+// original destination, and counts the others.
 func TestUDPPushDestinationFiltersReplies(t *testing.T) {
+	filtered := dropDownloadFiltered.Load()
 	inner := &pushingPacketConn{testPacketConn: newTestPacketConn(false)}
 	original, target := netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("192.0.2.1:443")
 	conn := &destinationPacketConn{PacketConn: inner, original: original, target: target}
@@ -247,8 +254,8 @@ func TestUDPPushDestinationFiltersReplies(t *testing.T) {
 	}
 	inner.onPacket(nil, netip.MustParseAddrPort("192.0.2.9:443"))
 	inner.onPacket(nil, netip.MustParseAddrPort("[::ffff:192.0.2.1]:443"))
-	if len(got) != 1 || got[0] != original {
-		t.Fatalf("pushed from %v, want only %v", got, original)
+	if len(got) != 1 || got[0] != original || dropDownloadFiltered.Load()-filtered != 1 {
+		t.Fatalf("pushed from %v with %d filtered, want only %v and 1", got, dropDownloadFiltered.Load()-filtered, original)
 	}
 }
 
@@ -268,11 +275,15 @@ func TestUDPPushRetiredSocketIsInert(t *testing.T) {
 	child := ue.sockets[dst]
 	ue.mu.Unlock()
 	child.retired.Store(true)
+	closed := netproxy.DropClosedStream.Load()
 	conn.onPacket([]byte("late"), dst)
 	conn.onClose(io.EOF)
 	time.Sleep(10 * time.Millisecond)
 	if _, exists := p.pool.Load(src); !exists || len(replies.replies()) != 0 {
 		t.Fatalf("retired socket delivered %q or ended the source", replies.replies())
+	}
+	if n := netproxy.DropClosedStream.Load() - closed; n != 1 {
+		t.Fatalf("%d replies for the retired socket counted, want 1", n)
 	}
 }
 

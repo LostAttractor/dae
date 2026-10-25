@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/internal/protocol"
 	"github.com/daeuniverse/quic-go"
 )
 
@@ -68,5 +69,27 @@ func TestRecoveryUDPLocalCloseAndDeadlineStayLocal(t *testing.T) {
 	f = netproxy.ClassifyFailure(err)
 	if !errors.Is(err, net.ErrClosed) || f.Origin != netproxy.OriginLocalCleanup || f.Scope != netproxy.ScopeStream || !parent.Valid() || fatal {
 		t.Fatalf("packet close killed session: %+v", f)
+	}
+}
+
+// A datagram for a closed session or a full session queue is dropped and
+// counted.
+func TestUDPFeedCountsDrops(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	m := &udpSessionManager{ctx: ctx, cancel: cancel}
+	packet, err := m.NewUDP(netproxy.NewLease(netproxy.NewResourceRef()).NewStream(), func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+	closed, full := netproxy.DropClosedStream.Load(), netproxy.DropReceiveFull.Load()
+	conn := packet.(*udpConn)
+	m.feed(&protocol.UDPMessage{SessionID: conn.ID + 1})
+	for range cap(conn.ReceiveCh) + 1 {
+		m.feed(&protocol.UDPMessage{SessionID: conn.ID})
+	}
+	if netproxy.DropClosedStream.Load()-closed != 1 || netproxy.DropReceiveFull.Load()-full != 1 {
+		t.Fatalf("counted %d closed and %d full, want 1 each", netproxy.DropClosedStream.Load()-closed, netproxy.DropReceiveFull.Load()-full)
 	}
 }

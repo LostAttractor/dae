@@ -17,6 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,6 +81,7 @@ func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 	for range udpTaskQueueLength {
 		require.True(t, pool.emit(nil, work))
 	}
+	dropped := dropSourceQueue.Load()
 	emitDone := make(chan bool)
 	go func() { emitDone <- pool.emit(nil, work) }()
 	select {
@@ -88,14 +90,7 @@ func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("emit blocked on a full queue")
 	}
-	firstLog := pool.drops.lastLog.Load()
-	require.NotZero(t, firstLog, "queue saturation was not reported")
-	require.False(t, pool.emit(nil, work))
-	require.Equal(t, firstLog, pool.drops.lastLog.Load(), "queue saturation warning was not rate limited")
-	futureLog := time.Now().Add(time.Hour).UnixNano()
-	pool.drops.lastLog.Store(futureLog)
-	pool.drops.report("source_queue_full")
-	require.Less(t, pool.drops.lastLog.Load(), futureLog, "clock rollback suppressed saturation warnings")
+	require.EqualValues(t, 1, dropSourceQueue.Load()-dropped, "queue saturation was not counted")
 	release()
 }
 
@@ -216,7 +211,7 @@ func TestUdpTaskPool_RoundRobin(t *testing.T) {
 }
 
 func TestUdpTaskPool_AdmissionBeforeCopying(t *testing.T) {
-	for _, limit := range []string{"sources", "tasks", "memory"} {
+	for limit, drop := range map[string]*netproxy.Drop{"sources": dropSourceLimit, "tasks": dropTaskLimit, "memory": dropUploadMemory} {
 		t.Run(limit, func(t *testing.T) {
 			started, unblock := make(chan struct{}), make(chan struct{})
 			var received string
@@ -247,7 +242,9 @@ func TestUdpTaskPool_AdmissionBeforeCopying(t *testing.T) {
 			<-started
 			borrowed[0] = 'X'
 			require.EqualValues(t, 8, p.memory.Status().Used, "running buffer capacity must remain charged")
+			dropped := drop.Load()
 			require.False(t, p.emit(borrowed, udpPacketWork{src: testUdpKey(2)}))
+			require.EqualValues(t, 1, drop.Load()-dropped)
 			require.EqualValues(t, 8, p.memory.Status().Used)
 			require.EqualValues(t, 8, p.memory.Status().Peak, "rejected packet allocated a buffer")
 			release()
@@ -312,7 +309,6 @@ func BenchmarkUdpTaskPoolRejectedPacket(b *testing.B) {
 	defer close(unblock)
 	plane := &ControlPlane{ctx: b.Context(), udpTaskPool: p}
 	data := make([]byte, 1500)
-	p.drops.lastLog.Store(time.Now().UnixNano())
 	b.ReportAllocs()
 	for b.Loop() {
 		plane.enqueueUDPPacket(data, source, source, nil)
@@ -396,6 +392,7 @@ func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 		endpoints.add(source, endpoint)
 		plane := &ControlPlane{ctx: t.Context(), udpTaskPool: p, udpEndpoints: endpoints}
 
+		expired := dropExpired.Load()
 		// Hold this source until only one second of the original timeout remains.
 		require.True(t, p.emit([]byte("hold"), udpPacketWork{src: source}))
 		queuedAt := time.Now()
@@ -406,6 +403,7 @@ func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 		<-conn.interrupted
 		require.Equal(t, consts.DefaultDialTimeout, time.Since(queuedAt))
 		p.close()
+		require.EqualValues(t, 1, dropExpired.Load()-expired, "a write ended by its deadline was not counted as expired")
 		require.Zero(t, p.memory.Status().Used)
 		require.False(t, endpoint.IsClosed(), "packet timeout retired a deadline-capable socket")
 		select {

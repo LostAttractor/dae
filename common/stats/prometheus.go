@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -89,6 +90,12 @@ var (
 		[]string{"event"},
 		nil,
 	)
+	udpPacketDropsDesc = prometheus.NewDesc(
+		"dae_udp_packet_drops_total",
+		"Process-lifetime UDP packets dropped by dae and its tproxy socket, by the layer that dropped them.",
+		[]string{"direction", "reason"},
+		nil,
+	)
 )
 
 func (s *Store) Describe(ch chan<- *prometheus.Desc) {
@@ -101,6 +108,7 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 		trafficBytesDesc,
 		externalCounterErrorsDesc,
 		processTimestampDesc,
+		udpPacketDropsDesc,
 	} {
 		ch <- descriptor
 	}
@@ -179,6 +187,9 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 	lastReload := s.lastReload.Load()
 	ch <- prometheus.MustNewConstMetric(processTimestampDesc, prometheus.GaugeValue, float64(lastReload), "reload")
 	ch <- prometheus.MustNewConstMetric(externalCounterErrorsDesc, prometheus.CounterValue, float64(s.externalReadErrors.Load()))
+	for drop := range netproxy.Drops() {
+		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
+	}
 }
 
 func (s *Store) Collect(ch chan<- prometheus.Metric) {

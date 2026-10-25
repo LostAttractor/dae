@@ -90,7 +90,8 @@ func newSmuxPacketConn(leased *leasedStream, stream *smuxStream, layer netproxy.
 }
 
 // WriteTo reports a dropped datagram as written: to callers that do not
-// count drops, as quic-go or DNS, ErrPacketDropped would be a failure.
+// account sent datagrams, as quic-go or DNS, ErrPacketDropped would be a
+// failure.
 func (c *smuxPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	n, err := c.TryWriteTo(b, addr)
 	if err == netproxy.ErrPacketDropped {

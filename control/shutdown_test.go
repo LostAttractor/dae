@@ -101,7 +101,7 @@ func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	dnsCanceled, releaseDNS := make(chan struct{}), make(chan struct{})
 	finishDNS := sync.OnceFunc(func() { close(releaseDNS) })
 	t.Cleanup(finishDNS)
-	if !plane.dnsRelay.admit() {
+	if plane.dnsRelay.admit() != nil {
 		t.Fatal("could not admit DNS work")
 	}
 	go func() {

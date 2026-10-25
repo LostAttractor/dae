@@ -20,6 +20,40 @@ its series from subsequent scrapes. `dae_plugin_instance_start_time_seconds`
 records activation time. Changing or disabling the listener does not reset
 running plugin state. Use `rate` or `increase` for counters across resets.
 
+## UDP packet drops
+
+`dae_udp_packet_drops_total{direction,reason}` is a core metric; its name has
+no `dae_plugin_` prefix. It is counted by the layer that drops a datagram, for
+the process lifetime; reload does not reset it. Every combination is exported
+as 0 before its first drop. `direction` is `upload` (LAN to internet) or
+`download`. Callers told of a drop do not count it again. Each combination
+logs at most one warning a minute, except `route_missing`, `filtered` and
+`closed_stream`, which occur in normal operation and are only counted.
+
+| `reason` | `direction` | Meaning |
+| --- | --- | --- |
+| `socket_overflow` | `upload` | The tproxy UDP socket's receive queue overflowed; reported with the next queued datagram |
+| `truncated` | `upload` | Truncated datagram |
+| `route_missing` | `upload` | The kernel routing record is gone, or the endpoint was removed while the datagram queued |
+| `source_queue_full`, `task_limit`, `source_limit` | `upload` | Per-source queue, global task or backlogged source limit reached |
+| `packet_memory_limit` | both | Shared datagram memory exhausted |
+| `expired` | `upload` | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
+| `setup_capacity`, `endpoint_limit` | `upload` | Concurrent association setup or UDP source endpoint limit reached |
+| `packet_resource_limit` | `upload` | No UDP association or socket could be opened: the process-wide packet resource limit or a source's socket limit is reached |
+| `dns_admission` | `upload` | Concurrent DNS query limit reached |
+| `mitm_bridge_full` | both | MITM HTTP/3 bridge queue full |
+| `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
+| `flow_queue_full`, `carrier_queue_full` | `upload` | smux per-stream or per-session datagram queue full |
+| `transport_receive_full` | `download` | hysteria2 or TUIC datagram receive queue, or fragment reassembly table, full |
+| `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
+| `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
+| `reply_queue_full` | `download` | Pushed reply backlog full |
+
+Drops inside quic-go's DATAGRAM receive queue or packet packer are not exposed
+by this metric.
+
+## Plugin metric names
+
 All metric names below have the **`dae_plugin_`** prefix. Histograms expose
 `_bucket`, `_sum` and `_count`; durations use seconds and memory uses bytes.
 Bounded counter vectors may appear when their first event occurs. Collection

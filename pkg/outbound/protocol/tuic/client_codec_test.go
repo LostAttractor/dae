@@ -101,18 +101,23 @@ func TestClientFrameWireFormat(t *testing.T) {
 }
 
 func TestPacketQueueAndReassemblyAreBounded(t *testing.T) {
+	full, closed := netproxy.DropReceiveFull.Load(), netproxy.DropClosedStream.Load()
 	queue := newPacketQueue()
 	for i := 0; i < packetQueueSize*2; i++ {
 		queue.PushBack(&packetFrame{})
 	}
-	if len(queue.packets) != packetQueueSize {
-		t.Fatalf("queue length=%d", len(queue.packets))
+	if len(queue.packets) != packetQueueSize || netproxy.DropReceiveFull.Load()-full != packetQueueSize {
+		t.Fatalf("queue length=%d, %d drops counted", len(queue.packets), netproxy.DropReceiveFull.Load()-full)
 	}
 	queue.Close()
 	select {
 	case <-queue.done:
 	default:
 		t.Fatal("close did not wake reader")
+	}
+	queue.PushBack(&packetFrame{})
+	if netproxy.DropClosedStream.Load()-closed != 1 {
+		t.Fatal("a packet for a closed association was not counted")
 	}
 	m, _ := protocol.ParseMetadata("127.0.0.1:53")
 	d := new(deFragger)
@@ -126,6 +131,28 @@ func TestPacketQueueAndReassemblyAreBounded(t *testing.T) {
 	// the old slice or treat duplicates as completion.
 	if _, _, ready := d.Feed(&packetFrame{FRAG_TOTAL: 3, FRAG_ID: 2, ADDR: &address{TYPE: AtypNone}, DATA: []byte("c")}, make([]byte, 3)); ready {
 		t.Fatal("mixed fragment counts assembled")
+	}
+}
+
+// A fragment that would start a datagram beyond the full reassembly table
+// is dropped and counted.
+func TestReassemblyTableDropIsCounted(t *testing.T) {
+	q := &quicStreamPacketConn{lease: netproxy.NewLease(netproxy.NewResourceRef()), incomingPackets: newPacketQueue(), readDeadline: protocol.MakeDeadline(),
+		fragments: make(map[uint16]*deFragger)}
+	defer q.incomingPackets.Close()
+	for id := range uint16(packetQueueSize) {
+		q.fragments[id] = &deFragger{updated: time.Now()}
+	}
+	m, _ := protocol.ParseMetadata("127.0.0.1:53")
+	dropped := netproxy.DropReceiveFull.Load()
+	q.incomingPackets.PushBack(&packetFrame{PKT_ID: packetQueueSize, FRAG_TOTAL: 2, ADDR: addressFromMetadata(&m), DATA: []byte("a")})
+	q.incomingPackets.PushBack(&packetFrame{FRAG_TOTAL: 1, ADDR: addressFromMetadata(&m), DATA: []byte("ok")})
+	data := make([]byte, 8)
+	if n, _, err := q.ReadFrom(data); err != nil || string(data[:n]) != "ok" {
+		t.Fatalf("read %q %v", data[:n], err)
+	}
+	if n := netproxy.DropReceiveFull.Load() - dropped; n != 1 {
+		t.Fatalf("counted %d drops, want 1", n)
 	}
 }
 

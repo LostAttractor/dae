@@ -182,10 +182,13 @@ var errReplyWouldBlock = errors.New("UDP reply would block")
 // having at most refreshed the socket and observed a known target, which a
 // repeat does again harmlessly.
 func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.PacketConn, child *udpSocket, payload []byte, from netip.AddrPort, wait bool) (done bool, err error) {
+	// A reply for an association ending here is dropped.
 	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+		netproxy.DropClosedStream.Add(1)
 		return true, cause
 	}
 	if !p.refreshSocket(src, ue, child, time.Now()) {
+		netproxy.DropClosedStream.Add(1)
 		return true, nil
 	}
 	if !ue.observeTarget(from, wait) {
@@ -317,7 +320,6 @@ type UdpEndpointPool struct {
 	resourceOnce         sync.Once
 	resources            *netproxy.PacketBudget
 	sourceLimit          int // zero uses the daemon default; immutable once used.
-	drops                udpPacketDrops
 }
 
 func (p *UdpEndpointPool) packetBudget() *netproxy.PacketBudget {
@@ -530,6 +532,10 @@ func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, no
 	}
 	removed := p.removeLocked(key, endpoint)
 	if removed {
+		if endpoint.pending != nil {
+			// Sniffing timed out: the buffered datagrams are never sent.
+			dropExpired.Add(uint64(len(endpoint.pending.sniffer.Data()) - 1))
+		}
 		endpoint.retireLocked()
 	}
 	endpoint.mu.Unlock()

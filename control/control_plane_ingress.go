@@ -46,6 +46,39 @@ func RetrieveOriginalDest(oob []byte) (destination netip.AddrPort) {
 	return destination
 }
 
+// socketDrops reads SO_RXQ_OVFL: the datagrams the socket dropped before it
+// queued this one, counted since its creation; zero until the first drop.
+func socketDrops(oob []byte) uint32 {
+	for len(oob) >= unix.CmsgLen(0) {
+		header := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
+		if header.Len < unix.SizeofCmsghdr || uint64(header.Len) > uint64(len(oob)) {
+			return 0
+		}
+		data := oob[unix.CmsgLen(0):header.Len]
+		if header.Level == unix.SOL_SOCKET && header.Type == unix.SO_RXQ_OVFL && len(data) >= 4 {
+			return binary.NativeEndian.Uint32(data)
+		}
+		oob = oob[min(unix.CmsgSpace(len(data)), len(oob)):]
+	}
+	return 0
+}
+
+// countIngressDrops counts what a read reports: the datagrams the socket
+// dropped since the total it last reported, and the datagram itself if it was
+// truncated, in which case it is not delivered. A read without the total
+// (none yet, or truncated control data) reports no drops.
+func countIngressDrops(oob []byte, flags int, dropped *uint32) (truncated bool) {
+	if total := socketDrops(oob); total != 0 && total != *dropped {
+		dropSocketOverflow.Add(uint64(total - *dropped))
+		*dropped = total
+	}
+	if flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+		dropTruncated.Add(1)
+		return true
+	}
+	return false
+}
+
 type Listener struct {
 	tcpListener net.Listener
 	packetConn  net.PacketConn
@@ -159,6 +192,7 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 		oob := pool.GetBuffer(120)
 		defer pool.PutBuffer(buf)
 		defer pool.PutBuffer(oob)
+		var dropped uint32 // by the socket, as last reported
 		for {
 			select {
 			case <-r.done:
@@ -170,7 +204,7 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 				reportIngressError(fmt.Errorf("read UDP datagram: %w", err))
 				return
 			}
-			if flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+			if countIngressDrops(oob[:oobn], flags, &dropped) {
 				continue
 			}
 			dst := RetrieveOriginalDest(oob[:oobn])
@@ -191,6 +225,7 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 			if !exists || dst.Port() == 53 {
 				routingResult, err = retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_UDP)
 				if err != nil {
+					dropRouteMissing.Add(1)
 					continue
 				}
 			}
@@ -231,14 +266,19 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 // that dae closes before the client has closed its side resets the client
 // once dae's FIN is acknowledged (TCP_LINGER2 < 0), instead of leaving it open.
 // Its later segments would find the flow state gone and go to the origin.
+// The UDP socket reports its receive queue's drops with each datagram.
 func tproxyListenConfig() net.ListenConfig {
 	config := net.ListenConfig{Control: func(network, _ string, c syscall.RawConn) error {
-		if err := tproxyControl(c); err != nil || !strings.HasPrefix(network, "tcp") {
+		if err := tproxyControl(c); err != nil {
 			return err
+		}
+		level, option, value := unix.IPPROTO_TCP, unix.TCP_LINGER2, -1
+		if !strings.HasPrefix(network, "tcp") {
+			level, option, value = unix.SOL_SOCKET, unix.SO_RXQ_OVFL, 1
 		}
 		var err error
 		if controlErr := c.Control(func(fd uintptr) {
-			err = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_LINGER2, -1)
+			err = unix.SetsockoptInt(int(fd), level, option, value)
 		}); controlErr != nil {
 			return controlErr
 		}

@@ -31,8 +31,11 @@ func PacketBudgetFromContext(ctx context.Context) *PacketBudget {
 	return budget
 }
 
+// ErrPacketCapacity is the cause of PacketCapacityError, for errors.Is.
+var ErrPacketCapacity = errors.New("UDP packet resource capacity exhausted")
+
 func PacketCapacityError() error {
-	return WrapFailure(errors.New("UDP packet resource capacity exhausted"), Failure{
+	return WrapFailure(ErrPacketCapacity, Failure{
 		Scope: ScopeOperation, Layer: LayerUDP, Reason: ReasonCapacity, Origin: OriginLocalProtocol,
 	})
 }

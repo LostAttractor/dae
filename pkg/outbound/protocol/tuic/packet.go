@@ -33,12 +33,14 @@ func newPacketQueue() *packetQueue {
 func (p *packetQueue) PushBack(packet *packetFrame) {
 	select {
 	case <-p.done:
+		netproxy.DropClosedStream.Add(1)
 		return
 	default:
 	}
 	select {
 	case p.packets <- packet:
 	default:
+		netproxy.DropReceiveFull.Add(1)
 	}
 }
 func (p *packetQueue) Close() error { p.once.Do(func() { close(p.done) }); return nil }
@@ -160,6 +162,8 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			return 0, nil, common.WrapQUICError(os.ErrDeadlineExceeded, q.lease.Resource(), q.lease, netproxy.OpRead, q.fail)
 		case packet := <-q.incomingPackets.packets:
 			now := time.Now()
+			// An expired entry's datagram lost a fragment before it got
+			// here; the layer that dropped the fragment counted it.
 			for id, entry := range q.fragments {
 				if now.Sub(entry.updated) >= 5*time.Second {
 					delete(q.fragments, id)
@@ -174,6 +178,7 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			d := q.fragments[packet.PKT_ID]
 			if d == nil {
 				if len(q.fragments) >= packetQueueSize {
+					netproxy.DropReceiveFull.Add(1)
 					continue
 				}
 				d = &deFragger{updated: now}

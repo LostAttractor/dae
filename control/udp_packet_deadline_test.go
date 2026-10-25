@@ -296,8 +296,18 @@ func TestPacketWriteSkipsDeadlinesForNonBlockingTransport(t *testing.T) {
 	}
 }
 
-// A datagram the transport queue drops counts as a capacity drop, not as a
-// failure, an upload or a reason to end the association.
+// countedDrops sums the drop counters of the reasons, or of all if none.
+func countedDrops(reasons ...string) (n uint64) {
+	for drop := range netproxy.Drops() {
+		if len(reasons) == 0 || slices.Contains(reasons, drop.Reason()) {
+			n += drop.Load()
+		}
+	}
+	return n
+}
+
+// A datagram the transport queue drops is not a failure, an upload or a
+// reason to end the association. The transport counts it; control does not.
 func TestUDPTransportQueueDropIsNotAFailure(t *testing.T) {
 	conn := &queueingPacketConn{deadlineRecordingPacketConn: deadlineRecordingPacketConn{testPacketConn: newTestPacketConn(false)}, drop: true}
 	path := stats.Path{Dialer: t.Name()}
@@ -307,13 +317,14 @@ func TestUDPTransportQueueDropIsNotAFailure(t *testing.T) {
 	ue := &UdpEndpoint{conn: conn, NatTimeout: time.Minute, statsPath: path, traffic: stats.DefaultStore.OpenConnection(path, false)}
 	p.add(src, ue)
 	c := &ControlPlane{udpEndpoints: p}
+	drops := countedDrops()
 	for range 3 {
 		if err := c.writeUDP(t.Context(), ue, src, netip.MustParseAddrPort("192.0.2.1:443"), []byte("packet")); err != nil {
 			t.Fatalf("dropped datagram reported %v", err)
 		}
 	}
-	if _, exists := p.pool.Load(src); !exists || p.drops.total.Load() != 3 {
-		t.Fatalf("endpoint present=%v drops=%d, want kept and 3", exists, p.drops.total.Load())
+	if _, exists := p.pool.Load(src); !exists || countedDrops() != drops {
+		t.Fatalf("endpoint present=%v, %d drops counted; want kept and none", exists, countedDrops()-drops)
 	}
 	if got := stats.DefaultStore.Snapshot()[path].UploadBytes; got != 0 {
 		t.Fatalf("dropped datagrams counted %d uploaded bytes", got)
@@ -322,8 +333,8 @@ func TestUDPTransportQueueDropIsNotAFailure(t *testing.T) {
 
 // Users of an smux UDP socket that do not count drops, such as MITM and DNS
 // upstreams, see a datagram its full queue drops as one lost on the way: no
-// write error, so no relay or path error. It counts as a capacity drop, not as
-// uploaded bytes.
+// write error, so no relay or path error. smux counts it once; it is not
+// uploaded.
 func TestSmuxDatagramDropIsLossForOtherUsers(t *testing.T) {
 	outbound, _ := smuxTestOutbound(t) // the carrier is not read: queues fill
 	conn, err := outbound.ListenPacket(t.Context(), "192.0.2.1:443")
@@ -338,16 +349,17 @@ func TestSmuxDatagramDropIsLossForOtherUsers(t *testing.T) {
 		traffic: traffic, path: path, lease: netproxy.NewLease(netproxy.NewResourceRef())}}
 	to := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:443"))
 	payload := make([]byte, 1200)
-	drops := mitmPacketDrops.total.Load()
+	drops, all := countedDrops("flow_queue_full", "carrier_queue_full"), countedDrops()
 	const writes = 200 // beyond a 64 KiB batch and the 64 KiB stream queue
 	for range writes {
 		if _, err := upstream.WriteTo(payload, to); err != nil {
 			t.Fatalf("WriteTo = %v", err)
 		}
 	}
-	dropped := mitmPacketDrops.total.Load() - drops
-	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes; dropped == 0 || uploaded != (writes-dropped)*uint64(len(payload)) {
-		t.Fatalf("%d of %d datagrams dropped, %d bytes uploaded; want drops and only the queued ones uploaded", dropped, writes, uploaded)
+	dropped := countedDrops("flow_queue_full", "carrier_queue_full") - drops
+	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes; dropped == 0 || countedDrops()-all != dropped || uploaded != (writes-dropped)*uint64(len(payload)) {
+		t.Fatalf("%d of %d datagrams dropped (%d counted), %d bytes uploaded; want drops counted once and only the queued ones uploaded",
+			dropped, writes, countedDrops()-all, uploaded)
 	}
 	// The writer may have taken the whole queue as its batch before blocking
 	// on the carrier; then the queue fills again within its 64 KiB.

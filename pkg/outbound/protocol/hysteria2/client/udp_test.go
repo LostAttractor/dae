@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/internal/protocol"
 )
 
@@ -68,12 +69,14 @@ func TestUDPConnExpiresIncompletePacket(t *testing.T) {
 	}
 }
 
+// A fragment beyond the full reassembly table is dropped and counted.
 func TestUDPConnLimitsIncompletePackets(t *testing.T) {
 	u := new(udpConn)
+	dropped := netproxy.DropReceiveFull.Load()
 	for i := 0; i < udpMessageChanSize+100; i++ {
 		u.feedDefrag(&protocol.UDPMessage{PacketID: uint16(i), FragCount: 2, Addr: "127.0.0.1:53", Data: []byte("pending")})
 	}
-	if len(u.defraggers) != udpMessageChanSize {
-		t.Fatalf("pending packets=%d", len(u.defraggers))
+	if len(u.defraggers) != udpMessageChanSize || netproxy.DropReceiveFull.Load()-dropped != 100 {
+		t.Fatalf("pending packets=%d, %d drops counted", len(u.defraggers), netproxy.DropReceiveFull.Load()-dropped)
 	}
 }

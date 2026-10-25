@@ -40,19 +40,21 @@ func newDNSRelay() *dnsRelay {
 	return &dnsRelay{ctx: ctx, cancel: cancel, slots: make(chan struct{}, 1024)}
 }
 
-func (r *dnsRelay) admit() bool {
+var errDNSCapacity = errors.New("DNS request capacity exhausted")
+
+func (r *dnsRelay) admit() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return false
+		return net.ErrClosed
 	}
 	select {
 	case r.slots <- struct{}{}:
 	default:
-		return false
+		return errDNSCapacity
 	}
 	r.active.Add(1)
-	return true
+	return nil
 }
 
 func (r *dnsRelay) finish() { <-r.slots; r.active.Done() }
@@ -299,7 +301,13 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 
 func (c *ControlPlane) handleDNSUDP(wire []byte, src, dst netip.AddrPort, identity routingResult) {
 	r := c.dnsRelay
-	if r == nil || !r.admit() {
+	if r == nil {
+		return
+	}
+	if err := r.admit(); err != nil {
+		if err == errDNSCapacity {
+			dropDNSAdmission.Add(1)
+		}
 		return
 	}
 	routeLease, err := c.deviceRoutes.acquire(&identity)
@@ -360,7 +368,7 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSR
 
 func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, identity routingResult) error {
 	r := c.dnsRelay
-	if r == nil || !r.admit() {
+	if r == nil || r.admit() != nil {
 		return net.ErrClosed
 	}
 	defer r.finish()
@@ -485,8 +493,8 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if !r.admit() {
-			return fmt.Errorf("DNS request capacity exhausted")
+		if r.admit() != nil {
+			return errDNSCapacity
 		}
 		request := template.Copy()
 		request.DNSPacket = plugin.DNSWire(wire)

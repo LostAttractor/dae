@@ -73,6 +73,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			setupDrops := dropSetupCapacity.Load()
 			plane.udpSetups.Store(maxConcurrentUDPSetups)
 			send()
 			if _, ok := endpoints.Get(source); ok || len(recorder.targets) != 0 {
@@ -85,7 +86,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			plane.udpSetups.Store(maxConcurrentUDPSetups)
 			send()
-			if plane.udpSetupDrops.total.Load() != 1 || len(recorder.targets) != 1 {
+			if dropSetupCapacity.Load()-setupDrops != 1 || len(recorder.targets) != 1 {
 				t.Fatal("established association passed through setup admission")
 			}
 			plane.udpSetups.Store(0)
