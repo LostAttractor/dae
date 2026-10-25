@@ -128,6 +128,41 @@ func TestYamuxStreamRoundTrip(t *testing.T) {
 	}
 }
 
+// CloseWrite ends only the upload: the server reads EOF and its reply still
+// arrives. Before any Write, it sends the stream request first.
+func TestYamuxCloseWriteHalfCloses(t *testing.T) {
+	for _, upload := range []string{"request", ""} {
+		requests := make(chan muxRequest, 1)
+		mux := newTestMux(t, ProtocolYAMux, func(request muxRequest, stream net.Conn) {
+			requests <- request
+			data, err := io.ReadAll(stream)
+			if err == nil {
+				_, _ = stream.Write(append([]byte("reply:"), data...))
+			}
+		})
+		conn, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		if upload != "" {
+			if _, err := conn.Write([]byte(upload)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := netproxy.CloseWrite(conn); err != nil {
+			t.Fatal(err)
+		}
+		if reply, err := io.ReadAll(conn); err != nil || string(reply) != "reply:"+upload {
+			t.Fatalf("reply = %q, %v", reply, err)
+		}
+		if request := <-requests; request.destination != "target.example:443" {
+			t.Fatalf("stream request = %+v", request)
+		}
+	}
+}
+
 func TestYamuxCarriesUDP(t *testing.T) {
 	requests := make(chan muxRequest, 1)
 	mux := newTestMux(t, ProtocolYAMux, func(request muxRequest, stream net.Conn) {

@@ -3,6 +3,7 @@ package singmux
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -103,6 +104,30 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 	return len(b), err
 }
 
+// CloseWrite half-closes the stream, first sending the stream request if no
+// Write has. A stream that cannot half-close reports so before sending it.
+func (c *Conn) CloseWrite() error {
+	if !halfCloses(c.Conn) {
+		return errors.ErrUnsupported
+	}
+	if !c.onceWrite {
+		if _, err := c.Write(nil); err != nil {
+			return err
+		}
+	}
+	return netproxy.CloseWrite(c.Conn)
+}
+
+// halfCloses reports whether conn, or the session stream it leases, can end
+// only its write side. A smux v1 FIN ends both directions.
+func halfCloses(conn net.Conn) bool {
+	if leased, ok := conn.(*leasedStream); ok {
+		conn = leased.Conn
+	}
+	_, ok := conn.(netproxy.CloseWriter)
+	return ok
+}
+
 func (c *Conn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 
 type leasedStream struct {
@@ -154,6 +179,14 @@ func (c *leasedStream) Read(p []byte) (int, error) {
 func (c *leasedStream) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	return n, c.failure(err, netproxy.OpWrite)
+}
+func (c *leasedStream) CloseWrite() error {
+	err := netproxy.CloseWrite(c.Conn)
+	if err == errors.ErrUnsupported {
+		// Unwrapped: callers compare it exactly.
+		return err
+	}
+	return c.failure(err, netproxy.OpCloseWrite)
 }
 func (c *leasedStream) Close() error {
 	defer c.release()

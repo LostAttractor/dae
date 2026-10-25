@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -415,6 +416,40 @@ func TestSmuxCloseFollowsWrittenData(t *testing.T) {
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("peer read %d bytes, %v", len(got), err)
 	}
+}
+
+// smux v1 cannot half-close: its FIN ends both directions. CloseWrite says
+// so with errors.ErrUnsupported itself, without sending the stream request,
+// and the stream stays usable.
+func TestSmuxCloseWriteUnsupported(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		requests := make(chan muxRequest, 1)
+		mux := newTestMux(t, ProtocolSmux, func(request muxRequest, stream net.Conn) {
+			requests <- request
+			_, _ = io.Copy(stream, stream)
+		})
+		conn, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := netproxy.CloseWrite(conn); err != errors.ErrUnsupported {
+			t.Fatalf("CloseWrite = %v, want errors.ErrUnsupported", err)
+		}
+		synctest.Wait()
+		select {
+		case request := <-requests:
+			t.Fatalf("CloseWrite sent the stream request %+v", request)
+		default:
+		}
+		if _, err := conn.Write([]byte("hello")); err != nil {
+			t.Fatal(err)
+		}
+		reply := make([]byte, 5)
+		if _, err := io.ReadFull(conn, reply); err != nil || string(reply) != "hello" {
+			t.Fatalf("echo = %q, %v", reply, err)
+		}
+	})
 }
 
 // Closing the session writes the frames already queued, such as the last data
