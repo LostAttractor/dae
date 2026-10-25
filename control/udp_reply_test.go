@@ -5,12 +5,14 @@ package control
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/trojanc"
 )
@@ -54,6 +56,102 @@ func TestUDPDomainReplyReturnsError(t *testing.T) {
 				t.Fatalf("domain reply error = %v", err)
 			}
 		})
+	}
+}
+
+// A dual-stack reader returns mapped IPv4; the shared reply pool must still
+// use the same socket as proxied replies, and retain the first target's domain.
+func TestUDPReplyMappedAddressUsesCanonicalPoolSocket(t *testing.T) {
+	listen := func(network string, addr *net.UDPAddr) *net.UDPConn {
+		t.Helper()
+		conn, err := net.ListenUDP(network, addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		return conn
+	}
+	outbound := listen("udp", nil)
+	peer := listen("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	client := listen("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: outbound.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := peer.WriteTo([]byte("reply"), to); err != nil {
+		t.Fatal(err)
+	}
+	_ = outbound.SetReadDeadline(time.Now().Add(time.Second))
+	var buf [16]byte
+	n, raw, err := outbound.ReadFromUDP(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !raw.AddrPort().Addr().Is4In6() {
+		t.Fatalf("fixture returned %v, want mapped IPv4", raw)
+	}
+	from := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	src := client.LocalAddr().(*net.UDPAddr).AddrPort()
+	pool := NewAnyfromPool()
+	socket := &Anyfrom{conn: peer, idleTTL: time.Hour}
+	pool.pool[from] = socket
+	endpoints := new(UdpEndpointPool)
+	defer endpoints.closeAll()
+	sender := &udpReplySender{pool: pool, to: src}
+	ue := &UdpEndpoint{conn: outbound, firstDst: from, domain: "cdn.example", activity: new(domainActivity),
+		NatTimeout: time.Hour, replies: sender}
+	endpoints.add(src, ue)
+	failed := dropReplySendFailed.Load()
+	for _, mode := range []string{"pulled_udpaddr", "pulled_parsed", "pushed_inline", "pushed_queued"} {
+		address := raw.AddrPort()
+		if strings.HasPrefix(mode, "pulled_") {
+			var addr net.Addr = raw
+			if mode == "pulled_parsed" {
+				addr = netproxy.NewAddr("udp", raw.String())
+			}
+			address, err = addrPortOf(addr)
+			if err != nil || address != from {
+				t.Fatalf("addrPortOf(%v) = %v, %v; want %v", addr, address, err, from)
+			}
+		}
+		sender.cached.Store(nil)
+		// An exclusive GetOrCreate would wait behind this read lock.
+		pool.mu.RLock()
+		sent := make(chan error, 1)
+		go func() {
+			if strings.HasPrefix(mode, "pushed_") {
+				r := &udpPushReceiver{ue: ue, p: endpoints, src: src, conn: outbound, draining: mode == "pushed_queued"}
+				r.onPacket(buf[:n], address)
+				if mode == "pushed_queued" {
+					r.drain()
+				}
+				sent <- nil
+				return
+			}
+			done, err := ue.deliver(endpoints, src, outbound, nil, buf[:n], address, true)
+			if done && err == nil {
+				err = errors.New("reply ended the association")
+			}
+			sent <- err
+		}()
+		select {
+		case err := <-sent:
+			pool.mu.RUnlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			pool.mu.RUnlock()
+			t.Fatal("mapped reply entered GetOrCreate instead of using the pooled socket")
+		}
+		_ = client.SetReadDeadline(time.Now().Add(time.Second))
+		var reply [16]byte
+		if n, source, err := client.ReadFromUDPAddrPort(reply[:]); err != nil || source != from || string(reply[:n]) != "reply" {
+			t.Fatalf("reply from %v = %q, %v", source, reply[:n], err)
+		}
+	}
+	if len(pool.pool) != 1 || sender.cached.Load().socket != socket || dropReplySendFailed.Load() != failed {
+		t.Fatal("mapped reply created a second socket or counted a failed send")
+	}
+	if target := ue.activityTargets[from]; len(ue.activityTargets) != 1 || target.key.domain != "cdn.example." {
+		t.Fatalf("reply lost its domain: %+v", ue.activityTargets)
 	}
 }
 
@@ -194,4 +292,56 @@ func TestUDPReplyTrySendUsesOnlyExistingSockets(t *testing.T) {
 		t.Fatalf("with the pool locked, trySend sent from the pool %v, from the cache %v", pooled, cached)
 	}
 	read(from)
+}
+
+// A reply that cannot be sent is lost, counted once, and the association
+// goes on: the next reply is delivered and the reader keeps running.
+func TestUDPReplySendFailureKeepsTheAssociation(t *testing.T) {
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	results := []error{errors.New("no route to the client"), netproxy.ErrPacketDropped, nil}
+	delivered := make(chan string, len(results))
+	ue := &UdpEndpoint{conn: conn, NatTimeout: time.Minute, replies: UdpHandler(func(data []byte, _ netip.AddrPort) error {
+		err := results[0]
+		results = results[1:]
+		if err == nil {
+			delivered <- string(data)
+		}
+		return err
+	})}
+	p := new(UdpEndpointPool)
+	src, dst := netip.MustParseAddrPort("192.0.2.1:1000"), peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	p.add(src, ue)
+	ended := make(chan error, 1)
+	failed, dropped := dropReplySendFailed.Load(), dropReplySocketFull.Load()
+	go func() { ended <- ue.run(p, src, dst, conn, nil) }()
+	for _, reply := range []string{"failed", "dropped", "delivered"} {
+		if _, err := peer.WriteTo([]byte(reply), conn.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case got := <-delivered:
+		if got != "delivered" {
+			t.Fatalf("delivered %q", got)
+		}
+	case err := <-ended:
+		t.Fatalf("delivery ended: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("the reply after a failed one was not delivered")
+	}
+	if dropReplySendFailed.Load()-failed != 1 || dropReplySocketFull.Load() != dropped {
+		t.Fatalf("counted %d failed sends and %d full sockets, want 1 and 0 (the sender counts its own)", dropReplySendFailed.Load()-failed, dropReplySocketFull.Load()-dropped)
+	}
+	p.remove(src, ue)
+	if err := <-ended; err != nil {
+		t.Fatalf("delivery ended with %v", err)
+	}
 }

@@ -7,96 +7,53 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"sync"
+	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
-// Most UDP writes complete immediately. Raw Control pins the descriptor across
-// a nonblocking send without changing another writer's poller deadline. EAGAIN
-// falls back to the serialized net.UDPConn path, which waits with this packet's
-// deadline and remains interruptible by Close.
-func (a *Anyfrom) tryWrite(data []byte, addr netip.AddrPort, deadline time.Time) (n int, err error, attempted bool) {
-	if !addr.IsValid() || addr.Addr().Zone() != "" {
-		return 0, nil, false
+// trySend sends data to addr without waiting and without touching another
+// writer's poller deadline. It returns syscall.EAGAIN if the send buffer is
+// full, and errors.ErrUnsupported, having sent nothing, for an address only
+// the net.UDPConn path can take or validate.
+func (a *Anyfrom) trySend(data []byte, addr netip.AddrPort) error {
+	if !addr.IsValid() {
+		return errors.ErrUnsupported
 	}
-	a.rawOnce.Do(func() {
-		a.raw, a.rawErr = a.conn.SyscallConn()
-		if a.rawErr != nil {
-			return
-		}
-		var optionErr error
-		controlErr := a.raw.Control(func(fd uintptr) {
-			a.family, optionErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_DOMAIN)
-		})
-		a.rawErr = errors.Join(controlErr, optionErr)
-	})
-	if a.rawErr != nil || a.raw == nil {
-		return 0, nil, false
+	a.socketOnce.Do(func() { a.socket = netproxy.NewUDPSocket(a.conn) })
+	err := a.socket.Send(data, addr)
+	if errno, ok := err.(syscall.Errno); ok && errno != syscall.EAGAIN {
+		err = &net.OpError{Op: "write", Net: "udp", Source: a.conn.LocalAddr(), Addr: net.UDPAddrFromAddrPort(addr), Err: os.NewSyscallError("sendto", errno)}
 	}
-
-	request := anyfromWrites.Get().(*anyfromWrite)
-	defer func() {
-		request.data, request.destination, request.err = nil, nil, nil
-		anyfromWrites.Put(request)
-	}()
-	switch a.family {
-	case unix.AF_INET:
-		if !addr.Addr().Is4In6() && !addr.Addr().Is4() {
-			return 0, nil, false
-		}
-		request.v4.Port, request.v4.Addr = int(addr.Port()), addr.Addr().Unmap().As4()
-		request.destination = &request.v4
-	case unix.AF_INET6:
-		request.v6.Port, request.v6.Addr = int(addr.Port()), addr.Addr().As16()
-		request.destination = &request.v6
-	default:
-		return 0, nil, false
-	}
-	request.data, request.deadline = data, deadline
-	err = a.raw.Control(request.send)
-	sendErr := request.err
-
-	if err != nil {
-		return 0, err, true
-	}
-	if errors.Is(sendErr, unix.EAGAIN) {
-		return 0, nil, false
-	}
-	if sendErr != nil {
-		return 0, &net.OpError{Op: "write", Net: "udp", Source: a.conn.LocalAddr(), Addr: net.UDPAddrFromAddrPort(addr), Err: sendErr}, true
-	}
-	return len(data), nil, true
+	return err
 }
 
-// Reuse callback state: RawConn.Control's interface otherwise makes the closure,
-// result and sockaddr escape on every packet. No data is retained after return.
-type anyfromWrite struct {
-	data        []byte
-	destination unix.Sockaddr
-	v4          unix.SockaddrInet4
-	v6          unix.SockaddrInet6
-	deadline    time.Time
-	err         error
-	send        func(uintptr)
+// WriteToUDPAddrPortWithDeadline sends without arming the socket deadline
+// unless the socket is full: only then does it serialize and wait, until the
+// deadline. Callers refresh the idle deadline before writing; that refresh
+// also detects a closed socket.
+func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (int, error) {
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return 0, os.ErrDeadlineExceeded
+	}
+	err := a.trySend(b, addr)
+	switch {
+	case err == nil:
+		return len(b), nil
+	case errors.Is(err, syscall.EAGAIN), errors.Is(err, errors.ErrUnsupported):
+		return a.writeWithDeadline(b, addr, deadline)
+	}
+	return 0, err
 }
 
-var anyfromWrites = sync.Pool{New: func() any {
-	request := new(anyfromWrite)
-	request.send = request.write
-	return request
-}}
-
-func (w *anyfromWrite) write(fd uintptr) {
-	for {
-		if !w.deadline.IsZero() && !time.Now().Before(w.deadline) {
-			w.err = os.ErrDeadlineExceeded
-			return
-		}
-		w.err = unix.Sendto(int(fd), w.data, unix.MSG_DONTWAIT, w.destination)
-		if !errors.Is(w.err, unix.EINTR) {
-			return
-		}
+// Only a would-block write needs a socket-wide deadline and serialization.
+func (a *Anyfrom) writeWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	if err := a.conn.SetWriteDeadline(deadline); err != nil {
+		return 0, err
 	}
+	defer a.conn.SetWriteDeadline(time.Time{})
+	return a.conn.WriteToUDPAddrPort(b, addr)
 }

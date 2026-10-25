@@ -49,6 +49,8 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
 | `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
 | `reply_queue_full` | `download` | Pushed reply backlog full |
+| `reply_socket_full` | `download` | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |
+| `reply_send_failed` | `download` | Sending a reply to the client failed, for example its reply socket could not be created; the association goes on |
 
 Drops inside quic-go's DATAGRAM receive queue or packet packer are not exposed
 by this metric.

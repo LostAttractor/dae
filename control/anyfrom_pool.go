@@ -36,10 +36,8 @@ type Anyfrom struct {
 	idleTTL        time.Duration
 	idleDeadline   time.Time
 	writeMu        sync.Mutex
-	rawOnce        sync.Once
-	raw            syscall.RawConn
-	family         int
-	rawErr         error
+	socketOnce     sync.Once
+	socket         *netproxy.UDPSocket
 	closed         atomic.Bool
 }
 
@@ -58,27 +56,6 @@ func (a *Anyfrom) refreshIdleDeadline() bool {
 func (a *Anyfrom) Close() error {
 	a.closed.Store(true)
 	return a.conn.Close()
-}
-
-// WriteToUDPAddrPortWithDeadline sends without arming the socket deadline
-// unless the socket is full. Callers refresh the idle deadline before writing;
-// that refresh also detects a closed socket.
-func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
-	if n, err, attempted := a.tryWrite(b, addr, deadline); attempted {
-		return n, err
-	}
-	return a.writeWithDeadline(b, addr, deadline)
-}
-
-// Only a would-block write needs a socket-wide deadline and serialization.
-func (a *Anyfrom) writeWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	if err := a.conn.SetWriteDeadline(deadline); err != nil {
-		return 0, err
-	}
-	defer a.conn.SetWriteDeadline(time.Time{})
-	return a.conn.WriteToUDPAddrPort(b, addr)
 }
 
 // AnyfromPool is a full-cone udp listener pool

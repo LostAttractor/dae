@@ -24,8 +24,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// udpReplies sends an endpoint's replies to its client. trySend sends a reply
-// only if that cannot block, reporting whether it did.
+// udpReplies sends an endpoint's replies to its client. send may wait to
+// create a socket, never for a full one: it drops the reply instead, counted,
+// with netproxy.ErrPacketDropped. trySend sends a reply only if that cannot
+// block, reporting whether it did.
 type udpReplies interface {
 	send(data []byte, from netip.AddrPort) error
 	trySend(data []byte, from netip.AddrPort) bool
@@ -68,14 +70,15 @@ type udpActivityTarget struct {
 func addrPortOf(addr net.Addr) (netip.AddrPort, error) {
 	if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		if udpAddr != nil && udpAddr.AddrPort().IsValid() {
-			return udpAddr.AddrPort(), nil
+			return common.ConvergeAddrPort(udpAddr.AddrPort()), nil
 		}
 		return netip.AddrPort{}, errors.New("invalid UDP reply address")
 	}
 	if addr == nil {
 		return netip.AddrPort{}, errors.New("missing UDP reply address")
 	}
-	return netip.ParseAddrPort(addr.String())
+	address, err := netip.ParseAddrPort(addr.String())
+	return common.ConvergeAddrPort(address), err
 }
 
 type UdpEndpoint struct {
@@ -177,11 +180,14 @@ func (ue *UdpEndpoint) receiveFailure(conn net.PacketConn, child *udpSocket, err
 var errReplyWouldBlock = errors.New("UDP reply would block")
 
 // deliver forwards a reply received on conn to the client. done reports that
-// conn's delivery ended, with err as the failure to report or nil. Without
-// wait it does nothing that may block and returns errReplyWouldBlock instead,
-// having at most refreshed the socket and observed a known target, which a
-// repeat does again harmlessly.
+// conn's delivery ended, with err as the failure to report or nil; a reply
+// that cannot be sent is dropped, counted, without ending it. With wait it may
+// wait to observe a target or create the client's socket, never for a full
+// one. Without wait it does nothing that may block and returns
+// errReplyWouldBlock instead, having at most refreshed the socket and observed
+// a known target, which a repeat does again harmlessly.
 func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.PacketConn, child *udpSocket, payload []byte, from netip.AddrPort, wait bool) (done bool, err error) {
+	from = common.ConvergeAddrPort(from)
 	// A reply for an association ending here is dropped.
 	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
 		netproxy.DropClosedStream.Add(1)
@@ -199,7 +205,11 @@ func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.
 			return false, errReplyWouldBlock
 		}
 	} else if err := ue.replies.send(payload, from); err != nil {
-		return true, netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
+		// A reply lost on the way to the client does not end the association.
+		if !errors.Is(err, netproxy.ErrPacketDropped) {
+			dropReplySendFailed.Add(1)
+		}
+		return false, nil
 	}
 	if !(ue.mitm && conn == ue.conn) && len(payload) > 0 && ue.traffic != nil {
 		ue.traffic.RecordDownload(uint64(len(payload)))

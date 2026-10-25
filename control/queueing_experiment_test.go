@@ -63,7 +63,10 @@ const (
 	qexpChunk           = 32 << 10 // as the relay's copy buffer
 )
 
-var qexpPSK = bytes.Repeat([]byte{0x51}, ss2022test.KeySize)
+var (
+	qexpPSK     = bytes.Repeat([]byte{0x51}, ss2022test.KeySize)
+	qexpLANHost = netip.MustParseAddr("192.168.77.10")
+)
 
 func qexpEnv(t *testing.T, name, fallback string) string {
 	if os.Getenv("DAE_QUEUE_EXP") != "1" {
@@ -102,6 +105,23 @@ func qexpTLS(t *testing.T) *tls.Config {
 	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}}, NextProtos: []string{"qexp"}}
 }
 
+// qexpRate parses a rate in tc units: kbit, mbit, gbit.
+func qexpRate(t *testing.T, rate string) (bits uint64) {
+	for unit, scale := range map[string]uint64{"kbit": 1e3, "mbit": 1e6, "gbit": 1e9} {
+		if number, ok := strings.CutSuffix(rate, unit); ok {
+			n, err := strconv.ParseUint(number, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bits = n * scale
+		}
+	}
+	if bits == 0 {
+		t.Fatalf("rate %q", rate)
+	}
+	return bits
+}
+
 // TestQueueingExperimentCake installs cake on QEXP_CAKE_DEV at QEXP_CAKE_RATE
 // (tc units: kbit, mbit, gbit) as the router's cu has it. tc's rtt keyword
 // also sets the target to rtt/20; the router sets only the RTT and keeps the
@@ -111,19 +131,7 @@ func TestQueueingExperimentCake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rate := qexpEnv(t, "QEXP_CAKE_RATE", "")
-	var bits uint64
-	for unit, scale := range map[string]uint64{"kbit": 1e3, "mbit": 1e6, "gbit": 1e9} {
-		if number, ok := strings.CutSuffix(rate, unit); ok {
-			if bits, err = strconv.ParseUint(number, 10, 64); err != nil {
-				t.Fatal(err)
-			}
-			bits *= scale
-		}
-	}
-	if bits == 0 {
-		t.Fatalf("rate %q", rate)
-	}
+	bits := qexpRate(t, qexpEnv(t, "QEXP_CAKE_RATE", ""))
 	// Attribute types and values of linux/pkt_sched.h.
 	const (
 		baseRate64, diffservMode, flowMode, overhead, rtt, target, nat, raw, wash, splitGSO = 2, 3, 5, 6, 7, 8, 11, 12, 13, 17
@@ -810,8 +818,44 @@ func TestQueueingExperimentClient(t *testing.T) {
 	default:
 		t.Fatalf("QEXP_UDP=%s", udp)
 	}
+	// With QEXP_LAN_RATE, replies reach the LAN host, on a loopback shaped to
+	// that rate, from transparent sockets of their sources, as dae sends
+	// them; otherwise the test takes them from the endpoints. The shaping
+	// ends with the load, so that the final counts get through.
+	var lan *AnyfromPool
+	var lanQdisc *netlink.Tbf
+	if rate := os.Getenv("QEXP_LAN_RATE"); rate != "" {
+		lo, err := netlink.LinkByName("lo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address, err := netlink.ParseAddr(netip.PrefixFrom(qexpLANHost, 32).String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := netlink.AddrAdd(lo, address); err != nil {
+			t.Fatal(err)
+		}
+		// The queue outgrows any socket's send buffer, which fills first.
+		perSecond := qexpRate(t, rate) / 8
+		lanQdisc = &netlink.Tbf{QdiscAttrs: netlink.QdiscAttrs{LinkIndex: lo.Attrs().Index, Handle: netlink.MakeHandle(1, 0), Parent: netlink.HANDLE_ROOT},
+			Rate: perSecond, Limit: 4 << 20, Buffer: netlink.Xmittime(perSecond, 1600)}
+		if err := netlink.QdiscAdd(lanQdisc); err != nil {
+			t.Fatal(err)
+		}
+		lan = NewAnyfromPool()
+		config := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error { return transparentControl(c) }}
+		for _, port := range []int{qexpGamePort, qexpFloodPort, qexpQUICPort} {
+			socket, err := config.ListenPacket(ctx, "udp4", qexpAddr(host, port).String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer socket.Close()
+			lan.pool[qexpAddr(host, port)] = &Anyfrom{conn: socket.(*net.UDPConn), idleTTL: time.Hour}
+		}
+	}
 	openFlow := func(port int) *qexpFlow {
-		flow := &qexpFlow{src: netip.AddrPortFrom(netip.MustParseAddr("192.168.77.10"), uint16(lanPort.Add(1))), dst: qexpAddr(host, port), replies: make(chan []byte, 1024)}
+		flow := &qexpFlow{src: netip.AddrPortFrom(qexpLANHost, uint16(lanPort.Add(1))), dst: qexpAddr(host, port), replies: make(chan []byte, 1024)}
 		// Setup is skipped: the dial gets none of the context setup would
 		// give it, such as the sniffed protocol.
 		conn, err := packets.ListenPacket(ctx, flow.dst.String())
@@ -819,6 +863,27 @@ func TestQueueingExperimentClient(t *testing.T) {
 			t.Fatal(err)
 		}
 		ue := &UdpEndpoint{conn: conn, NatTimeout: time.Hour, replies: flow}
+		if lan != nil {
+			socket, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(flow.src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = socket.Close() })
+			if err := qexpReceiveBuffer(socket); err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				buf := make([]byte, 65535)
+				for {
+					n, from, err := socket.ReadFromUDPAddrPort(buf)
+					if err != nil {
+						return
+					}
+					flow.trySend(buf[:n], from)
+				}
+			}()
+			ue.replies = &udpReplySender{pool: lan, to: flow.src}
+		}
 		endpoints.add(flow.src, ue)
 		ue.startSocket(endpoints, flow.src, flow.dst, netip.AddrPort{}, conn)
 		return flow
@@ -1093,6 +1158,14 @@ func TestQueueingExperimentClient(t *testing.T) {
 		// Its unread data would hold up the final counts.
 		_ = download.Close()
 	}
+	if lanQdisc != nil {
+		// Unshaped, not removed: removing would drop the queued replies.
+		lanQdisc.Rate = 10e9 / 8
+		lanQdisc.Buffer = netlink.Xmittime(lanQdisc.Rate, 1600)
+		if err := netlink.QdiscChange(lanQdisc); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Let queues drain, then ask the reflectors for their final counts.
 	time.Sleep(time.Second)
 	for _, flow := range []*qexpFlow{game, flood} {
@@ -1113,7 +1186,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 		"elapsed_s": time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
 		"carriers": len(carriers.notsent()), "datagram_memory_peak": udpPacketMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
 	}
-	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "RETURN_DELAY", "LABEL", "BINARY"} {
+	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "LAN_RATE", "RETURN_DELAY", "LABEL", "BINARY"} {
 		report[strings.ToLower(name)] = os.Getenv("QEXP_" + name)
 	}
 	rec.mu.Lock()

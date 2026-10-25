@@ -13,10 +13,14 @@
 #                       one-way delay is its queueing delay
 #   CC=bbr              congestion control in both namespaces
 #   ECN=0               tcp_ecn of the client namespace
+#   LAN_RATE=           replies reach the LAN host through transparent sockets,
+#                       on the client's loopback shaped to this rate (tc units)
+#                       until the load stops; unset, the test takes them
 #   OUT=/tmp/dae-queueing  where LABEL.json, LABEL.tc and LABEL.nstat are
 #                       written; a run whose server namespace dropped UDP
 #                       fails and leaves no LABEL.json
 # The client and the server run on disjoint halves of the physical cores.
+# The client namespace's UDP socket errors go to LABEL.client.nstat.
 # Workload, passed to the client test (see control/queueing_experiment_test.go):
 #   QEXP_WORKLOAD=game,bulk:4  game, bulk:N, quic, itcp, ttfb, flood:MBIT
 #   QEXP_DOWNLOAD=stall|slow   a TCP download that stalls or reads 1 MiB/s
@@ -99,12 +103,13 @@ for _ in $(seq 50); do
 	sleep 0.1
 done
 
-env DAE_QUEUE_EXP=1 QEXP_SERVER=10.77.0.2 QEXP_CAKE_DEV=qexpa QEXP_OUT="$report.tmp" QEXP_RETURN_DELAY="$RETURN_DELAY" QEXP_LABEL="$LABEL" \
+env DAE_QUEUE_EXP=1 QEXP_SERVER=10.77.0.2 QEXP_CAKE_DEV=qexpa QEXP_LAN_RATE="${LAN_RATE:-}" QEXP_OUT="$report.tmp" QEXP_RETURN_DELAY="$RETURN_DELAY" QEXP_LABEL="$LABEL" \
 	QEXP_BINARY="$(sha256sum "$BIN" | cut -d' ' -f1)" ip netns exec "$client" taskset -c "$client_cpus" \
 	"$BIN" -test.run '^TestQueueingExperimentClient$' -test.timeout=${minutes}m >"$OUT/$LABEL.client.log" 2>&1 &
 pids+=($!)
 wait "${pids[-1]}" || { tail -20 "$OUT/$LABEL.client.log" >&2; exit 1; }
 ip netns exec "$client" tc -s qdisc show dev qexpa >"$OUT/$LABEL.tc"
+ip netns exec "$client" nstat -saz UdpRcvbufErrors UdpSndbufErrors Udp6RcvbufErrors Udp6SndbufErrors >"$OUT/$LABEL.client.nstat"
 # Lost probes must be the client's: the server must not drop UDP.
 ip netns exec "$server" nstat -saz UdpRcvbufErrors UdpInErrors Udp6RcvbufErrors Udp6InErrors >"$OUT/$LABEL.nstat"
 if awk '$1 ~ /^Udp/ && $2 != 0 { bad = 1 } END { exit !bad }' "$OUT/$LABEL.nstat"; then

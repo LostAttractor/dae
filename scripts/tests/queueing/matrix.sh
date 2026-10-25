@@ -41,6 +41,8 @@ declare -A scenarios=(
 	[w4_idle]="QEXP_WORKLOAD=ttfb"
 	[w6_stall]="QEXP_WORKLOAD=game QEXP_DOWNLOAD=stall"
 	[w6_slow]="QEXP_WORKLOAD=game QEXP_DOWNLOAD=slow"
+	[w6_lan]="QEXP_WORKLOAD=game LAN_RATE=8kbit"
+	[w6_lan_direct]="QEXP_WORKLOAD=game QEXP_UDP=direct LAN_RATE=8kbit"
 	[w7]="QEXP_WORKLOAD=bulk:4"
 	[w7_cubic]="QEXP_WORKLOAD=bulk:4 CC=cubic"
 	[w7_d2]="QEXP_WORKLOAD=bulk:4 QEXP_WRITER_DELAY=2ms"

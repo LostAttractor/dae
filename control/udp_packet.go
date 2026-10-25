@@ -70,4 +70,7 @@ var (
 	dropUploadFiltered   = netproxy.NewQuietDrop(netproxy.DropUpload, "filtered")
 	dropDownloadFiltered = netproxy.NewQuietDrop(netproxy.DropDownload, "filtered")
 	dropReplyQueue       = netproxy.NewDrop(netproxy.DropDownload, "reply_queue_full")
+	// The client's reply socket had no room, or sending the reply failed.
+	dropReplySocketFull = netproxy.NewDrop(netproxy.DropDownload, "reply_socket_full")
+	dropReplySendFailed = netproxy.NewDrop(netproxy.DropDownload, "reply_send_failed")
 )

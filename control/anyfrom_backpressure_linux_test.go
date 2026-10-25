@@ -7,15 +7,18 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
 
 // An unresolved neighbor holds datagrams against a deliberately tiny send
-// buffer. All links, addresses and neighbor queues live in a private namespace.
+// buffer: replies are dropped, DNS responses wait until their deadline or a
+// close. All links, addresses and neighbor queues live in a private namespace.
 func TestAnyfromBackpressureDeadlineAndClose(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root required for isolated socket backpressure")
@@ -61,12 +64,12 @@ func TestAnyfromBackpressureDeadlineAndClose(t *testing.T) {
 	data := make([]byte, 4096)
 	blocked := false
 	for range 64 {
-		_, err, attempted := a.tryWrite(data, dst, time.Now().Add(time.Second))
-		must(err)
-		if !attempted {
+		err := a.trySend(data, dst)
+		if errors.Is(err, syscall.EAGAIN) {
 			blocked = true
 			break
 		}
+		must(err)
 	}
 	if !blocked {
 		t.Fatal("fixture failed to fill send buffer")
@@ -76,6 +79,12 @@ func TestAnyfromBackpressureDeadlineAndClose(t *testing.T) {
 	if sender.trySend(data, sender.cached.Load().from) {
 		t.Fatal("trySend reported a reply the full socket did not take")
 	}
+	// A reply is dropped, counted, at once: no wait for the socket.
+	dropped, start := dropReplySocketFull.Load(), time.Now()
+	if err := sender.send(data, sender.cached.Load().from); err != netproxy.ErrPacketDropped || dropReplySocketFull.Load()-dropped != 1 || time.Since(start) > time.Second {
+		t.Fatalf("send to a full socket = %v after %v with %d counted", err, time.Since(start), dropReplySocketFull.Load()-dropped)
+	}
+	// DNS responses still wait, bounded by their deadline.
 	if _, err := a.WriteToUDPAddrPortWithDeadline(data, dst, time.Now().Add(30*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("congested deadline: %v", err)
 	}
