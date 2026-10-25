@@ -249,6 +249,10 @@ func (s *smuxSession) Close() error {
 		}
 		timer.Stop()
 	}
+	return s.abort()
+}
+
+func (s *smuxSession) abort() error {
 	if !s.shutdown(io.ErrClosedPipe) {
 		return io.ErrClosedPipe
 	}

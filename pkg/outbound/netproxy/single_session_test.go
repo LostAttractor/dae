@@ -62,7 +62,12 @@ func TestSingleSessionRecoveryExecutorFollowsResource(t *testing.T) {
 func TestSingleSessionAbortIsExplicit(t *testing.T) {
 	for _, abort := range []bool{false, true} {
 		t.Run(fmt.Sprintf("abort=%v", abort), func(t *testing.T) {
-			session := NewSingleSession(SingleSessionConfig[int]{Establish: func(context.Context) (int, error) { return 1, nil }})
+			var closes, aborts atomic.Int32
+			session := NewSingleSession(SingleSessionConfig[int]{
+				Establish: func(context.Context) (int, error) { return 1, nil },
+				Close:     func(int) error { closes.Add(1); return nil },
+				Abort:     func(int) error { aborts.Add(1); return nil },
+			})
 			defer session.Close()
 			if err := session.Connect(context.Background()); err != nil {
 				t.Fatal(err)
@@ -77,6 +82,11 @@ func TestSingleSessionAbortIsExplicit(t *testing.T) {
 			}
 			if stream.Valid() || (stream.AbortCause() != nil) != abort {
 				t.Fatalf("termination: valid=%v abort=%v", stream.Valid(), stream.AbortCause())
+			}
+			// An aborted resource is closed through Abort, without lingering.
+			_ = session.Close()
+			if got, want := [2]int32{closes.Load(), aborts.Load()}, map[bool][2]int32{false: {1, 0}, true: {0, 1}}[abort]; got != want {
+				t.Fatalf("closes, aborts = %v, want %v", got, want)
 			}
 		})
 	}

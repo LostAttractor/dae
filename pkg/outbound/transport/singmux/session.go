@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +23,8 @@ type session interface {
 	IsClosed() bool
 	CloseChan() <-chan struct{}
 	Close() error
+	// abort closes the session at once, dropping the frames still queued.
+	abort() error
 	// closeErr reports why the library closed the session, if it records it.
 	closeErr() error
 	// saturated reports a session on which a new stream could not grow its
@@ -41,13 +45,14 @@ func newSession(protocol Protocol, conn *monitoredConn) (session, error) {
 		config.MaxIncomingStreams = 0
 		config.LogOutput = io.Discard
 		budget := new(windowBudget)
-		session, err := yamux.Client(conn, config, func() (yamux.MemoryManager, error) {
+		writer := &goAwayWriter{monitoredConn: conn, written: make(chan struct{})}
+		session, err := yamux.Client(writer, config, func() (yamux.MemoryManager, error) {
 			return &windowSpan{budget: budget}, nil
 		})
 		if err != nil {
 			return nil, err
 		}
-		return yamuxSession{Session: session, budget: budget, carrier: conn}, nil
+		return yamuxSession{Session: session, budget: budget, carrier: conn, goAway: writer.written, writers: &streamWriters{streams: make(map[*yamux.Stream]struct{})}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported multiplex %s", protocol)
 	}
@@ -57,14 +62,90 @@ type yamuxSession struct {
 	*yamux.Session
 	budget  *windowBudget
 	carrier *monitoredConn
+	// goAway is closed once the carrier took the session's GoAway.
+	goAway  <-chan struct{}
+	writers *streamWriters
 }
+
+// streamWriters holds the streams of a session that may still write.
+type streamWriters struct {
+	mu      sync.Mutex
+	streams map[*yamux.Stream]struct{}
+}
+
+func (w *streamWriters) add(stream *yamux.Stream) {
+	w.mu.Lock()
+	w.streams[stream] = struct{}{}
+	w.mu.Unlock()
+}
+
+func (w *streamWriters) remove(stream *yamux.Stream) {
+	w.mu.Lock()
+	delete(w.streams, stream)
+	w.mu.Unlock()
+}
+
+func (w *streamWriters) list() []*yamux.Stream {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Collect(maps.Keys(w.streams))
+}
+
+// goAwayWriter is the session's carrier; it reports when the GoAway is
+// written, a 12-byte frame header of version 0 and type 3.
+// shortcut: relies on go-yamux writing one frame per Write;
+// TestYamuxCloseDetectsGoAway pins it, an in-tree yamux client removes it.
+type goAwayWriter struct {
+	*monitoredConn
+	once    sync.Once
+	written chan struct{}
+}
+
+func (c *goAwayWriter) Write(p []byte) (int, error) {
+	n, err := c.monitoredConn.Write(p)
+	if err == nil && len(p) == 12 && p[0] == 0 && p[1] == 3 {
+		c.once.Do(func() { close(c.written) })
+	}
+	return n, err
+}
+
+// Close writes the frames already queued, such as the last data and FIN of
+// a stream closed just before, then closes the session: yamux queues every
+// frame in one FIFO, and its own Close drops what is still queued. The
+// GoAway queued behind them is written last, so Close waits until the
+// carrier took it, the session ends or netproxy.CloseLinger passes. A
+// stream that may still write is reset first, as smux fails its writes
+// while closing: what it queued after the GoAway would not reach the peer.
+// Streams opened later fail on their lease, invalidated before any Close.
+func (s yamuxSession) Close() error {
+	timer := time.NewTimer(netproxy.CloseLinger)
+	defer timer.Stop()
+	writers := s.writers.list()
+	// Resets and GoAway wait for room in the queue; the session's end
+	// releases them.
+	go func() {
+		for _, stream := range writers {
+			_ = stream.Reset()
+		}
+		_ = s.Session.GoAway()
+	}()
+	select {
+	case <-s.goAway:
+	case <-s.CloseChan():
+	case <-timer.C:
+	}
+	return s.Session.Close()
+}
+
+func (s yamuxSession) abort() error { return s.Session.Close() }
 
 func (s yamuxSession) OpenStream(ctx context.Context) (net.Conn, error) {
 	stream, err := s.Session.OpenStream(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return yamuxStream{stream}, nil
+	s.writers.add(stream)
+	return yamuxStream{stream, s.writers}, nil
 }
 
 func (s yamuxSession) closeErr() error {
@@ -93,7 +174,15 @@ func (s yamuxSession) saturated() bool {
 // the session ends. Close sends FIN instead, keeps the stream registered and
 // resets it unless the peer has closed its half by netproxy.CloseLinger
 // (sing-box's yamux client waits as long).
-type yamuxStream struct{ *yamux.Stream }
+type yamuxStream struct {
+	*yamux.Stream
+	writers *streamWriters
+}
+
+func (s yamuxStream) CloseWrite() error {
+	s.writers.remove(s.Stream)
+	return s.Stream.CloseWrite()
+}
 
 func (s yamuxStream) Close() error {
 	// Wake local readers; the stream is not read after Close.

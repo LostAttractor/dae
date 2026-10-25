@@ -18,9 +18,12 @@ type SingleSession[T any] struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	mu         sync.RWMutex
-	current    *SingleSessionHandle[T]
-	observers  sync.WaitGroup
+	mu        sync.RWMutex
+	current   *SingleSessionHandle[T]
+	observers sync.WaitGroup
+	// closing tracks the closes of detached resources that may linger.
+	closing    sync.WaitGroup
+	errMu      sync.Mutex
 	cleanupErr error
 	closeOnce  sync.Once
 	ref        ResourceRef
@@ -118,7 +121,7 @@ func (h *SingleSessionHandle[T]) cleanupDisconnected() {
 	}
 	resource := s.detachLocked()
 	s.mu.Unlock()
-	s.recordCloseError(s.closeHandle(resource))
+	s.closeDetached(resource)
 	s.mu.Lock()
 	if s.ctx.Err() == nil && s.current == nil {
 		s.phaseLocked("queued", "")
@@ -145,6 +148,12 @@ type SingleSessionConfig[T any] struct {
 	Recover func(context.Context, T) (replace bool, err error)
 	Observe func(context.Context, *SingleSessionHandle[T])
 	Close   func(T) error
+	// Abort optionally closes a resource at once, without waiting for its
+	// peer: one whose lease was aborted or that was never installed. Any
+	// other closes through Close, which may linger; a replaced or lost one
+	// then closes in the background, and SingleSession.Close waits for it.
+	// Without Abort, Close closes every resource in place.
+	Abort func(T) error
 }
 
 func NewSingleSession[T any](config SingleSessionConfig[T]) *SingleSession[T] {
@@ -301,7 +310,7 @@ func (s *SingleSession[T]) Connect(ctx context.Context) error {
 		s.phaseLocked("cleanup", "")
 	}
 	s.mu.Unlock()
-	s.recordCloseError(s.closeHandle(current))
+	s.closeDetached(current)
 	return s.establishAndInstall(connectCtx)
 }
 
@@ -368,7 +377,7 @@ func (s *SingleSession[T]) recoverCurrent(ctx context.Context, current *SingleSe
 		s.transitionLocked(SessionConnecting, nil)
 	}
 	s.mu.Unlock()
-	s.recordCloseError(s.closeHandle(resource))
+	s.closeDetached(resource)
 	if err != nil {
 		return err
 	}
@@ -397,13 +406,13 @@ func (s *SingleSession[T]) establishAndInstall(ctx context.Context) error {
 	}
 	if s.ctx.Err() != nil {
 		s.mu.Unlock()
-		s.recordCloseError(s.closeResource(resource))
+		s.recordCloseError(s.abortResource(resource))
 		return net.ErrClosed
 	}
 	if operationErr := ctx.Err(); operationErr != nil {
 		s.transitionLocked(SessionDisconnected, operationErr)
 		s.mu.Unlock()
-		s.recordCloseError(s.closeResource(resource))
+		s.recordCloseError(s.abortResource(resource))
 		return operationErr
 	}
 	parents := dependencies.snapshot()
@@ -417,7 +426,7 @@ func (s *SingleSession[T]) establishAndInstall(ctx context.Context) error {
 		cause := WrapFailure(ErrDependencyInvalid, Failure{Scope: ScopeSharedResource, Layer: s.config.Layer, Phase: OpHandshake})
 		s.transitionLocked(SessionDisconnected, cause)
 		s.mu.Unlock()
-		s.recordCloseError(s.closeResource(resource))
+		s.recordCloseError(s.abortResource(resource))
 		return cause
 	}
 	observerCtx, observerCancel := context.WithCancel(context.Background())
@@ -482,11 +491,18 @@ func (s *SingleSession[T]) detachLocked() *SingleSessionHandle[T] {
 	return current
 }
 
-func (s *SingleSession[T]) closeHandle(handle *SingleSessionHandle[T]) error {
+func (s *SingleSession[T]) abortHandle(handle *SingleSessionHandle[T]) error {
 	if handle == nil {
 		return nil
 	}
-	return s.closeResource(handle.resource)
+	return s.abortResource(handle.resource)
+}
+
+func (s *SingleSession[T]) abortResource(resource T) error {
+	if s.config.Abort != nil {
+		return s.config.Abort(resource)
+	}
+	return s.closeResource(resource)
 }
 
 func (s *SingleSession[T]) closeResource(resource T) error {
@@ -497,7 +513,23 @@ func (s *SingleSession[T]) closeResource(resource T) error {
 }
 
 func (s *SingleSession[T]) recordCloseError(err error) {
+	s.errMu.Lock()
 	s.cleanupErr = errors.Join(s.cleanupErr, err)
+	s.errMu.Unlock()
+}
+
+// closeDetached closes a replaced or lost resource without holding the
+// operation. An aborted one closes at once; any other may still hand its
+// peer what it accepted, so it closes in the background and Close waits.
+func (s *SingleSession[T]) closeDetached(handle *SingleSessionHandle[T]) {
+	if handle == nil {
+		return
+	}
+	if s.config.Abort == nil || handle.lease.AbortCause() != nil {
+		s.recordCloseError(s.abortHandle(handle))
+		return
+	}
+	s.closing.Go(func() { s.recordCloseError(s.closeResource(handle.resource)) })
 }
 
 func (s *SingleSession[T]) Close() error {
@@ -511,7 +543,12 @@ func (s *SingleSession[T]) Close() error {
 		s.operation <- struct{}{}
 		<-s.operation
 		s.observers.Wait()
-		s.recordCloseError(s.closeHandle(current))
+		if current != nil && current.lease.AbortCause() == nil {
+			s.recordCloseError(s.closeResource(current.resource))
+		} else {
+			s.recordCloseError(s.abortHandle(current))
+		}
+		s.closing.Wait()
 	})
 	return s.cleanupErr
 }

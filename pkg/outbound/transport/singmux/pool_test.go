@@ -2,9 +2,12 @@ package singmux
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -315,4 +318,174 @@ func TestPoolKeepsSoleUsableIdleSession(t *testing.T) {
 			t.Fatalf("extra session outlived the refill: loads=%v dials=%d state=%+v", h.loads(), h.dials(), state)
 		}
 	})
+}
+
+// leasedConn is a carrier that depends on a parent's lease.
+type leasedConn struct {
+	net.Conn
+	lease *netproxy.Lease
+}
+
+func (c leasedConn) DependencyLease() *netproxy.Lease { return c.lease }
+
+// Replacing a session whose peer stopped reading takes no time, whether it
+// was aborted, and closes at once, or its carrier's lease ended without an
+// abort (as an h2 GOAWAY ends it), and it closes in the background.
+func TestLostSessionReplacedAtOnce(t *testing.T) {
+	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
+		for _, loss := range []string{"abort", "parent"} {
+			t.Run(protocol.String()+"/"+loss, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					parentLease := netproxy.NewLease(netproxy.NewResourceRef())
+					stop := make(chan struct{})
+					parent := &pipeDialer{server: make(chan net.Conn), wrapClient: func(i int, conn net.Conn) net.Conn {
+						if i == 0 {
+							return leasedConn{conn, parentLease}
+						}
+						return conn
+					}}
+					go func() {
+						for conn := range parent.server {
+							go func() {
+								_, _ = io.ReadFull(conn, make([]byte, 2))
+								<-stop
+								_ = conn.Close()
+							}()
+						}
+					}()
+					defer close(parent.server)
+					defer close(stop)
+					mux := &Mux{Dialer: parent, Protocol: protocol, MaxConnections: 1}
+					defer mux.Close()
+					if err := mux.Connect(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					if loss == "abort" {
+						pool := mux.pool()
+						pool.mu.Lock()
+						lifecycle := pool.slots[0].lifecycle
+						pool.mu.Unlock()
+						handle, err := lifecycle.CurrentHandle()
+						if err != nil {
+							t.Fatal(err)
+						}
+						handle.Abort(errors.New("aborted by its owner"))
+					} else {
+						parentLease.Invalidate(errors.New("parent retired"))
+					}
+					synctest.Wait()
+					start := time.Now()
+					if err := mux.Connect(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					if waited := time.Since(start); waited != 0 {
+						t.Fatalf("replacing the session took %v", waited)
+					}
+				})
+			})
+		}
+	}
+}
+
+// heldConn is a carrier whose writes wait while it is held, as behind a
+// peer that does not read yet; closing it fails them.
+type heldConn struct {
+	leasedConn
+	held            *atomic.Bool
+	release, closed <-chan struct{}
+	close           func()
+}
+
+func (c heldConn) Write(p []byte) (int, error) {
+	if c.held.Load() {
+		select {
+		case <-c.release:
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
+	}
+	return c.leasedConn.Write(p)
+}
+
+func (c heldConn) Close() error { c.close(); return c.leasedConn.Close() }
+
+// A stream closes normally with its upload still queued behind a carrier
+// that cannot write yet; the carrier's lease then ends without an abort, as
+// an h2 GOAWAY ends it, and Connect replaces the session at once. The old
+// session still writes the upload and FIN once the carrier can, while a
+// stream left open on it fails its writes instead of queueing them behind
+// the session's end.
+func TestLostSessionDeliversQueuedUpload(t *testing.T) {
+	// Within what a smux stream queues without waiting for the carrier.
+	const size = 48 << 10
+	for _, protocol := range []Protocol{ProtocolSmux, ProtocolYAMux} {
+		t.Run(protocol.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				got := make(chan error, 1)
+				parent := serveSingMux(t, protocol, func(_ muxRequest, stream net.Conn) {
+					if _, err := stream.Write([]byte{1}); err != nil {
+						got <- err
+						return
+					}
+					data, err := io.ReadAll(stream)
+					if err == nil && len(data) != size {
+						err = fmt.Errorf("server read %d of %d bytes", len(data), size)
+					}
+					got <- err
+				})
+				parentLease := netproxy.NewLease(netproxy.NewResourceRef())
+				held, release := new(atomic.Bool), make(chan struct{})
+				parent.wrapClient = func(i int, conn net.Conn) net.Conn {
+					if i == 0 {
+						closed := make(chan struct{})
+						return heldConn{leasedConn{conn, parentLease}, held, release, closed, sync.OnceFunc(func() { close(closed) })}
+					}
+					return conn
+				}
+				mux := &Mux{Dialer: parent, Protocol: protocol, MaxConnections: 1}
+				defer mux.Close()
+				if err := mux.Connect(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				conn, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The first byte carries the stream request; the reply shows
+				// the server accepted the stream.
+				if _, err := conn.Write([]byte{0}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+					t.Fatal(err)
+				}
+				open, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+				if err != nil {
+					t.Fatal(err)
+				}
+				held.Store(true)
+				if _, err := conn.Write(make([]byte, size-1)); err != nil {
+					t.Fatal(err)
+				}
+				_ = netproxy.CloseWrite(conn)
+				_ = conn.Close()
+				parentLease.Invalidate(errors.New("parent got GOAWAY"))
+				synctest.Wait()
+				if _, err := open.Write([]byte{0}); err == nil {
+					t.Fatal("a stream open on the closing session accepted a write")
+				}
+				start := time.Now()
+				if err := mux.Connect(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if waited := time.Since(start); waited != 0 {
+					t.Fatalf("replacing the session took %v", waited)
+				}
+				close(release)
+				if err := <-got; err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+	}
 }

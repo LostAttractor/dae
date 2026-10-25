@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -303,6 +304,79 @@ func TestYamuxClosedStreamReleasesServerWriter(t *testing.T) {
 		}
 		if waited := time.Since(closed); waited > netproxy.CloseLinger {
 			t.Fatalf("server writer released %v after Close", waited)
+		}
+	})
+}
+
+// The relay's order when the target closes first, on a path retired at the
+// same time: the client reads EOF, sends its last upload, half-closes and
+// closes, and the session closes right after. yamux only queues the upload
+// and the FIN; closing the session must write them first.
+func TestYamuxSessionCloseWritesQueuedFrames(t *testing.T) {
+	const size = 64 << 10
+	for range 20 {
+		got := make(chan error, 1)
+		mux := &Mux{Dialer: serveSingMux(t, ProtocolYAMux, func(_ muxRequest, stream net.Conn) {
+			if err := netproxy.CloseWrite(stream); err != nil {
+				got <- err
+				return
+			}
+			_ = stream.SetReadDeadline(time.Now().Add(3 * time.Second))
+			data, err := io.ReadAll(stream)
+			if err == nil && len(data) != size {
+				err = fmt.Errorf("server read %d of %d bytes", len(data), size)
+			}
+			got <- err
+		}), Protocol: ProtocolYAMux, MaxConnections: 1}
+		if err := mux.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		conn, err := mux.DialContext(t.Context(), "tcp", "target.example:443")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		// The first byte carries the stream request.
+		if _, err := conn.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadAll(conn); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Write(make([]byte, size-1)); err != nil {
+			t.Fatal(err)
+		}
+		if err := netproxy.CloseWrite(conn); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+		_ = mux.Close()
+		if err := <-got; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Close waits only until the carrier took the GoAway. A peer that reads the
+// carrier but keeps the session after a GoAway, as hashicorp/yamux does,
+// does not hold Close: Close sees the GoAway being written.
+func TestYamuxCloseDetectsGoAway(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		parent := &pipeDialer{server: make(chan net.Conn)}
+		go func() {
+			for conn := range parent.server {
+				go func() { _, _ = io.Copy(io.Discard, conn) }()
+			}
+		}()
+		defer close(parent.server)
+		mux := &Mux{Dialer: parent, Protocol: ProtocolYAMux, MaxConnections: 1}
+		if err := mux.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_ = mux.Close()
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("Close took %v", waited)
 		}
 	})
 }

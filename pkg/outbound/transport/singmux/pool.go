@@ -69,13 +69,8 @@ func newSessionPool(owner *Mux, maxConnections int) *sessionPool {
 				Establish:   owner.establish,
 				IsConnected: (*sessionResource).connected,
 				Observe:     owner.observe,
-				Close: func(resource *sessionResource) error {
-					err := resource.session.Close()
-					if errors.Is(err, io.ErrClosedPipe) {
-						return nil
-					}
-					return err
-				},
+				Close:       func(resource *sessionResource) error { return ignoreClosedPipe(resource.session.Close()) },
+				Abort:       func(resource *sessionResource) error { return ignoreClosedPipe(resource.session.abort()) },
 			})
 		},
 	}
@@ -83,6 +78,14 @@ func newSessionPool(owner *Mux, maxConnections int) *sessionPool {
 		p.slots[i] = new(sessionSlot)
 	}
 	return p
+}
+
+// ignoreClosedPipe drops the error of closing a session that had ended.
+func ignoreClosedPipe(err error) error {
+	if errors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
 }
 
 func (p *sessionPool) Snapshot() netproxy.StateEvent {
