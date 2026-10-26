@@ -5,6 +5,7 @@ package mitm
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
@@ -20,7 +21,9 @@ func (h *Host) roundTrip(transport http.RoundTripper, r *http.Request) (*http.Re
 	release := prepareRequestReplay(r, h.options.bodyMemory())
 	defer release()
 	r = h.traceUpstream(r)
+	started := time.Now()
 	response, err := transport.RoundTrip(r)
+	h.httpStages.WithLabelValues("upstream").Observe(time.Since(started).Seconds())
 	if response != nil && h.options.Logger.Logger.IsLevelEnabled(log.TraceLevel) {
 		h.requestLogger(r).WithFields(log.Fields{
 			"event": "mitm_upstream_response", "host": r.URL.Hostname(),

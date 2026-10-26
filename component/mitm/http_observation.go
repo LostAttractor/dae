@@ -63,7 +63,13 @@ func (h *Host) observeRequest(w http.ResponseWriter, r *http.Request, scheme str
 		entry = entry.WithField("destination", flow.Destination.String())
 	}
 	entry.WithField("event", "mitm_request_begin").Trace("MITM request started")
-	return &requestObservation{logger: entry, started: time.Now(), writer: &observedResponseWriter{ResponseWriter: w}}
+	o := &requestObservation{logger: entry, started: time.Now()}
+	o.writer = &observedResponseWriter{ResponseWriter: w, event: o.event}
+	return o
+}
+
+func (o *requestObservation) event(event string) {
+	o.logger.WithFields(log.Fields{"event": event, "elapsed_ms": float64(time.Since(o.started)) / float64(time.Millisecond)}).Trace("MITM HTTP stage")
 }
 
 func (o *requestObservation) authorityRejected(reason string) {
@@ -76,7 +82,7 @@ func (o *requestObservation) observeResponse(response *http.Response) {
 	// Upgrades require io.ReadWriteCloser. Their tunnel lifetime and byte
 	// accounting belong to ReverseProxy, rather than an HTTP response body.
 	if response.StatusCode != http.StatusSwitchingProtocols {
-		o.body = &observedResponseBody{ReadCloser: response.Body}
+		o.body = &observedResponseBody{ReadCloser: response.Body, event: o.event}
 		response.Body = o.body
 	}
 }
@@ -159,13 +165,22 @@ func diagnosticError(err error) string {
 
 type observedResponseBody struct {
 	io.ReadCloser
-	read int64
-	eof  bool
-	err  error
+	read    int64
+	eof     bool
+	err     error
+	started bool
+	event   func(string)
 }
 
 func (b *observedResponseBody) Read(p []byte) (int, error) {
+	if !b.started {
+		b.started = true
+		b.event("mitm_response_first_read")
+	}
 	n, err := b.ReadCloser.Read(p)
+	if n > 0 && b.read == 0 {
+		b.event("mitm_response_first_data")
+	}
 	b.read += int64(n)
 	if err == io.EOF {
 		b.eof = true
@@ -183,6 +198,8 @@ type observedResponseWriter struct {
 	status  int
 	written int64
 	err     error
+	flushed bool
+	event   func(string)
 }
 
 func (w *observedResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -203,6 +220,9 @@ func (w *observedResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	if n > 0 && w.written == 0 {
+		w.event("mitm_response_first_write")
+	}
 	w.written += int64(n)
 	if err != nil {
 		w.err = err
@@ -214,6 +234,10 @@ func (w *observedResponseWriter) FlushError() error {
 	err := http.NewResponseController(w.ResponseWriter).Flush()
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.flushed {
+		w.flushed = true
+		w.event("mitm_response_first_flush")
+	}
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}

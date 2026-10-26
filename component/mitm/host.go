@@ -148,6 +148,7 @@ type Host struct {
 	memoryLimit      *membuffer.Limit
 	metrics          *prometheus.Registry
 	startedAt        *prometheus.GaugeVec
+	httpStages       *prometheus.HistogramVec
 }
 
 func (h *Host) Instances() []*pluginhost.Instance {
@@ -242,7 +243,11 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		Name: "dae_plugin_instance_start_time_seconds",
 		Help: "Activation time of the current plugin instance as Unix seconds. Instance counters reset on reconstruction.",
 	}, []string{"plugin_type", "plugin_instance"})
-	registry.MustRegister(h.startedAt)
+	h.httpStages = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "dae_mitm_http_stage_duration_seconds",
+		Help: "HTTP wall-clock intervals, including failed operations. Stages overlap and must not be added or interpreted as CPU time.",
+	}, []string{"stage"})
+	registry.MustRegister(h.startedAt, h.httpStages)
 	for i := range h.instances {
 		instance := &h.instances[i]
 		if instance.owner.Metrics != nil {

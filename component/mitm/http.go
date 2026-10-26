@@ -65,6 +65,8 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		defer func() { h.httpStages.WithLabelValues("request").Observe(time.Since(started).Seconds()) }()
 		// Keep the server's request: HTTP/3 replaces its Trailer map at EOF,
 		// so even a WithContext copy cannot observe the final trailers.
 		source := r
@@ -152,8 +154,15 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 			Director: func(*http.Request) {},
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				forwardRequestTrailers(req, source)
+				req = req.WithContext(pluginctx.WithSnapshotObserver(req.Context(), func(duration time.Duration) {
+					h.httpStages.WithLabelValues("snapshot").Observe(duration.Seconds())
+				}))
 				exchange.Request = plugin.NewRequest(req, h.options.bodyMemory())
 				response, err := chain(exchange)
+				h.httpStages.WithLabelValues("response_ready").Observe(time.Since(started).Seconds())
+				if observation != nil {
+					observation.event("mitm_response_ready")
+				}
 				_ = setReadDeadline(time.Time{})
 				if err != nil {
 					if response != nil {
