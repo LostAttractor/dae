@@ -56,6 +56,8 @@ func newMetadataPeer(t *testing.T) *metadataPeer {
 		t.Fatal(err)
 	}
 	serverDone, readerDone := make(chan struct{}), make(chan struct{})
+	// The reader may ACK SETTINGS immediately; the preface must be written first.
+	p.writeMu.Lock()
 	go func() {
 		defer close(serverDone)
 		server.ServeConn(t.Context(), serverConn)
@@ -88,7 +90,6 @@ func newMetadataPeer(t *testing.T) *metadataPeer {
 		<-readerDone
 		<-serverDone
 	})
-	p.writeMu.Lock()
 	_, err = io.WriteString(clientConn, wire.ClientPreface)
 	if err == nil {
 		err = p.framer.WriteSettings()
