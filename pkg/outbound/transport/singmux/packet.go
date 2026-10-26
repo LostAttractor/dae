@@ -5,11 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -60,9 +62,9 @@ func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 }
 
 // smuxPacketConn writes datagrams to an smux stream without waiting: each is
-// queued as its own frames or dropped once the stream or session holds too
-// many queued datagrams; see netproxy.NonBlockingWriter. Reads stay with
-// UDPConn.
+// queued as its own frames in the session's scheduler, which drops queued
+// datagrams that wait too long or overflow its limits; see
+// netproxy.NonBlockingWriter and fq.Scheduler. Reads stay with UDPConn.
 type smuxPacketConn struct {
 	UDPConn
 	leased *leasedStream
@@ -80,9 +82,6 @@ func newSmuxPacketConn(leased *leasedStream, stream *smuxStream, layer netproxy.
 		_ = leased.Close()
 		return nil, err
 	}
-	stream.session.mu.Lock()
-	stream.datagram = true
-	stream.session.mu.Unlock()
 	return &smuxPacketConn{
 		UDPConn: UDPConn{Conn: Conn{Conn: leased, layer: layer, addr: addr, udp: true, packetAddr: true, onceWrite: true}},
 		leased:  leased, stream: stream, request: bytes.Clone(buf.Bytes()),
@@ -116,22 +115,16 @@ func (c *smuxPacketConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
 
 // writeTo queues one datagram behind request, if any, which forces it.
 func (c *smuxPacketConn) writeTo(b []byte, addr net.Addr, request []byte) (int, error) {
+	if len(b) > math.MaxUint16 {
+		return 0, syscall.EMSGSIZE
+	}
 	var header [socks.MaxAddrLen + 2]byte
 	prefix, err := socks5.AppendNetAddr(header[:0], addr)
 	if err != nil {
 		return 0, err
 	}
 	prefix = binary.BigEndian.AppendUint16(prefix, uint16(len(b)))
-	size := smuxHeaderSize + len(request) + len(prefix) + len(b)
-	var data []byte
-	if size <= smuxFullFrame {
-		data = newFrame(size, 0)
-	} else {
-		data = pool.GetBuffer(size) // writeDatagram splits it into frames
-	}
-	n := smuxHeaderSize + copy(data[smuxHeaderSize:], request)
-	copy(data[n+copy(data[n:], prefix):], b)
-	err = c.stream.writeDatagram(data, request != nil)
+	err = c.stream.writeDatagram(request, prefix, b)
 	if request != nil && err == nil {
 		c.requested.Store(true)
 	}

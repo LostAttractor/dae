@@ -357,8 +357,8 @@ func TestUDPTransportQueueDropIsNotAFailure(t *testing.T) {
 
 // Users of an smux UDP socket that do not count drops, such as MITM and DNS
 // upstreams, see a datagram its full queue drops as one lost on the way: no
-// write error, so no relay or path error. smux counts it once; it is not
-// uploaded.
+// write error, so no relay or path error, and uploaded as it left dae's
+// hands. smux counts it once.
 func TestSmuxDatagramDropIsLossForOtherUsers(t *testing.T) {
 	outbound, _ := smuxTestOutbound(t) // the carrier is not read: queues fill
 	conn, err := outbound.ListenPacket(t.Context(), "192.0.2.1:443")
@@ -374,27 +374,15 @@ func TestSmuxDatagramDropIsLossForOtherUsers(t *testing.T) {
 	to := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.0.2.1:443"))
 	payload := make([]byte, 1200)
 	drops, all := countedDrops("flow_queue_full", "carrier_queue_full"), countedDrops()
-	const writes = 200 // beyond a 64 KiB batch and the 64 KiB stream queue
+	const writes = 200 // beyond a batch and the 64 KiB stream queue
 	for range writes {
 		if _, err := upstream.WriteTo(payload, to); err != nil {
 			t.Fatalf("WriteTo = %v", err)
 		}
 	}
 	dropped := countedDrops("flow_queue_full", "carrier_queue_full") - drops
-	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes; dropped == 0 || countedDrops()-all != dropped || uploaded != (writes-dropped)*uint64(len(payload)) {
-		t.Fatalf("%d of %d datagrams dropped (%d counted), %d bytes uploaded; want drops counted once and only the queued ones uploaded",
+	if uploaded := stats.DefaultStore.Snapshot()[path].UploadBytes; dropped == 0 || countedDrops()-all != dropped || uploaded != writes*uint64(len(payload)) {
+		t.Fatalf("%d of %d datagrams dropped (%d counted), %d bytes uploaded; want drops counted once and every datagram uploaded",
 			dropped, writes, countedDrops()-all, uploaded)
-	}
-	// The writer may have taken the whole queue as its batch before blocking
-	// on the carrier; then the queue fills again within its 64 KiB.
-	writer, _ := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn)
-	for i := 0; ; i++ {
-		_, err := writer.TryWriteTo(payload, to)
-		if errors.Is(err, netproxy.ErrPacketDropped) {
-			break
-		}
-		if err != nil || i > 64<<10/len(payload)+1 {
-			t.Fatalf("TryWriteTo = %v after %d queued, want a full queue", err, i)
-		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy/fq"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
@@ -122,8 +123,9 @@ func nextFrame(t *testing.T, frames <-chan wireFrame) wireFrame {
 	return wireFrame{}
 }
 
-// Streams send SYN, their data and FIN in order; the writer takes one frame
-// per stream in turn, up to smuxWriteBatch bytes per carrier write.
+// Streams send SYN, their data and FIN in order; the writer shares the
+// carrier among them by bytes, a batch of about smuxBatch bytes per carrier
+// write.
 func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 	local, remote := net.Pipe()
 	carrier := newGatedConn(local)
@@ -134,7 +136,7 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-carrier.entered // SYN a is being written
-	frame := func(c byte) []byte { return bytes.Repeat([]byte{c}, smuxMaxFrame) }
+	frame := func(c byte) []byte { return bytes.Repeat([]byte{c}, smuxFrame-smuxHeaderSize) }
 	if _, err := a.Write(append(frame('a'), frame('A')...)); err != nil {
 		t.Fatal(err)
 	}
@@ -155,8 +157,8 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 		fill byte
 	}{
 		{smuxCmdSYN, 1, 0},
-		{smuxCmdPSH, 1, 'a'}, {smuxCmdSYN, 3, 0}, {smuxCmdPSH, 1, 'A'},
-		{smuxCmdPSH, 3, 'b'}, {smuxCmdFIN, 1, 0}, {smuxCmdPSH, 3, 'B'},
+		{smuxCmdPSH, 1, 'a'}, {smuxCmdSYN, 3, 0}, {smuxCmdPSH, 3, 'b'},
+		{smuxCmdPSH, 1, 'A'}, {smuxCmdPSH, 3, 'B'}, {smuxCmdFIN, 1, 0},
 		{smuxCmdFIN, 3, 0},
 	}
 	for i, w := range want {
@@ -167,9 +169,14 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 	}
 }
 
-// A stream queues smuxStreamQueue bytes of frames; further writes wait for
-// the writer within their deadline and are woken by Close. A write past its
-// deadline fails even with room.
+// fqStreamBytes is the stream data that fills a stream's queue: whole
+// frames up to fq.StreamLimit of buffers.
+const fqStreamBytes = fq.StreamLimit / smuxFrame * (smuxFrame - smuxHeaderSize)
+
+// A stream queues fq.StreamLimit bytes of frame buffers; further writes wait
+// for the writer within their deadline and are woken by Close. A write past
+// its deadline fails even with room. The streams of a session queue
+// independently: no session bound holds an idle stream's write.
 func TestSmuxWriteWaitsForQueue(t *testing.T) {
 	local, remote := net.Pipe()
 	carrier := newGatedConn(local)
@@ -186,7 +193,7 @@ func TestSmuxWriteWaitsForQueue(t *testing.T) {
 		t.Fatalf("write past its deadline = %d, %v; want a timeout", n, err)
 	}
 	_ = st.SetWriteDeadline(time.Time{})
-	if n, err := st.Write(make([]byte, 2*smuxMaxFrame)); n != 2*smuxMaxFrame || err != nil {
+	if n, err := st.Write(make([]byte, fqStreamBytes)); n != fqStreamBytes || err != nil {
 		t.Fatalf("queued write = %d, %v", n, err)
 	}
 	_ = st.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
@@ -194,7 +201,37 @@ func TestSmuxWriteWaitsForQueue(t *testing.T) {
 		t.Fatalf("write to a full queue = %d, %v; want a timeout", n, err)
 	}
 	_ = st.SetWriteDeadline(time.Time{})
+
+	// More than the old 1 MiB session queue held. Their SYNs queue too.
+	frames := func(n int) []byte { return make([]byte, n*(smuxFrame-smuxHeaderSize)) }
+	for range 24 {
+		other, err := s.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := other.Write(frames(3)); err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close()
+	}
+	other, err := s.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Write(frames(3)); err != nil {
+		t.Fatal(err)
+	}
 	written := make(chan error, 1)
+	go func() {
+		_, err := other.Write(frames(1))
+		written <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	_ = other.Close()
+	if err := <-written; !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("Close woke a waiting writer with %v", err)
+	}
+
 	go func() {
 		_, err := st.Write([]byte{1})
 		written <- err
@@ -208,195 +245,66 @@ func TestSmuxWriteWaitsForQueue(t *testing.T) {
 	if err := <-written; err != nil {
 		t.Fatal(err)
 	}
-
-	other, err := s.OpenStream(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	other.(*smuxStream).queued = smuxStreamQueue // as if the writer were stuck
-	s.mu.Unlock()
-	go func() {
-		_, err := other.Write([]byte{1})
-		written <- err
-	}()
-	time.Sleep(10 * time.Millisecond)
-	_ = other.Close()
-	if err := <-written; !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("Close woke a waiting writer with %v", err)
-	}
 }
 
-// Small writes behind a busy carrier join the stream's last queued frame.
-func TestSmuxSmallWritesShareFrames(t *testing.T) {
+// steppedConn holds every write until step lets it through.
+type steppedConn struct {
+	net.Conn
+	entered, step chan struct{}
+}
+
+func (c *steppedConn) Write(p []byte) (int, error) {
+	c.entered <- struct{}{}
+	<-c.step
+	return c.Conn.Write(p)
+}
+
+// A stream that turns busy leads the next carrier write, ahead of streams
+// that queued long before.
+func TestSmuxSparseStreamGoesFirst(t *testing.T) {
 	local, remote := net.Pipe()
-	carrier := newGatedConn(local)
+	carrier := &steppedConn{Conn: local, entered: make(chan struct{}), step: make(chan struct{})}
 	s := newTestSmuxSession(carrier)
 	defer s.Close()
-	st, err := s.OpenStream(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-carrier.entered // the writer holds SYN
-	var want []byte
-	for i := range 3000 {
-		if _, err := st.Write([]byte{byte(i)}); err != nil {
-			t.Fatal(err)
-		}
-		want = append(want, byte(i))
-	}
 	frames := readFrames(remote)
-	close(carrier.gate)
-	if f := nextFrame(t, frames); f.cmd != smuxCmdSYN {
-		t.Fatalf("first frame cmd %d", f.cmd)
-	}
-	var got []byte
-	count := 0
-	for len(got) < len(want) {
-		f := nextFrame(t, frames)
-		got, count = append(got, f.data...), count+1
-	}
-	if !bytes.Equal(got, want) || count != 2 {
-		t.Fatalf("%d bytes in %d frames, want %d in 2 frames of %d byte buffers", len(got), count, len(want), smuxCoalesce)
-	}
-}
-
-// The streams of a session queue smuxSessionQueue bytes of frames; then
-// writers wait until the queue drains.
-func TestSmuxSessionQueueBoundsWriters(t *testing.T) {
-	local, remote := net.Pipe()
-	carrier := newGatedConn(local)
-	s := newTestSmuxSession(carrier)
-	defer s.Close()
-	go io.Copy(io.Discard, remote)
-	open := func() net.Conn {
-		st, err := s.OpenStream(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return st
-	}
-	open()
-	<-carrier.entered
-	for range smuxSessionQueue / smuxStreamQueue {
-		if _, err := open().Write(make([]byte, 2*smuxMaxFrame)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	late := open()
-	_ = late.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
-	if _, err := late.Write(make([]byte, smuxCoalesce)); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("write to a full session = %v; want a timeout", err)
-	}
-	_ = late.SetWriteDeadline(time.Time{})
-	written := make(chan error, 2)
-	for _, st := range []net.Conn{late, open()} {
-		go func() {
-			_, err := st.Write(make([]byte, 2*smuxMaxFrame))
-			written <- err
-		}()
-	}
-	select {
-	case err := <-written:
-		t.Fatalf("write did not wait: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	s.mu.Lock()
-	queued := s.queued
-	s.mu.Unlock()
-	if queued != smuxSessionQueue {
-		t.Fatalf("session queued %d bytes, want %d", queued, smuxSessionQueue)
-	}
-	close(carrier.gate)
-	for range 2 {
-		if err := <-written; err != nil {
-			t.Fatal(err)
-		}
-	}
-	waitIdle(t, s)
-	if s.queued != 0 {
-		t.Fatalf("session queued %d bytes once idle", s.queued)
-	}
-}
-
-// A writer waiting for the session keeps its turn: a later write that would
-// fit the space left waits behind it.
-func TestSmuxSessionQueueKeepsTurns(t *testing.T) {
-	local, remote := net.Pipe()
-	carrier := newGatedConn(local)
-	s := newTestSmuxSession(carrier)
-	defer s.Close()
-	go io.Copy(io.Discard, remote)
-	first, err := s.OpenStream(t.Context())
+	bulk, err := s.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-carrier.entered
-	later, err := s.OpenStream(t.Context())
+	<-carrier.entered // the SYN
+	if _, err := bulk.Write(make([]byte, fqStreamBytes)); err != nil {
+		t.Fatal(err)
+	}
+	carrier.step <- struct{}{}
+	<-carrier.entered // the first data frame
+	sparse, err := s.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	s.queued = smuxSessionQueue - 2*smuxCoalesce // as if other streams queued it
-	s.mu.Unlock()
-	written := make(chan error, 2)
+	if _, err := sparse.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
 	go func() {
-		_, err := first.Write(make([]byte, smuxMaxFrame))
-		written <- err
-	}()
-	for waiting := 0; waiting == 0; {
-		time.Sleep(time.Millisecond)
-		s.mu.Lock()
-		waiting = s.waiting
-		s.mu.Unlock()
-	}
-	_ = later.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
-	if _, err := later.Write([]byte{1}); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("later write = %v; want it to wait its turn", err)
-	}
-	_ = later.SetWriteDeadline(time.Time{})
-	go func() {
-		_, err := later.Write([]byte{1})
-		written <- err
-	}()
-	s.mu.Lock()
-	s.queued = 0 // the other streams' frames were written
-	s.grantLocked()
-	s.mu.Unlock()
-	close(carrier.gate)
-	for range 2 {
-		if err := <-written; err != nil {
-			t.Fatal(err)
+		for {
+			select {
+			case carrier.step <- struct{}{}:
+			case <-s.CloseChan():
+				return
+			}
+			select {
+			case <-carrier.entered:
+			case <-s.CloseChan():
+				return
+			}
 		}
-	}
-	waitIdle(t, s)
-	if s.queued != 0 || s.waiting != 0 {
-		t.Fatalf("queued %d, %d waiting once idle", s.queued, s.waiting)
-	}
-}
-
-// Waiting writers are granted session space in turn, as far as it lasts,
-// skipping those that left.
-func TestSmuxSessionQueueGrantsInTurn(t *testing.T) {
-	s := &smuxSession{queued: smuxSessionQueue - smuxFullFrame}
-	needs := []int{smuxFullFrame, smuxFullFrame / 2, smuxFullFrame / 2, 1}
-	streams := make([]*smuxStream, len(needs))
-	for i, need := range needs {
-		streams[i] = &smuxStream{need: need, writable: make(chan struct{}, 1)}
-		s.blocked.push(streams[i])
-		s.waiting++
-	}
-	streams[0].need = 0 // its writer left
-	s.waiting--
-	s.grantLocked()
-	for i, st := range streams {
-		granted := len(st.writable) == 1
-		if want := i == 1 || i == 2; granted != want || want && st.reserved != needs[i] {
-			t.Fatalf("stream %d granted %v (%d bytes)", i, granted, st.reserved)
+	}()
+	for i, want := range []struct {
+		cmd byte
+		sid uint32
+	}{{smuxCmdSYN, 1}, {smuxCmdPSH, 1}, {smuxCmdSYN, 3}, {smuxCmdPSH, 3}, {smuxCmdPSH, 1}} {
+		if f := nextFrame(t, frames); f.cmd != want.cmd || f.sid != want.sid {
+			t.Fatalf("frame %d = cmd %d sid %d, want cmd %d sid %d", i, f.cmd, f.sid, want.cmd, want.sid)
 		}
-	}
-	if s.queued != smuxSessionQueue || s.waiting != 1 || s.blocked.len() != 1 {
-		t.Fatalf("queued %d, %d waiting, %d in line", s.queued, s.waiting, s.blocked.len())
 	}
 }
 
@@ -469,7 +377,7 @@ func TestSmuxSessionCloseWritesQueuedFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := make([]byte, 2*smuxMaxFrame)
+	payload := make([]byte, fqStreamBytes)
 	for i := range payload {
 		payload[i] = byte(i)
 	}
@@ -762,4 +670,73 @@ func TestSmuxStreamIDsRunOut(t *testing.T) {
 	if _, err := s.OpenStream(t.Context()); !idsExhausted(err) {
 		t.Fatalf("open after the last ID = %v", err)
 	}
+}
+
+// Small writes behind a busy carrier join the stream's last queued frame.
+func TestSmuxSmallWritesShareFrames(t *testing.T) {
+	local, remote := net.Pipe()
+	carrier := newGatedConn(local)
+	s := newTestSmuxSession(carrier)
+	defer s.Close()
+	st, err := s.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-carrier.entered // the writer holds SYN
+	var want []byte
+	for i := range 3000 {
+		if _, err := st.Write([]byte{byte(i)}); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, byte(i))
+	}
+	frames := readFrames(remote)
+	close(carrier.gate)
+	if f := nextFrame(t, frames); f.cmd != smuxCmdSYN {
+		t.Fatalf("first frame cmd %d", f.cmd)
+	}
+	var got []byte
+	count := 0
+	for len(got) < len(want) {
+		f := nextFrame(t, frames)
+		got, count = append(got, f.data...), count+1
+	}
+	if !bytes.Equal(got, want) || count != 2 {
+		t.Fatalf("%d bytes in %d frames, want %d in 2 frames of %d byte buffers", len(got), count, len(want), smuxCoalesce)
+	}
+}
+
+func TestSmuxConcurrentWritersUseFreedSpace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		local, remote := net.Pipe()
+		carrier := newGatedConn(local)
+		s := newTestSmuxSession(carrier)
+		defer s.Close()
+		defer remote.Close()
+		go io.Copy(io.Discard, remote)
+		st, err := s.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-carrier.entered
+		if _, err := st.Write(make([]byte, fqStreamBytes)); err != nil {
+			t.Fatal(err)
+		}
+		var writers sync.WaitGroup
+		var failures atomic.Int32
+		for range 10 {
+			writers.Go(func() {
+				_ = st.SetWriteDeadline(time.Now().Add(time.Second))
+				if _, err := st.Write([]byte{1}); err != nil {
+					failures.Add(1)
+				}
+			})
+		}
+		synctest.Wait()
+		close(carrier.gate)
+		writers.Wait()
+		if failures.Load() != 0 {
+			t.Fatalf("%d writers timed out despite space in their queue", failures.Load())
+		}
+	})
 }

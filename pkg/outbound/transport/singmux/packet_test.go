@@ -10,10 +10,12 @@ import (
 	"net/netip"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy/fq"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
@@ -119,13 +121,57 @@ func testSmuxPacketConn(t testing.TB, s *smuxSession) *smuxPacketConn {
 	return conn
 }
 
-// Datagrams queue without waiting, even while the carrier is stuck, up to
-// the stream's queue; beyond it they are dropped and counted, and later ones
-// queue again once the writer caught up. The request precedes the first
-// datagram. Only TryWriteTo reports a drop: to other callers it is a
-// datagram lost on the way.
-func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
-	dropped := dropFlowQueueFull.Load()
+// dropCount returns the upload drops counted for reason so far.
+func dropCount(reason string) uint64 {
+	for drop := range netproxy.Drops() {
+		if drop.Direction() == netproxy.DropUpload && drop.Reason() == reason {
+			return drop.Load()
+		}
+	}
+	panic("no drop counter " + reason)
+}
+
+// readDatagrams reads the stream request and then datagrams of a 4-byte
+// sequence number and padding, returning their sequence numbers.
+func readDatagrams(t *testing.T, peer net.Conn, n int) []uint32 {
+	t.Helper()
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(peer, make([]byte, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := socks5.ReadAddr(peer); err != nil {
+		t.Fatal(err)
+	}
+	var seqs []uint32
+	for range n {
+		var length uint16
+		_, err := socks5.ReadAddr(peer)
+		if err == nil {
+			err = binary.Read(peer, binary.BigEndian, &length)
+		}
+		payload := make([]byte, length)
+		if err == nil {
+			_, err = io.ReadFull(peer, payload)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		seqs = append(seqs, binary.BigEndian.Uint32(payload))
+	}
+	return seqs
+}
+
+func datagram(seq uint32, size int) []byte {
+	return binary.BigEndian.AppendUint32(make([]byte, 0, size), seq)[:size]
+}
+
+// Datagrams queue without waiting, even while the carrier is stuck. Beyond
+// the stream's limit its oldest are dropped and counted, never the first,
+// which carries the stream request, and the writer is not told: to it they
+// are lost on the way. Only exhausted datagram memory refuses one, which
+// TryWriteTo reports and WriteTo does not.
+func TestSmuxDatagramsDropOldest(t *testing.T) {
+	flowFull, memory := dropCount("flow_queue_full"), netproxy.DropUploadMemory.Load()
 	local, remote := net.Pipe()
 	carrier := newGatedConn(local)
 	s := newTestSmuxSession(carrier)
@@ -133,32 +179,18 @@ func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
 	conn := testSmuxPacketConn(t, s)
 	<-carrier.entered
 	target := netproxy.NewAddr("udp", "192.0.2.1:53")
-	payload := make([]byte, 1200)
-	queued := 0
-	for {
-		n, err := conn.TryWriteTo(payload, target)
-		if err == netproxy.ErrPacketDropped {
-			break
-		}
-		if err != nil || n != len(payload) {
+	const sent = 100
+	for seq := range uint32(sent) {
+		if n, err := conn.TryWriteTo(datagram(seq, 1200), target); n != 1200 || err != nil {
 			t.Fatalf("TryWriteTo = %d, %v", n, err)
 		}
-		queued++
 	}
-	bound := &netproxy.BindPacketConn{PacketConn: conn, Address: target}
-	if n, err := bound.Write(payload); n != len(payload) || err != nil {
-		t.Fatalf("dropped Write = %d, %v; want it written", n, err)
+	// The first datagram carries the 16-byte request too.
+	frame := smuxHeaderSize + 7 + 2 + 1200
+	kept := (fq.FlowDatagramLimit - frame - 16) / frame
+	if dropped := dropCount("flow_queue_full") - flowFull; dropped != sent-1-uint64(kept) {
+		t.Fatalf("counted %d drops, want %d", dropped, sent-1-kept)
 	}
-	if n := dropFlowQueueFull.Load() - dropped; n != 2 {
-		t.Fatalf("counted %d stream queue drops, want 2", n)
-	}
-	s.mu.Lock()
-	backlog := conn.stream.queued
-	s.mu.Unlock()
-	if size := smuxHeaderSize + 7 + 2 + len(payload); backlog > smuxDatagramQueue || backlog+size <= smuxDatagramQueue {
-		t.Fatalf("dropped with %d bytes queued (%d datagrams), bound %d", backlog, queued, smuxDatagramQueue)
-	}
-	request := len("\x00\x03\x03\x0budp.example\x00\x35")
 	server := smuxtest.Server(remote)
 	defer server.Close()
 	close(carrier.gate)
@@ -166,69 +198,67 @@ func TestSmuxDatagramsQueueOrDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
-	header := make([]byte, request)
-	if _, err := io.ReadFull(peer, header); err != nil || !bytes.Equal(header, []byte("\x00\x03\x03\x0budp.example\x00\x35")) {
-		t.Fatalf("request = %q, %v", header, err)
-	}
-	for range queued {
-		addr, err := socks5.ReadAddr(peer)
-		var length uint16
-		if err == nil {
-			err = binary.Read(peer, binary.BigEndian, &length)
-		}
-		if err != nil || addr.String() != "192.0.2.1:53" || int(length) != len(payload) {
-			t.Fatalf("datagram from %v, length %d, %v", addr, length, err)
-		}
-		if _, err := io.ReadFull(peer, payload); err != nil {
-			t.Fatal(err)
-		}
+	seqs := readDatagrams(t, peer, 1+kept)
+	if seqs[0] != 0 || seqs[1] != sent-uint32(kept) || seqs[kept] != sent-1 {
+		t.Fatalf("received datagrams %v", seqs)
 	}
 	waitIdle(t, s)
-	if _, err := conn.WriteTo(payload, target); err != nil {
-		t.Fatalf("WriteTo after the queue drained = %v", err)
+	limit := netproxy.DatagramMemory.UseLimit(1) // exhausts it
+	_, refused := conn.TryWriteTo(datagram(sent, 1200), target)
+	bound := &netproxy.BindPacketConn{PacketConn: conn, Address: target}
+	n, err := bound.Write(datagram(sent, 1200))
+	limit.Close()
+	if refused != netproxy.ErrPacketDropped || n != 1200 || err != nil || netproxy.DropUploadMemory.Load()-memory != 2 {
+		t.Fatalf("without memory: TryWriteTo %v, Write %d, %v, %d counted", refused, n, err, netproxy.DropUploadMemory.Load()-memory)
+	}
+	if _, err := conn.WriteTo(datagram(0, 1200), target); err != nil {
+		t.Fatalf("WriteTo with memory = %v", err)
 	}
 }
 
-// The datagram streams of a session share one queue bound.
+// The datagram streams of a session share one bound: the fattest gives way
+// to a stream that queued nothing, whose admitted first datagram is protected from eviction.
 func TestSmuxSessionDatagramQueue(t *testing.T) {
-	dropped := dropCarrierQueueFull.Load()
+	carrierFull := dropCount("carrier_queue_full")
 	local, remote := net.Pipe()
-	defer remote.Close()
 	carrier := newGatedConn(local)
 	s := newTestSmuxSession(carrier)
 	defer s.Close()
 	target := netproxy.NewAddr("udp", "192.0.2.1:53")
-	payload := make([]byte, 4000)
-	accepted := 0
-	for i := range smuxSessionDatagramQueue/smuxDatagramQueue + 1 {
+	for i := range fq.CarrierDatagramLimit / fq.FlowDatagramLimit {
 		conn := testSmuxPacketConn(t, s)
 		if i == 0 {
 			<-carrier.entered // the writer holds only the first SYN
 		}
-		for {
-			if _, err := conn.TryWriteTo(payload, target); err != nil {
-				if err != netproxy.ErrPacketDropped {
-					t.Fatal(err)
-				}
-				break
+		for seq := range uint32(16) {
+			if _, err := conn.TryWriteTo(datagram(seq, 4060), target); err != nil {
+				t.Fatal(err)
 			}
-			accepted++
 		}
 	}
-	s.mu.Lock()
-	queued := s.datagrams
-	s.mu.Unlock()
-	// The last stream dropped below its own bound, at the session's.
-	if size := smuxHeaderSize + 7 + 2 + len(payload); queued > smuxSessionDatagramQueue || queued+size <= smuxSessionDatagramQueue {
-		t.Fatalf("session dropped with %d datagram bytes queued (%d datagrams), bound %d", queued, accepted, smuxSessionDatagramQueue)
+	if dropCount("carrier_queue_full") != carrierFull {
+		t.Fatal("dropped within the session's bound")
 	}
-	if n := dropCarrierQueueFull.Load() - dropped; n != 1 {
-		t.Fatalf("counted %d session queue drops, want 1", n)
+	late := testSmuxPacketConn(t, s)
+	if _, err := late.TryWriteTo(datagram(0, 4060), target); err != nil {
+		t.Fatal(err)
 	}
-	// Let Close write the queue.
-	go io.Copy(io.Discard, remote)
+	if dropCount("carrier_queue_full") == carrierFull {
+		t.Fatal("the session took a datagram beyond its bound")
+	}
+	server := smuxtest.Server(remote)
+	defer server.Close()
 	close(carrier.gate)
+	for range fq.CarrierDatagramLimit/fq.FlowDatagramLimit + 1 {
+		peer, err := server.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := io.ReadFull(peer, make([]byte, 2)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // A datagram larger than a frame is split, and the peer reads it whole.
@@ -550,4 +580,46 @@ func TestSmuxPacketHandlerAfterFirstWritePanics(t *testing.T) {
 		}
 	}()
 	conn.SetPacketHandler(func([]byte, netip.AddrPort) {}, func(error) {})
+}
+
+func TestSmuxRejectsOversizedDatagramBeforeRequest(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	go io.Copy(io.Discard, remote)
+	s := newTestSmuxSession(local)
+	defer s.Close()
+	conn := testSmuxPacketConn(t, s)
+	before := netproxy.DatagramMemory.Status().Used
+	if _, err := conn.TryWriteTo(make([]byte, 1<<16), netproxy.NewAddr("udp", "192.0.2.1:53")); !errors.Is(err, syscall.EMSGSIZE) {
+		t.Fatalf("oversized UDP datagram: %v", err)
+	}
+	if conn.requested.Load() || netproxy.DatagramMemory.Status().Used != before {
+		t.Fatal("invalid datagram consumed the request or reserved payload memory")
+	}
+}
+
+func TestSmuxRequestAdmissionRetriesWithoutLosingHeader(t *testing.T) {
+	local, remote := net.Pipe()
+	s := newTestSmuxSession(local)
+	defer s.Close()
+	server := smuxtest.Server(remote)
+	defer server.Close()
+	conn := testSmuxPacketConn(t, s)
+	target := netproxy.NewAddr("udp", "192.0.2.1:53")
+	limit := netproxy.DatagramMemory.UseLimit(1)
+	defer limit.Close()
+	if n, err := conn.TryWriteTo(datagram(1, 1200), target); n != 0 || err != netproxy.ErrPacketDropped || conn.requested.Load() {
+		t.Fatalf("refused first datagram: n=%d err=%v requested=%v", n, err, conn.requested.Load())
+	}
+	limit.Close()
+	if n, err := conn.TryWriteTo(datagram(2, 1200), target); n != 1200 || err != nil {
+		t.Fatalf("retry: %d %v", n, err)
+	}
+	peer, err := server.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seqs := readDatagrams(t, peer, 1); len(seqs) != 1 || seqs[0] != 2 {
+		t.Fatalf("retry sent %v", seqs)
+	}
 }

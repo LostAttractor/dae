@@ -47,8 +47,9 @@ global {
 | `dns_admission` | `upload` | 并发 DNS 查询数已满 |
 | `mitm_bridge_full` | 两者 | MITM HTTP/3 桥队列已满 |
 | `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
-| `flow_queue_full` | `upload` | smux 单流的数据报队列已满 |
-| `carrier_queue_full` | `upload` | smux 单会话或 QUIC DATAGRAM 发送队列已满 |
+| `flow_queue_full` | `upload` | smux 单流排队的数据报超过 64 KiB，淘汰该流最早的可丢数据报 |
+| `carrier_queue_full` | `upload` | smux 会话的数据报超过 256 KiB，淘汰其积压最多流的最早可丢数据报；或 QUIC DATAGRAM 发送队列已满 |
+| `codel` | `upload` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过该流在会话内公平份额下应有的等待 |
 | `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
 | `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
 | `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
@@ -65,6 +66,8 @@ global {
 TUIC native UDP 和 Hysteria2 使用非阻塞 QUIC DATAGRAM 接纳。载体队列已满时丢弃应用数据报，而不占住共享 UDP worker；`TryWriteTo` 返回 `ErrPacketDropped`，普通 `WriteTo` 则像有损链路一样报告已写入。分片发送中遇满时停止提交余片，协议计一次 `carrier_queue_full` 丢包；已经接纳的片段不能撤回。TUIC QUIC relay 模式及其他可靠流传输仍保留反压。
 
 关联初始化、目的地 socket 创建和阻塞 UDP 写入共用每个控制面的 32 个慢操作额度，为 128-worker 池中的其他就绪来源保留处理能力。同一 worker 内嵌套的设置和写入只占一份额度；准入不等待，也不为数据包另建 worker。拒绝的数据报计数一次，不关闭已有的关联。非阻塞发送不占这些额度；嗅探等待下一个包时释放 worker 及其额度。
+
+`dae_udp_queue_delay_seconds{transport}` 是传输层发出的数据报在其发送队列中等待时长的直方图，按进程生命周期累计，桶从 1 ms 到 1 s。`transport` 为 `smux`。
 
 ## 插件指标名称
 
