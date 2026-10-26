@@ -98,9 +98,28 @@ values without process I/O. Sample coverage and age identify partial/stale data.
 
 See [configuration](../../docs/zh/configuration/surge-module.md),
 [supported features](../../docs/zh/configuration/surge-module-support.md), and
-[the common plugin contract](../../component/plugin/plugin.go).
+[the common plugin contract](../../component/plugin/README.md).
 The [script compatibility boundaries](../../docs/zh/development/surge-compatibility.md)
 describe execution ownership, kernel passthrough and rule/event limitations.
+
+## Body representation and decoding
+
+HTTP plugins observe, snapshot and replace bodies only through the managed message's
+`Body()`; `Head` carries metadata only. Generic content decoding uses
+`component/plugin/codec` with the input View's actual budget, which also accounts for
+compression workspaces. `decodeBodyView` consumes the input View and releases it even
+on failure; the caller closes the View returned on success.
+
+Valid bodyless responses may carry encoding headers. Surge treats empty input as
+identity; this compatibility policy is not part of the shared codec. Originally
+bodyless HEAD/304 responses update only the required metadata, without using body
+replacement that would incorrectly remove their validators. When a script changes
+a response with a body to 204/304, `Body.Replace` releases the original body,
+restores default delivery and clears framing/trailers. Omitting the transmitted
+body is not the same as replacing the selected representation, so ETag,
+Last-Modified, Content-Encoding and Repr-Digest remain if still valid, but digests
+of the original message content do not. Fields already cleared by an actual body
+replacement are not restored.
 
 ## Reports and clients
 

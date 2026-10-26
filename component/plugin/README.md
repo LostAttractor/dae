@@ -226,13 +226,19 @@ request processing takes precedence when several matching scopes overlap.
 Request candidates hand off before old-target block, mark or must decisions.
 Client exclusions still follow ordinary connection routing.
 
-`Wrap(flow, next)` builds middleware separately for each HTTP/1, HTTP/2 or
-HTTP/3 connection and each admitted H2/H3 authority, in configuration order: requests A → B →
-upstream, responses B → A. Call `next` synchronously. Success returns a valid
-response with non-nil Header and Body, transferring body ownership; failure closes
-owned bodies and returns `nil, err`. Compiled plugins must honor this contract.
-The host associates the response returned by `next` with `Exchange.Request`,
-including local responses produced by downstream plugins.
+`Wrap(flow, next)` builds middleware for each HTTP/1, HTTP/2 or HTTP/3 connection
+and each admitted H2/H3 authority, in order: requests A → B → upstream, responses
+B → A. Call `next` synchronously:
+
+```go
+type Handler func(*Exchange) (*Response, error)
+```
+
+Success returns a valid managed `Response` and transfers body ownership; close
+any previously owned response before replacing it or returning an error. Failure
+returns `nil, err`. `Head.Header` and the private body must be non-nil; use
+`http.NoBody` for an empty body. The host associates `Response.Head.Request` with
+`Exchange.Request.Head`, including local responses produced by downstream plugins.
 `HTTPError` requires an underlying error and a valid HTTP error status.
 
 An admitted HTTPS/H2 or HTTPS/H3 connection may carry another incoming authority
@@ -251,12 +257,13 @@ changes retain the original ingress. An explicit URL scheme mismatch, invalid au
 port changes, and cross-host HTTP/1 requests receive 421. Kernel capture and client
 admission continue to use the declared host/port predicates.
 
-Go's HTTP/2 server does not expose the original `:scheme` in the request URL.
-TLS HTTP/2 therefore uses `https` for plugin URLs, forwarding and request logs,
-even if the client sent `:scheme=http`. An authority without a port uses 443;
-an explicit port different from the intercepted port is still rejected.
-This normalization retains the original route and upstream TLS identity.
-HTTP/1 absolute-form and HTTP/3 schemes remain subject to the mismatch check.
+The host's [HTTP/2 adapter](../../internal/http2/README.md) preserves the original
+`:scheme` in the request URL. Explicit schemes in HTTP/2, HTTP/3 and HTTP/1
+absolute-form requests are checked during admission. A mismatch with the ingress
+connection returns 421 before plugin execution or upstream selection; `:scheme=http`
+over TLS is not normalized to HTTPS. Default ports follow the admitted scheme,
+with 443 for HTTPS; explicit ports must still match the ingress port.
+HTTP/1 origin-form derives its scheme from the ingress connection; h2c is unsupported.
 
 The host issues a local single-host leaf for the intercepted TLS/QUIC ingress,
 independently of scope and routing effects. The signing cache has 256 LRU entries;
@@ -279,7 +286,7 @@ from that handshake hostname.
 
 Unrewritten forwarding binds the transport URL to the original ingress while
 preserving the HTTP Host; plugins retain their business URL, including in
-`Response.Request`. Its original plan is selected lazily once per downstream
+`Response.Head.Request`. Its original plan is selected lazily once per downstream
 connection and retains the intercepted IP, node, outbound and mark. Local
 responses do not choose an upstream. `Exchange.Client` and explicit URL target
 rewrites resolve/route their own URLs through the system resolver. Destination
@@ -300,29 +307,88 @@ Host HTTP entry points require an `UpstreamPlanner`; there is no separate
 dial-only execution path. Daemon downloads use the same candidate iterator,
 consuming addresses lazily until one connects. HTTP/3 pools use the final UDP
 route; retiring a pool waits for its active responses before closing QUIC.
-`SetReadDeadline`, when non-nil,
-bounds request-body reads and is reset by the host before forwarding.
-[Body helpers](body.go) provide bounded snapshots and replacement with correct
-framing and trailers; plugins handle decompression and protocol-specific semantics.
-`SnapshotBody` returns an immutable `membuffer.View` and reuses untouched
-snapshots. Close the view after use; forwarding owns the replay reader. Supply
-the factory's `Services.BodyMemory` to share the MITM budget across instances and
-overlapping hosts. Embedders may supply a process-owned budget in
-`mitm.Options.BodyMemory`; the host injects the same budget into every factory.
-Direct factory callers must supply a budget when the plugin processes bodies.
-`membuffer.ErrBudgetExhausted` never waits: a failed snapshot restores the
-consumed prefix and unread tail for forwarding.
 
-`SetRequestBody` and `SetResponseBody` transfer an independent body cursor;
-callers still close their own views. Replacing a request clears its old `GetBody`.
-The host prepares retry ownership from the final body immediately before
-RoundTrip and releases it when that call returns. Rewritten bodies and read-only
-snapshots use the same path, without retaining retry storage throughout a long
-response. The transport closes upload cursors separately, including uploads that
-outlive response headers. The host closes the final request body after forwarding
-or a local response. There is no Exchange-owned retry state or cleanup API.
-Lifetime is explicit; garbage collection does not release budget reservations.
-Arbitrary plugin allocations and interpreter heaps are outside this budget.
+### Messages, bodies and ownership
+
+`Request.Head` / `Response.Head` reuse standard-library metadata; do not replace the
+Head pointer or write to `Head.Body` / `Head.GetBody`. `Head.ContentLength` is the
+sole source of logical length, and bodies are accessed only through `Body()`.
+When non-nil, `SetReadDeadline` bounds request reads; the host resets it before
+passing the request to the next layer.
+
+- `NewRequest(raw, budget)` takes ownership of the request body while preserving
+  the lifetime reference held by the HTTP server's original request.
+- `Exchange.NewResponse(raw)` takes ownership of a local response or an auxiliary
+  response explicitly transferred downstream, inheriting the current budget and
+  observation association.
+- `NewResponse(raw, budget)` is for independent auxiliary responses; it does not
+  automatically associate them with the current exchange. After ownership is
+  transferred, do not use or close raw's body.
+- The host uses `Request.Forward()` to lend an upload cursor and
+  `Response.TakeHTTP()` to consume the final response and its delivery policy.
+  Plugins must not export and rewrap messages to bypass body operations. After
+  forwarding, body installation and changes to committed metadata are forbidden,
+  but reading the request Head and stopping observations remain allowed.
+
+The budget is bound once when constructing a message; the host injects the same
+budget into messages and `Services.BodyMemory`. Embedders may supply
+`mitm.Options.BodyMemory`; direct factory callers must supply a body budget.
+Protocol decoding/transformation workspaces also use this budget; arbitrary Go
+allocations and interpreter heaps are not included.
+
+| Operation | Read and failure semantics | Representation and delivery |
+| --- | --- | --- |
+| `Observe(limit, complete)` | No read-ahead; bounded observation during consumption. Exceeding the limit, budget exhaustion or an incomplete read only suppresses the callback | Preserves bytes, original n/error, length and policy |
+| `Snapshot(limit)` | Reads eagerly; lends an immutable `membuffer.View` on success, restores the prefix, tail and actual error on failure | Replaces only the read backing, not the representation |
+| `Replace(view)` | Acquires an independent reference before closing the old body; the caller still closes the view | Updates framing, clears invalid representation fields and restores default delivery |
+| `Transform(install)` | Installation must not read/close input or start background work; failure leaves the original message unchanged, success transfers input ownership to the output | Unknown length, metadata cleanup and default delivery |
+
+Observe completes when a positive Content-Length has been read in full; nonpositive
+lengths require EOF. The callback runs at most once and borrows a read-only slice;
+it must not retain the slice, perform I/O or reenter stop/Close. `stop()` is
+idempotent and synchronizes with an already-started callback, so results can be
+read after it returns. It neither waits for a blocked source Read nor closes the
+upload. An invalid limit or nil callback installs no observation.
+
+Snapshot can share a complete, unconsumed snapshot but does not bypass pending
+observers. Closing the borrowed view does not affect the forwarding cursor.
+`membuffer.ErrBudgetExhausted` does not wait for memory. `Body.Close()` can
+concurrently interrupt a blocked Snapshot; after cancellation, no replay cursor
+is published, and the operation releases its buffer before returning. Except for
+Close/observation stop, body installation and eager reads must be serialized.
+
+A reader returned by Transform must unblock, close its input and release its own
+resources on Close. Actual protocol work runs during consumption, not before
+Handler returns. Delivered bytes cannot be rolled back; protocol plugins own
+authentication and failure replay for uncommitted units. A 101 upgrade preserves
+read/write and half-close capabilities and cannot accept ordinary body transforms;
+Observe installs no observer or callback for it, and its returned stop does not
+affect the connection.
+
+`Response.SetDelivery(plugin.DeliveryStreaming)` asks the host to flush promptly,
+regardless of length. Transparent Observe/Snapshot operations preserve the policy;
+Replace/Transform create a new representation and automatically restore
+`DeliveryDefault`. Redeclare streaming delivery after installation if needed.
+Response delivery uses only the final message's policy and does not affect
+concurrent requests. A cold path can simply declare Streaming while retaining the
+original Content-Length/ETag; it need not pretend the length is unknown.
+
+Replacement/transformation clears Content-Encoding, length, transfer framing,
+digests, validators and range declarations; valid protocol trailers are retained.
+Responses synchronize the final Trailer map after the transformer completes and
+before returning EOF to the consumer, including when n>0 and EOF are returned
+together. Close and read errors do not publish unconfirmed final trailers.
+[`component/plugin/codec`](codec) provides opt-in generic HTTP content decoding
+and gRPC message framing; protocol recognition, Protobuf, RPC success criteria and
+business semantics such as UMP remain the plugin's responsibility.
+
+Returning from `next` does not mean the upload has ended. The transport closes
+upload cursors separately; the host closes the final request body when request
+handling ends. Retry references are retained only during the actual upstream
+RoundTrip, not throughout a long response; complete, unconsumed snapshots can
+still be shared for retries. Response bodies may continue executing after Handler
+returns and must not retain the entire Exchange. Every view, body and retry
+reference has an explicit owner; budget reclamation does not rely on GC.
 
 [`pkg/membuffer`](../../pkg/membuffer) owns admission, buffer growth and shared
 immutable storage. `Read`, `Copy` and `Buffer.Write` reserve capacity before
@@ -333,6 +399,224 @@ copying, and each owner must be closed. Components outside MITM provide their ow
 `NewBudget`; the package has no protocol dependency or global budget. The plugin
 package adds HTTP snapshot restoration, body replacement, framing and trailers.
 The host owns transport retries and their lifetime.
+
+`membuffer.ReadExact(reader, size, budget)` admits the known length in one step
+before reading, without probing subsequent bytes. On a read failure, a non-nil
+returned View still owns the consumed prefix and must be closed or transferred by
+the caller; admission failure consumes no input. `Buffer.Grow(n)` reserves capacity
+for the next n bytes without changing length; failure preserves existing bytes and
+capacity. `GRPCFrame`, whose final length is known, admits the entire frame before
+writing.
+
+### Opt-in HTTP and gRPC codecs
+
+The host does not automatically decompress content or parse gRPC. HTTP/1 chunked
+encoding, HTTP/2 DATA, HTTP/3, cancellation and trailers remain the transport's
+responsibility. Plugins use
+`codec.New(ctx, budget, codec.Limits{Wire: ..., Decoded: ...})` to bind the current
+exchange's shared budget and processing limits once, without adding configuration
+options or another body access path.
+
+- `HTTPView(view, encoding)` consumes the input View and closes it even on failure;
+  identity returns the original View directly. The input must use the same budget
+  as the Codec. `HTTPReader(source, encoding)` performs no read-ahead on installation;
+  decoding starts on the first Read. Both support identity, gzip, deflate (zlib/raw)
+  and br. Join multiple `Content-Encoding` lines with
+  `strings.Join(head.Header.Values("Content-Encoding"), ",")`; stacked encodings are
+  decoded in reverse order.
+- `GRPCDecoder(source, grpcEncoding)` returns a complete `Message` from `Next()`;
+  `Wire()` is the original frame and `Payload()` is the decompressed, read-only
+  payload. Slices are valid only until Message is closed; callers must explicitly
+  call `Message.Close()`. `Decoder.Close()` does not close previously returned
+  Messages. flag=1 supports only explicitly declared gzip; a missing declaration
+  must not be guessed to mean gzip.
+- Constructors returning a reader/Decoder do not take ownership of source on
+  failure. On success, the returned value owns source closure; Close can interrupt
+  blocked reads. Once `HTTPReader` starts delivery, decoding, limit and source
+  errors propagate directly; it cannot roll back by appending the original
+  compressed stream.
+- `GRPCFrame(parts...)` builds a flag=0 message frame within the shared budget and
+  returns a caller-owned View.
+  `GRPCTransform(source, httpEncoding, grpcEncoding, rewrite)` accepts only identity
+  outer HTTP encoding and rejects other encodings before installation; it does not
+  automatically set Delivery.
+- The Transform callback borrows Message and must not close it or retain it
+  asynchronously. Returning `nil, nil` preserves the original frame; a new payload
+  View must use the same budget and transfers ownership to the transformer. An empty
+  View is an empty message, not a deletion. The transformer encodes the new frame
+  for the caller; do not return an encoded frame as payload. Mixed streams may
+  still contain original compressed frames, so retain `Grpc-Encoding`.
+- For HTTP, Wire limits total input and Decoded limits each layer's output. For
+  gRPC, Wire limits a single frame (including its five-byte header) and Decoded
+  limits a single payload, not the cumulative bytes of a long stream. Original
+  bytes, decompressed results, compression workspaces and pending output share the
+  budget; estimates must account for all representations retained simultaneously.
+
+Codec itself stores only limits and budget references; returned Views, Messages
+and readers own the actual resources. Serialize Read calls on a reader and Next
+calls on a Decoder. Close can concurrently close the actual input before waiting
+for the read lock and releasing workspaces; it must not instead hold a lock while
+waiting for a blocked Read. Cancellation notifications are bound lazily when
+reading starts, so Transform installation does not close input prematurely.
+
+Each HTTP layer reads at most one extra byte to detect a limit overrun and never
+delivers that byte to the next layer. After decoding EOF, input is still drained
+within bounds to actual EOF to complete trailer publication. HTTP sources and all
+decoding layers preserve errors returned alongside data; gRPC also preserves
+source errors exactly at frame boundaries, which fixed-length reads must not hide.
+An empty compressed payload does not mean the entire gRPC stream ended normally.
+Deflate limits read-ahead to six bytes when trying a zlib header; on failure it
+replays only that prefix and decodes as raw deflate. Brotli accepts only standard
+window sizes of up to 24 bits and rejects the Large Window extension; its budget includes
+window state and auxiliary tables that coexist during growth.
+
+#### Snapshot and unary: commit after full validation
+
+The following example is called by a plugin that has already identified the target
+RPC and applies a strict HTTP 200 and final `grpc-status: 0` policy. First Snapshot
+to retain the original representation, then decode fully, confirm exactly one
+message and read the **current** `Head.Trailer` after actual HTTP EOF. Do not cache
+an early Trailer map or treat a complete message or framing EOF as RPC success.
+Whether to accept a missing status is a business-level choice, such as bilijump's
+compatibility policy, not a default rule of the shared codec.
+
+```go
+package example
+
+import (
+    "context"
+    "errors"
+    "io"
+    "net/http"
+    "strings"
+
+    "github.com/daeuniverse/dae/component/plugin"
+    "github.com/daeuniverse/dae/component/plugin/codec"
+    "github.com/daeuniverse/dae/pkg/membuffer"
+)
+
+func rewriteUnary(ctx context.Context, r *plugin.Response, limits codec.Limits,
+    rewrite func(*codec.Message) (*membuffer.View, error)) error {
+    snapshot, err := r.Body().Snapshot(limits.Wire)
+    if err != nil {
+        return err
+    }
+    budget := snapshot.Budget()
+    c, err := codec.New(ctx, budget, limits)
+    if err != nil {
+        snapshot.Close()
+        return err
+    }
+    decoded, err := c.HTTPView(snapshot, strings.Join(r.Head.Header.Values("Content-Encoding"), ","))
+    if err != nil {
+        return err
+    }
+    defer decoded.Close()
+    source := decoded.Open()
+    decoder, err := c.GRPCDecoder(source, r.Head.Header.Get("Grpc-Encoding"))
+    if err != nil {
+        source.Close()
+        return err
+    }
+    defer decoder.Close()
+    message, err := decoder.Next()
+    if err != nil {
+        return err
+    }
+    defer message.Close()
+    extra, err := decoder.Next()
+    if extra != nil {
+        extra.Close()
+        return errors.New("unary response contains multiple messages")
+    }
+    if err != io.EOF {
+        return err
+    }
+    status := r.Head.Trailer.Get("Grpc-Status")
+    if status == "" {
+        status = r.Head.Header.Get("Grpc-Status")
+    }
+    if r.Head.StatusCode != http.StatusOK || status != "0" {
+        return errors.New("RPC did not finish successfully")
+    }
+    payload, err := rewrite(message)
+    defer payload.Close()
+    if err != nil || payload == nil {
+        return err
+    }
+    if payload.Budget() != budget {
+        return codec.ErrBudgetMismatch
+    }
+    frame, err := c.GRPCFrame(payload.Bytes())
+    if err != nil {
+        return err
+    }
+    defer frame.Close()
+    r.Body().Replace(frame)
+    return nil
+}
+```
+
+The callback borrows Message for business-level parsing and validation; this
+function closes the returned new payload. Keep the callback free of side effects
+and commit business results only after all validation and required output
+construction succeed. HTTPView consumes snapshot, but Body retains the original
+representation; Replace acquires an independent reference to the new frame and
+restores default delivery. If the example returns an error, the caller can still
+deliver the unchanged `r`; to abort the exchange, close `r` before returning
+`nil, err`.
+
+#### Transform and streaming: commit per message
+
+Use the host-injected `Services.BodyMemory` budget. The following function only
+installs a lazy transform; it has read no messages when it returns and explicitly
+declares Streaming after successful installation. The callback captures only the
+required business state, not the entire Exchange.
+
+```go
+package example
+
+import (
+    "context"
+    "io"
+    "strings"
+
+    "github.com/daeuniverse/dae/component/plugin"
+    "github.com/daeuniverse/dae/component/plugin/codec"
+    "github.com/daeuniverse/dae/pkg/membuffer"
+)
+
+func installGRPCStream(ctx context.Context, r *plugin.Response, budget *membuffer.Budget,
+    limits codec.Limits, rewrite func(*codec.Message) (*membuffer.View, error)) error {
+    c, err := codec.New(ctx, budget, limits)
+    if err != nil {
+        return err
+    }
+    httpEncoding := strings.Join(r.Head.Header.Values("Content-Encoding"), ",")
+    grpcEncoding := r.Head.Header.Get("Grpc-Encoding")
+    if err := r.Body().Transform(func(source io.ReadCloser) (io.ReadCloser, error) {
+        return c.GRPCTransform(source, httpEncoding, grpcEncoding, rewrite)
+    }); err != nil {
+        return err
+    }
+    r.SetDelivery(plugin.DeliveryStreaming)
+    return nil
+}
+```
+
+Installation failure leaves the body, Head and delivery policy unchanged. If the
+callback panics, the transformer releases the borrowed Message and propagates the
+panic. Each complete, validated message commits independently; the first frame
+does not wait for the next frame or EOF. Unsupported content, decoding/business
+callback failure, a limit overrun or budget rejection passes through the current
+undelivered message and the entire remaining stream as original bytes, with no
+further rewrite attempts. Previously delivered messages cannot be retracted.
+Actual source read errors, cancellation and truncation must propagate, not be
+misrepresented as successful EOF. A final nonzero `grpc-status` may arrive after
+the first frame has been delivered and must still reach the client; business logic
+requiring success of the entire RPC must not use this early-commit approach.
+A later `Body.Replace` closes the transformer and restores default delivery rather
+than inheriting its Streaming policy.
 
 ## Lifecycle
 
@@ -442,6 +726,18 @@ The daemon closes the old host before starting the successor. Direct embedders
 must preserve that ordering or coordinate concurrent writers themselves.
 
 ## Prometheus metrics
+
+The host records fixed wall-clock intervals with
+`dae_mitm_http_stage_duration_seconds{stage}`: `upstream` covers the actual
+transport.RoundTrip call, `response_ready` spans request entry through the plugin
+chain's return (including errors), `request` covers the full handler lifetime and
+`snapshot` covers the shared Snapshot operation. Collection does not require Debug.
+These intervals can overlap; adding or subtracting them does not yield CPU time.
+Auxiliary requests are not automatically attributed to the current downstream
+exchange. Trace records the first body Read, first data, first Write/Flush and
+completion; a returned Write/Flush does not prove client receipt. Plugins observe
+protocol-internal authentication/transformation themselves, without treating Transform
+installation time as body processing or double-counting the shared Snapshot.
 
 `Services.Metrics` is a standard `prometheus.Registerer` scoped to the instance.
 Register collectors in the factory, return registration errors, and retain the

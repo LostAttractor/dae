@@ -56,6 +56,10 @@ HTTP scope 匹配的构建与查询成本可用 `BenchmarkHTTPScopes` 测量：
 go test ./component/mitm -run '^$' -bench '^BenchmarkHTTPScopes$' -benchmem -benchtime=100ms -count=3
 ```
 
+`component/plugin/codec` 的 `BenchmarkCodecHTTP` 在计时循环外准入既有输入 View，每轮计入输入消费、解码和输出释放；压缩窗口与正文共享预算。解码成功、大小/格式失败与预算拒绝使用各自的预算条件，避免因工作区尚未准入而跳过待测分支。
+
+流式首消息测试使用通道闸门控制尾帧和 EOF，只在客户端实际读取首帧后放行，不依赖等待时长推断交付。`TestCodecCloseUnblocksSource` 先确认源 Read 已进入，再并发 Close；Mutex 等待不是 `synctest` 的 durable block，因此该用例用显式超时触发失败断言，随后放行闸门并回收 goroutine。
+
 `BenchmarkDomainRegistry` 测量有名和无名活动续期、从二进制基线冷恢复的耗时及分配。内核写入回调为空操作，因此该基准只衡量用户态 Registry：
 
 ```sh

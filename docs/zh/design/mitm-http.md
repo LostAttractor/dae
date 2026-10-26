@@ -54,7 +54,7 @@ dae 作为 TLS 客户端验证的是**实际接入点**。`*.biliapi.net` 可以
 
 - dae 到真实上游继续执行 TLS 名称、有效期和信任链验证；验证失败由 dae 中止并返回上游错误，不能交给源站替客户端检查。
 - 任意 authority 不会令 dae 拨号到另一个网络目标；改变网络目标必须来自插件显式 URL 改写或插件主动 HTTP 请求。
-- 插件看到的 `Flow.Host` / `Request.Host` 是请求声明的业务主机，不是独立认证证明；`Flow.Source/Destination` 保留捕获元组。
+- 插件看到的 `Flow.Host` / `Request.Head.Host` 是请求声明的业务主机，不是独立认证证明；`Flow.Source/Destination` 保留捕获元组。
 - HTTPS/H2/H3 跨主机仍须同端口；不支持的 HTTP/1 跨主机、URL scheme 不一致、端口不一致或非法 authority 均被本地拒绝。
 - 单主机证书使遵循 SAN 复用规则的客户端可能多建几条连接；已经自行采用统一接入身份的客户端可继续复用。
 
@@ -101,9 +101,13 @@ ServeConn / ServePacketConn
 
 上表路径均相对于 `component/mitm/`。控制平面的路由与租约归 `control/http_route_plan.go`、`control/mitm_lifecycle.go` 所有。
 
+控制平面的 `mitmMu` 同时保护当前宿主和已接受的插件配置摘要；运行中替换时共同发布，退役宿主排空后再清理。
+摘要仅保留已编入类型及实例的 ID、Type、Enabled，不保存私有配置；候选控制平面可在发布前设置自身摘要。
+状态查询合并该摘要与运行状态，并保留不属于用户配置清单的系统诊断实例。
+
 ### HTTP URL 与连接目标分离
 
-插件执行期间，`Request.URL` 始终是业务 URL。终端转发比较插件执行后的 URL scheme/host/port 与 incoming authority：
+插件执行期间，`Request.Head.URL` 始终是业务 URL。终端转发比较插件执行后的 URL scheme/host/port 与 incoming authority：
 
 - 只改 path/query、正文、普通头或 HTTP Host：保持原网络目标。
 - 改 scheme、URL 主机或端口：使用新目标计划；插件可以独立决定 HTTP Host 是否随 URL 一起修改。
@@ -111,7 +115,7 @@ ServeConn / ServePacketConn
 
 普通转发在终端创建浅请求副本和独立 URL，将其 URL host 设为原接入主机/端口，
 保留请求 Host。标准 HTTP/H3 transport 用 URL 选择池、拨号和验证 TLS，用 Host 编码 HTTP authority。
-副本共享正文和 trailer；插件链的 `next` 边界统一将 `Response.Request` 恢复为插件的业务请求，终端无需另行赋值。
+副本持有转发游标并共享 trailer；插件链的 `next` 边界统一将 `Response.Head.Request` 恢复为插件的业务请求 Head。
 没有插件的响应在返回 ReverseProxy 时完成请求关联。
 插件主动请求使用独立的 `Exchange.Client`，按自己的 URL 正常解析、路由及验证，不继承 fronting 绑定。
 
@@ -157,6 +161,70 @@ TCP 连接或 QUIC 握手成功后，连接由实际所属池保存，共享拨�
 
 下游签发只依赖本地 CA，不访问原目标；本地响应和目标改写无需原目标 TLS 探测。
 下游 session ticket 和 QUIC 0-RTT 关闭。
+
+### 消息与正文所有权
+
+宿主负责 HTTP 消息生命周期、预算、framing、重试和交付；插件负责协议识别及内容处理。
+中间件接收受控 Request、返回受控 Response，标准库 Head 仅承载元数据，Body 是唯一正文入口。
+观察、快照、替换和惰性变换是每条消息选择的操作，不是静态插件类型或连接 Plan 能力。
+
+Observe 随实际消费推进，不预读、不阻塞早响应。Snapshot 主动有界缓冲，失败恢复原字节和读取错误。
+Replace 与 Transform 创建新表示，自动清除失效 metadata 并恢复默认交付；透明观察和快照不改变表示。
+流式交付属于最终 Response，插件安装变换后声明 `DeliveryStreaming`；宿主不靠未知长度猜测插件的交付意图。
+这允许 cold 流保持 Content-Length/ETag，同时不等待小响应缓冲填满。外层完整替换不会继承内层的流式策略。
+
+请求在 Forward 后不能再安装正文，但 next 返回时上传可能尚未结束，仍可读取请求 Head 和停止观察。
+响应正文可在 Handler 返回后继续变换；输出 reader 接管输入的关闭责任，不保留整个 Exchange。
+辅助请求继续使用 routed `http.Client`，仅明确转交为下游结果时才用 Exchange.NewResponse 接管。
+Snapshot 与取消 Close 同步发布回放游标，但不持锁等待源 Read，因此取消能打断阻塞并释放预算。
+接口细节及使用约束见[插件正文契约](../../../component/plugin/README.md#messages-bodies-and-ownership)。
+
+### 按需内容解码与消息提交
+
+`component/plugin/codec` 是插件显式选择的内容层，不在宿主默认转发路径中。
+transport 继续处理 HTTP framing、H2/H3 stream、取消与 trailer，保持自动解压关闭；
+codec 处理 `Content-Encoding`、gRPC 五字节消息头及逐消息压缩。
+HTTP DATA 或底层 Read 的边界不代表 gRPC 消息边界；Protobuf、RPC 路径与成功判定、UMP 等业务协议仍归插件。
+
+| 接口 | 输入与所有权 | 提交边界 |
+| --- | --- | --- |
+| `HTTPView` | 消费同预算的输入 View，失败也关闭；identity 不复制 | 完整内容解码后返回调用者拥有的 View |
+| `HTTPReader` | 安装不预读；成功后接管源，Close 中断读取并释放资源 | 按读取交付，启动后的错误传播，不拼回原压缩字节 |
+| `GRPCDecoder.Next` | 返回调用者必须 Close 的 Message；Wire/Payload 切片均为借用 | 完整单消息，不代表整条 RPC 成功 |
+| `GRPCTransform` | 借用 Message 调用业务回调；新 payload View 的所有权交给变换器 | 单消息验证完成后输出，不等待尾帧或 EOF |
+
+HTTP 支持 identity、gzip、deflate（zlib/raw）和 br；多行编码声明按顺序合并，叠加编码逆序解码。
+gRPC flag=1 仅支持显式声明的 gzip，不把缺失 `Grpc-Encoding` 猜成 gzip。
+`GRPCFrame` 输出 flag=0 的消息；未变消息直接保留原 wire，因此压缩与非压缩消息可混合，
+不能因为部分消息已解压改写就删除整个流的 `Grpc-Encoding`。
+
+Codec 构造时一次绑定 context、共享正文预算与 Wire/Decoded 上限，不引入额外配置。
+HTTP 的 Wire 限制总输入，Decoded 限制每层输出；gRPC 限制单帧（含头）与单个 payload，
+不按长流累计字节拒绝。原 wire、解压结果、工作区及待提交输出同时记账；
+Message、View、reader 各有明确所有者，Decoder.Close 不代关已交付的 Message。
+
+两种业务提交方式不能互换：
+
+1. **Snapshot / unary**：保留完整原表示，HTTP 解码后逐消息解析并确认恰好一条；
+   真实 HTTP EOF 后重新读取当前 `Response.Head.Trailer`，通过最终状态及业务校验才 Replace 或发布结果。
+   framing EOF 不能替代 `grpc-status`，缺失状态的兼容策略只属于业务消费者（如 bilijump）。
+   失败仍可交付原压缩字节、metadata 和原交付策略。见[完整 unary 示例](../../../component/plugin/README.md#snapshot-and-unary-commit-after-full-validation)。
+2. **Transform / streaming**：首消息完整后即可提交，不能等待最终 RPC 状态，也不能撤回已输出内容。
+   当前消息的内容、预算或业务回调失败时，保留当前原帧及整个尾流并停止后续改写；
+   源错误、取消和截断继续传播。最终 `grpc-status: 13` 可以在改写后的首帧交付后到达，仍需原样传给客户端。
+   见[按消息变换示例](../../../component/plugin/README.md#transform-and-streaming-commit-per-message)。
+
+`GRPCTransform` 只接受 identity 外层 HTTP 编码；gzip 等外层编码在安装前拒绝，保持原 Body、Head 和 Delivery。
+这避免已经输出解压字节后再旁路原压缩流而产生混合表示。外层压缩的 unary 可先用 HTTPView；
+HTTPReader 则用于接受“启动后失败直接传播”语义的流式解码，不承诺整流回滚。
+成功的 Body.Transform 清理失效 HTTP metadata 并恢复默认交付，插件随后显式 SetDelivery(DeliveryStreaming)。
+后续 Replace 关闭旧变换器并重置策略；codec 不绕过受控 Body，也不隐式控制宿主 flush。
+
+源码入口：[预算与上限](../../../component/plugin/codec/codec.go)、
+[HTTPView 与 HTTPReader](../../../component/plugin/codec/http.go)、
+[Message 与 Decoder](../../../component/plugin/codec/grpc.go)、
+[流式安装边界](../../../component/plugin/codec/grpc_transform.go)、
+[最终 trailer 发布](../../../component/plugin/message.go)。
 
 ### 零长度正文与 trailer
 
@@ -209,6 +277,14 @@ HTTP/3 transport 用尽内部重试后，远端返回的 `H3_REQUEST_REJECTED` �
 - `mitm_certificate certificate_source=single`：正常的本地单主机签发。
 - `mitm_authority_coalesced`：记录原 `connection_host` 与业务 `request_authority`；`plugin_scope=false` 表示跳过插件。
 - `upstream_dial`：真实接入 `domain`、目的地址、出站和 mark。
+- `mitm_response_ready`：插件链已返回，不表示惰性正文变换完成。
+- `mitm_response_first_read` / `mitm_response_first_data`：最终正文首次被读取、首次返回数据。
+- `mitm_response_first_write` / `mitm_response_first_flush`：首次写入/flush 返回，不表示远端已收到。
 - `mitm_request_end`：状态、正文完整性和 gRPC 结果。
+
+请求级事件同时携带 `request_id`，Trace 只在首次边界取时，不逐媒体 Read 记录。
+`dae_mitm_http_stage_duration_seconds` 在日志关闭时仍记录 upstream、response_ready、request 和 snapshot。
+upstream 包含成功或失败的实际 transport 调用；snapshot 只覆盖公共正文操作，不包括 Surge 重获执行槽位的等待。
+各阶段是重叠的墙钟区间，不能相加，也不能相减当作 CPU。协议内部控制缓冲/认证/变换由插件单独记录。
 
 421 原因和日志方法见[MITM 插件排查](../configuration/mitm-plugins.md#排查偶发-http--grpc-失败)。
