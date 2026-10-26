@@ -33,7 +33,7 @@ group {
         filter: name(lightsail) [priority: 1]
 
         # Inline filters form a proxy chain.
-        filter: name(lightsail) -> filter: subtag(flowercloud) && name(keyword: '日本')
+        filter: name(lightsail) -> filter: subtag(flowercloud) && name(keyword: 'Japan')
 
         # A policyless group can be reused as a stage.
         group(relay) -> filter: subtag(exit) [add_latency: 20ms]
@@ -61,7 +61,7 @@ A same-name group can also combine proxy chains, ordinary single-hop paths, and 
 ```shell
 group {
     lightsail {
-        filter: subtag(flowercloud) && name(keyword: '日本') -> filter: name(lightsail)
+        filter: subtag(flowercloud) && name(keyword: 'Japan') -> filter: name(lightsail)
         filter: name(lightsail)
         filter: name(lightsail) [interface: cu, priority: 1]
         policy: min_moving_avg
@@ -77,14 +77,14 @@ Reuse the `lightsail` group above and select complete paths containing Japanese 
 ```shell
 group {
     lightsail_jp {
-        filter: group(lightsail) && name(keyword: '日本')
+        filter: group(lightsail) && name(keyword: 'Japan')
         policy: min_moving_avg
     }
 }
 ```
 
 - `filter: group(lightsail)` imports every candidate from that group; additional predicates match complete paths. Path order, duplicate candidates, proxy chains and path annotations are preserved. Reference annotations add to `priority` and `add_latency`; entry options follow the same merge and conflict checks.
-- `name()` matches the complete string formed by joining original node names with ` -> `, excluding interface, mark and IPv4/IPv6 display labels. For example, `name('日本 01 -> lightsail')` matches that entire chain, while `name(lightsail)` matches only single-hop candidates. `keyword`, `regex` and `!name(...)` also operate on the complete string.
+- `name()` matches the complete string formed by joining original node names with ` -> `, excluding interface, mark and IPv4/IPv6 display labels. For example, `name('Japan 01 -> lightsail')` matches that entire chain, while `name(lightsail)` matches only single-hop candidates. `keyword`, `regex` and `!name(...)` also operate on the complete string.
 - `link()` and `protocol()` similarly match original links or protocol names joined with ` -> `; `subtag()` matches the terminal node's subscription tag. `ipversion()` still constrains the entry hop and intersects the source path's family restrictions.
 - Each filter stage accepts one `group(name)` with an exact group name; `!group(...)` is unsupported. Use separate filter statements to combine groups. Forward references, nested references and further `->` composition are supported. Missing groups and dependency cycles are errors, even when other filters match nothing.
 - Only candidate paths are imported. The receiving group uses its own policy, selected candidate, check settings and connection-switching behavior. A group referenced only by filters does not acquire its own runtime, connectivity checks or selector API entry.

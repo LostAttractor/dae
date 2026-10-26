@@ -91,10 +91,10 @@ proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂
 direct: 8 active · 120 total · Fallback Total 3
 
 GROUP     STATE  24H      1H            SELECTED              ACTIVE
-proxy_hk  UP     100.00%  [......++++]  香港标准 IEPL 专线 2  0
+proxy_hk  UP     100.00%  [......++++]  香港 2                0
 proxy_jp  UP     100.00%  [......++++]  lightsail             108
-proxy_tw  UP     100.00%  [......++++]  台湾标准 IEPL 专线 3  0
-proxy_us  UP     100.00%  [......++++]  美国高级 IEPL 专线 1  0
+proxy_tw  UP     100.00%  [......++++]  台湾 3                0
+proxy_us  UP     100.00%  [......++++]  美国 1                0
 tor       UP     100.00%  [......++++]  tor                   0
 ```
 
