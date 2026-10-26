@@ -56,11 +56,12 @@ func TestUDPReplayKeepsEachDeadline(t *testing.T) {
 			conn := &replayPacketConn{deadlineRecordingPacketConn: &deadlineRecordingPacketConn{testPacketConn: newTestPacketConn(false)}}
 			t.Cleanup(func() { _ = conn.Close() })
 			pending := &udpSetup{sniffer: sniffing.NewPacketSniffer(nil)}
-			t.Cleanup(func() { _ = pending.sniffer.Close() })
+			t.Cleanup(pending.close)
 			deadlines := []time.Time{time.Now().Add(-time.Second), time.Now().Add(time.Second), time.Now().Add(2 * time.Second)}
 			for i, packet := range []string{"expired", "first", "second"} {
-				pending.sniffer.AppendData([]byte(packet))
-				pending.deadlines = append(pending.deadlines, deadlines[i])
+				if !pending.appendPacket(&udpPacket{data: []byte(packet), deadline: deadlines[i]}) {
+					t.Fatal("packet budget exhausted")
+				}
 			}
 			endpoint := &UdpEndpoint{conn: conn, firstDst: netip.MustParseAddrPort("198.51.100.1:443")}
 			plane := &ControlPlane{udpEndpoints: new(UdpEndpointPool)}

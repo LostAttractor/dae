@@ -33,15 +33,15 @@ func dumpCryptos(t *testing.T, cryptos *quicutils.CryptoReassembler) {
 	t.Logf("CRYPTO length: %d\nDump:\n%s", len(b), hex.Dump(b))
 }
 
-func TestSniffQuicV2Initial(t *testing.T) {
+func testQUICV2Initial(t *testing.T, payload []byte) []byte {
+	t.Helper()
 	// RFC 9369 Appendix A.1 client keys, used to protect a focused v2
-	// Initial carrying one CRYPTO frame.
+	// Initial with the requested payload.
 	key, _ := hex.DecodeString("8b1a0bc121284290a29e0971b5cd045d")
 	iv, _ := hex.DecodeString("91f73e2351d8fa91660e909f")
 	hp, _ := hex.DecodeString("45b95e15235d6f45a6b19cbcb0294ba9")
 	destConnID, _ := hex.DecodeString("8394c8f03e515708")
 
-	payload := []byte{quicutils.Quic_FrameType_Crypto, 0, 3, 'a', 'b', 'c'}
 	header := []byte{0xd3, 0x6b, 0x33, 0x43, 0xcf, byte(len(destConnID))}
 	header = append(header, destConnID...)
 	header = append(header, 0, 0, byte(4+len(payload)+16), 0, 0, 0, 2)
@@ -70,6 +70,11 @@ func TestSniffQuicV2Initial(t *testing.T) {
 		packet[packetNumberOffset+i] ^= mask[i+1]
 	}
 
+	return packet
+}
+
+func TestSniffQuicV2Initial(t *testing.T) {
+	packet := testQUICV2Initial(t, []byte{quicutils.Quic_FrameType_Crypto, 0, 3, 'a', 'b', 'c'})
 	reassembly, next, err := sniffQuicBlock(nil, packet)
 	if err != nil {
 		t.Fatal(err)

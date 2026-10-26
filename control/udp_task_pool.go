@@ -110,10 +110,14 @@ func newUdpTaskPool(execute func(udpPacketWork, *udpWriteSlot, []byte)) *udpTask
 	return p
 }
 
-// emit checks capacity before copying the borrowed datagram. Work is ordered by
-// source, and execute may use the owned data until it returns. The pool then
-// releases the buffer and budget. The executor is fixed for the pool's lifetime.
+// emit checks capacity before copying the borrowed datagram. A worker may move
+// its packet to the next owner; the pool releases only what it still owns.
 func (p *udpTaskPool) emit(data []byte, work udpPacketWork) bool {
+	packet := udpPacket{data: data, deadline: work.deadline}
+	return p.emitPacket(&packet, work)
+}
+
+func (p *udpTaskPool) emitPacket(packet *udpPacket, work udpPacketWork) bool {
 	key := work.src
 	p.mu.Lock()
 	if p.closed || p.ctx.Err() != nil {
@@ -135,14 +139,15 @@ func (p *udpTaskPool) emit(data []byte, work udpPacketWork) bool {
 		drop.Add(1)
 		return false
 	}
-	packet, ok := copyUDPPacket(data, p.memory)
+	owned, ok := packet.take(p.memory)
 	if !ok {
 		p.mu.Unlock()
 		dropUploadMemory.Add(1)
 		return false
 	}
 	task := queuedUDPTasks.Get().(*queuedUDPTask)
-	task.packet, task.work = packet, work
+	work.deadline = owned.deadline
+	task.packet, task.work = owned, work
 	if q == nil {
 		q = &udpTaskQueue{key: key}
 		p.queues[key] = q
@@ -202,7 +207,9 @@ func (p *udpTaskPool) run(slot *udpWriteSlot) {
 		q.pending--
 		p.mu.Unlock()
 		if p.ctx.Err() == nil {
-			p.execute(task.work, slot, task.packet.data)
+			work := task.work
+			work.packet = &task.packet
+			p.execute(work, slot, task.packet.data)
 		}
 		task.packet.release()
 		*task = queuedUDPTask{}

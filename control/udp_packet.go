@@ -4,21 +4,24 @@ package control
 
 import (
 	"math/bits"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
-// Shared by ingress tasks, both directions of every MITM QUIC bridge and the
-// reply backlogs of pushing UDP sockets, including overlapping control planes
+// Shared by ingress tasks, sniffing packets, both directions of every MITM
+// QUIC bridge and pushed reply backlogs, including overlapping control planes
 // during reload. Accounts for checked-out buffer capacity; idle sync.Pool
 // storage and QUIC's own buffers are separate.
 var udpPacketMemory = membuffer.NewBudget(8 << 20)
 
 type udpPacket struct {
-	data   []byte
-	memory membuffer.Reservation
+	data     []byte
+	deadline time.Time
+	owned    bool
+	memory   membuffer.Reservation
 }
 
 func copyUDPPacket(data []byte, budget *membuffer.Budget) (udpPacket, bool) {
@@ -34,13 +37,30 @@ func copyUDPPacket(data []byte, budget *membuffer.Budget) (udpPacket, bool) {
 	}
 	owned := pool.GetBuffer(size)[:len(data)]
 	copy(owned, data)
-	return udpPacket{data: owned, memory: memory}, true
+	return udpPacket{data: owned, owned: true, memory: memory}, true
+}
+
+// take moves the allocation and its reservation; borrowed data is copied once.
+func (p *udpPacket) take(budget *membuffer.Budget) (udpPacket, bool) {
+	packet := *p
+	if !p.owned {
+		var ok bool
+		packet, ok = copyUDPPacket(p.data, budget)
+		if !ok {
+			return udpPacket{}, false
+		}
+		packet.deadline = p.deadline
+	}
+	*p = udpPacket{}
+	return packet, true
 }
 
 func (p *udpPacket) release() {
-	pool.PutBuffer(p.data)
-	p.data = nil
+	if p.owned {
+		pool.PutBuffer(p.data)
+	}
 	p.memory.Close()
+	*p = udpPacket{}
 }
 
 // UDP packets control drops itself, by direction and reason.

@@ -129,8 +129,25 @@ type UdpEndpoint struct {
 type udpSetup struct {
 	routingResult *routingResult
 	sniffer       *sniffing.Sniffer
-	deadlines     []time.Time // one per buffered datagram
-	observedAt    time.Time   // incomplete sniff activity, applied on setup or retirement
+	packets       []udpPacket
+	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
+}
+
+func (s *udpSetup) appendPacket(packet *udpPacket) bool {
+	owned, ok := packet.take(udpPacketMemory)
+	if !ok {
+		return false
+	}
+	s.packets = append(s.packets, owned)
+	s.sniffer.AppendBorrowedData(owned.data)
+	return true
+}
+
+func (s *udpSetup) close() {
+	_ = s.sniffer.Close()
+	for i := range s.packets {
+		s.packets[i].release()
+	}
 }
 
 // run reads replies from conn until its delivery ends.
@@ -273,7 +290,7 @@ func (ue *UdpEndpoint) retireLocked() {
 		if !ue.pending.observedAt.IsZero() {
 			ue.activity.observe(ue.firstDst.Addr(), ue.domain, ue.pending.observedAt)
 		}
-		_ = ue.pending.sniffer.Close()
+		ue.pending.close()
 		ue.pending = nil
 	}
 	ue.timerDeadline = time.Time{}
@@ -545,7 +562,7 @@ func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, no
 	if removed {
 		if endpoint.pending != nil {
 			// Sniffing timed out: the buffered datagrams are never sent.
-			dropExpired.Add(uint64(len(endpoint.pending.sniffer.Data()) - 1))
+			dropExpired.Add(uint64(len(endpoint.pending.packets)))
 		}
 		endpoint.retireLocked()
 	}

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"os"
@@ -76,6 +77,11 @@ func (c *mitmPacketConn) ReadFrom(buf []byte) (int, net.Addr, error) {
 			c.head = (c.head + 1) % mitmPacketQueueSize
 			c.count--
 			c.pair.mu.Unlock()
+			if c.peer.upload && !packet.deadline.IsZero() && !time.Now().Before(packet.deadline) {
+				dropExpired.Add(1)
+				packet.release()
+				continue
+			}
 			n := copy(buf, packet.data)
 			packet.release()
 			return n, net.UDPAddrFromAddrPort(c.peer.local), nil
@@ -113,6 +119,15 @@ func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 // TryWriteTo queues buf for the peer, or drops it with
 // netproxy.ErrPacketDropped if the peer's queue or the packet memory is full.
 func (c *mitmPacketConn) TryWriteTo(buf []byte, addr net.Addr) (int, error) {
+	packet := udpPacket{data: buf}
+	return c.writePacket(&packet, addr)
+}
+
+func (c *mitmPacketConn) writePacket(packet *udpPacket, addr net.Addr) (int, error) {
+	buf := packet.data
+	if !packet.deadline.IsZero() && !time.Now().Before(packet.deadline) {
+		return 0, context.DeadlineExceeded
+	}
 	c.pair.mu.Lock()
 	defer c.pair.mu.Unlock()
 	if c.pair.closed {
@@ -140,7 +155,7 @@ func (c *mitmPacketConn) TryWriteTo(buf []byte, addr net.Addr) (int, error) {
 		return 0, netproxy.ErrPacketDropped
 	}
 	index := (c.peer.head + c.peer.count) % mitmPacketQueueSize
-	packet, ok := copyUDPPacket(buf, c.pair.memory)
+	owned, ok := packet.take(c.pair.memory)
 	if !ok {
 		if c.upload {
 			dropUploadMemory.Add(1)
@@ -149,7 +164,7 @@ func (c *mitmPacketConn) TryWriteTo(buf []byte, addr net.Addr) (int, error) {
 		}
 		return 0, netproxy.ErrPacketDropped
 	}
-	c.peer.packets[index] = packet
+	c.peer.packets[index] = owned
 	c.peer.count++
 	if c.peer.count == 1 {
 		c.peer.notifyReaders()

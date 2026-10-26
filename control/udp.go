@@ -162,6 +162,7 @@ type udpPacketWork struct {
 	src, dst      netip.AddrPort
 	routingResult *routingResult
 	deadline      time.Time
+	packet        *udpPacket // set by the owning worker
 }
 
 // A packet whose deadline passes before it is handled, or while its handling
@@ -176,7 +177,11 @@ func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
 		dropExpired.Add(1)
 		return
 	}
-	err := c.handlePktUntil(ctx, w.deadline, slot, data, w.src, w.dst, w.routingResult)
+	packet := w.packet
+	if packet == nil {
+		packet = &udpPacket{data: data, deadline: w.deadline}
+	}
+	err := c.handleUDPPacket(ctx, slot, packet, w.src, w.dst, w.routingResult)
 	if err == nil || c.ctx.Err() != nil || ctx.Err() != nil {
 		return
 	}
@@ -208,7 +213,13 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 }
 
 // ctx is the generation's work context; slot is the pool worker's write slot.
-func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
+func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, data []byte, src, dst netip.AddrPort, routingResult *routingResult) error {
+	packet := udpPacket{data: data, deadline: deadline}
+	return c.handleUDPPacket(ctx, slot, &packet, src, dst, routingResult)
+}
+
+func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, packet *udpPacket, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
+	data, deadline := packet.data, packet.deadline
 	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -240,7 +251,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 		if owner := ue.setupOwner.Load(); owner != nil && owner != c {
 			// A packet can queue before a predecessor publishes its endpoint.
 			// Keep initialization (and the worker drain) in the owning generation.
-			owner.enqueueUDPPacketUntil(data, src, dst, nil, deadline)
+			owner.udpTaskPool.emitPacket(packet, udpPacketWork{plane: owner, src: src, dst: dst})
 			return nil
 		}
 	}
@@ -296,15 +307,15 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 	}
 	if ue.conn != nil {
 		ue.setupOwner.Store(nil)
-		return c.writeUDPUntil(ctx, deadline, slot, ue, src, dst, data)
+		return c.writeUDPPacket(ctx, slot, ue, src, dst, packet)
 	}
 
-	return c.initializeUDP(ctx, slot, ue, src, dst, data)
+	return c.initializeUDP(ctx, slot, ue, src, dst, packet)
 }
 
 // initializeUDP runs under the source lock until the first route is installed.
 // Later packets enter writeUDP directly, without routing or sniffing again.
-func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
+func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, packet *udpPacket) (err error) {
 	defer func() {
 		if ue.conn != nil {
 			ue.setupOwner.Store(nil)
@@ -327,9 +338,10 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	var domain string
 	var isQuic bool
 	if dst == ue.firstDst {
-		deadline, _ := ctx.Deadline()
-		pending.sniffer.AppendData(data)
-		pending.deadlines = append(pending.deadlines, deadline)
+		if !pending.appendPacket(packet) {
+			dropUploadMemory.Add(1)
+			return nil
+		}
 		domain, isQuic, err = pending.sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			pending.observedAt = time.Time{}
@@ -366,7 +378,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	// A failed setup discards the packets buffered for sniffing and the
 	// current one; execute does not see them.
 	discard := func(drop *netproxy.Drop) {
-		n := len(pending.sniffer.Data()) - 1 // Data()[0] is the empty seed
+		n := len(pending.packets)
 		if dst != ue.firstDst {
 			n++
 		}
@@ -488,15 +500,13 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 
 	// Send the buffered first destination in arrival order, followed by the
 	// packet that completed initialization (if it uses another destination).
-	sniffer := pending.sniffer
 	ue.pending = nil
-	defer sniffer.Close()
+	defer pending.close()
 	if err := c.replayUDP(ctx, slot, ue, src, pending); err != nil || ue.IsClosed() {
 		return err
 	}
-	deadline, _ := ctx.Deadline()
 	if dst != ue.firstDst {
-		if err := c.writeUDPUntil(ctx, deadline, slot, ue, src, dst, data); err != nil || ue.IsClosed() {
+		if err := c.writeUDPPacket(ctx, slot, ue, src, dst, packet); err != nil || ue.IsClosed() {
 			return err
 		}
 	}
@@ -506,16 +516,27 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 
 // Replayed datagrams keep their own deadlines, not the setup-completing packet's.
 func (c *ControlPlane) replayUDP(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src netip.AddrPort, pending *udpSetup) error {
-	for i, packet := range pending.sniffer.Data()[1:] {
+	for i := range pending.packets {
+		packet := &pending.packets[i]
 		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				dropExpired.Add(uint64(len(pending.packets) - i))
+				return nil
+			}
 			return err
 		}
-		deadline := pending.deadlines[i]
+		deadline := packet.deadline
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			dropExpired.Add(1)
+			packet.release()
 			continue
 		}
-		err := c.writeUDPUntil(ctx, deadline, slot, ue, src, ue.firstDst, packet)
+		err := c.writeUDPPacket(ctx, slot, ue, src, ue.firstDst, packet)
+		packet.release()
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			dropExpired.Add(uint64(len(pending.packets) - i))
+			return nil
+		}
 		if err != nil && ctx.Err() == nil && !deadline.IsZero() && !time.Now().Before(deadline) {
 			dropExpired.Add(1)
 			err = nil
@@ -533,6 +554,12 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 }
 
 func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
+	packet := udpPacket{data: data, deadline: deadline}
+	return c.writeUDPPacket(ctx, slot, ue, src, dst, &packet)
+}
+
+func (c *ControlPlane) writeUDPPacket(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, packet *udpPacket) error {
+	data, deadline := packet.data, packet.deadline
 	ue.observeDomain(dst)
 	// Request-routing HTTP/3 has no connection-wide outbound. Its source
 	// lifetime is scoped to the admitted destination; it cannot migrate.
@@ -553,7 +580,17 @@ func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, sl
 		if ue.writeAddr == nil || ue.writeDst != dst {
 			ue.writeDst, ue.writeAddr = dst, net.UDPAddrFromAddrPort(dst)
 		}
-		n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
+		var bridge *mitmPacketConn
+		if ue.mitm {
+			bridge, _ = netproxy.PacketConnAs[*mitmPacketConn](conn)
+		}
+		if bridge != nil {
+			if err = ctx.Err(); err == nil {
+				n, err = bridge.writePacket(packet, ue.writeAddr)
+			}
+		} else {
+			n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
+		}
 		if err == netproxy.ErrPacketDropped {
 			// Counted by the transport; not uploaded, not a failure.
 			return nil

@@ -73,6 +73,17 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `reply_socket_full` | `download` | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |
 | `reply_send_failed` | `download` | Sending a reply to the client failed, for example its reply socket could not be created; the association goes on |
 
+Ingress datagrams keep their original deadline across control-plane handoff,
+sniffing replay and the MITM bridge. An expired packet is discarded before
+forwarding or bridge delivery, without refreshing its deadline at each queue.
+This does not impose a delivery deadline on transport-internal or kernel queues.
+
+The shared 8 MiB packet-memory budget covers ingress, pending sniffing packets,
+MITM bridge queues and pushed reply backlogs across control-plane generations.
+Moving an owned packet transfers its allocation and reservation without another
+payload copy. Private parser reassembly, DNS request copies, transport-internal
+buffers, idle pool storage and kernel buffers are separate.
+
 ## Plugin metric names
 
 Plugin metric names below omit the **`dae_plugin_`** prefix. Histograms expose

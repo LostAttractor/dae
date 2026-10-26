@@ -106,10 +106,10 @@ func TestUDPDestinationSocketBeyondLimitIsCounted(t *testing.T) {
 // expired; closing a source while it sniffs counts nothing.
 func TestUDPSniffingTimeoutCountsBufferedDatagrams(t *testing.T) {
 	pending := func() *UdpEndpoint {
-		sniffer := sniffing.NewPacketSniffer(nil)
-		sniffer.AppendData([]byte("first"))
-		sniffer.AppendData([]byte("second"))
-		return &UdpEndpoint{pending: &udpSetup{sniffer: sniffer}, NatTimeout: 50 * time.Millisecond}
+		setup := &udpSetup{sniffer: sniffing.NewPacketSniffer(nil)}
+		require.True(t, setup.appendPacket(&udpPacket{data: []byte("first")}))
+		require.True(t, setup.appendPacket(&udpPacket{data: []byte("second")}))
+		return &UdpEndpoint{pending: setup, NatTimeout: 50 * time.Millisecond}
 	}
 	expired := dropExpired.Load()
 	closed := new(UdpEndpointPool)

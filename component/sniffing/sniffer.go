@@ -47,6 +47,7 @@ type Sniffer struct {
 	needMore     bool
 	packetBytes  int
 	packetCount  int
+	packetRead   int
 	packetLimit  bool
 	quicNextRead int
 	quicCryptos  *quicutils.CryptoReassembler
@@ -252,7 +253,7 @@ func (s *Sniffer) SniffUdp() (d string, isQuic bool, err error) {
 		close(s.dataReady)
 	}
 
-	if s.buf.Len() == 0 || s.packetLimit {
+	if s.packetBytes == 0 || s.packetLimit {
 		return "", s.quicNextRead != 0, ErrNotApplicable
 	}
 	d, err = sniffGroup(s.sniffQuicLocked)
@@ -263,15 +264,21 @@ func (s *Sniffer) SniffUdp() (d string, isQuic bool, err error) {
 }
 
 func (s *Sniffer) AppendData(data []byte) {
+	ori := s.buf.Len()
+	s.buf.Write(data)
+	s.AppendBorrowedData(s.buf.Bytes()[ori:])
+}
+
+// AppendBorrowedData retains data without copying. The caller lends exclusive
+// access until sniffing and replay finish; Close does not release borrowed data.
+func (s *Sniffer) AppendBorrowedData(data []byte) {
 	s.needMore = false
 	if !s.stream && (s.packetCount >= packetSniffingMaxPackets || s.packetBytes+len(data) > packetSniffingMaxBufferedBytes) {
 		// Retain the triggering datagram so the caller can process it normally
 		// after replaying earlier packets, then stop this sniffing session.
 		s.packetLimit = true
 	}
-	ori := s.buf.Len()
-	s.buf.Write(data)
-	s.data = append(s.data, s.buf.Bytes()[ori:])
+	s.data = append(s.data, data)
 	s.packetBytes += len(data)
 	s.packetCount++
 }

@@ -39,28 +39,40 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 
 // sniffQuicLocked requires s.readMu to be held.
 func (s *Sniffer) sniffQuicLocked() (d string, err error) {
-	remaining := s.buf.Bytes()[s.quicNextRead:]
-	parsedInitial := false
-	for {
-		s.quicCryptos, remaining, err = sniffQuicBlock(s.quicCryptos, remaining)
-		if err == nil {
-			parsedInitial = true
-			if len(remaining) == 0 {
-				break
-			}
-			continue
-		}
-		if errors.Is(err, ErrNotApplicable) && parsedInitial {
-			// Ignore an unexpected trailing block after a valid Initial.
-			break
-		}
-		if errors.Is(err, fs.ErrClosed) {
-			return "", ErrNotFound
-		}
-		return "", err
+	packets := s.data[s.packetRead:]
+	if s.stream {
+		packets = [][]byte{s.buf.Bytes()[s.quicNextRead:]}
 	}
-
-	s.quicNextRead = s.buf.Len()
+	for _, packet := range packets {
+		if len(packet) > 0 {
+			remaining := packet
+			parsedInitial := false
+			for {
+				s.quicCryptos, remaining, err = sniffQuicBlock(s.quicCryptos, remaining)
+				if err == nil {
+					parsedInitial = true
+					if len(remaining) == 0 {
+						break
+					}
+					continue
+				}
+				if errors.Is(err, ErrNotApplicable) && parsedInitial {
+					break // Ignore trailing padding after a valid Initial.
+				}
+				if errors.Is(err, fs.ErrClosed) {
+					return "", ErrNotFound
+				}
+				return "", err
+			}
+			s.quicNextRead += len(packet)
+		}
+		if !s.stream {
+			s.packetRead++
+		}
+	}
+	if s.quicNextRead == 0 {
+		return "", ErrNotApplicable
+	}
 	// Resolve holes once, before parsing SNI or ALPN from contiguous bytes.
 	hello, err := s.quicCryptos.Bytes()
 	var extensions []byte
