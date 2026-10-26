@@ -58,7 +58,7 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 	var output bytes.Buffer
 	plugins.SetOut(&output)
 	plugins.SetArgs([]string{"status"})
-	if err := plugins.Execute(); err != nil || !strings.Contains(output.String(), "no active plugin instances") {
+	if err := plugins.Execute(); err != nil || !strings.Contains(output.String(), "no configured instances") {
 		t.Fatal(output.String(), err)
 	}
 }

@@ -6,8 +6,9 @@ import "encoding/json"
 
 // PluginStatus keeps process-wide resources independent of instance selection.
 type PluginStatus struct {
-	BufferMemory BufferMemoryStatus     `json:"buffer_memory"`
-	Plugins      []PluginInstanceStatus `json:"plugins,omitempty"`
+	CompiledPlugins []string               `json:"compiled_plugins"`
+	BufferMemory    BufferMemoryStatus     `json:"buffer_memory"`
+	Plugins         []PluginInstanceStatus `json:"plugins,omitempty"`
 }
 
 // PluginInstanceStatus excludes plugin configuration and its credentials.
@@ -15,7 +16,11 @@ type PluginStatus struct {
 type PluginInstanceStatus struct {
 	ID               string          `json:"id"`
 	Type             string          `json:"type"`
+	Enabled          bool            `json:"enabled"`
 	State            string          `json:"state"`
+	DeclaredScopes   int             `json:"declared_scopes"`
+	HTTPActive       bool            `json:"http_active"`
+	HTTPReason       string          `json:"http_reason"`
 	Scopes           int             `json:"scopes"`
 	DestinationRules int             `json:"destination_rules"`
 	Details          json.RawMessage `json:"details,omitempty"`

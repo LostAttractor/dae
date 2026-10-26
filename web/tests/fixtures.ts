@@ -53,7 +53,8 @@ export interface Fixture {
   caTest?: Schema<"CertificateTest">;
   groups: FixtureGroup[];
   tables: Pick<GlobalStatus["tables"][number], "name" | "used" | "limit">[];
-  plugins: Pick<NonNullable<GlobalStatus["plugins"]>[number], "id" | "type" | "state">[];
+  compiled_plugins: GlobalStatus["compiled_plugins"];
+  plugins: NonNullable<GlobalStatus["plugins"]>;
   stats: FixtureStats;
   selectors: SelectorState[];
   device: DeviceState;

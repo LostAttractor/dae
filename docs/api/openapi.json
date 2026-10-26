@@ -496,6 +496,23 @@
       },
       "PluginInstanceStatus": {
         "properties": {
+          "enabled": {
+            "description": "Enabled flag from the accepted configuration. Disabled instances are not instantiated and do not prepare resources.",
+            "type": "boolean"
+          },
+          "declared_scopes": {
+            "description": "Number of HTTP scopes declared by the instantiated plugin. Disabled instances do not evaluate Plan and report zero.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "http_active": {
+            "description": "Effective scopes can participate in HTTP processing. This does not guarantee that a device is intercepted or that background tasks are healthy.",
+            "type": "boolean"
+          },
+          "http_reason": {
+            "description": "Empty when HTTP processing is active; otherwise disabled, no_scopes, mitm_disabled, prepared, draining, or unavailable.",
+            "type": "string"
+          },
           "destination_rules": {
             "format": "int64",
             "type": "integer"
@@ -504,6 +521,7 @@
             "type": "string"
           },
           "scopes": {
+            "description": "Number of effective HTTP scopes after applying the host-wide HTTP enablement setting.",
             "format": "int64",
             "type": "integer"
           },
@@ -520,7 +538,11 @@
         "required": [
           "id",
           "type",
+          "enabled",
           "state",
+          "declared_scopes",
+          "http_active",
+          "http_reason",
           "scopes",
           "destination_rules"
         ],
@@ -984,6 +1006,11 @@
       },
       "StatusSnapshot": {
         "properties": {
+          "compiled_plugins": {
+            "description": "Plugin types registered by the running daemon, sorted by name and independent of instance configuration. Excludes the system MITM diagnostic plugin.",
+            "items": { "type": "string" },
+            "type": "array"
+          },
           "buffer_memory": {
             "$ref": "#/components/schemas/BufferMemoryStatus",
             "description": "Process-wide body buffer budget, present even when no plugin instances are active."
@@ -1041,6 +1068,7 @@
           }
         },
         "required": [
+          "compiled_plugins",
           "buffer_memory",
           "schema",
           "version",

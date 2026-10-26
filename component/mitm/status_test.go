@@ -5,15 +5,59 @@ package mitm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
+
+func TestStatusSeparatesHTTPFromLifecycle(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http_disabled=%t", disabled), func(t *testing.T) {
+			plan := plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.test")}}, DNS: []plugin.DNSScope{{Names: []string{"example.test"}}}}
+			host, err := New(Options{DisableHTTP: disabled, Authority: &localca.Authority{}},
+				Instance{ID: "http", Type: "mixed", Plugin: &testPlugin{plan: plan}},
+				Instance{ID: "worker", Type: "worker", Plugin: &testPlugin{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer host.Close()
+			if len(host.Plan().DNS) != 1 {
+				t.Fatal("HTTP switch discarded non-HTTP declarations")
+			}
+			for _, state := range []string{"prepared", "active", "draining"} {
+				if state == "active" {
+					err = host.Start(t.Context())
+				} else if state == "draining" {
+					err = host.Close()
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				status := host.Status().Plugins
+				p := status[0]
+				wantScopes, wantReason := 1, state
+				if disabled {
+					wantScopes, wantReason = 0, "mitm_disabled"
+				} else if state == "active" {
+					wantReason = ""
+				}
+				if !p.Enabled || p.State != state || p.DeclaredScopes != 1 || p.Scopes != wantScopes || p.HTTPReason != wantReason || p.HTTPActive != (wantReason == "") {
+					t.Fatalf("HTTP status: %+v", p)
+				}
+				if !status[1].Enabled || status[1].State != state || status[1].HTTPActive || status[1].HTTPReason != "no_scopes" {
+					t.Fatalf("non-HTTP status: %+v", status[1])
+				}
+			}
+		})
+	}
+}
 
 func TestStatusWithoutInstancesKeepsBodyBudget(t *testing.T) {
 	budget := membuffer.NewBudget(4096)

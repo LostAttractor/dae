@@ -53,47 +53,53 @@ func parsePlugins(to *Plugins, section *config_parser.Section) error {
 	*to = nil
 	names := make(map[string]bool)
 	for _, item := range section.Items {
-		switch value := item.Value.(type) {
+		var value *config_parser.Section
+		switch v := item.Value.(type) {
 		case *config_parser.Section:
-			if !pluginIdentifier.MatchString(value.Name) {
-				return fmt.Errorf("invalid plugin instance name %q", value.Name)
-			}
-			if names[value.Name] {
-				return fmt.Errorf("duplicate plugin instance %q", value.Name)
-			}
-			names[value.Name] = true
-			p := PluginSpec{Name: value.Name, Type: value.Name, Enabled: true, Config: &config_parser.Section{Name: value.Name}}
-			seen := make(map[string]bool)
-			for _, child := range value.Items {
-				param, ok := child.Value.(*config_parser.Param)
-				if !ok || param.Key != "type" && param.Key != "enabled" {
-					p.Config.Items = append(p.Config.Items, child)
-					continue
-				}
-				if seen[param.Key] || param.AndFunctions != nil || len(param.Annotation) != 0 {
-					return fmt.Errorf("plugins.%s: invalid or duplicate %s", p.Name, param.Key)
-				}
-				seen[param.Key] = true
-				if param.Key == "type" {
-					if param.Val == "" {
-						return fmt.Errorf("plugins.%s: empty plugin type", p.Name)
-					}
-					p.Type = param.Val
-					if !pluginIdentifier.MatchString(p.Type) {
-						return fmt.Errorf("plugins.%s: invalid plugin type", p.Name)
-					}
-				} else {
-					var err error
-					p.Enabled, err = strconv.ParseBool(param.Val)
-					if err != nil {
-						return fmt.Errorf("plugins.%s.enabled: expected boolean", p.Name)
-					}
-				}
-			}
-			*to = append(*to, p)
+			value = v
+		case *config_parser.Param:
+			enabled := *v
+			enabled.Key = "enabled"
+			value = &config_parser.Section{Name: v.Key, Items: []*config_parser.Item{{Value: &enabled}}}
 		default:
-			return fmt.Errorf("plugins: expected a named plugin section")
+			return fmt.Errorf("plugins: expected a named plugin section or boolean")
 		}
+		if !pluginIdentifier.MatchString(value.Name) {
+			return fmt.Errorf("invalid plugin instance name %q", value.Name)
+		}
+		if names[value.Name] {
+			return fmt.Errorf("duplicate plugin instance %q", value.Name)
+		}
+		names[value.Name] = true
+		p := PluginSpec{Name: value.Name, Type: value.Name, Enabled: true, Config: &config_parser.Section{Name: value.Name}}
+		seen := make(map[string]bool)
+		for _, child := range value.Items {
+			param, ok := child.Value.(*config_parser.Param)
+			if !ok || param.Key != "type" && param.Key != "enabled" {
+				p.Config.Items = append(p.Config.Items, child)
+				continue
+			}
+			if seen[param.Key] || param.AndFunctions != nil || len(param.Annotation) != 0 {
+				return fmt.Errorf("plugins.%s: invalid or duplicate %s", p.Name, param.Key)
+			}
+			seen[param.Key] = true
+			if param.Key == "type" {
+				if param.Val == "" {
+					return fmt.Errorf("plugins.%s: empty plugin type", p.Name)
+				}
+				p.Type = param.Val
+				if !pluginIdentifier.MatchString(p.Type) {
+					return fmt.Errorf("plugins.%s: invalid plugin type", p.Name)
+				}
+			} else {
+				var err error
+				p.Enabled, err = strconv.ParseBool(param.Val)
+				if err != nil {
+					return fmt.Errorf("plugins.%s.enabled: expected boolean", p.Name)
+				}
+			}
+		}
+		*to = append(*to, p)
 	}
 	return nil
 }
@@ -111,9 +117,17 @@ func (m *Marshaller) marshalMITM(conf MITM, depth int) error {
 
 func (m *Marshaller) marshalPlugins(conf Plugins, depth int) error {
 	for _, p := range conf {
+		if p.Name == p.Type && (p.Config == nil || len(p.Config.Items) == 0) {
+			m.writeLine(depth, p.Name+":"+strconv.FormatBool(p.Enabled))
+			continue
+		}
 		m.writeLine(depth, p.Name+" {")
-		m.writeLine(depth+1, "type:"+strconv.Quote(p.Type))
-		m.writeLine(depth+1, "enabled:"+strconv.FormatBool(p.Enabled))
+		if p.Type != p.Name {
+			m.writeLine(depth+1, "type:"+strconv.Quote(p.Type))
+		}
+		if !p.Enabled {
+			m.writeLine(depth+1, "enabled:false")
+		}
 		if p.Config != nil {
 			if err := m.marshalRawItems(p.Config.Items, depth+1); err != nil {
 				return err

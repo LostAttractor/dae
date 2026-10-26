@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -129,11 +131,30 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	original, host := app.plane, app.plane.MITMHost()
+	initialStatus := app.plane.MITMStatus()
+	if !reflect.DeepEqual(initialStatus.CompiledPlugins, []string{"fixture"}) || len(initialStatus.Plugins) != 1 || !initialStatus.Plugins[0].Enabled {
+		t.Fatalf("initial assembly omitted plugin configuration: %+v", initialStatus)
+	}
 	if result, err := app.reload(t.Context(), false, false); err != nil || result != "No changes" {
 		t.Fatalf("unchanged reload: %s, %v", result, err)
 	}
 	if app.plane != original || app.plane.MITMHost() != host || built.Load() != 1 {
 		t.Fatal("unchanged reload reconstructed running resources")
+	}
+	write(strings.Replace(text, "fixture {}", "fixture {} uncompiled:false", 1))
+	if _, err := app.reload(t.Context(), false, false); err != nil {
+		t.Fatal(err)
+	}
+	status := app.plane.MITMStatus()
+	if app.plane != original || app.plane.MITMHost() != host || built.Load() != 1 || len(status.Plugins) != 2 || status.Plugins[1].ID != "uncompiled" || status.Plugins[1].State != "disabled" {
+		t.Fatalf("disabled-only edit replaced runtime or lost status: %+v", status)
+	}
+	write(strings.Replace(text, "fixture {}", "fixture {} uncompiled:true rejected:false", 1))
+	if _, err := app.reload(t.Context(), false, false); err == nil {
+		t.Fatal("uncompiled enabled instance accepted")
+	}
+	if after := app.plane.MITMStatus(); !reflect.DeepEqual(after.Plugins, status.Plugins) || !reflect.DeepEqual(after.CompiledPlugins, status.CompiledPlugins) {
+		t.Fatalf("failed reload changed plugin status: %+v", after)
 	}
 	write("global { disable_waiting_network:true api_key:'new-key' log_level:debug }\nplugins { fixture {} }\nrouting { fallback:direct }")
 	if _, err := app.reload(t.Context(), false, false); err != nil {

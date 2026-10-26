@@ -96,7 +96,7 @@ func TestMITMRefreshesGeodataWithSharedInstances(t *testing.T) {
 					if plane.CanReplaceMITM(prepared) == test.changed {
 						t.Fatal("routing reuse ignored effective geodata")
 					}
-					if test.changed && plane.ReplaceMITM(prepared) == nil {
+					if test.changed && plane.ReplaceMITM(prepared, nil) == nil {
 						t.Fatal("changed routing accepted without kernel replacement")
 					}
 				})

@@ -76,8 +76,55 @@ fallback: direct }`)
 	}
 }
 
+func TestPluginShorthandRoundTrip(t *testing.T) {
+	conf := parseConfig(t, `global {}
+plugins {
+ youtube: true
+ absent: false
+ empty { enabled: true type: empty }
+ disabled { enabled: false }
+ named { type: youtube }
+ options { enabled: true type: options private_default: true }
+}
+routing { fallback: direct }`)
+	wire, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"youtube:true", "absent:false", "empty:true", "disabled:false", `type:"youtube"`, `private_default:"true"`} {
+		if !strings.Contains(string(wire), want) {
+			t.Fatalf("missing %q in %s", want, wire)
+		}
+	}
+	if strings.Contains(string(wire), "enabled:true") || strings.Contains(string(wire), `type:"options"`) {
+		t.Fatalf("default envelope fields retained: %s", wire)
+	}
+	round := parseConfig(t, string(wire))
+	for i, spec := range round.Plugins {
+		original := conf.Plugins[i]
+		if spec.Name != original.Name || spec.Type != original.Type || spec.Enabled != original.Enabled {
+			t.Fatalf("instance changed: %+v -> %+v", original, spec)
+		}
+	}
+	canonical, err := round.Marshal(2)
+	if err != nil || string(canonical) != string(wire) {
+		t.Fatalf("unstable marshal: %s, %v", canonical, err)
+	}
+}
+
 func TestMITMConfigRejectsInvalid(t *testing.T) {
 	for _, body := range []string{
+		`plugins { youtube: true youtube {} }`,
+		`plugins { youtube {} youtube: false }`,
+		`plugins { youtube: true youtube: false }`,
+		`plugins { 'bad.name': true }`,
+		`plugins { youtube: perhaps }`,
+		`plugins { youtube: enabled() }`,
+		`plugins { youtube: true [tag: value] }`,
+		`plugins { youtube { enabled: true [tag: value] } }`,
+		`plugins { youtube { enabled: perhaps } }`,
+		`plugins { youtube { enabled: true enabled: false } }`,
+		`plugins { youtube { type: 'bad.name' } }`,
 		`mitm { ca_cert: cert }`,
 		`mitm { buffer_memory_limit: 0 }`,
 		`mitm { buffer_memory_limit: -1 }`,

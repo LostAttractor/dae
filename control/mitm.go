@@ -6,20 +6,57 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *planeHTTP) MITMStatus() api.PluginStatus {
-	host := c.MITMHost()
-	if host == nil {
-		return api.PluginStatus{BufferMemory: mitm.BodyBufferStatus()}
+func (c *planeHTTP) SetPluginConfiguration(plugins config.Plugins, compiled []string) {
+	c.mitmMu.Lock()
+	defer c.mitmMu.Unlock()
+	c.pluginStatus.CompiledPlugins = append([]string{}, compiled...)
+	c.pluginStatus.Plugins = pluginConfigurationStatus(plugins)
+}
+
+func pluginConfigurationStatus(plugins config.Plugins) []api.PluginInstanceStatus {
+	instances := make([]api.PluginInstanceStatus, 0, len(plugins))
+	for _, p := range plugins {
+		instances = append(instances, api.PluginInstanceStatus{ID: p.Name, Type: p.Type, Enabled: p.Enabled})
 	}
-	return host.Status()
+	return instances
+}
+
+func (c *planeHTTP) MITMStatus() api.PluginStatus {
+	c.mitmMu.RLock()
+	defer c.mitmMu.RUnlock()
+	snapshot := api.PluginStatus{BufferMemory: mitm.BodyBufferStatus()}
+	if c.mitmHost != nil {
+		snapshot = c.mitmHost.Status()
+	}
+	snapshot.CompiledPlugins = append([]string{}, c.pluginStatus.CompiledPlugins...)
+	live := snapshot.Plugins
+	snapshot.Plugins = make([]api.PluginInstanceStatus, 0, len(live)+len(c.pluginStatus.Plugins))
+	for _, p := range c.pluginStatus.Plugins {
+		if !p.Enabled {
+			p.State, p.HTTPReason = "disabled", "disabled"
+		} else if i := slices.IndexFunc(live, func(status api.PluginInstanceStatus) bool { return status.ID == p.ID }); i >= 0 {
+			p = live[i]
+		} else {
+			p.State, p.HTTPReason = "unavailable", "unavailable"
+		}
+		snapshot.Plugins = append(snapshot.Plugins, p)
+	}
+	for _, p := range live {
+		if !slices.ContainsFunc(c.pluginStatus.Plugins, func(status api.PluginInstanceStatus) bool { return status.ID == p.ID }) {
+			snapshot.Plugins = append(snapshot.Plugins, p)
+		}
+	}
+	return snapshot
 }
 
 // Pure inspection can use an existing route. Request transformations are

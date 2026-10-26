@@ -40,7 +40,7 @@ func SelectMITM(fetch MITMSource, kind string, instance *string) MITMSource {
 			}
 		}
 		if *instance != "" && len(selected) == 0 {
-			return api.PluginStatus{}, fmt.Errorf("plugin instance %q is not active for this command", *instance)
+			return api.PluginStatus{}, fmt.Errorf("plugin instance %q is not configured for this command", *instance)
 		}
 		instances.Plugins = selected
 		return instances, nil
@@ -148,7 +148,9 @@ func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses
 		var custom bool
 		if commands != nil {
 			group, custom = commands(name, func(ctx context.Context) (api.PluginStatus, error) {
-				return api.PluginStatus{Plugins: instances, BufferMemory: statuses.BufferMemory}, ctx.Err()
+				snapshot := statuses
+				snapshot.Plugins = instances
+				return snapshot, ctx.Err()
 			})
 		}
 		var output bytes.Buffer

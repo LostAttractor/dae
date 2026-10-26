@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
@@ -39,9 +40,9 @@ type planeTraffic struct {
 	abortConnections atomic.Bool
 }
 
-// mitmMu protects host replacement; retired hosts and workers drain before cleanup.
 type planeHTTP struct {
 	mitmHost         *mitm.Host
+	pluginStatus     api.PluginStatus
 	mitmPlan         plugin.Plan // Accepted, expanded routing inputs; immutable.
 	mitmMu           sync.RWMutex
 	retiredHosts     sync.WaitGroup

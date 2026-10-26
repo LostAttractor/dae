@@ -86,8 +86,9 @@ function StatusDetails({ snapshot, global, prefix }: { prefix: string } & ({ sna
       </StatusSection>
       <StatusSection className="plugins-section" title="Plugins" count={snapshot.plugins?.length || 0}>
         <p className="buffer-memory text-sm text-kumo-subtle">Body buffers (process): {bytes(snapshot.buffer_memory.used)} / {bytes(snapshot.buffer_memory.limit)}; peak: {bytes(snapshot.buffer_memory.peak)}; denied: {snapshot.buffer_memory.denied.toLocaleString()}</p>
-        <Records entries={(snapshot.plugins || []).map(plugin => [plugin.id, <><span>{plugin.type}</span><span>{plugin.state}</span></>])} />
-        {!snapshot.plugins?.length && <p className={muted}>No plugins loaded.</p>}
+        <p className={muted}>Compiled plugins: {snapshot.compiled_plugins.join(", ") || "none"}</p>
+        <Records entries={(snapshot.plugins || []).map(plugin => [plugin.id, <><span>{plugin.type}</span><span>{plugin.enabled ? "Enabled" : "Disabled"}; lifecycle: {plugin.state}</span><span>HTTP: {plugin.http_active ? "active" : plugin.http_reason}; scopes (effective/declared): {plugin.scopes}/{plugin.declared_scopes}</span></>])} />
+        {!snapshot.plugins?.length && <p className={muted}>No plugins configured.</p>}
       </StatusSection>
     </>}
   </div>;

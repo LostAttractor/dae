@@ -10,9 +10,17 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
+func TestSurgeDisabledWithoutDetails(t *testing.T) {
+	status, err := Surge([]api.PluginInstanceStatus{{ID: "disabled", Type: "surge", State: "disabled"}})
+	if err != nil || status.Enabled || len(status.Modules) != 0 {
+		t.Fatalf("disabled instance decoded a report: %+v, %v", status, err)
+	}
+}
+
 func TestSurgeUsesInstanceReports(t *testing.T) {
 	instances := []api.PluginInstanceStatus{
 		{ID: "other", Type: "demo", Details: json.RawMessage(`{"tasks":1}`)},
+		{ID: "disabled", Type: "surge", State: "disabled", HTTPReason: "disabled"},
 		{ID: "first", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"one","state":"loaded"}],"future_field":true}`)},
 		{ID: "second", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"two","state":"cached","warnings":["offline"]}]}`)},
 	}
@@ -30,7 +38,7 @@ func TestSurgeUsesInstanceReports(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"", "null", "{"} {
-		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Details: json.RawMessage(raw)}}); err == nil {
+		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Enabled: true, Details: json.RawMessage(raw)}}); err == nil {
 			t.Errorf("invalid report %q accepted", raw)
 		}
 	}

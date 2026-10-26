@@ -85,7 +85,7 @@ func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 		}
 	}
 	for _, detail := range []jsonv1.RawMessage{nil, jsonv1.RawMessage(`null`), jsonv1.RawMessage(`{"enabled":"bad"}`)} {
-		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Details: detail}}); err == nil {
+		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Enabled: true, Details: detail}}); err == nil {
 			t.Fatal("invalid plugin report was silently accepted")
 		}
 	}

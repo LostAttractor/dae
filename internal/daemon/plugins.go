@@ -39,9 +39,9 @@ func logStartupMITMStatus(instances []plugin.InstanceStatus) {
 }
 
 func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*pluginhost.Configuration, error) {
-	for _, spec := range configuredPluginSpecs(conf) {
-		if spec.ID == mitmverify.InstanceID {
-			return nil, fmt.Errorf("plugin ID %q is reserved for MITM verification", spec.ID)
+	for _, spec := range conf.Plugins {
+		if spec.Name == mitmverify.InstanceID {
+			return nil, fmt.Errorf("plugin ID %q is reserved for MITM verification", spec.Name)
 		}
 	}
 	if conf.MITM.Enabled && conf.Global.APIPort != 0 {

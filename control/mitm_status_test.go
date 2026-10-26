@@ -10,13 +10,103 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	localca "github.com/daeuniverse/dae/component/ca"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func TestPluginConfigurationStatusWithoutHost(t *testing.T) {
+	plane := &ControlPlane{}
+	compiled := []string{"fixture"}
+	specs := config.Plugins{{Name: "future", Type: "not-compiled", Config: &config_parser.Section{Name: "private-credential"}}}
+	plane.SetPluginConfiguration(specs, compiled)
+	compiled[0], specs[0].Name = "mutated", "mutated"
+	status := plane.MITMStatus()
+	if !reflect.DeepEqual(status.CompiledPlugins, []string{"fixture"}) || len(status.Plugins) != 1 {
+		t.Fatalf("lost accepted configuration: %+v", status)
+	}
+	p := status.Plugins[0]
+	if p.ID != "future" || p.Type != "not-compiled" || p.Enabled || p.State != "disabled" || p.HTTPActive || p.HTTPReason != "disabled" || p.DeclaredScopes != 0 || p.Scopes != 0 || len(p.Details) != 0 {
+		t.Fatalf("disabled status: %+v", p)
+	}
+	wire, err := jsonv2.Marshal(status)
+	if err != nil || strings.Contains(string(wire), "private-credential") {
+		t.Fatalf("configuration leaked: %s, %v", wire, err)
+	}
+	status.CompiledPlugins[0], status.Plugins[0].ID = "mutated", "mutated"
+	if next := plane.MITMStatus(); next.CompiledPlugins[0] != "fixture" || next.Plugins[0].ID != "future" {
+		t.Fatalf("snapshot mutation changed accepted status: %+v", next)
+	}
+	plane.SetPluginConfiguration(nil, nil)
+	wire, err = jsonv2.Marshal(plane.MITMStatus())
+	if err != nil || !strings.Contains(string(wire), `"compiled_plugins":[]`) {
+		t.Fatalf("empty compiled list missing: %s, %v", wire, err)
+	}
+}
+
+func TestReplaceMITMPublishesConfigurationOnlyAfterActivation(t *testing.T) {
+	plane := &ControlPlane{core: &controlPlaneCore{}, ctx: t.Context()}
+	plane.SetPluginConfiguration(config.Plugins{{Name: "old", Type: "uncompiled"}}, []string{"test"})
+	before := plane.MITMStatus()
+	rejected := controlTestHost(t, &controlTestPlugin{}, nil)
+	if err := rejected.Close(); err != nil {
+		t.Fatal(err)
+	}
+	plugins := config.Plugins{{Name: "test", Type: "test", Enabled: true}, {Name: "new", Type: "uncompiled"}}
+	if err := plane.ReplaceMITM(PreparedMITM{Host: rejected}, plugins); err == nil {
+		t.Fatal("closed candidate was accepted")
+	}
+	if after := plane.MITMStatus(); !reflect.DeepEqual(after, before) || plane.MITMHost() != nil {
+		t.Fatalf("failed activation published status: %+v", after)
+	}
+	host := controlTestHost(t, &controlTestPlugin{}, nil)
+	stop, ready := make(chan struct{}), make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Go(func() {
+		close(ready)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			status := plane.MITMStatus()
+			old := len(status.Plugins) == 1 && status.Plugins[0].ID == "old" && !status.Plugins[0].Enabled
+			current := len(status.Plugins) == 2 && status.Plugins[0].ID == "test" && status.Plugins[0].State == "active" && status.Plugins[1].ID == "new"
+			if !old && !current {
+				t.Errorf("mixed host/configuration generation: %+v", status)
+				return
+			}
+		}
+	})
+	defer func() { close(stop); readers.Wait() }()
+	<-ready
+	if err := plane.ReplaceMITM(PreparedMITM{Host: host}, plugins); err != nil {
+		t.Fatal(err)
+	}
+	status := plane.MITMStatus()
+	if plane.MITMHost() != host || !reflect.DeepEqual(status.CompiledPlugins, []string{"test"}) || len(status.Plugins) != 2 || status.Plugins[0].State != "active" || !status.Plugins[0].Enabled || status.Plugins[1].ID != "new" || status.Plugins[1].State != "disabled" {
+		t.Fatalf("host and accepted envelope disagree: %+v", status)
+	}
+}
+
+func TestPluginStatusPreservesSystemInstances(t *testing.T) {
+	host := controlTestHost(t, &controlTestPlugin{}, nil)
+	plane := &ControlPlane{mitmHost: host}
+	plane.SetPluginConfiguration(config.Plugins{{Name: "disabled", Type: "future"}}, []string{"compiled"})
+	status := plane.MITMStatus()
+	if len(status.Plugins) != 2 || status.Plugins[0].ID != "disabled" || status.Plugins[1].ID != "test" || !status.Plugins[1].Enabled {
+		t.Fatalf("system instance was dropped: %+v", status)
+	}
+}
 
 func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
 	server := &apiserver.Server{}

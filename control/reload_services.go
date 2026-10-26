@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,7 +34,7 @@ func (c *planeHTTP) CanReplaceMITM(prepared PreparedMITM) bool {
 
 // ReplaceMITM publishes a prepared host whose routing contribution is unchanged.
 // Existing protocol work drains under the old host's existing lifecycle rules.
-func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM) error {
+func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM, plugins config.Plugins) error {
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
 	if c.closedDone.Load() {
@@ -51,6 +52,7 @@ func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM) error {
 	c.mitmMu.Lock()
 	old := c.mitmHost
 	c.mitmHost = host
+	c.pluginStatus.Plugins = pluginConfigurationStatus(plugins)
 	c.mitmMu.Unlock()
 	if old != nil {
 		old.StopWorkers()

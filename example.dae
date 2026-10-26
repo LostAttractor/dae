@@ -372,7 +372,8 @@ mitm {
 }
 
 plugins {
-    # A section name is the instance ID and defaults to its plugin type.
+    # The section name is the instance ID and default type; instances are enabled by default.
+    # An instance matching its type with no private options may use youtube: true / false; enabling it requires that type to be compiled in.
     # Copy plugins.cfg.example to local plugins.cfg to select external Go plugins, then run make.
     surge {
         enabled: false

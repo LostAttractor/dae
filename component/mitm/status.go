@@ -20,7 +20,20 @@ func (h *Host) Status() api.PluginStatus {
 	}
 	result := make([]plugin.InstanceStatus, 0, len(h.instances))
 	for _, p := range h.instances {
-		result = append(result, plugin.InstanceStatus{ID: p.ID, Type: p.Type, State: state, Scopes: len(p.plan.Scopes), DestinationRules: len(p.plan.Destinations)})
+		reason := ""
+		switch {
+		case len(p.owner.Plan.Scopes) == 0:
+			reason = "no_scopes"
+		case h.options.DisableHTTP:
+			reason = "mitm_disabled"
+		case state != "active":
+			reason = state
+		}
+		result = append(result, plugin.InstanceStatus{
+			ID: p.ID, Type: p.Type, Enabled: true, State: state,
+			DeclaredScopes: len(p.owner.Plan.Scopes), Scopes: len(p.plan.Scopes),
+			HTTPActive: reason == "", HTTPReason: reason, DestinationRules: len(p.plan.Destinations),
+		})
 	}
 	h.mu.Unlock()
 	for i, p := range h.instances {

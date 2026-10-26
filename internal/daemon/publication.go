@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -44,6 +46,7 @@ func (a *application) assemblePlane(ctx context.Context, preparation *control.Co
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, plane.Close())
 	}
+	plane.SetPluginConfiguration(conf.Plugins, slices.Sorted(maps.Keys(a.definitions)))
 	api, err := prepareAPIServer(a.managementAPI, conf.Global.APIPort)
 	if err != nil {
 		return nil, errors.Join(err, plane.Close())

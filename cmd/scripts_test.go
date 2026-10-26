@@ -115,7 +115,7 @@ func TestSurgeListCommandDiscovery(t *testing.T) {
 		{name: "selected JSON", args: []string{"--instance", "personal", "--module", "another"}, raw: true, count: 1, queries: 1, want: `"state":"ready"`, absent: "cronexp"},
 		{name: "empty JSON", args: []string{"--module", "missing"}, raw: true, queries: 1, want: "[]"},
 		{name: "empty", args: []string{"--module", "missing"}, queries: 1, want: "No configured Surge script tasks"},
-		{name: "missing instance", args: []string{"--instance", "missing"}, queries: 1, errorText: "not active"},
+		{name: "missing instance", args: []string{"--instance", "missing"}, queries: 1, errorText: "not configured"},
 		{name: "daemon error", queries: 1, fetchErr: errors.New("daemon unavailable"), errorText: "daemon unavailable"},
 		{name: "unexpected argument", args: []string{"script"}, errorText: "unknown command"},
 	} {

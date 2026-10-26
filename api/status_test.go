@@ -21,7 +21,11 @@ func TestStatusWireRoundTrip(t *testing.T) {
 		Tracking: "standby", Degraded: true, RecoveryElapsed: 5 * time.Second, FailureRecovery: 30 * time.Second,
 		Priority: 10, Score: -time.Second, MeasuredAt: time.Unix(100, 0).UTC(),
 	}
-	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active"}}
+	want.CompiledPlugins = []string{"example", "unused"}
+	want.Plugins = []PluginInstanceStatus{
+		{ID: "example", Type: "example", Enabled: true, State: "active", DeclaredScopes: 2, HTTPReason: "mitm_disabled"},
+		{ID: "future", Type: "uncompiled", State: "disabled", HTTPReason: "disabled"},
+	}
 	want.BufferMemory = BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}
 	want.Tables = []TableUsage{{Name: "domain-registry", Used: 8,
 		Breakdown: &TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: ^uint64(0)}}}
@@ -65,8 +69,8 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.Groups[0].Nodes[0].Selection, want.Groups[0].Nodes[0].Selection) {
 		t.Fatal("selection durations or signed score changed after round trip")
 	}
-	if !reflect.DeepEqual(got.Plugins, want.Plugins) {
-		t.Fatal("MITM buffer memory statistics changed after round trip")
+	if !reflect.DeepEqual(got.Plugins, want.Plugins) || !reflect.DeepEqual(got.CompiledPlugins, want.CompiledPlugins) || got.BufferMemory != want.BufferMemory {
+		t.Fatal("plugin envelope or process statistics changed after round trip")
 	}
 	if !reflect.DeepEqual(got.Tables, want.Tables) {
 		t.Fatal("domain/IP counts changed after round trip")

@@ -16,22 +16,31 @@ import (
 func RenderMITM(snapshot api.PluginStatus, withSummary bool) string {
 	instances := snapshot.Plugins
 	memory := snapshot.BufferMemory
-	memorySummary := fmt.Sprintf("Body buffers (process): %.2f / %.2f MiB; peak=%.2f MiB; denied=%d\n\n",
-		float64(memory.Used)/(1<<20), float64(memory.Limit)/(1<<20), float64(memory.Peak)/(1<<20), memory.Denied)
+	compiled := strings.Join(snapshot.CompiledPlugins, ", ")
+	if compiled == "" {
+		compiled = "none"
+	}
+	memorySummary := fmt.Sprintf("Compiled plugins: %s\nBody buffers (process): %.2f / %.2f MiB; peak=%.2f MiB; denied=%d\n\n",
+		compiled, float64(memory.Used)/(1<<20), float64(memory.Limit)/(1<<20), float64(memory.Peak)/(1<<20), memory.Denied)
 	if len(instances) == 0 {
-		return memorySummary + "MITM: no active plugin instances"
+		return memorySummary + "Plugins: no configured instances"
 	}
 	rows := make([]table.Row, 0, len(instances))
 	var details strings.Builder
 	for _, instance := range instances {
-		rows = append(rows, table.Row{instance.ID, instance.Type, instance.State, instance.Scopes, instance.DestinationRules})
+		httpState := "active"
+		if !instance.HTTPActive {
+			httpState = instance.HTTPReason
+		}
+		rows = append(rows, table.Row{instance.ID, instance.Type, instance.Enabled, instance.State, httpState,
+			fmt.Sprintf("%d/%d", instance.Scopes, instance.DeclaredScopes), instance.DestinationRules})
 		if withSummary {
 			if summary := mitmReportSummary(instance.Details); summary != "" {
 				fmt.Fprintf(&details, "\n\n%s: %s", instance.ID, summary)
 			}
 		}
 	}
-	return memorySummary + clitable.RenderLog(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows) + details.String()
+	return memorySummary + clitable.RenderLog(table.Row{"INSTANCE", "TYPE", "ENABLED", "STATE", "HTTP", "SCOPES (EFF/DECL)", "DNAT"}, rows) + details.String()
 }
 
 // Nested reports stay available through --verbose, --json or the plugin's status command.

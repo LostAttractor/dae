@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"slices"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -78,6 +80,7 @@ func (a *application) accept(conf *config.Config, inputs *controlInputs, server 
 		a.plane.SetAPIKey(conf.Global.APIKey)
 	}
 	observability.Commit()
+	a.plane.SetPluginConfiguration(conf.Plugins, slices.Sorted(maps.Keys(a.definitions)))
 	a.conf, a.inputs = conf, inputs
 	pruneSubscriptions(conf, filepath.Dir(a.options.ConfigFile))
 	stats.DefaultStore.RecordReload()
@@ -240,7 +243,7 @@ func (a *application) replaceServices(next *config.Config, inputs *controlInputs
 		pauseAPI()
 	}
 	if !unchanged {
-		if err := a.plane.ReplaceMITM(*prepared); err != nil {
+		if err := a.plane.ReplaceMITM(*prepared, next.Plugins); err != nil {
 			return "", err
 		}
 		*prepared = control.PreparedMITM{} // The plane now owns this host.

@@ -19,7 +19,9 @@ plugins {
 }
 ```
 
-子段名是实例 ID，也是默认的类型。`type` 用于多个同类实例。Surge 的 `store` 默认为 `true`，按实例 ID 自动保存在 `DAE_LOCATION_CACHE/plugins/<ID>/surge-store.json`；不同实例的数据独立，设置 `store: false` 改为实例内存存储。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS 插件。未知的活动类型、重复 ID 或未知插件字段会报错。显式关闭的插件不加载。
+子段名是实例 ID，也是默认的类型。`type` 用于多个同类实例。无私有参数且实例名等于类型时可写 `plugins { youtube: true }`，等价于 `youtube {}`；`youtube: false` 等价于 `youtube { enabled: false }`。配置输出优先使用这种简写，配置块省略与实例名相同的 `type` 和默认的 `enabled: true`，不省略插件私有参数。简写与配置块共用实例名、重复 ID 和布尔校验，不允许函数或 annotation。系统诊断保留实例名 `dae-mitm-test`。
+
+Surge 的 `store` 默认为 `true`，按实例 ID 自动保存在 `DAE_LOCATION_CACHE/plugins/<ID>/surge-store.json`；不同实例的数据独立，设置 `store: false` 改为实例内存存储。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS、路由或后台任务。未知的启用类型、重复 ID 或已启用插件的未知字段会报错。关闭的插件不执行配置解析、资源准备、实例构造或后台任务，允许保留尚未编入的类型及其私有配置。
 
 启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 解析并校验各实例配置，得到运行资源工厂，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。普通 `dae reload` 会刷新插件声明的外部资源，比较有效配置和资源内容，只重建变化的实例；内置 Surge 会比较模块及其依赖脚本内容。刷新失败时使用完整有效缓存或拒绝重载，不将资源失败解释为删除实例。静态校验或资源准备失败会保持当前控制平面，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
@@ -53,7 +55,9 @@ HTTP/3 使用同一 CA、客户端开关与插件 scope，没有单独开关。�
 
 未变化的插件实例保留后台任务、缓存、内存状态和指标。被替换实例失去最后一个活动宿主时才取消后台任务，旧协议宿主在交接后排空已开始的 HTTP 请求，默认排空预算 5 秒，超时后取消请求并关闭连接；最后一个宿主释放实例且后台任务退出后才关闭实例资源。插件的捕获与路由声明未变化时，实例更新不重建内核路由。后台识别、等待预算、缓存等行为由具体插件定义；宿主没有通用的任务队列，也不能事后补写已返回的响应。
 
-`dae plugins status` 汇总所有已启用实例，`--verbose`（`-v`）聚合各插件的完整 status 输出。整次命令只查询 daemon 一次，`--instance ID` 筛选实例。没有自定义 status 的插件展示完整 JSON 报告；渲染失败时保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 输出完整插件报告，优先于 `-v`。
+`dae plugins status` 和 Web 的 Plugins 区域区分编入类型、配置启用、实例生命周期与 HTTP 生效。编入清单来自运行中的 daemon，不代表已配置实例，也不读取本地 `plugins.cfg` 推测。实例列表包括已接受配置中的 disabled 行，并保留系统 MITM diagnostic；`scopes` 是有效数量，`declared_scopes` 是实例声明数量。关闭实例不求值 Plan，两者均为零且没有 `details`。`http_active` 仅表示有效 scope 可参与 HTTP 处理，不保证某台设备已经截获或后台任务健康；`http_reason` 说明未生效原因。
+
+`--verbose`（`-v`）聚合各插件的完整 status 输出。整次命令只查询 daemon 一次，`--instance ID` 也能筛选关闭实例，筛选不会移除进程级编入清单和内存预算。没有自定义 status 的插件展示完整 JSON 报告；Surge 跳过关闭实例的空 `details`；其他渲染失败保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 输出 `compiled_plugins`、`buffer_memory` 和 `plugins`，优先于 `-v`。状态只反映成功接受的配置；失败重载保持旧状态，仅修改 disabled 配置也会刷新状态而不替换协议宿主或 API handler。普通 `dae status` 的文本展示不扩展插件详情。
 
 `dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令为 `dae ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
 

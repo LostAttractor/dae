@@ -123,7 +123,7 @@ function resetFixture() {
   }));
   fixture = {
     mode: "lan", requests: [], nextRead: null,
-    nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [], tables: [], plugins: [],
+    nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [], tables: [], compiled_plugins: [], plugins: [],
     stats: { active_connections: 2, total_connections: 7, upload_bytes: 2048, download_bytes: 8192, history: { upload_bytes_per_second: [100, 200], download_bytes_per_second: [400, 800] } },
     selectors: [
       { name: "On demand", node_id: "node-0", track_all: false, overridden: false, nodes },
@@ -281,7 +281,7 @@ const httpServer = createServer(async (req, res) => {
       const override = fixture.nextGlobalRead;
       fixture.nextGlobalRead = null;
       const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
-      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, plugins: fixture.plugins };
+      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins: fixture.plugins };
       override?.started.resolve();
       if (override?.release) await override.release.promise;
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
@@ -1909,6 +1909,25 @@ try {
     read.release.resolve();
   });
 
+  await test("plugin status separates compiled types, enabled instances and HTTP activity", async () => {
+    fixture.mode = "lan";
+    fixture.compiled_plugins = ["http", "unused"];
+    fixture.plugins = [
+      { id: "paused", type: "http", enabled: true, state: "active", scopes: 0, declared_scopes: 2, destination_rules: 1, http_active: false, http_reason: "mitm_disabled" },
+      { id: "future", type: "not-compiled", enabled: false, state: "disabled", scopes: 0, declared_scopes: 0, destination_rules: 0, http_active: false, http_reason: "disabled" },
+      { id: "live", type: "http", enabled: true, state: "active", scopes: 1, declared_scopes: 1, destination_rules: 0, http_active: true, http_reason: "" },
+    ];
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await setDisclosure("#global-traffic .plugins-section");
+    const text = await js<string>('document.querySelector("#global-traffic .plugins-section").textContent');
+    for (const expected of ["Compiled plugins: http, unused", "Enabled; lifecycle: active", "Disabled; lifecycle: disabled", "HTTP: mitm_disabled; scopes (effective/declared): 0/2", "HTTP: active; scopes (effective/declared): 1/1", "future", "not-compiled"]) assert.ok(text.includes(expected), expected);
+    fixture.plugins = [];
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.match(await js<string>('document.querySelector("#global-traffic .plugins-section").textContent'), /Compiled plugins: http, unused.*No plugins configured/s);
+  });
+
   await test("expanded outbound details preserve focus and scrolling across polls", async () => {
     fixture.groups = [
       { name: "proxy_jp", policy: "min_moving_avg", health: "healthy", connectivity: "available", stats: fixture.stats, nodes: Array.from({ length: 80 }, (_, index) => ({
@@ -1972,7 +1991,8 @@ try {
     };
     fixture.groups = statusGroups(fixture.stats);
     fixture.tables = [{ name: "resolved_domains", used: 128, limit: 4096 }];
-    fixture.plugins = [{ id: "request_rules", type: "http", state: "ready" }];
+    fixture.compiled_plugins = ["http"];
+    fixture.plugins = [{ id: "request_rules", type: "http", enabled: true, state: "active", scopes: 1, declared_scopes: 1, destination_rules: 0, http_active: true, http_reason: "" }];
     fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", mitm_test_generation: "layout" };
     fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: fixture.certificate.fingerprint };
     fixture.selectors[0].name = "Long outbound group name · " + "subscription ".repeat(6);

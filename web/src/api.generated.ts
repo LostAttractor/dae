@@ -1517,12 +1517,26 @@ export interface components {
             upload_bytes: number;
         };
         PluginInstanceStatus: {
+            /**
+             * Format: int64
+             * @description Number of HTTP scopes declared by the instantiated plugin. Disabled instances do not evaluate Plan and report zero.
+             */
+            declared_scopes: number;
             /** Format: int64 */
             destination_rules: number;
             /** @description Opaque plugin-defined JSON report. Its schema belongs to the plugin; reports exclude configuration credentials. */
             details?: unknown;
+            /** @description Enabled flag from the accepted configuration. Disabled instances are not instantiated and do not prepare resources. */
+            enabled: boolean;
+            /** @description Effective scopes can participate in HTTP processing. This does not guarantee that a device is intercepted or that background tasks are healthy. */
+            http_active: boolean;
+            /** @description Empty when HTTP processing is active; otherwise disabled, no_scopes, mitm_disabled, prepared, draining, or unavailable. */
+            http_reason: string;
             id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Number of effective HTTP scopes after applying the host-wide HTTP enablement setting.
+             */
             scopes: number;
             state: string;
             type: string;
@@ -1705,6 +1719,8 @@ export interface components {
         StatusSnapshot: {
             /** @description Process-wide body buffer budget, present even when no plugin instances are active. */
             buffer_memory: components["schemas"]["BufferMemoryStatus"];
+            /** @description Plugin types registered by the running daemon, sorted by name and independent of instance configuration. Excludes the system MITM diagnostic plugin. */
+            compiled_plugins: string[];
             /**
              * Format: int64
              * @description Process-lifetime count of no-connectivity fallbacks to direct established in userspace; excludes fallback flows forwarded directly by eBPF. Preserved across reloads. Not a per-path or per-node counter.

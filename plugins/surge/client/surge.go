@@ -143,7 +143,7 @@ func notificationDisplayText(value string) string {
 func Surge(instances []api.PluginInstanceStatus) (surgeapi.SurgeStatus, error) {
 	var status surgeapi.SurgeStatus
 	for _, instance := range instances {
-		if instance.Type != "surge" {
+		if instance.Type != "surge" || !instance.Enabled && len(instance.Details) == 0 {
 			continue
 		}
 		var detail *surgeapi.SurgeStatus

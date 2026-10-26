@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/plugins/surge"
 )
@@ -45,6 +48,59 @@ func mitmConfigForTest(t *testing.T, body string) *config.Config {
 	return c
 }
 
+func TestDisabledPluginStatusAcceptsWithoutHost(t *testing.T) {
+	t.Setenv("DAE_LOCATION_CACHE", t.TempDir())
+	definitions := map[string]plugin.Definition{"fixture": {Configure: func(plugin.Spec) (plugin.Factory, error) {
+		t.Fatal("disabled plugin was configured")
+		return nil, nil
+	}}}
+	conf := mitmConfigForTest(t, "plugins { fixture: false unavailable: false }")
+	conf.Global.ResourceCache = false
+	app := &application{conf: conf, plane: &control.ControlPlane{}, datapath: control.NewRuntime(), definitions: definitions}
+	defer app.datapath.Close()
+	for _, plugins := range []config.Plugins{conf.Plugins, {{Name: "changed", Type: "uncompiled"}}, nil} {
+		next := *conf
+		next.Plugins = plugins
+		configured, err := configurePlugins(&next, definitions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := loadMITM(t.Context(), &next, nil, http.DefaultClient, http.DefaultClient, configured, nil, nil, nil)
+		if err != nil || prepared.Host != nil {
+			t.Fatalf("disabled instances created a host: %+v, %v", prepared, err)
+		}
+		observability, err := prepareObservabilityServers(0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := app.replaceServices(&next, nil, netip.AddrPort{}, nil, &prepared, func() {
+			t.Fatal("disabled-only change replaced the API handler")
+		}, observability)
+		observability.Close()
+		if err != nil || result == "" || app.plane.MITMHost() != nil {
+			t.Fatalf("disabled-only accept failed: %s, %v", result, err)
+		}
+		status := app.plane.MITMStatus()
+		if !reflect.DeepEqual(status.CompiledPlugins, []string{"fixture"}) || len(status.Plugins) != len(plugins) {
+			t.Fatalf("accepted configuration not published: %+v", status)
+		}
+		for i, spec := range plugins {
+			p := status.Plugins[i]
+			if p.ID != spec.Name || p.Type != spec.Type || p.Enabled || p.State != "disabled" || len(p.Details) != 0 {
+				t.Fatalf("wrong disabled projection: %+v", p)
+			}
+		}
+		bad := next
+		bad.Plugins = config.Plugins{{Name: "unavailable", Type: "unavailable", Enabled: true}}
+		if _, err := app.apply(t.Context(), &bad, false, false, false); err == nil {
+			t.Fatal("enabled uncompiled type was accepted")
+		}
+		if after := app.plane.MITMStatus(); !reflect.DeepEqual(after, status) {
+			t.Fatalf("failed reload published configuration: %+v -> %+v", status, after)
+		}
+	}
+}
+
 func TestLoadMITMInstances(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
@@ -69,6 +125,13 @@ plugins {
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPluginDiagnosticIDIsReservedWhenDisabled(t *testing.T) {
+	conf := mitmConfigForTest(t, "plugins { dae-mitm-test: false }")
+	if _, err := configurePlugins(conf, nil); err == nil {
+		t.Fatal("disabled user configuration can shadow the system diagnostic")
 	}
 }
 
