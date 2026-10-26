@@ -19,6 +19,16 @@ go test -race github.com/buke/quickjs-go/...
 
 Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` 指定浏览器路径，`openssl` 和 NSS `certutil` 须位于 PATH。证书测试使用临时 HOME、浏览器配置和 NSS 信任库，不修改现有信任设置；不使用忽略 TLS 错误的启动参数。额外的 `pnpm --dir web run test:certificate` 需要 Go 工具链，单独运行生产 Go API、CSP 与浏览器请求函数的集成检查，覆盖安装 CA、未安装 CA、手动接受 HTTPS 警告，以及 HTTP/HTTPS 页面。除 IPv4/IPv6 回环地址外，存在私有 IPv4 网卡时也从该地址测试普通 LAN HTTP；没有该网卡时明确报告跳过。普通 Go 测试不替代需要 root 的 `make ebpf-test`。
 
+## 固定内核状态
+
+跨进程保留的表为 `tcp_flow_map`（LRU hash，40 字节键、16 字节值）和 `cookie_pid_map`（socket-local storage，4 字节键、20 字节值）。daemon 重启按表比较类型、键值大小、容量和 flags；匹配的 pin 及其内容直接复用，仅删除并重建明确不兼容的 pin。程序或非固定表的变化不会使这些 pin 失效。同进程 reload 使用 Runtime 的共享表。
+
+固定表的字节布局及含义是稳定约定。TCP 流值的 `route_epoch` 位于偏移 0，`mark` 位于 8，`owner` 位于 12；owner 为 0 表示直通，1 表示用户态代理，其余值为 fallback 令牌。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时的 map 元数据比较无法识别字段改名或数值含义变化；`TestPinnedMapABI` 独立于生成类型锁定布局与保留值，不应仅为通过测试而改写不兼容变更的预期。容量仍可在构建时指定；容量不匹配只替换对应的表。
+
+`TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 使用固定字节夹具验证直连 mark、代理 ACK/RST 和令牌边界。前者在 root control 测试中运行，后者在内核测试中运行；均使用隔离表，不接触正在运行的 daemon 的 pin。保留内核状态不等于保留跨 daemon 进程替换的用户态 relay socket。Fallback lease 属于单个进程，因此携带令牌的 fallback 流可能随重启结束；不兼容的表也会丢失其自身状态。
+
+## 性能测量
+
 `scripts/runtime-ablation.py` 在临时副本和独立网络命名空间中执行 reload 消融：可通过 `--baseline` 传入源代码快照，对比接入循环额外复制的监听 FD 数量及配置发布开销；`extra-fds` 不含各版本都需要的原始 TCP/UDP 监听 socket 和 map 描述符。逐项移除代际、SYN、长期 TCP 状态、过期、消费、策略归属与关闭屏障，要求相应行为断言失败。日志、固定 CPU 的交错重复样本和统计保存在输出目录。运行前生成生产及内核测试 BPF 对象，需要 Go、Clang 和免密 sudo。
 
 `control/kern/tests` 的 C 用例各自加载独立 maps，避免前一个用例的路由、域名或连通性状态掩盖错误。Go 的捕获与缓存回归直接检查内核返回值和交接状态，不能仅以最终出站名为 direct 证明内核直通。

@@ -29,6 +29,34 @@ For documentation changes, run `pnpm install --frozen-lockfile`,
 run `make -C web test` with Chromium installed. Both use the root pnpm lockfile;
 commit manifest and lockfile changes together when changing dependencies.
 
+## Pinned kernel state
+
+The persistent maps are `tcp_flow_map` (LRU hash, 40-byte key and 16-byte value)
+and `cookie_pid_map` (socket-local storage, 4-byte key and 20-byte value).
+A daemon restart reuses each pin whose type, key/value sizes, capacity and flags
+match. Only a pin that fails that comparison is removed and recreated; other
+pins and their contents are kept. Changes to programs or unpinned maps do not
+invalidate these pins. Reload within a process uses the Runtime's shared maps.
+
+Treat pinned bytes and their meanings as a stable contract. TCP flow values keep
+`route_epoch` at offset 0, `mark` at 8 and `owner` at 12. Owner 0 means direct,
+1 means userspace proxying, and the remaining values are fallback tokens.
+Socket owner values keep `pid` at offset 0 and the 16-byte `pname` at 4.
+A field rename or change of numeric meaning is not detected by the runtime's
+map metadata comparison. `TestPinnedMapABI` fixes layouts and reserved values
+independently of generated types; do not update its expectations just to make
+an incompatible change pass. Capacity overrides remain build-time choices;
+a capacity mismatch replaces only that map.
+
+`TestRemoveIncompatiblePinnedMaps` checks selective replacement and the retained
+map's ID and contents. `TestPinnedTCPFlowEncoding` feeds fixed byte fixtures to
+the kernel to check direct marks, proxy ACK/RST handling and token boundaries.
+Run the former as root in the `control` tests and the latter with the kernel
+suite; both use isolated maps and never touch the running daemon's pins.
+Keeping kernel state does not preserve userspace relay sockets across daemon
+process replacement. Fallback leases belong to one process, so token-bearing
+fallback flows can end on restart; incompatible maps also lose their own state.
+
 ## Pre-commit Hook
 
 This repo uses [pre-commit hook](https://github.com/pre-commit/pre-commit-hooks) to apply linting check prior to writing commit to local Git history. To set up pre-commit, do the followings:

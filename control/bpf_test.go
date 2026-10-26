@@ -171,12 +171,26 @@ func TestRemoveIncompatiblePinnedMaps(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	tests := []struct {
+		name    string
+		oldType ebpf.MapType
+		next    *ebpf.MapSpec
+		keep    bool
+	}{
+		{"compatible", ebpf.Array, &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}, true},
+		{"value_size", ebpf.Array, &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1}, false},
+		{"key_size", ebpf.Hash, &ebpf.MapSpec{Type: ebpf.Hash, KeySize: 8, ValueSize: 4, MaxEntries: 1}, false},
+		{"capacity", ebpf.Array, &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 2}, false},
+		{"type", ebpf.Array, &ebpf.MapSpec{Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1}, false},
+		{"flags", ebpf.Hash, &ebpf.MapSpec{Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Flags: unix.BPF_F_NO_PREALLOC}, false},
+		{"unrelated", ebpf.Array, nil, true},
+	}
 	spec := &ebpf.CollectionSpec{Maps: make(map[string]*ebpf.MapSpec)}
-	for _, name := range []string{"compatible", "changed", "changed_flags", "unrelated"} {
-		mapSpec := &ebpf.MapSpec{Name: name, Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}
-		if name == "changed_flags" {
-			mapSpec.Type = ebpf.Hash
-		}
+	ids := make(map[string]ebpf.MapID)
+	const contents = uint32(0x12345678)
+	for _, test := range tests {
+		name := test.name
+		mapSpec := &ebpf.MapSpec{Name: name, Type: test.oldType, KeySize: 4, ValueSize: 4, MaxEntries: 1}
 		m, err := ebpf.NewMap(mapSpec)
 		if err != nil {
 			t.Fatal(err)
@@ -185,32 +199,78 @@ func TestRemoveIncompatiblePinnedMaps(t *testing.T) {
 		if err := m.Pin(filepath.Join(pinPath, name)); err != nil {
 			t.Fatal(err)
 		}
-		if name == "unrelated" {
-			continue
+		if err := m.Update(uint32(0), contents, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
 		}
-		mapSpec.Pinning = ebpf.PinByName
-		if name == "changed" {
-			mapSpec.ValueSize = 8
+		info, err := m.Info()
+		if err != nil {
+			t.Fatal(err)
 		}
-		if name == "changed_flags" {
-			mapSpec.Flags = unix.BPF_F_NO_PREALLOC
+		id, ok := info.ID()
+		if !ok {
+			t.Fatal("kernel did not provide a map ID")
 		}
-		spec.Maps[name] = mapSpec
+		ids[name] = id
+		if test.next != nil {
+			test.next.Name, test.next.Pinning = name, ebpf.PinByName
+			spec.Maps[name] = test.next
+		}
 	}
 	for range 2 { // A removed pin is absent on the next load.
 		if err := removeIncompatiblePinnedMaps(spec, pinPath); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"compatible", "changed", "changed_flags", "unrelated"} {
-		_, err := os.Stat(filepath.Join(pinPath, name))
-		if name == "changed" || name == "changed_flags" {
-			if !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("changed map was not removed: %v", err)
-			}
-		} else if err != nil {
-			t.Fatalf("%s map was not preserved: %v", name, err)
+	checkKept := func(name string, m *ebpf.Map) {
+		t.Helper()
+		info, err := m.Info()
+		if err != nil {
+			t.Fatal(err)
 		}
+		if id, ok := info.ID(); !ok || id != ids[name] {
+			t.Fatalf("%s: replaced retained map %d with %d", name, ids[name], id)
+		}
+		var value uint32
+		if err := m.Lookup(uint32(0), &value); err != nil || value != contents {
+			t.Fatalf("%s: retained contents = %#x, %v; want %#x", name, value, err, contents)
+		}
+	}
+	for _, test := range tests {
+		name := test.name
+		m, err := ebpf.LoadPinnedMap(filepath.Join(pinPath, name), nil)
+		if !test.keep {
+			if m != nil {
+				m.Close()
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s: incompatible pin was not removed: %v", name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkKept(name, m)
+		m.Close()
+	}
+	for range 2 {
+		collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: pinPath}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range tests {
+			if test.next == nil {
+				continue
+			}
+			m := collection.Maps[test.name]
+			if err := test.next.Compatible(m); err != nil {
+				t.Fatalf("%s: rebuilt map does not match its new shape: %v", test.name, err)
+			}
+			if test.keep {
+				checkKept(test.name, m)
+			}
+		}
+		collection.Close()
 	}
 }
 
