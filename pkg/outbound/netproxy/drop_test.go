@@ -3,6 +3,8 @@ package netproxy
 import (
 	"testing"
 	"time"
+
+	quic "github.com/daeuniverse/quic-go"
 )
 
 // A counter logs its first drop, then at most once a minute; a clock that
@@ -39,4 +41,14 @@ func TestDropRegistersEachPairOnce(t *testing.T) {
 		}
 	}()
 	NewDrop(DropReceiveFull.Direction(), DropReceiveFull.Reason())
+}
+
+// quic-go's DATAGRAM drops reach the shared counters.
+func TestQUICDatagramDropsAreCounted(t *testing.T) {
+	received, tooLarge := DropReceiveFull.Load(), dropTooLarge.Load()
+	quic.DatagramDropped(false)
+	quic.DatagramDropped(true)
+	if DropReceiveFull.Load()-received != 1 || dropTooLarge.Load()-tooLarge != 1 {
+		t.Fatalf("counted %d received and %d too large, want 1 each", DropReceiveFull.Load()-received, dropTooLarge.Load()-tooLarge)
+	}
 }

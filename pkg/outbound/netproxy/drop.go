@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	quic "github.com/daeuniverse/quic-go"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -82,4 +83,16 @@ var (
 	DropReceiveFull = NewDrop(DropDownload, "transport_receive_full")
 	// A received datagram belongs to an association closed here.
 	DropClosedStream = NewQuietDrop(DropDownload, "closed_stream")
+	// A queued datagram exceeds what the transport can ever send.
+	dropTooLarge = NewDrop(DropUpload, "too_large")
 )
+
+func init() {
+	quic.DatagramDropped = func(sending bool) {
+		if sending {
+			dropTooLarge.Add(1)
+		} else {
+			DropReceiveFull.Add(1)
+		}
+	}
+}

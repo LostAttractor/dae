@@ -65,15 +65,13 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
 | `flow_queue_full`, `carrier_queue_full` | `upload` | smux per-stream or per-session datagram queue full |
 | `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
-| `transport_receive_full` | `download` | hysteria2 or TUIC datagram receive queue, or fragment reassembly table, full |
+| `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
+| `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
 | `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
 | `reply_queue_full` | `download` | Pushed reply backlog full |
 | `reply_socket_full` | `download` | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |
 | `reply_send_failed` | `download` | Sending a reply to the client failed, for example its reply socket could not be created; the association goes on |
-
-Drops inside quic-go's DATAGRAM receive queue or packet packer are not exposed
-by this metric.
 
 ## Plugin metric names
 

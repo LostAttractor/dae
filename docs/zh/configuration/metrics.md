@@ -47,14 +47,13 @@ global {
 | `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
 | `flow_queue_full`、`carrier_queue_full` | `upload` | smux 单流或单会话的数据报队列已满 |
 | `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
-| `transport_receive_full` | `download` | hysteria2、TUIC 的数据报接收队列或分片重组表已满 |
+| `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
+| `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
 | `carrier_queue_full` | `download` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
 | `closed_stream` | `download` | 回包所属的关联已被 dae 关闭或正在关闭。smux 为已被 dae 关闭的流收到的数据不计：会话已无法判断该流是否承载数据报 |
 | `reply_queue_full` | `download` | 推送回包的积压队列已满 |
 | `reply_socket_full` | `download` | 发往客户端的回包 socket 发送缓冲区已满：丢弃回包而不等待 |
 | `reply_send_failed` | `download` | 回包发往客户端失败，例如无法建立回包 socket；关联继续 |
-
-该指标不包含 quic-go 内部 DATAGRAM 接收队列和封包器丢弃的数据报。
 
 ## 插件指标名称
 
