@@ -191,9 +191,12 @@ func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
 // include queue time; context timers are needed only for setup, MITM, new
 // destination sockets and transports that cannot enforce socket deadlines.
 func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *routingResult) {
+	c.enqueueUDPPacketUntil(data, src, dst, routingResult, time.Now().Add(consts.DefaultDialTimeout))
+}
+
+func (c *ControlPlane) enqueueUDPPacketUntil(data []byte, src, dst netip.AddrPort, routingResult *routingResult, deadline time.Time) {
 	c.udpTaskPool.emit(data, udpPacketWork{
-		plane: c, src: src, dst: dst, routingResult: routingResult,
-		deadline: time.Now().Add(consts.DefaultDialTimeout),
+		plane: c, src: src, dst: dst, routingResult: routingResult, deadline: deadline,
 	})
 }
 
@@ -237,7 +240,7 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 		if owner := ue.setupOwner.Load(); owner != nil && owner != c {
 			// A packet can queue before a predecessor publishes its endpoint.
 			// Keep initialization (and the worker drain) in the owning generation.
-			owner.enqueueUDPPacket(data, src, dst, nil)
+			owner.enqueueUDPPacketUntil(data, src, dst, nil, deadline)
 			return nil
 		}
 	}
@@ -324,7 +327,9 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	var domain string
 	var isQuic bool
 	if dst == ue.firstDst {
+		deadline, _ := ctx.Deadline()
 		pending.sniffer.AppendData(data)
+		pending.deadlines = append(pending.deadlines, deadline)
 		domain, isQuic, err = pending.sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			pending.observedAt = time.Time{}
@@ -486,18 +491,39 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	sniffer := pending.sniffer
 	ue.pending = nil
 	defer sniffer.Close()
-	deadline, _ := ctx.Deadline()
-	for _, packet := range sniffer.Data()[1:] {
-		if err := c.writeUDPUntil(ctx, deadline, slot, ue, src, ue.firstDst, packet); err != nil || ue.IsClosed() {
-			return err
-		}
+	if err := c.replayUDP(ctx, slot, ue, src, pending); err != nil || ue.IsClosed() {
+		return err
 	}
+	deadline, _ := ctx.Deadline()
 	if dst != ue.firstDst {
 		if err := c.writeUDPUntil(ctx, deadline, slot, ue, src, dst, data); err != nil || ue.IsClosed() {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// Replayed datagrams keep their own deadlines, not the setup-completing packet's.
+func (c *ControlPlane) replayUDP(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src netip.AddrPort, pending *udpSetup) error {
+	for i, packet := range pending.sniffer.Data()[1:] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		deadline := pending.deadlines[i]
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			dropExpired.Add(1)
+			continue
+		}
+		err := c.writeUDPUntil(ctx, deadline, slot, ue, src, ue.firstDst, packet)
+		if err != nil && ctx.Err() == nil && !deadline.IsZero() && !time.Now().Before(deadline) {
+			dropExpired.Add(1)
+			err = nil
+		}
+		if err != nil || ue.IsClosed() {
+			return err
+		}
+	}
 	return nil
 }
 

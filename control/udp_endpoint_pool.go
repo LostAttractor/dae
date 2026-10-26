@@ -129,7 +129,8 @@ type UdpEndpoint struct {
 type udpSetup struct {
 	routingResult *routingResult
 	sniffer       *sniffing.Sniffer
-	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
+	deadlines     []time.Time // one per buffered datagram
+	observedAt    time.Time   // incomplete sniff activity, applied on setup or retirement
 }
 
 // run reads replies from conn until its delivery ends.
