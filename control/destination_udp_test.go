@@ -4,6 +4,7 @@ package control
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -15,19 +16,107 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	quic "github.com/daeuniverse/quic-go"
 )
 
 type destinationUDPRecorder struct {
 	downloadTestDialer
 	targets []string
+	quic    []bool
 	opened  []*udpLifecyclePacket
 }
 
-func (d *destinationUDPRecorder) ListenPacket(_ context.Context, target string) (net.PacketConn, error) {
+func (d *destinationUDPRecorder) ListenPacket(ctx context.Context, target string) (net.PacketConn, error) {
 	d.targets = append(d.targets, target)
+	d.quic = append(d.quic, netproxy.IsQUIC(ctx))
 	conn := &udpLifecyclePacket{testPacketConn: newTestPacketConn(false), lease: netproxy.NewLease(netproxy.NewResourceRef()), writes: make(chan netip.AddrPort, 8)}
 	d.opened = append(d.opened, conn)
 	return conn, nil
+}
+
+// Capture a real QUIC Initial without completing a handshake or serving TLS.
+func destinationQUICInitial(t *testing.T) []byte {
+	t.Helper()
+	server, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, _ := quic.Dial(ctx, client, server.LocalAddr(), &tls.Config{
+			ServerName: "127.0.0.1", NextProtos: []string{"probe"}, CurvePreferences: []tls.CurveID{tls.X25519},
+		}, &quic.Config{InitialPacketSize: 1200})
+		if conn != nil {
+			_ = conn.CloseWithError(0, "done")
+		}
+	}()
+	if err := server.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		cancel()
+		<-done
+		t.Fatal(err)
+	}
+	packet := make([]byte, 65535)
+	n, _, err := server.ReadFrom(packet)
+	cancel()
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet[:n]
+}
+
+func TestDestinationUDPKeepsSniffedQUICClassification(t *testing.T) {
+	for _, isQUIC := range []bool{false, true} {
+		t.Run(fmt.Sprint(isQUIC), func(t *testing.T) {
+			bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", 8)
+			decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
+			var endpoints UdpEndpointPool
+			defer endpoints.closeAll()
+			source := netip.MustParseAddrPort("192.0.2.10:5000")
+			first := netip.MustParseAddrPort("192.0.2.20:443")
+			second := netip.MustParseAddrPort("192.0.2.21:443")
+			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t,
+				"dip(192.0.2.20,192.0.2.21) -> dnat(198.51.100.20)", "dip(198.51.100.20) -> proxy"))
+			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
+				t.Fatal("UDP association must use the selected packet dialer")
+				return nil, net.ErrClosed
+			})
+			recorder := &destinationUDPRecorder{downloadTestDialer: unused}
+			global := &dialer.GlobalOption{}
+			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: recorder}), global, &dialer.Property{Name: t.Name()}, false, "")
+			group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
+			defer group.Close()
+			plane := &ControlPlane{udpEndpoints: &endpoints, routingMatcher: matcher, deviceRoutes: newTestDeviceRoutes(t),
+				core:      &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UdpBindingsMap: bindings, UdpRoutingCacheMap: decisions}}}},
+				outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), group},
+			}
+			packet := []byte("payload")
+			if isQUIC {
+				packet = destinationQUICInitial(t)
+			}
+			result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: matcher.defaultProfileID}
+			for i, dst := range []netip.AddrPort{first, second} {
+				if err := plane.handlePkt(t.Context(), packet, source, dst, result); err != nil {
+					t.Fatal(err)
+				}
+				if len(recorder.quic) != i+1 || recorder.quic[i] != isQUIC {
+					t.Fatalf("destination %v lost classification %v: dials=%v targets=%v", dst, isQUIC, recorder.quic, recorder.targets)
+				}
+				// Only the first destination is sniffed; later payloads cannot
+				// supply the association's retained classification themselves.
+				packet = []byte("later packet")
+			}
+		})
+	}
 }
 
 // Exercise real UDP association creation, replacement and private ownership maps.

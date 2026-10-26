@@ -96,15 +96,16 @@ type smuxSession struct {
 	streams map[uint32]*smuxStream // receive or retain send ownership until FIN leaves
 	retired int
 	// nextID passes math.MaxUint32 once stream IDs are exhausted.
-	nextID  uint64
-	fq      fq.Scheduler
-	writing bool          // sendLoop is busy; enqueuers wake it otherwise
-	closing bool          // Close is writing the queue; only FIN may join
-	flushed chan struct{} // closed once sendLoop idles while closing
-	sealed  bool          // flushed while closing; not even a FIN joins
-	dead    bool
-	err     error // why the session died; set before die closes
-	wake    chan struct{}
+	nextID   uint64
+	fq       fq.Scheduler
+	writing  bool          // sendLoop is busy; enqueuers wake it otherwise
+	draining chan struct{} // closed when queued and in-flight frames have left
+	closing  bool          // Close is writing the queue; only FIN may join
+	flushed  chan struct{} // closed once sendLoop idles while closing
+	sealed   bool          // flushed while closing; not even a FIN joins
+	dead     bool
+	err      error // why the session died; set before die closes
+	wake     chan struct{}
 
 	budget     atomic.Int64 // receive buffer left
 	budgetWake chan struct{}
@@ -225,7 +226,23 @@ func (s *smuxSession) abort() error {
 // The carrier monitor records why the session failed.
 func (*smuxSession) closeErr() error { return nil }
 
-func (*smuxSession) saturated() bool { return false }
+// smux v1 has no per-stream window: a session whose receive buffer is full
+// stops reading, and a new stream would wait behind the stalled one.
+func (s *smuxSession) saturated() bool { return s.budget.Load() <= 0 }
+
+// drained returns nil when the sender is idle, otherwise its next idle event.
+// writing includes the batch outside fq, including a last FIN in Write.
+func (s *smuxSession) drained() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.writing || s.dead {
+		return nil
+	}
+	if s.draining == nil {
+		s.draining = make(chan struct{})
+	}
+	return s.draining
+}
 
 // shutdown kills the session with err once, dropping queued frames and closing
 // the carrier, which stops both loops. It reports whether this call did so.
@@ -336,7 +353,10 @@ func (s *smuxSession) sendLoop() {
 			s.mu.Lock()
 			if !s.fq.Queued() || s.dead {
 				s.writing = false
-
+				if s.draining != nil {
+					close(s.draining)
+					s.draining = nil
+				}
 				s.sealed = s.closing
 				if s.flushed != nil {
 					close(s.flushed)

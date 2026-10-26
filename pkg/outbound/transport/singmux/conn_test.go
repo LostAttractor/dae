@@ -22,7 +22,7 @@ func testLeasedStream(t *testing.T) (*Mux, *leasedStream, *smuxtest.Session) {
 	}
 	server := waitForSmuxSessions(t, accepted, 1)[0]
 	t.Cleanup(func() { _ = server.Close() })
-	conn, err := dialer.pool().OpenStream(t.Context())
+	conn, err := dialer.pool().OpenStream(t.Context(), laneStream)
 	if err != nil {
 		t.Fatal(err)
 	}

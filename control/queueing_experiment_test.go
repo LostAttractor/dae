@@ -874,9 +874,13 @@ func TestQueueingExperimentClient(t *testing.T) {
 	}
 	openFlow := func(port int) *qexpFlow {
 		flow := &qexpFlow{src: netip.AddrPortFrom(qexpLANHost, uint16(lanPort.Add(1))), dst: qexpAddr(host, port), replies: make(chan []byte, 1024)}
-		// Setup is skipped: the dial gets none of the context setup would
-		// give it, such as the sniffed protocol.
-		conn, err := packets.ListenPacket(ctx, flow.dst.String())
+		// Setup is skipped; the dial gets the sniffed protocol as setup
+		// would give it, and nothing else.
+		dialCtx := ctx
+		if port == qexpQUICPort {
+			dialCtx = netproxy.WithQUIC(ctx)
+		}
+		conn, err := packets.ListenPacket(dialCtx, flow.dst.String())
 		if err != nil {
 			t.Fatal(err)
 		}

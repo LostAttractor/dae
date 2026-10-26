@@ -175,6 +175,9 @@ func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEnd
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	if ue.isQUIC {
+		ctx = netproxy.WithQUIC(ctx)
+	}
 	upstream := upstreamDial{dialer: ue.dialer, path: ue.statsPath, origin: ue.origin,
 		resource: ue.lease, policy: ue.policyLease, route: ue.routeLease}
 	conn, err := upstream.establishUpstream(ctx, func(ctx context.Context) (net.PacketConn, error) {

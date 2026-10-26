@@ -211,7 +211,7 @@ func TestPacketNewDestinationSocketDial(t *testing.T) {
 				first := netip.MustParseAddrPort("192.0.2.2:443")
 				second := netip.MustParseAddrPort("192.0.2.3:443")
 				dialed := make(chan context.Context, 1)
-				endpoint := &UdpEndpoint{conn: newTestPacketConn(false), firstDst: first, NatTimeout: time.Hour,
+				endpoint := &UdpEndpoint{conn: newTestPacketConn(false), firstDst: first, NatTimeout: time.Hour, isQUIC: true,
 					packetDialer: blockingPacketDialer{dialed: dialed}, sockets: make(map[netip.AddrPort]*udpSocket),
 					destinations: map[netip.AddrPort]udpDestination{second: {second, time.Now()}}}
 				endpoints.add(source, endpoint)
@@ -226,6 +226,9 @@ func TestPacketNewDestinationSocketDial(t *testing.T) {
 					_ = plane.handlePktUntil(work, deadline, new(udpWriteSlot), []byte("packet"), source, second, nil)
 				}()
 				dial := <-dialed
+				if !netproxy.IsQUIC(dial) {
+					t.Error("new destination socket lost the sniffed QUIC classification")
+				}
 				if got, ok := dial.Deadline(); !ok || !got.Equal(deadline) {
 					t.Fatalf("socket dial deadline = %v, %t; want packet deadline %v", got, ok, deadline)
 				}

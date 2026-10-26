@@ -666,7 +666,9 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 			go delayLink(link, conn, 50*time.Millisecond)
 			return client
 		}
-		mux := &Mux{Dialer: parent, Protocol: ProtocolYAMux, MaxConnections: 2}
+		// Room for a second TCP session besides the spare and the positions
+		// kept for the datagram lanes.
+		mux := &Mux{Dialer: parent, Protocol: ProtocolYAMux, MaxConnections: 5}
 		t.Cleanup(func() { _ = mux.Close() })
 		ctx := t.Context()
 		if err := mux.Connect(ctx); err != nil {
@@ -695,6 +697,9 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 			return h.loads()
 		}
 		grown := []net.Conn{open()}
+		if err := mux.Connect(ctx); err != nil { // the new spare
+			t.Fatal(err)
+		}
 		first := download(grown[0])
 		for range expandStreams - 1 {
 			conn := open()
@@ -719,7 +724,7 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 		for range expandStreams + 1 {
 			open()
 		}
-		if got := loads(); len(got) != 2 || got[0] != 3 || got[1] != expandStreams+1 {
+		if got := loads(); len(got) != 3 || got[0] != 3 || got[2] != expandStreams+1 {
 			t.Fatalf("streams were placed on the saturated session: loads=%v", got)
 		}
 		if last := download(open()); last > first*5/4 {

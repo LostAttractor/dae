@@ -30,7 +30,7 @@ func TestSmuxBlockedCarrierExpires(t *testing.T) {
 		}
 		_ = c.Close()
 		synctest.Wait()
-		if !s.writing {
+		if s.drained() == nil {
 			t.Fatal("blocked SYN/data/FIN was reported drained")
 		}
 		time.Sleep(netproxy.DialTimeout)
@@ -127,7 +127,7 @@ func TestSmuxIdleSenderDoesNotEnterGate(t *testing.T) {
 		if deadlines, writes := carrier.deadlines.Load(), carrier.writes.Load(); writes == 0 || deadlines != writes {
 			t.Fatalf("deadline/gate attempts=%d carrier writes=%d", deadlines, writes)
 		}
-		if s.writing {
+		if s.drained() != nil {
 			t.Fatal("empty sender did not become idle")
 		}
 	})

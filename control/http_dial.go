@@ -92,7 +92,7 @@ func (c *mitmUpstreamConn) Close() error {
 }
 
 func dialHTTPPacketUpstream(parent context.Context, option *DialOption) (net.PacketConn, net.Addr, error) {
-	conn, err := newUpstreamDial(option).establishUpstream(parent, func(ctx context.Context) (net.PacketConn, error) {
+	conn, err := newUpstreamDial(option).establishUpstream(netproxy.WithQUIC(parent), func(ctx context.Context) (net.PacketConn, error) {
 		return option.dialerForConnection().ListenPacket(ctx, option.DialTarget)
 	})
 	if err != nil {

@@ -218,3 +218,33 @@ func TestStoreExportsCarrierGateWaits(t *testing.T) {
 	}
 	t.Fatal("carrier gate waits not exported")
 }
+
+// Lane placements are exported by lane and result.
+var testLanePlacement = netproxy.NewLanePlacement("test", "own")
+
+func TestStoreExportsMuxLanePlacements(t *testing.T) {
+	placement := testLanePlacement
+	before := placement.Load()
+	placement.Add(2)
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(newStoreAt(time.Now()))
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "dae_mux_lane_placements_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["lane"] == "test" && labels["result"] == "own" && metric.GetCounter().GetValue() == float64(before+2) {
+				return
+			}
+		}
+	}
+	t.Fatal("lane placement not exported")
+}

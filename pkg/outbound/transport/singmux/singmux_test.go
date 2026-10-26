@@ -172,7 +172,7 @@ func TestIdleSessionRemainsUsableWithoutPeerHeartbeats(t *testing.T) {
 		if state := dialer.Snapshot(); !state.Accepting {
 			t.Fatalf("idle session stopped accepting streams: %+v", state)
 		}
-		stream, err := dialer.pool().OpenStream(t.Context())
+		stream, err := dialer.pool().OpenStream(t.Context(), laneStream)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -210,12 +210,11 @@ func TestCarrierWriteFailureMovesStreamsToAnotherSession(t *testing.T) {
 		return failing
 	})
 	ctx := t.Context()
-	base := h.openN(ctx, expandStreams+1)
+	base := h.open(ctx)
 	h.replenish()
-	h.openN(ctx, expandStreams)
-	// The emptied base session is now preferred; its carrier fails once
-	// the FINs of its streams are out.
-	closeAll(base)
+	// The emptied base session is a spare again, and preferred; its carrier
+	// fails once the FIN of its stream is out.
+	_ = base.Close()
 	resource, err := h.dialer.pool().slots[0].lifecycle.Current()
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +235,7 @@ func TestCarrierWriteFailureMovesStreamsToAnotherSession(t *testing.T) {
 		t.Fatal("session with a failed carrier was not closed")
 	}
 	h.open(ctx)
-	if loads := h.loads(); loads[1] != expandStreams+1 {
+	if loads := h.loads(); loads[1] != 1 {
 		t.Fatalf("stream did not move to the other session: loads=%v", loads)
 	}
 	if dials := h.dials(); dials != 2 {

@@ -18,8 +18,11 @@ controller. `Retire()` drains retained connections before releasing the chain.
 Recovery follows the first unavailable dependency and never replays data.
 
 The package can construct and retire protocol chains without dae's control
-plane, plugin host or health checker. Its only shared project dependency outside
-`pkg/outbound` is the pure link parser in `pkg/proxylink`.
+plane, plugin host or health checker. Shared project dependencies outside
+`pkg/outbound` are the pure link parser in `pkg/proxylink` and the
+standard-library-only owned buffer reservations in `pkg/membuffer`.
+Packet queues share one process-wide budget; admission does not exceed it,
+including requests protected from later eviction.
 
 HTTP/2 and QUIC pools share `netproxy.PoolState` for member availability, capacity
 demand and failure episodes. Protocols retain ownership of negotiation, stream
@@ -41,10 +44,3 @@ the repository root with its pinned quic-go dependency:
 ```sh
 nix-shell --run 'go test -race ./pkg/outbound/... -count=1'
 ```
-
-### Shared memory accounting
-
-Outbound transports may use the standard-library-only `pkg/membuffer` package
-for owned buffer reservations. The dependency boundary still excludes control,
-plugins and daemon components. Packet queues share one process-wide budget;
-admission does not exceed it, including requests protected from later eviction.

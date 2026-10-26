@@ -243,7 +243,7 @@ func (s *Mux) DialContext(ctx context.Context, network, addr string) (c net.Conn
 	}
 	switch network {
 	case "tcp":
-		stream, err := s.pool().OpenStream(ctx)
+		stream, err := s.pool().OpenStream(ctx, laneStream)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +266,11 @@ func (s *Mux) ListenPacket(ctx context.Context, addr string) (net.PacketConn, er
 	if s.PassthroughUdp {
 		return s.Dialer.ListenPacket(ctx, addr)
 	}
-	stream, err := s.pool().OpenStream(ctx)
+	l := laneInteractive
+	if netproxy.IsQUIC(ctx) {
+		l = laneBulk
+	}
+	stream, err := s.pool().OpenStream(ctx, l)
 	if err != nil {
 		return nil, err
 	}

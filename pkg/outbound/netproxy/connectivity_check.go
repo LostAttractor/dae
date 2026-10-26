@@ -16,3 +16,17 @@ func IsConnectivityCheck(ctx context.Context) bool {
 	check, _ := ctx.Value(connectivityCheckKey{}).(bool)
 	return check
 }
+
+type quicKey struct{}
+
+// WithQUIC marks the dial of a UDP association that carries QUIC, as
+// sniffed from its first datagram. Pooled transports keep such bulk
+// datagram flows apart from interactive ones.
+func WithQUIC(ctx context.Context) context.Context {
+	return context.WithValue(ctx, quicKey{}, true)
+}
+
+func IsQUIC(ctx context.Context) bool {
+	quic, _ := ctx.Value(quicKey{}).(bool)
+	return quic
+}

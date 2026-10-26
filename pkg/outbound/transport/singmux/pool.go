@@ -20,11 +20,59 @@ const (
 	idleTimeout = 60 * time.Second
 )
 
+// lane is the kind of user streams a session carries, so that each kind
+// shares a carrier only with its own: a lost carrier segment stalls every
+// stream of the carrier for an RTT, and a session carrying TCP stops reading
+// while a TCP reader stalls, whereas pushed datagrams never hold it. A
+// session takes the lane of its first user stream and loses it when its
+// last one ends and its sender drains; a spare waits for a lane that has none.
+type lane uint8
+
+const (
+	laneSpare       lane = iota
+	laneInteractive      // datagrams other than QUIC: games, DNS, calls
+	laneBulk             // QUIC datagrams
+	laneStream           // TCP
+	laneCount
+)
+
+// fallbacks orders the lanes a stream may fall back to when its own lane
+// has no session and no spare is left: datagrams before TCP for
+// interactive datagrams, never interactive ones for bulk while another
+// remains.
+var fallbacks = [laneCount][]lane{
+	laneInteractive: {laneBulk, laneStream},
+	laneBulk:        {laneStream, laneInteractive},
+	laneStream:      {laneBulk, laneInteractive},
+}
+
+// How user streams of each lane were placed.
+var placements = func() (counters [laneCount][3]*netproxy.LanePlacement) {
+	for l, name := range [laneCount]string{laneInteractive: "interactive", laneBulk: "bulk_datagram", laneStream: "stream"} {
+		if name != "" {
+			for r, result := range [3]string{placeOwn: "own", placeSpare: "spare", placeFallback: "fallback"} {
+				counters[l][r] = netproxy.NewLanePlacement(name, result)
+			}
+		}
+	}
+	return counters
+}()
+
+const (
+	placeOwn = iota
+	placeSpare
+	placeFallback
+)
+
 // sessionSlot is one bounded pool position. Its lifecycle exists only while the
 // slot is active. Slot 0 is the path's base session and is never retired.
 type sessionSlot struct {
 	lifecycle  *netproxy.SingleSession[*sessionResource]
 	connecting int
+	// lane is set by the slot's first user stream, or by the expansion that
+	// activated it for a lane, and cleared after its last user's tail drains.
+	lane     lane
+	draining <-chan struct{} // the current sender's idle event, if watched
 	// streams counts streams handed out by the pool, including opens in flight;
 	// users counts the user streams among them, which alone grow the pool.
 	streams, users int
@@ -46,7 +94,6 @@ type sessionPool struct {
 	cancel context.CancelFunc
 
 	mu        sync.Mutex
-	cursor    int
 	idle      *time.Timer
 	idleAt    time.Time
 	watchers  sync.WaitGroup
@@ -130,7 +177,11 @@ func (p *sessionPool) retireLocked(slot *sessionSlot) {
 
 // idleLocked reports an active extra slot that no stream or Connect uses.
 func (p *sessionPool) idleLocked(slot *sessionSlot) bool {
-	return p.ctx.Err() == nil && slot != p.slots[0] && slot.lifecycle != nil && slot.streams == 0 && slot.connecting == 0
+	if p.ctx.Err() != nil || slot == p.slots[0] || slot.lifecycle == nil || slot.streams != 0 || slot.connecting != 0 {
+		return false
+	}
+	_, connected := p.connectedHandleLocked(slot)
+	return slot.draining == nil || !connected
 }
 
 func (p *sessionPool) scheduleIdleLocked(slot *sessionSlot) {
@@ -162,8 +213,9 @@ func (p *sessionPool) retireIdle() {
 			p.scheduleIdleLocked(slot)
 			continue
 		}
-		if p.soleConnectedLocked(slot) {
-			// Keep the path's only usable session while slot 0 is refilled.
+		if p.soleConnectedLocked(slot) || p.lastSpareLocked(slot) {
+			// Keep the path's only usable session while slot 0 is refilled,
+			// and the spare while lanes have sessions.
 			slot.lastUsed = time.Now()
 			p.scheduleIdleLocked(slot)
 			continue
@@ -174,6 +226,22 @@ func (p *sessionPool) retireIdle() {
 	if retired {
 		p.publishStateLocked(nil)
 	}
+}
+
+// lastSpareLocked reports whether slot is the only connected spare while
+// some session has a lane.
+func (p *sessionPool) lastSpareLocked(slot *sessionSlot) bool {
+	if !p.spareLocked(slot) {
+		return false
+	}
+	laned := false
+	for _, other := range p.slots {
+		if _, connected := p.connectedHandleLocked(other); connected && p.spareLocked(other) && other != slot {
+			return false
+		}
+		laned = laned || other.lifecycle != nil && other.lane != laneSpare
+	}
+	return laned
 }
 
 // soleConnectedLocked reports whether slot is the pool's only connected slot.
@@ -187,7 +255,8 @@ func (p *sessionPool) soleConnectedLocked(slot *sessionSlot) bool {
 }
 
 // observeSlotLocked applies a newer lifecycle event. An idle extra slot whose
-// established session fails is retired rather than refilled.
+// established session fails is retired rather than refilled, except the
+// last spare while lanes still have sessions.
 func (p *sessionPool) observeSlotLocked(slot *sessionSlot, event netproxy.StateEvent) {
 	if event.Seq <= slot.state.Seq {
 		return
@@ -195,7 +264,7 @@ func (p *sessionPool) observeSlotLocked(slot *sessionSlot, event netproxy.StateE
 	lost := slot.state.State == netproxy.SessionConnected && event.State != netproxy.SessionConnected
 	p.observeSlotFailureLocked(slot, event)
 	slot.state = event
-	if lost && p.idleLocked(slot) {
+	if lost && p.idleLocked(slot) && !p.lastSpareLocked(slot) {
 		p.retireLocked(slot)
 	}
 }
@@ -315,6 +384,10 @@ func (p *sessionPool) Connect(ctx context.Context) error {
 	}
 	p.observeSlotLocked(slot, lifecycle.Snapshot())
 	p.scheduleIdleLocked(slot)
+	if err == nil && !p.hasSpareLocked() {
+		// A consumed spare's request may have coalesced with this connection.
+		p.expandLocked(laneSpare)
+	}
 	p.publishStateLocked(err)
 	return err
 }
@@ -322,7 +395,16 @@ func (p *sessionPool) Connect(ctx context.Context) error {
 // reserve only allocates established resources. Expansion is an owner fact
 // consumed by the external recovery coordinator; data-plane callers never dial
 // or wait behind a failed slot's reconnect/backoff.
-func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]struct{}, user bool) (*sessionSlot, *netproxy.SingleSessionHandle[*sessionResource], error) {
+//
+// A user stream goes to the least loaded session of its lane. A lane without
+// one takes the spare; without a spare it falls back to another lane's
+// session and asks for a session of its own. A user stream that finds no
+// spare left asks for one. A
+// lane whose sessions are all loaded grows only into positions left after
+// one for each lane without a session and one for a missing spare.
+// Connectivity checks use interactive sessions, else a spare, else any, and
+// change no lane.
+func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]struct{}, user bool, want lane) (*sessionSlot, *netproxy.SingleSessionHandle[*sessionResource], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -334,33 +416,43 @@ func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]str
 	// Sync first: syncing may retire an idle slot, never the chosen one.
 	p.syncStatesLocked()
 	var best *sessionSlot
-	var bestHandle *netproxy.SingleSessionHandle[*sessionResource]
-	ready, loaded, bestSaturated := true, true, false
-	start := p.cursor
-	p.cursor = (start + 1) % len(p.slots)
-	for offset := range len(p.slots) {
-		slot := p.slots[(start+offset)%len(p.slots)]
-		if slot.lifecycle == nil {
-			continue
+	var handle *netproxy.SingleSessionHandle[*sessionResource]
+	placement := placeOwn
+	if !user {
+		for _, l := range []lane{laneInteractive, laneSpare, laneBulk, laneStream} {
+			if best, handle, _ = p.leastLoadedLocked(excluded, l, true); best != nil {
+				break
+			}
 		}
-		handle, connected := p.connectedHandleLocked(slot)
-		if !connected {
-			ready = false
-			continue
+	} else if own, ownHandle, loaded := p.leastLoadedLocked(excluded, want, true); own != nil {
+		best, handle = own, ownHandle
+		if loaded && p.freeLocked() > p.reservedLocked() {
+			p.expandLocked(want)
 		}
-		if _, skip := excluded[slot]; skip {
-			continue
-		}
-		// A saturated session is loaded whatever it carries: new streams
-		// there could not grow their receive windows.
-		saturated := handle.Resource().session.saturated()
-		loaded = loaded && (saturated || slot.users >= expandStreams)
-		if best == nil || bestSaturated && !saturated || bestSaturated == saturated && slot.streams < best.streams {
-			best, bestHandle, bestSaturated = slot, handle, saturated
+	} else if spare, spareHandle, _ := p.leastLoadedLocked(excluded, laneSpare, true); spare != nil {
+		best, handle, placement = spare, spareHandle, placeSpare
+		best.lane = want
+	} else {
+		placement = placeFallback
+		for _, l := range fallbacks[want] {
+			if best, handle, _ = p.leastLoadedLocked(excluded, l, true); best != nil {
+				break
+			}
 		}
 	}
-	if user && best != nil && loaded {
-		p.expandLocked(ready)
+	if best == nil {
+		// A busy untagged carrier is not a clean spare, but is still usable.
+		best, handle, _ = p.leastLoadedLocked(excluded, laneSpare, false)
+		placement = placeFallback
+		if user && best != nil {
+			best.lane = want
+		}
+	}
+	if user && (best == nil || best.lane != want) {
+		p.expandLocked(want)
+	}
+	if user && !p.hasSpareLocked() {
+		p.expandLocked(laneSpare)
 	}
 	p.publishStateLocked(nil)
 	if best == nil {
@@ -369,25 +461,155 @@ func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]str
 	best.streams++
 	if user {
 		best.users++
+		placements[want][placement].Add(1)
 	}
-	return best, bestHandle, nil
+	return best, handle, nil
 }
 
-// expandLocked asks for one more session. Requests coalesce: while an active
-// slot is unconnected, the outstanding request is only kept wanted.
-func (p *sessionPool) expandLocked(ready bool) {
+// leastLoadedLocked returns the connected slot of lane l, not excluded, with
+// the fewest streams, unsaturated ones first, and whether every such slot is
+// loaded: saturated, whatever it carries, since new streams there could not
+// grow their receive windows, or carrying expandStreams user streams.
+func (p *sessionPool) leastLoadedLocked(excluded map[*sessionSlot]struct{}, l lane, cleanSpare bool) (*sessionSlot, *netproxy.SingleSessionHandle[*sessionResource], bool) {
+	var best *sessionSlot
+	var bestHandle *netproxy.SingleSessionHandle[*sessionResource]
+	loaded, bestSaturated := true, false
 	for _, slot := range p.slots {
-		if slot.lifecycle == nil {
-			if ready {
-				p.activateLocked(slot)
-				return
-			}
+		handle, connected := p.connectedHandleLocked(slot)
+		if _, skip := excluded[slot]; !connected || skip || slot.lane != l || l == laneSpare && cleanSpare && !p.spareLocked(slot) {
 			continue
 		}
-		if _, connected := p.connectedHandleLocked(slot); !connected {
+		saturated := handle.Resource().session.saturated()
+		loaded = loaded && (saturated || slot.users >= expandStreams)
+		if best == nil || bestSaturated && !saturated || bestSaturated == saturated && slot.streams < best.streams {
+			best, bestHandle, bestSaturated = slot, handle, saturated
+		}
+	}
+	return best, bestHandle, loaded
+}
+
+// freeLocked counts the inactive positions.
+func (p *sessionPool) freeLocked() (free int) {
+	for _, slot := range p.slots {
+		if slot.lifecycle == nil {
+			free++
+		}
+	}
+	return free
+}
+
+// senderDrained uses the sender's own queue and in-flight state, not leases.
+func senderDrained(s session) <-chan struct{} {
+	if sender, ok := s.(interface{ drained() <-chan struct{} }); ok {
+		return sender.drained()
+	}
+	// shortcut: go-yamux has no sender-idle event; replace with its in-tree core.
+	return nil
+}
+
+// spareLocked also accepts a spare being connected, but never a draining one.
+func (p *sessionPool) spareLocked(slot *sessionSlot) bool {
+	if slot.lifecycle == nil || slot.lane != laneSpare || slot.streams != 0 {
+		return false
+	}
+	handle, connected := p.connectedHandleLocked(slot)
+	return !connected || senderDrained(handle.Resource().session) == nil
+}
+
+func (p *sessionPool) hasSpareLocked() bool {
+	for _, slot := range p.slots {
+		if p.spareLocked(slot) {
+			return true
+		}
+	}
+	return false
+}
+
+// reservedLocked counts the positions a loaded lane leaves free: one for each
+// lane without a session, and one for the spare if there is none.
+func (p *sessionPool) reservedLocked() int {
+	var present [laneCount]bool
+	for _, slot := range p.slots {
+		if slot.lifecycle != nil && (slot.lane != laneSpare || p.spareLocked(slot)) {
+			present[slot.lane] = true
+		}
+	}
+	reserved := 0
+	for l := laneInteractive; l < laneCount; l++ {
+		if !present[l] {
+			reserved++
+		}
+	}
+	if !present[laneSpare] {
+		reserved++
+	}
+	return reserved
+}
+
+// expandLocked asks for one more session for lane l. Requests coalesce: while
+// an active slot is unconnected, the outstanding request is only kept
+// wanted.
+func (p *sessionPool) expandLocked(l lane) {
+	var vacant *sessionSlot
+	pending := false
+	for _, slot := range p.slots {
+		if slot.lifecycle == nil {
+			if vacant == nil {
+				vacant = slot
+			}
+		} else if _, connected := p.connectedHandleLocked(slot); !connected {
+			pending = true
 			slot.lastUsed = time.Now()
 		}
 	}
+	if !pending && vacant != nil {
+		p.activateLocked(vacant)
+		vacant.lane = l
+	}
+}
+
+// releaseLaneLocked retains the lane until accepted data and FIN have left.
+// One idle event per slot is enough, even if more users arrive meanwhile.
+func (p *sessionPool) releaseLaneLocked(slot *sessionSlot) {
+	if slot.streams != 0 || slot.draining != nil {
+		return
+	}
+	handle, connected := p.connectedHandleLocked(slot)
+	if !connected {
+		// Extras keep their failed lane until retirement, not spare recovery.
+		// The permanent base slot can be retagged when it reconnects.
+		if slot == p.slots[0] {
+			slot.lane = laneSpare
+		}
+		return
+	}
+	s := handle.Resource().session
+	if drained := senderDrained(s); drained != nil {
+		lifecycle := slot.lifecycle
+		slot.draining = drained
+		p.watchers.Go(func() {
+			select {
+			case <-drained:
+			case <-s.CloseChan():
+			case <-p.ctx.Done():
+				return
+			}
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if p.ctx.Err() != nil || slot.lifecycle != lifecycle || slot.draining != drained {
+				return
+			}
+			slot.draining = nil
+			p.releaseLaneLocked(slot)
+			p.scheduleIdleLocked(slot)
+			if !p.hasSpareLocked() {
+				p.expandLocked(laneSpare)
+			}
+			p.publishStateLocked(nil)
+		})
+		return
+	}
+	slot.lane = laneSpare
 }
 
 func (p *sessionPool) release(slot *sessionSlot, user bool) {
@@ -398,6 +620,7 @@ func (p *sessionPool) release(slot *sessionSlot, user bool) {
 		slot.users--
 		slot.lastUsed = time.Now()
 	}
+	p.releaseLaneLocked(slot)
 	if !p.idleLocked(slot) {
 		return
 	}
@@ -406,7 +629,7 @@ func (p *sessionPool) release(slot *sessionSlot, user bool) {
 		// A failure its lifecycle has not reported yet retires the slot on
 		// arrival instead, so the failure still opens an episode.
 		p.observeSlotLocked(slot, slot.lifecycle.Snapshot())
-		if slot.lifecycle != nil && slot.state.State != netproxy.SessionConnected {
+		if slot.lifecycle != nil && slot.state.State != netproxy.SessionConnected && !p.lastSpareLocked(slot) {
 			p.retireLocked(slot)
 		}
 		p.publishStateLocked(nil)
@@ -415,13 +638,13 @@ func (p *sessionPool) release(slot *sessionSlot, user bool) {
 	p.scheduleIdleLocked(slot)
 }
 
-func (p *sessionPool) OpenStream(ctx context.Context) (net.Conn, error) {
+func (p *sessionPool) OpenStream(ctx context.Context, l lane) (net.Conn, error) {
 	// Connectivity checks use existing sessions but never grow the pool.
 	user := !netproxy.IsConnectivityCheck(ctx)
 	excluded := make(map[*sessionSlot]struct{}, len(p.slots))
 	var openErr error
 	for len(excluded) < len(p.slots) {
-		slot, handle, err := p.reserve(ctx, excluded, user)
+		slot, handle, err := p.reserve(ctx, excluded, user, l)
 		if err != nil {
 			return nil, errors.Join(openErr, err)
 		}

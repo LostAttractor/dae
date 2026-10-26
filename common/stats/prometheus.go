@@ -102,6 +102,12 @@ var (
 		nil,
 		nil,
 	)
+	muxLanePlacementsDesc = prometheus.NewDesc(
+		"dae_mux_lane_placements_total",
+		"Process-lifetime user streams a multiplexed transport placed in a lane: on a session of the lane, a spare session, or one of another lane.",
+		[]string{"lane", "result"},
+		nil,
+	)
 	udpQueueDelayDesc = prometheus.NewDesc(
 		"dae_udp_queue_delay_seconds",
 		"Process-lifetime time that UDP datagrams waited in a transport's send queue.",
@@ -123,6 +129,7 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 		udpPacketDropsDesc,
 		udpQueueDelayDesc,
 		carrierGateWaitsDesc,
+		muxLanePlacementsDesc,
 	} {
 		ch <- descriptor
 	}
@@ -205,6 +212,9 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
 	}
 	ch <- prometheus.MustNewConstMetric(carrierGateWaitsDesc, prometheus.CounterValue, float64(netproxy.GateWaits()))
+	for placement := range netproxy.LanePlacements() {
+		ch <- prometheus.MustNewConstMetric(muxLanePlacementsDesc, prometheus.CounterValue, float64(placement.Load()), placement.Lane(), placement.Result())
+	}
 	for delay := range netproxy.QueueDelays() {
 		count, sum, cumulative := delay.Snapshot()
 		buckets := make(map[float64]uint64, len(cumulative))

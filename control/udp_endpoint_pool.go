@@ -86,6 +86,7 @@ type UdpEndpoint struct {
 	generation uint32
 	conn       net.PacketConn
 	mitm       bool // The first destination is served by the HTTP/3 packet bridge.
+	isQUIC     bool // Retained sniff result for every destination socket.
 	activity   *domainActivity
 	domain     string
 	// mu protects timer state, observed destinations and cleanup snapshots.

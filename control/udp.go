@@ -350,13 +350,12 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	// Only the first destination participates in sniffing. A different
 	// destination completes initialization with the information already known.
 	var domain string
-	var isQuic bool
 	if dst == ue.firstDst {
 		if !pending.appendPacket(packet) {
 			dropUploadMemory.Add(1)
 			return nil
 		}
-		domain, isQuic, err = pending.sniffer.SniffUdp()
+		domain, ue.isQUIC, err = pending.sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			pending.observedAt = time.Time{}
 			ue.activity.observe(dst.Addr(), domain, observedAt)
@@ -454,14 +453,17 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			ue.origin = netproxy.OriginTarget
 		}
 		label := network.String()
-		if isQuic {
+		dialCtx := ctx
+		if ue.isQUIC {
 			label = "quic" + string(network.IpVersion)
+			// Pooled transports keep bulk datagram flows apart.
+			dialCtx = netproxy.WithQUIC(ctx)
 		}
 		c.logDial(src, ue.firstDst, domain, option, label, pending.routingResult)
 
 		upstream := newUpstreamDial(option)
 		upstream.route = ue.routeLease
-		conn, err = upstream.establishUpstream(ctx, func(ctx context.Context) (net.PacketConn, error) {
+		conn, err = upstream.establishUpstream(dialCtx, func(ctx context.Context) (net.PacketConn, error) {
 			return p.packetBudget().Open(ctx, option.DialTarget, option.dialerForConnection().ListenPacket)
 		})
 		if err != nil {
