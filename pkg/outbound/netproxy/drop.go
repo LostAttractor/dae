@@ -78,6 +78,8 @@ func (d *Drop) Add(n uint64) {
 
 // Drops shared by transports.
 var (
+	// One flow cannot retain another outgoing datagram.
+	DropFlowQueueFull = NewDrop(DropUpload, "flow_queue_full")
 	// A shared carrier cannot accept another outgoing datagram.
 	DropCarrierQueueFull = NewDrop(DropUpload, "carrier_queue_full")
 	// A received datagram finds the queue towards its reader, or the table

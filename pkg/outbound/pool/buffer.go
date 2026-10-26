@@ -30,6 +30,15 @@ func init() {
 	}
 }
 
+// BufferCapacity returns the capacity GetBuffer(size) will allocate, so a
+// caller can reserve memory before copying borrowed data into the pool.
+func BufferCapacity(size int) int {
+	if size >= 1 && size <= maxsize {
+		return 1 << bits.Len(uint(size-1))
+	}
+	return size
+}
+
 // GetBuffer gets a buffer from pool, size should in range: [1, maxsize],
 // otherwise, this function will call make([]byte, size) directly.
 func GetBuffer(size int) []byte {

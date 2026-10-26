@@ -164,3 +164,38 @@ func TestStoreExportsUDPPacketDrops(t *testing.T) {
 		t.Fatalf("exported %d drop counters, want %d", exported, want)
 	}
 }
+
+// Queue delays are exported as a histogram per transport, in seconds.
+var testQueueDelay = netproxy.NewQueueDelay("test")
+
+func TestStoreExportsUDPQueueDelay(t *testing.T) {
+	delay := testQueueDelay
+	before, beforeSum, _ := delay.Snapshot()
+	delay.Observe(3 * time.Millisecond)
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(newStoreAt(time.Now()))
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "dae_udp_queue_delay_seconds" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if metric.GetLabel()[0].GetValue() != "test" {
+				continue
+			}
+			histogram := metric.GetHistogram()
+			counts := map[float64]uint64{}
+			for _, bucket := range histogram.GetBucket() {
+				counts[bucket.GetUpperBound()] = bucket.GetCumulativeCount()
+			}
+			if histogram.GetSampleCount() != before+1 || histogram.GetSampleSum() != (beforeSum+3*time.Millisecond).Seconds() || counts[0.002] != 0 || counts[0.005] != before+1 || len(counts) != len(netproxy.QueueDelayBuckets) {
+				t.Fatalf("exported %v", histogram)
+			}
+			return
+		}
+	}
+	t.Fatal("queue delay not exported")
+}

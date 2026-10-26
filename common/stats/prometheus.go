@@ -96,6 +96,12 @@ var (
 		[]string{"direction", "reason"},
 		nil,
 	)
+	udpQueueDelayDesc = prometheus.NewDesc(
+		"dae_udp_queue_delay_seconds",
+		"Process-lifetime time that UDP datagrams waited in a transport's send queue.",
+		[]string{"transport"},
+		nil,
+	)
 )
 
 func (s *Store) Describe(ch chan<- *prometheus.Desc) {
@@ -109,6 +115,7 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 		externalCounterErrorsDesc,
 		processTimestampDesc,
 		udpPacketDropsDesc,
+		udpQueueDelayDesc,
 	} {
 		ch <- descriptor
 	}
@@ -189,6 +196,14 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(externalCounterErrorsDesc, prometheus.CounterValue, float64(s.externalReadErrors.Load()))
 	for drop := range netproxy.Drops() {
 		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
+	}
+	for delay := range netproxy.QueueDelays() {
+		count, sum, cumulative := delay.Snapshot()
+		buckets := make(map[float64]uint64, len(cumulative))
+		for i, bound := range netproxy.QueueDelayBuckets {
+			buckets[bound.Seconds()] = cumulative[i]
+		}
+		ch <- prometheus.MustNewConstHistogram(udpQueueDelayDesc, count, sum.Seconds(), buckets, delay.Transport())
 	}
 }
 

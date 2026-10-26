@@ -15,7 +15,7 @@ import (
 // QUIC bridge and pushed reply backlogs, including overlapping control planes
 // during reload. Accounts for checked-out buffer capacity; idle sync.Pool
 // storage and QUIC's own buffers are separate.
-var udpPacketMemory = membuffer.NewBudget(8 << 20)
+var udpPacketMemory = netproxy.DatagramMemory
 
 type udpPacket struct {
 	data     []byte
@@ -74,8 +74,8 @@ var (
 	dropSourceQueue    = netproxy.NewDrop(netproxy.DropUpload, "source_queue_full")
 	dropTaskLimit      = netproxy.NewDrop(netproxy.DropUpload, "task_limit")
 	dropSourceLimit    = netproxy.NewDrop(netproxy.DropUpload, "source_limit")
-	dropUploadMemory   = netproxy.NewDrop(netproxy.DropUpload, "packet_memory_limit")
-	dropDownloadMemory = netproxy.NewDrop(netproxy.DropDownload, "packet_memory_limit")
+	dropUploadMemory   = netproxy.DropUploadMemory
+	dropDownloadMemory = netproxy.DropDownloadMemory
 	// The packet's deadline passed before it was sent.
 	dropExpired           = netproxy.NewDrop(netproxy.DropUpload, "expired")
 	dropSetupCapacity     = netproxy.NewDrop(netproxy.DropUpload, "setup_capacity")

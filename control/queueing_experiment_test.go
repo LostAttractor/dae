@@ -1206,7 +1206,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 		},
 		"game_window_sent": windowProbes.Load(),
 		"elapsed_s":        time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
-		"carriers": len(carriers.notsent()), "datagram_memory_peak": udpPacketMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
+		"carriers": len(carriers.notsent()), "datagram_memory_peak": netproxy.DatagramMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
 	}
 	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "LAN_RATE", "RETURN_DELAY", "LABEL", "BINARY"} {
 		report[strings.ToLower(name)] = os.Getenv("QEXP_" + name)

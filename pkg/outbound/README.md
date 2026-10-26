@@ -41,3 +41,10 @@ the repository root with its pinned quic-go dependency:
 ```sh
 nix-shell --run 'go test -race ./pkg/outbound/... -count=1'
 ```
+
+### Shared memory accounting
+
+Outbound transports may use the standard-library-only `pkg/membuffer` package
+for owned buffer reservations. The dependency boundary still excludes control,
+plugins and daemon components. Packet queues share one process-wide budget;
+admission does not exceed it, including requests protected from later eviction.

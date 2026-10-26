@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy/fq"
 )
 
 func TestUDPOwnershipHandoffAtMemoryLimit(t *testing.T) {
@@ -200,5 +201,34 @@ func TestUDPReplayDeadlineCountsRemainingPackets(t *testing.T) {
 	}
 	if got := dropExpired.Load() - before; got != 3 {
 		t.Fatalf("expired replay counted %d packets, want 3", got)
+	}
+}
+
+func TestUDPIngressAndCarrierShareMemoryBudget(t *testing.T) {
+	if udpPacketMemory != netproxy.DatagramMemory {
+		t.Fatal("ingress and carrier use different budgets")
+	}
+	limit := udpPacketMemory.UseLimit(2048)
+	defer limit.Close()
+	packet, ok := copyUDPPacket(make([]byte, 1024), udpPacketMemory)
+	if !ok {
+		t.Fatal("ingress allocation failed")
+	}
+	defer packet.release()
+	s := new(fq.Scheduler)
+	defer s.Clear()
+	if !s.Force(new(fq.Flow), time.Now(), make([]byte, 1024)) {
+		t.Fatal("carrier admission failed")
+	}
+	if s.Force(new(fq.Flow), time.Now(), make([]byte, 1)) {
+		t.Fatal("carrier ignored ingress allocation")
+	}
+	packet.release()
+	if !s.Offer(new(fq.Flow), time.Now(), make([]byte, 1024)) {
+		t.Fatal("ingress release did not return carrier capacity")
+	}
+	s.Clear()
+	if used := udpPacketMemory.Status().Used; used != 0 {
+		t.Fatalf("shared budget retained %d bytes", used)
 	}
 }

@@ -56,7 +56,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `truncated` | `upload` | Truncated datagram |
 | `route_missing` | `upload` | The kernel routing record is gone, or the endpoint was removed while the datagram queued |
 | `source_queue_full`, `task_limit`, `source_limit` | `upload` | Per-source queue, global task or backlogged source limit reached |
-| `packet_memory_limit` | both | Shared datagram memory exhausted |
+| `packet_memory_limit` | both | Shared datagram memory (8 MiB) exhausted |
 | `expired` | `upload` | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
 | `setup_capacity` | `upload` | Shared slow-operation capacity exhausted while initializing an association or opening a destination socket |
 | `slow_write_capacity` | `upload` | Shared slow-operation capacity exhausted before a blocking UDP write |
@@ -82,9 +82,10 @@ forwarding or bridge delivery, without refreshing its deadline at each queue.
 This does not impose a delivery deadline on transport-internal or kernel queues.
 
 The shared 8 MiB packet-memory budget covers ingress, pending sniffing packets,
-MITM bridge queues and pushed reply backlogs across control-plane generations.
+MITM bridge queues, pushed reply backlogs and smux send queues across control-plane generations.
 Moving an owned packet transfers its allocation and reservation without another
-payload copy. Private parser reassembly, DNS request copies, transport-internal
+payload copy. Admitted smux requests are protected from eviction, but admission
+never exceeds this budget. Private parser reassembly, DNS request copies, other transport-internal
 buffers, idle pool storage and kernel buffers are separate.
 
 TUIC native UDP and Hysteria2 use nonblocking QUIC DATAGRAM admission. A full

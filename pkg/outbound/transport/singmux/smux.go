@@ -56,7 +56,7 @@ var (
 	errSmuxProtocol  = errors.New("smux: invalid frame")
 	errSmuxStreamIDs = errors.New("smux: stream IDs exhausted")
 
-	dropFlowQueueFull    = netproxy.NewDrop(netproxy.DropUpload, "flow_queue_full")
+	dropFlowQueueFull    = netproxy.DropFlowQueueFull
 	dropCarrierQueueFull = netproxy.DropCarrierQueueFull
 )
 
