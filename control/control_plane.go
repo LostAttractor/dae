@@ -65,9 +65,9 @@ type ControlPlane struct {
 	closeErr   error
 }
 
-// TODO: 统一 Outbound 中的DNS解析器
-// TODO: Hy2 的 mark 支持
-// TODO: HandlePkt HandleConn 分割 Route 和 Dial
+// TODO: unify the DNS resolvers used by outbounds.
+// TODO: support mark for Hy2.
+// TODO: split Route and Dial between HandlePkt and HandleConn.
 //
 // NewControlPlane consumes prepared kernel resources and copies prepared rules
 // to build the userspace control plane. When WAN is configured, it attaches the

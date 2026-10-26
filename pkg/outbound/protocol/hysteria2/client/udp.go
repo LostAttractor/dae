@@ -75,7 +75,7 @@ func (u *udpConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 				// Incomplete message, wait for more
 				continue
 			}
-			// TODO: 避免copy
+			// TODO: avoid the copy.
 			addr, parseErr := netip.ParseAddrPort(dfMsg.Addr)
 			if parseErr != nil {
 				return copy(p, dfMsg.Data), netproxy.NewAddr("udp", dfMsg.Addr), nil

@@ -189,7 +189,7 @@ func ParseSSURL(ssurl string) (data *Shadowsocks, err error) {
 	content := ssurl
 	// try to parse the ss:// link, if it fails, base64 decode first
 	if v, ok = parse(content); !ok {
-		// 进行base64解码，并unmarshal到VmessInfo上
+		// The link may be base64-wrapped; decode and re-parse it.
 		t := content[5:]
 		var l, r string
 		if ind := strings.Index(t, "#"); ind > -1 {

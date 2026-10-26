@@ -1569,7 +1569,7 @@ static __always_inline int do_tproxy_unfragmented(
 	get_tuples(skb, tuples, l3h, l4h, l4proto);
 
 	// Backup for feature use.
-	// 由于向helper function传递了skb, 一旦verifier无法推断出skb是否被修改, 则可能在访问skb时出现问题
+	// Helper calls receive skb; if the verifier cannot prove skb is unchanged, later access may fail.
 	u16 protocol = skb->protocol;
 	u32 ifindex = skb->ifindex;
 
@@ -1943,7 +1943,7 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
 	 */
-	// TODO: 直接redirect到lo?
+	// TODO: redirect directly to lo?
 	skb->mark = TPROXY_MARK;
 	if (bpf_skb_change_type(skb, PACKET_HOST))
 		return TC_ACT_SHOT;

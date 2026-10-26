@@ -135,9 +135,9 @@ func kernelRoute(result *routingResult) (routeDecision, bool) {
 	return d, d.outbound <= consts.OutboundUserDefinedMax
 }
 
-// verified 返回 domain 是不是 dst 的域名
-// SniffVerifyMode_Loose 在这个域名存在时, 通过认证
-// SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
+// verifySniff reports whether domain is the domain of dst.
+// SniffVerifyMode_Loose passes when the domain is known.
+// SniffVerifyMode_Strict passes when a matching DNS resolution was observed.
 func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, domain string) (verified bool, err error) {
 	if err = ctx.Err(); err != nil {
 		return
