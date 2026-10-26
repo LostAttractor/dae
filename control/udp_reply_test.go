@@ -262,8 +262,8 @@ func TestUDPReplyTrySendUsesOnlyExistingSockets(t *testing.T) {
 	other := second.LocalAddr().(*net.UDPAddr).AddrPort()
 	pool := NewAnyfromPool()
 	sender := &udpReplySender{pool: pool, to: receiver.LocalAddr().(*net.UDPAddr).AddrPort()}
-	if sender.trySend([]byte("reply"), netip.MustParseAddrPort("192.0.2.1:443")) || len(pool.pool) != 0 {
-		t.Fatal("trySend sent without a socket")
+	if err := sender.trySend([]byte("reply"), netip.MustParseAddrPort("192.0.2.1:443")); !errors.Is(err, errReplyWouldBlock) || len(pool.pool) != 0 {
+		t.Fatalf("trySend without a socket = %v, want slow path without creating a socket", err)
 	}
 	pool.pool[from] = &Anyfrom{conn: first, idleTTL: time.Hour}
 	pool.pool[other] = &Anyfrom{conn: second, idleTTL: time.Hour}
@@ -276,8 +276,8 @@ func TestUDPReplyTrySendUsesOnlyExistingSockets(t *testing.T) {
 		}
 	}
 	for _, address := range []netip.AddrPort{from, other} {
-		if !sender.trySend([]byte("reply"), address) {
-			t.Fatalf("trySend did not use the pooled socket of %s", address)
+		if err := sender.trySend([]byte("reply"), address); err != nil {
+			t.Fatalf("trySend from the pooled socket of %s: %v", address, err)
 		}
 		read(address)
 	}
@@ -288,8 +288,8 @@ func TestUDPReplyTrySendUsesOnlyExistingSockets(t *testing.T) {
 	pool.mu.Lock()
 	pooled, cached := sender.trySend([]byte("reply"), other), sender.trySend([]byte("reply"), from)
 	pool.mu.Unlock()
-	if pooled || !cached {
-		t.Fatalf("with the pool locked, trySend sent from the pool %v, from the cache %v", pooled, cached)
+	if !errors.Is(pooled, errReplyWouldBlock) || cached != nil {
+		t.Fatalf("with the pool locked, trySend from the pool = %v, from the cache = %v", pooled, cached)
 	}
 	read(from)
 }

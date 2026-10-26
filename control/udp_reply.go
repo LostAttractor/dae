@@ -58,11 +58,22 @@ func (s *udpReplySender) send(data []byte, from netip.AddrPort) error {
 	return err
 }
 
-// trySend sends without waiting from an existing socket of from; a reply
-// without one, or one the socket cannot take at once, needs send.
-func (s *udpReplySender) trySend(data []byte, from netip.AddrPort) bool {
+// trySend sends without waiting from an existing socket of from, dropping and
+// counting a reply if it is full. Only replies needing send return errReplyWouldBlock.
+func (s *udpReplySender) trySend(data []byte, from netip.AddrPort) error {
 	socket, _ := s.socket(from, false)
-	return socket != nil && socket.trySend(data, s.to) == nil
+	if socket == nil {
+		return errReplyWouldBlock
+	}
+	switch err := socket.trySend(data, s.to); {
+	case err == nil:
+		return nil
+	case errors.Is(err, syscall.EAGAIN):
+		dropReplySocketFull.Add(1)
+		return netproxy.ErrPacketDropped
+	default:
+		return errReplyWouldBlock
+	}
 }
 
 // socket returns the cached socket of from or one the pool holds, without

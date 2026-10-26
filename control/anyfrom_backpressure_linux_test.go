@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -76,13 +77,31 @@ func TestAnyfromBackpressureDeadlineAndClose(t *testing.T) {
 	}
 	sender := &udpReplySender{to: dst}
 	sender.cached.Store(&udpReplySocket{from: socket.LocalAddr().(*net.UDPAddr).AddrPort(), socket: a})
-	if sender.trySend(data, sender.cached.Load().from) {
-		t.Fatal("trySend reported a reply the full socket did not take")
-	}
-	// A reply is dropped, counted, at once: no wait for the socket.
+	// Both sending paths drop and count at once: no wait for the socket.
 	dropped, start := dropReplySocketFull.Load(), time.Now()
-	if err := sender.send(data, sender.cached.Load().from); err != netproxy.ErrPacketDropped || dropReplySocketFull.Load()-dropped != 1 || time.Since(start) > time.Second {
+	if err := sender.trySend(data, sender.cached.Load().from); !errors.Is(err, netproxy.ErrPacketDropped) || dropReplySocketFull.Load()-dropped != 1 || time.Since(start) > time.Second {
+		t.Fatalf("trySend to a full socket = %v after %v with %d counted", err, time.Since(start), dropReplySocketFull.Load()-dropped)
+	}
+	dropped, start = dropReplySocketFull.Load(), time.Now()
+	if err := sender.send(data, sender.cached.Load().from); !errors.Is(err, netproxy.ErrPacketDropped) || dropReplySocketFull.Load()-dropped != 1 || time.Since(start) > time.Second {
 		t.Fatalf("send to a full socket = %v after %v with %d counted", err, time.Since(start), dropReplySocketFull.Load()-dropped)
+	}
+	// A pushed reply is already dropped, not copied for a slow-path retry.
+	_, ue, pushed, _, _ := pushEndpoint(t)
+	ue.replies = sender
+	dropped = dropReplySocketFull.Load()
+	failed, memoryDrops := dropReplySendFailed.Load(), dropDownloadMemory.Load()
+	limit := udpPacketMemory.UseLimit(1)
+	pushed.onPacket(data, sender.cached.Load().from)
+	limit.Close()
+	if drops := dropReplySocketFull.Load() - dropped; drops != 1 {
+		t.Fatalf("pushed reply counted %d socket drops, want 1", drops)
+	}
+	if dropReplySendFailed.Load() != failed || dropDownloadMemory.Load() != memoryDrops {
+		t.Fatal("pushed reply double-counted the drop or tried to copy it into backlog")
+	}
+	if got := stats.DefaultStore.Snapshot()[ue.statsPath].DownloadBytes; got != 0 || ue.IsClosed() {
+		t.Fatalf("dropped push recorded %d downloaded bytes or ended the association", got)
 	}
 	// DNS responses still wait, bounded by their deadline.
 	if _, err := a.WriteToUDPAddrPortWithDeadline(data, dst, time.Now().Add(30*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {

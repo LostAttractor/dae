@@ -26,18 +26,18 @@ import (
 
 // udpReplies sends an endpoint's replies to its client. send may wait to
 // create a socket, never for a full one: it drops the reply instead, counted,
-// with netproxy.ErrPacketDropped. trySend sends a reply only if that cannot
-// block, reporting whether it did.
+// with netproxy.ErrPacketDropped. trySend returns nil on success,
+// netproxy.ErrPacketDropped for a counted drop, or errReplyWouldBlock to defer to send.
 type udpReplies interface {
 	send(data []byte, from netip.AddrPort) error
-	trySend(data []byte, from netip.AddrPort) bool
+	trySend(data []byte, from netip.AddrPort) error
 }
 
 // UdpHandler sends replies that may block.
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
 func (h UdpHandler) send(data []byte, from netip.AddrPort) error { return h(data, from) }
-func (UdpHandler) trySend([]byte, netip.AddrPort) bool           { return false }
+func (UdpHandler) trySend([]byte, netip.AddrPort) error          { return errReplyWouldBlock }
 
 const (
 	maxUDPSources               = 4096
@@ -219,10 +219,14 @@ func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.
 		return false, errReplyWouldBlock
 	}
 	if !wait {
-		if !ue.replies.trySend(payload, from) {
+		err = ue.replies.trySend(payload, from)
+		if errors.Is(err, errReplyWouldBlock) {
 			return false, errReplyWouldBlock
 		}
-	} else if err := ue.replies.send(payload, from); err != nil {
+	} else {
+		err = ue.replies.send(payload, from)
+	}
+	if err != nil {
 		// A reply lost on the way to the client does not end the association.
 		if !errors.Is(err, netproxy.ErrPacketDropped) {
 			dropReplySendFailed.Add(1)

@@ -51,13 +51,14 @@ type testReplies struct {
 	slow atomic.Int32
 }
 
-func (r *testReplies) trySend(data []byte, from netip.AddrPort) bool {
+func (r *testReplies) trySend(data []byte, from netip.AddrPort) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.fast {
-		r.sent, r.from = append(r.sent, string(data)), append(r.from, from)
+	if !r.fast {
+		return errReplyWouldBlock
 	}
-	return r.fast
+	r.sent, r.from = append(r.sent, string(data)), append(r.from, from)
+	return nil
 }
 
 func (r *testReplies) send(data []byte, from netip.AddrPort) error {

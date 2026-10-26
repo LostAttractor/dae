@@ -517,13 +517,13 @@ type qexpFlow struct {
 	dropped  atomic.Uint64 // replies the LAN reader was too slow for
 }
 
-func (f *qexpFlow) trySend(data []byte, _ netip.AddrPort) bool {
+func (f *qexpFlow) trySend(data []byte, _ netip.AddrPort) error {
 	select {
 	case f.replies <- bytes.Clone(data):
 	default:
 		f.dropped.Add(1)
 	}
-	return true
+	return nil
 }
 
 func (f *qexpFlow) send(data []byte, from netip.AddrPort) error {
