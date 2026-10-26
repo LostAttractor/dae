@@ -14,11 +14,31 @@ own `instance` label continues to identify the scrape target. Plugins must be
 compiled in and enabled to produce metrics.
 
 Plugin collectors are prepared privately and published on activation. Failed
-preparation preserves the current metrics. Reload reconstructs plugin instances,
-resetting their counters and histogram observations. Closing an instance removes
+preparation preserves the current metrics. Reload preserves unchanged instances
+and their statistics; rebuilt instances reset counters and histogram observations.
+Closing an instance removes
 its series from subsequent scrapes. `dae_plugin_instance_start_time_seconds`
 records activation time. Changing or disabling the listener does not reset
 running plugin state. Use `rate` or `increase` for counters across resets.
+
+## Core traffic statistics
+
+`dae_process_connections_total{network}` and `dae_process_traffic_bytes_total{network,direction}`
+retain process-lifetime totals from the same source as global status. Retiring
+detailed counters does not reduce these totals.
+`dae_group_connections_total{outbound,network}` and `dae_group_traffic_bytes_total{outbound,network,direction}`
+accumulate by outbound group name for the process lifetime, including retired
+paths, and share the totals shown by status. Replacing nodes does not reduce them.
+Removing a group hides its series; re-adding it resumes its previous totals,
+including connections that drained while the group was absent.
+
+Path-level connection, traffic, dial-duration and error series retain nodes in the
+current configuration. Removed paths are retired once their connections end and
+their last minute of history expires. Returning paths start new detailed counters;
+use `rate` or `increase` for historical trends. Device identities are not exported
+as Prometheus labels. Listener changes prepare the required sockets before
+publication; a binding failure rejects the configuration and preserves the running
+service.
 
 ## UDP packet drops
 
@@ -57,7 +77,7 @@ by this metric.
 
 ## Plugin metric names
 
-All metric names below have the **`dae_plugin_`** prefix. Histograms expose
+Plugin metric names below omit the **`dae_plugin_`** prefix. Histograms expose
 `_bucket`, `_sum` and `_count`; durations use seconds and memory uses bytes.
 Bounded counter vectors may appear when their first event occurs. Collection
 uses in-memory state and does not depend on log level.
@@ -158,10 +178,12 @@ New or unreadable workers are excluded from the sums. Zero samples does not
 mean live workers use zero memory. RSS/PSS include more than the V8 old-generation
 heap limited by `memory_limit`.
 
-`dae status`, `dae status --recent`, `dae plugins status` and
-`dae plugins surge status` show the same pool counters, memory sums, coverage
-and age. The API and `--json` retain these values in each Surge report's
-`runtimes` field. QuickJS reports its backend without Node.js process metrics.
+`dae plugins surge status` and `dae plugins status --verbose` show the pool
+counters, memory sums, coverage and age from the same underlying statistics.
+`dae status` and `dae status --recent` show core daemon state without expanding
+plugin runtime reports. `/api/status` and `dae status --json` retain these values
+in each Surge report's `runtimes` field; plugin JSON commands also include them.
+QuickJS reports its backend without Node.js process metrics.
 
 Script `phase` is `http-request`, `http-response`, `dns`, `cron` or `generic`; slot-wait `kind`
 also includes `body_rewrite`. Script results are `unchanged`, `success`,

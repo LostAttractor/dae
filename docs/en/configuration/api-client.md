@@ -221,6 +221,10 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | Restore explicit `selector(n)`; admin, empty body; `409` without a default |
 | `POST /api/probes` | `202` + `ProbeResponse`; admin, `{"outbound":"group","node_id":"..."}`; omit or leave `node_id` empty for the entire outbound |
+| `POST /api/resources/refresh` | `202` + `Operation`; admin, empty body; refresh accepted resources, `409` if a refresh is queued/running |
+| `GET /api/resources` | `ResourceRefreshStatus`; admin; latest API/automatic refresh and next check |
+| `POST /api/operations` | `202` + `Operation`; admin; submit reload, suspend or refresh and receive a unique ID |
+| `GET /api/operations/{id}` | `Operation`; admin; `404` for unknown or expired IDs |
 | `GET /api/device` | `DeviceState`; direct identifiable LAN caller, TCP only |
 | `GET /api/device/status` | `DeviceStatus`; MAC-attributed upstream traffic, connections and used outbounds for the direct LAN caller |
 | `POST /api/device/mitm-tests` | `201` + `MITMTest`; empty body, creates a short-lived browser challenge |
@@ -232,6 +236,13 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `POST /api/certificate/tests` | `201` + `CertificateTest`; empty body, issues a temporary certificate held in memory without replacing the management certificate; TCP API only |
 | `GET /api/certificate/tests/{id}` | `CertificateTest` over HTTPS using a challenge certificate; success consumes the challenge; management or older challenge connections receive `409` and close for retry |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Public certificate downloads, `404` when unavailable |
+
+`RefreshResources(ctx)` returns an `Operation`; query `Operation(ctx, id)` to
+follow that request. `ResourceRefreshStatus(ctx)` returns the latest refresh as
+`operation` and its next check as `next_check`. `SubmitOperation(ctx,
+api.OperationRequest{Kind: "reload"})` submits a generic operation; `Abort` applies
+only to reload and suspend. Refresh uses resources from the accepted configuration;
+configuration-file changes require `dae reload`. See [resource refresh](api.md#resource-refresh).
 
 All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass LAN ingress verification (direct neighbor validation for Ethernet; interface evidence for IP-only links, including routed subnets), otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
 

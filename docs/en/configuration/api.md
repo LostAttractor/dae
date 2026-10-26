@@ -44,7 +44,7 @@ For selector groups, `dae status` (including verbose/JSON) includes only selecte
 
 - **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, clients with verified LAN ingress can use selectors immediately; the toolbar shows **LAN access**. Plain `selector` has no configured default: restore a saved choice, otherwise initially select the first candidate, without a default badge or reset button. Only explicit `selector(n)`, including `selector(0)`, declares a default path index. Changes affect everyone using the group. Choices persist as independent logical path references; reordering, priority, TLS, multiplex, global mark and probe settings do not change them.
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authenticated selector access and public certificate downloads remain available.
-- **This Device Status**: Active/total connections, upload/download totals, recent rates and used outbounds for the visiting device. IPv4/IPv6 share the ingress MAC identity; administrator login is unnecessary. These are userspace upstream counters, including splice acceleration, excluding kernel passthrough, local HTTP/DNS responses and daemon-originated work. Totals survive reload and reset on process restart.
+- **This Device Status**: Active/total connections, upload/download totals, recent rates and used outbounds for the visiting device. IPv4/IPv6 share the ingress MAC identity; administrator login is unnecessary. These are userspace upstream counters, including splice acceleration, excluding kernel passthrough, local HTTP/DNS responses and daemon-originated work. Totals survive reload. Devices with no active connections are retired after their last minute of history expires; returning devices start a new observation period identified by `started_at`. Process restart resets all counters.
 - **Global Status**: Version, uptime, global connections/traffic, outbound/node state, domain tables and plugins. Existing administrative authorization applies; logout or session expiry clears protected data.
 - **HTTPS Modules**: Choose **Router default**, **On** or **Off** for this device. **Router default** follows `mitm.client_source_address` and shows its current value; **On** and **Off** override it, including explicit disabling. Install and trust the CA before turning modules on: without it, the device's HTTPS connections fail. The section warns until this browser verifies the CA. While modules are on, the page tests the CA by itself and shows a red alert when verification fails. **Test certificate** separately checks CA acceptance by this browser and the transparent MITM path.
 
@@ -146,6 +146,10 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `DELETE /api/selectors/{name}` | Restore explicit `selector(n)`; `409` if no default exists |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"node ID"}` probes one node; omit or leave `node_id` empty for the whole outbound; returns `202` with accepted node IDs |
 | `POST /api/plugins/{instance}/scripts/run` | Requires administration; `{"module":"tools","script":"demo.tool"}` triggers a configured cron/generic task; returns `202` with its per-task run number and acceptance status |
+| `POST /api/resources/refresh` | Administrator; empty body, refresh resources from the accepted configuration; returns `202` and an operation ID |
+| `GET /api/resources` | Administrator; latest API/automatic refresh operation and next scheduled check |
+| `POST /api/operations` | Administrator; submit reload, suspend or refresh; returns `202` and a unique operation ID |
+| `GET /api/operations/{id}` | Administrator; operation status; `404` for unknown or expired IDs |
 | `GET /api/certificate` | CA name, SHA-256 fingerprint, and optional `mitm_test_generation` and `mitm_test_origins`; `404` when unavailable |
 | `POST /api/certificate/tests` | `201` with a one-minute CA trust challenge and a temporary certificate held in memory; preserves the management certificate; TCP API only, no MAC or MITM required |
 | `GET /api/certificate/tests/{id}` | HTTPS only; a challenge handshake returns `id`, `ca_fingerprint` and `expires_at` and consumes the challenge; management or older challenge connections receive `409` and close for retry; consumed or expired challenges return `404` |
@@ -172,3 +176,32 @@ The daemon status schema is 14, served at `/api/status` over the Unix socket `/v
 `dae plugins status --json` prints process-wide `compiled_plugins`, the `buffer_memory` budget and complete reports in `plugins`. The compiled list and budget remain visible with no active instances and after instance filtering. The CLI plugin overview and Web Plugins section use the same accepted state; failed reloads leave it unchanged. The ordinary `dae status` text display does not expand plugin details. `dae plugins <type> status --instance <ID>` selects one instance. Automatic plugin state excludes configuration credentials; notification fields retain explicit script-authored text under the same administration access controls.
 
 Notification histories also share a conservative 1 MiB JSON budget per instance, charging worst-case text escaping. When full, the longest history loses its oldest entry first; ties remove the oldest entry. A script may therefore retain fewer than 50 messages. Verbose and JSON output include all messages remaining within this budget.
+
+### Resource refresh
+
+```sh
+sudo curl --unix-socket /var/run/dae.sock -X POST -H 'X-Dae-API: 1' http://localhost/api/resources/refresh
+sudo curl --unix-socket /var/run/dae.sock http://localhost/api/operations/OPERATION_ID
+sudo curl --unix-socket /var/run/dae.sock http://localhost/api/resources
+```
+
+Refresh uses the accepted configuration; changes to configuration files still
+require `dae reload`. A `202` response contains a unique operation ID. Work
+continues after the HTTP response and is published serially with reload and
+suspend operations. Another refresh while one is queued or running returns `409`.
+Operations include `id`, `kind`, `state` (`queued`, `running`, `completed`, `failed`
+or `canceled`), `trigger` (`api` or `automatic`), queue/start/finish timestamps,
+`progress`, `result` and `error`. `GET /api/resources` returns the latest refresh
+as `operation` and the next check as `next_check`; `operation` is omitted before
+the first refresh. The result reports how many resource groups retained their
+previous contents after download or validation failures. See
+[resource caching](../../zh/configuration/cache-directory.md#全局资源缓存) for the
+automatic check interval and fallback rules.
+
+`POST /api/operations` accepts `{"kind":"reload"}`, `{"kind":"suspend"}` or
+`{"kind":"refresh"}`. Reload and suspend may also set `"abort":true`. The queue
+holds up to 16 waiting operations and returns `409` when full. The daemon retains
+the latest 64 completed operations and current work. `GET /api/operations/{id}`
+returns `404` for unknown, expired or previous-process IDs. A CLI timeout stops
+waiting but does not cancel accepted work. Local Unix operation routes remain
+available while the control plane is replaced.

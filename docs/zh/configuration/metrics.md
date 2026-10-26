@@ -25,7 +25,7 @@ global {
 
 路径级连接、流量、拨号耗时和错误序列保留当前配置中的节点；移除路径在连接结束且最近一分钟历史过期后回收。
 路径重新出现时明细从零开始，查询历史趋势使用 `rate` 或 `increase`。设备统计不作为 Prometheus 标签导出。
-端口变更会先准备全部监听；任一端口绑定失败时拒绝配置，保留现有服务。
+监听变更会先准备所需 socket；任一绑定失败时拒绝配置，保留现有服务。
 
 ## UDP 丢包
 
@@ -110,10 +110,35 @@ global {
 | `surge_execution_slots_limit` | Gauge | 共享槽位上限 |
 | `surge_rule_matches_total{kind}` | Counter | HTTP 改写、Map Local、DNS Host 命中 |
 | `surge_processing_skips_total{stage,reason}` | Counter | 跳过脚本或改写操作的有界原因分类 |
+| `surge_runtime_info{backend}` | Gauge | 编译时选择的后端：`quickjs` 或 `nodejs`，值为 1 |
+| `surge_nodejs_workers{state}` | Gauge | 按 `active`、`idle` 区分的工作进程数 |
+| `surge_nodejs_worker_limit` | Gauge | 当前实例的工作进程上限 |
+| `surge_nodejs_worker_starts_total` | Counter | 成功启动的应用工作进程数 |
+| `surge_nodejs_worker_start_failures_total` | Counter | 应用工作进程启动失败次数 |
+| `surge_nodejs_worker_reuses_total` | Counter | 从空闲池取得工作进程的次数 |
+| `surge_nodejs_worker_retirements_total{reason}` | Counter | 回收原因：`idle` 或 `failed`，后者包含取消 |
+| `surge_nodejs_cgroup_memory_bytes` | Gauge | 缓存的进程池 `memory.current`，包含内核计账，不等同于 RSS/PSS |
+| `surge_nodejs_cgroup_memory_peak_bytes` | Gauge | 内核记录的进程池 `memory.peak` |
+| `surge_nodejs_cgroup_memory_limit_bytes` | Gauge | 进程池的 `memory.max` |
+| `surge_nodejs_cgroup_oom_kills_total` | Counter | 进程池及工作进程的内核 `memory.events` 中 `oom_kill` 计数；包含祖先组或宿主 OOM 的受害者，不等同于工作进程超限次数或回收次数 |
+| `surge_nodejs_cgroup_sample_timestamp_seconds` | Gauge | 最近一次成功的 cgroup 采样时间，不可用时为 0 |
+| `surge_nodejs_idle_timeout_seconds` | Gauge | 多余空闲工作进程的回收超时 |
+| `surge_nodejs_rss_bytes` | Gauge | 已采样工作进程的 RSS 之和，共享页可能重复计数 |
+| `surge_nodejs_pss_bytes` | Gauge | 已采样工作进程的 PSS 之和，按比例分摊共享页 |
+| `surge_nodejs_memory_sampled_workers` | Gauge | 当前纳入内存汇总的工作进程数 |
+| `surge_nodejs_memory_sample_timestamp_seconds` | Gauge | 汇总所含最旧样本的时间，无样本时为 0 |
 
-脚本 `phase` 为 `http-request`、`http-response`、`dns`；槽位等待的 `kind` 额外包含 `body_rewrite`。
+Node.js 指标仅在 Node.js 构建中提供。每个活动工作进程属于一次调用，等待宿主 HTTP 或定时器时仍属于活动状态。含脚本的实例在准备阶段预热一个工作进程，计入应用启动次数；后续按需扩容。维护任务每 5 秒检查一次，回收空闲满 60 秒的多余进程，保留最近归还的一个空闲进程。空闲回收不会终止正在执行的调用。预检使用一次性进程池，不计入应用启动或回收次数；实例关闭也不计为回收。没有脚本的实例不创建运行时工作进程。
+
+后台每 5 秒从 Linux `smaps_rollup` 采样内存；metrics 和状态查询只读取缓存值。应将已采样进程数与活动、空闲进程总数比较，并结合样本时间判断覆盖率和时效。新进程或无法读取的进程不计入汇总；没有样本不代表运行中的进程不占内存。RSS/PSS 包含的范围大于 `memory_limit` 限制的 V8 老生代堆。
+
+`dae plugins surge status` 和 `dae plugins status --verbose` 展示同一底层统计提供的进程池计数、内存汇总、覆盖率及样本年龄。`dae status` 与 `dae status --recent` 展示核心状态，不展开插件运行时报告。`/api/status` 和 `dae status --json` 在各 Surge 报告的 `runtimes` 字段中保留这些值，插件 JSON 命令也包含它们。QuickJS 只报告后端，不提供 Node.js 进程指标。
+
+脚本 `phase` 为 `http-request`、`http-response`、`dns`、`cron`、`generic`；槽位等待的 `kind` 额外包含 `body_rewrite`。
 脚本结果为 `unchanged`、`success`、`synthetic`、`abort`、`failed`、`skipped`。
 运行耗时不包含执行前跳过、槽位等待、正文缓冲及应用脚本结果。HTTP 脚本失败后继续转发原文仍计为脚本失败；DNS 脚本成功返回服务器后发生的下游解析失败不计为脚本失败。
+
+Cron 与 generic 任务共用执行槽位。在预算内未取得槽位的任务计为跳过；已有调用尚未结束时到达的定时触发增加 `surge_processing_skips_total{stage="cron",reason="overlap"}`，不会另起调用。任务成功表示运行时正常完成，不代表业务逻辑成功。
 
 规则数量包含 `script`、`url_rewrite`、`header_rewrite`、`body_rewrite`、`map_local`、`dns_host`、`destination`、`route`。
 命中数只覆盖实际执行的 HTTP/DNS 匹配，DNS alias 每一跳单独计数；匹配不一定导致修改。

@@ -92,9 +92,11 @@ results and runtime durations, execution-slot waits/occupancy, rule matches and
 processing skips. Collection is independent of trace logging. See the
 [metric definitions and examples](../../docs/en/configuration/metrics.md#surge).
 Node.js pool counters, background RSS/PSS samples, and separately cached cgroup
-usage, peak, limit and OOM-kill counts also appear in ordinary
-status, `--recent`, and plugin reports. Collectors and status queries read cached
-values without process I/O. Sample coverage and age identify partial/stale data.
+usage, peak, limit and OOM-kill counts appear in `dae plugins surge status`,
+`dae plugins status --verbose` and raw JSON reports. Core `dae status` and
+`status --recent` do not expand plugin runtime reports. Collectors and status
+queries read cached values without process I/O. Sample coverage and age identify
+partial/stale data.
 
 See [configuration](../../docs/zh/configuration/surge-module.md),
 [supported features](../../docs/zh/configuration/surge-module-support.md), and

@@ -42,7 +42,7 @@ routing {
 
 - **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过 LAN 入口校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
-- **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留；设备无活动连接且最近一分钟历史过期后回收统计，重新出现时开始新的观察周期，`started_at` 表示该周期起点。
+- **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留；设备无活动连接且最近一分钟历史过期后回收统计，重新出现时开始新的观察周期，`started_at` 表示该周期起点。进程重启会重置所有计数。
 - **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
 - **HTTPS Modules**：为当前设备选择 **Router default**、**On** 或 **Off**。**Router default** 跟随 `mitm.client_source_address` 并显示当前取值；**On** / **Off** 覆盖该配置，包括显式关闭。开启前须[安装并信任 CA](certificate.md)，否则该设备的 HTTPS 连接会失败。当前浏览器验证 CA 前，该区域持续显示警告；开启期间页面会自动测试 CA，验证失败时显示红色警告。**Test certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
 
@@ -146,7 +146,9 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
 | `POST /api/resources/refresh` | 需要管理权限；空正文，立即尝试刷新当前配置的订阅、模块与依赖；返回 `202` 和受理状态 |
 | `GET /api/resources` | 需要管理权限；最近一次 API/自动刷新状态和下次自动检查时间 |
-| `POST /api/certificate/tests` | 创建一分钟有效的 CA 信任挑战，签发内存临时证书；不修改管理证书，不要求 MAC 或 MITM |
+| `POST /api/operations` | 需要管理权限；提交 reload、suspend 或 refresh，返回 `202` 和唯一操作 ID |
+| `GET /api/operations/{id}` | 需要管理权限；查询操作状态，未知或过期 ID 返回 `404` |
+| `POST /api/certificate/tests` | 仅 TCP API；返回 `201` 和一分钟有效的 CA 信任挑战，签发内存临时证书；不修改管理证书，不要求 MAC 或 MITM |
 | `GET /api/certificate/tests/{id}` | 仅 HTTPS；挑战证书握手返回 `id`、`ca_fingerprint`、`expires_at` 并消费挑战，管理证书或旧挑战连接 `409` 后关闭，已消费或失效挑战 `404` |
 | `GET /api/certificate` | CA 名称、SHA-256 指纹，以及可选 `mitm_test_generation`、`mitm_test_origins`；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
@@ -175,9 +177,9 @@ daemon 的状态 schema 为 14，通过 Unix socket `/var/run/dae.sock` 的 `/ap
 
 ### 资源刷新
 
-```bash
+```sh
 sudo curl --unix-socket /var/run/dae.sock -X POST -H 'X-Dae-API: 1' http://localhost/api/resources/refresh
-sudo curl --unix-socket /var/run/dae.sock http://localhost/api/operations/返回的ID
+sudo curl --unix-socket /var/run/dae.sock http://localhost/api/operations/OPERATION_ID
 sudo curl --unix-socket /var/run/dae.sock http://localhost/api/resources
 ```
 
