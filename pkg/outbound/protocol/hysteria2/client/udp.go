@@ -126,7 +126,21 @@ func (u *udpConn) feedDefrag(msg *protocol.UDPMessage) *protocol.UDPMessage {
 	return dfMsg
 }
 
-func (u *udpConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
+func (u *udpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	n, err := u.TryWriteTo(b, addr)
+	if err == netproxy.ErrPacketDropped {
+		return len(b), nil
+	}
+	return n, err
+}
+
+func (u *udpConn) TryWriteTo(b []byte, addr net.Addr) (n int, err error) {
+	defer func() {
+		if errors.Is(err, quic.ErrDatagramQueueFull) {
+			netproxy.DropCarrierQueueFull.Add(1)
+			err = netproxy.ErrPacketDropped
+		}
+	}()
 	if addr == nil {
 		return 0, errors.New("nil UDP destination")
 	}
@@ -159,7 +173,7 @@ func (u *udpConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	err = u.WritePacket(buf, msg)
+	err = u.writePacket(buf, msg)
 	if errTooLarge, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
 		// Message too large, try fragmentation
 		msg.PacketID = uint16(mathrand.IntN(0xFFFF)) + 1
@@ -168,7 +182,7 @@ func (u *udpConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 			return 0, err
 		}
 		for _, fMsg := range fMsgs {
-			err := u.WritePacket(buf, &fMsg)
+			err := u.writePacket(buf, &fMsg)
 			if err != nil {
 				return 0, err
 			}
@@ -181,10 +195,13 @@ func (u *udpConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	return len(b), nil
 }
 
-func (u *udpConn) WritePacket(buf *bytes.Buffer, msg *protocol.UDPMessage) error {
+func (u *udpConn) writePacket(buf *bytes.Buffer, msg *protocol.UDPMessage) error {
 	buf.Reset()
 	msg.AppendTo(buf)
-	err := u.conn.SendDatagram(buf.Bytes())
+	err := u.conn.TrySendDatagram(buf.Bytes())
+	if errors.Is(err, quic.ErrDatagramQueueFull) {
+		return err
+	}
 	return tuiccommon.WrapQUICError(err, u.lease.Resource(), u.lease, netproxy.OpWrite, u.fail)
 }
 

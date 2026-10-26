@@ -193,14 +193,25 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 }
 
 func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error) {
-	defer func() { err = common.WrapQUICError(err, q.lease.Resource(), q.lease, netproxy.OpWrite, q.fail) }()
+	defer func() {
+		if errors.Is(err, quic.ErrDatagramQueueFull) {
+			netproxy.DropCarrierQueueFull.Add(1)
+			err = netproxy.ErrPacketDropped
+		} else {
+			err = common.WrapQUICError(err, q.lease.Resource(), q.lease, netproxy.OpWrite, q.fail)
+		}
+	}()
 	if len(p) > 0xffff {
 		return 0, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 0xffff}
 	}
 	q.writeMu.Lock()
 	defer q.writeMu.Unlock()
 	if q.closed.Load() || !q.lease.Valid() {
-		return 0, q.terminalError(netproxy.OpWrite)
+		cause := q.lease.Cause()
+		if cause == nil {
+			cause = net.ErrClosed
+		}
+		return 0, cause
 	}
 	q.stateMu.Lock()
 	deadline := q.writeDeadline
@@ -245,7 +256,7 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 		if q.maxUdpRelayPacketSize > 0 && len(p) > q.maxUdpRelayPacketSize {
 			err = fragWriteNative(q.quicConn, packet, buf, q.maxUdpRelayPacketSize)
 		} else {
-			err = q.quicConn.SendDatagram(buf.Bytes())
+			err = q.quicConn.TrySendDatagram(buf.Bytes())
 		}
 		if tooLarge, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
 			err = fragWriteNative(q.quicConn, packet, buf, int(tooLarge.MaxDatagramPayloadSize)-10-packet.ADDR.BytesLen())
@@ -262,11 +273,35 @@ func (q *quicStreamPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if addr == nil {
 		return 0, errors.New("nil packet destination")
 	}
+	n, err := q.writeTo(p, addr.String())
+	if err == netproxy.ErrPacketDropped {
+		return len(p), nil
+	}
+	return n, err
+}
+
+// QUIC relay mode uses a reliable stream per packet; only native DATAGRAMs
+// offer nonblocking admission to the carrier's send queue.
+func (q *quicStreamPacketConn) CanTryWrite() bool { return q.udpRelayMode == common.NATIVE }
+
+func (q *quicStreamPacketConn) TryWriteTo(p []byte, addr net.Addr) (int, error) {
+	if !q.CanTryWrite() {
+		return 0, errors.ErrUnsupported
+	}
+	if addr == nil {
+		return 0, errors.New("nil packet destination")
+	}
 	return q.writeTo(p, addr.String())
 }
-func (q *quicStreamPacketConn) LocalAddr() net.Addr         { return q.quicConn.LocalAddr() }
-func (q *quicStreamPacketConn) RemoteAddr() net.Addr        { return netproxy.NewAddr("udp", q.target) }
-func (q *quicStreamPacketConn) Read(p []byte) (int, error)  { n, _, err := q.ReadFrom(p); return n, err }
-func (q *quicStreamPacketConn) Write(p []byte) (int, error) { return q.writeTo(p, q.target) }
+func (q *quicStreamPacketConn) LocalAddr() net.Addr        { return q.quicConn.LocalAddr() }
+func (q *quicStreamPacketConn) RemoteAddr() net.Addr       { return netproxy.NewAddr("udp", q.target) }
+func (q *quicStreamPacketConn) Read(p []byte) (int, error) { n, _, err := q.ReadFrom(p); return n, err }
+func (q *quicStreamPacketConn) Write(p []byte) (int, error) {
+	n, err := q.writeTo(p, q.target)
+	if err == netproxy.ErrPacketDropped {
+		return len(p), nil
+	}
+	return n, err
+}
 
 var _ net.PacketConn = (*quicStreamPacketConn)(nil)

@@ -63,7 +63,8 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `dns_admission` | `upload` | Concurrent DNS query limit reached |
 | `mitm_bridge_full` | both | MITM HTTP/3 bridge queue full |
 | `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
-| `flow_queue_full`, `carrier_queue_full` | `upload` | smux per-stream or per-session datagram queue full |
+| `flow_queue_full` | `upload` | smux per-stream datagram queue full |
+| `carrier_queue_full` | `upload` | smux per-session or QUIC DATAGRAM send queue full |
 | `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
 | `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
 | `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
@@ -83,6 +84,14 @@ MITM bridge queues and pushed reply backlogs across control-plane generations.
 Moving an owned packet transfers its allocation and reservation without another
 payload copy. Private parser reassembly, DNS request copies, transport-internal
 buffers, idle pool storage and kernel buffers are separate.
+
+TUIC native UDP and Hysteria2 use nonblocking QUIC DATAGRAM admission. A full
+carrier queue drops the application datagram instead of retaining a shared UDP
+worker. `TryWriteTo` reports `ErrPacketDropped`; ordinary `WriteTo` reports it as
+written, like a lossy link. If a fragmented datagram encounters a full queue,
+its remaining fragments are not queued and the protocol counts one
+`carrier_queue_full` drop. Previously accepted fragments cannot be retracted.
+TUIC QUIC relay mode and other reliable-stream transports retain backpressure.
 
 ## Plugin metric names
 

@@ -24,7 +24,7 @@ func fragWriteNative(conn *quic.Conn, packet *packetFrame, buf *bytes.Buffer, si
 		if err := fragment.appendTo(buf); err != nil {
 			return err
 		}
-		if err := conn.SendDatagram(buf.Bytes()); err != nil {
+		if err := conn.TrySendDatagram(buf.Bytes()); err != nil {
 			return err
 		}
 		offset = end

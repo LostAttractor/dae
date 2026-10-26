@@ -57,7 +57,7 @@ var (
 	errSmuxStreamIDs = errors.New("smux: stream IDs exhausted")
 
 	dropFlowQueueFull    = netproxy.NewDrop(netproxy.DropUpload, "flow_queue_full")
-	dropCarrierQueueFull = netproxy.NewDrop(netproxy.DropUpload, "carrier_queue_full")
+	dropCarrierQueueFull = netproxy.DropCarrierQueueFull
 )
 
 // fifo is a slice-backed queue that reuses its storage.

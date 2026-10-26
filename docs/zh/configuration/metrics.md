@@ -45,7 +45,8 @@ global {
 | `dns_admission` | `upload` | 并发 DNS 查询数已满 |
 | `mitm_bridge_full` | 两者 | MITM HTTP/3 桥队列已满 |
 | `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
-| `flow_queue_full`、`carrier_queue_full` | `upload` | smux 单流或单会话的数据报队列已满 |
+| `flow_queue_full` | `upload` | smux 单流的数据报队列已满 |
+| `carrier_queue_full` | `upload` | smux 单会话或 QUIC DATAGRAM 发送队列已满 |
 | `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
 | `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
 | `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
@@ -58,6 +59,8 @@ global {
 入口数据报在控制面转交、嗅探重放和 MITM 桥接中保留原始截止时间，不在每次入队时重新计时；过期包在转发或桥接交付前丢弃。这不为传输内部队列或内核队列规定送达期限。
 
 共享的 8 MiB 数据包内存预算覆盖跨控制面代际的入口包、嗅探待发包、MITM 桥接队列和推送回包积压。移动已有包时连同分配和预算预留一起转交，不再复制整包。解析器私有重组数据、DNS 请求副本、传输内部缓冲、空闲池及内核缓冲另计。
+
+TUIC native UDP 和 Hysteria2 使用非阻塞 QUIC DATAGRAM 接纳。载体队列已满时丢弃应用数据报，而不占住共享 UDP worker；`TryWriteTo` 返回 `ErrPacketDropped`，普通 `WriteTo` 则像有损链路一样报告已写入。分片发送中遇满时停止提交余片，协议计一次 `carrier_queue_full` 丢包；已经接纳的片段不能撤回。TUIC QUIC relay 模式及其他可靠流传输仍保留反压。
 
 ## 插件指标名称
 
