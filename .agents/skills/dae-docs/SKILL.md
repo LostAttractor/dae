@@ -1,11 +1,12 @@
 ---
 name: dae-docs
-description: 编写、修改或审查 dae 文档时使用，涵盖设计文档的组织、开发文档的归属及 Surge 模块兼容性文档的内容边界。
+description: Write or review dae documentation, including design structure, developer guides, bilingual sync, and Surge module compatibility scope.
 ---
 
-# dae 文档规范
+# dae Documentation
 
-- 文档只写当前用法、行为和设计，不写工作记录或实验总结。
-- Surge 模块兼容性文档仅写 API 支持范围、行为差异和限制，不写外部脚本测试过程或结果。
-- `docs/*/design` 按项目能力和架构组织，记录职责、状态模型、约束与设计取舍，不以 review、修复历史或消融过程命名和组织。
-- 测试操作与性能测量方法放在开发文档。
+- Keep `docs/zh` and `docs/en` counterparts in sync, writing each side in its own language; link to the existing side when a translation is missing. After doc changes, run the checks in `docs/en/development/contribute.md`.
+- Document current usage, behavior, and design; omit work logs and experiment summaries.
+- Limit Surge module compatibility docs to API support, behavior differences, and limitations. Omit external script test procedures and results.
+- Organize `docs/*/design` by project capabilities and architecture. Describe responsibilities, state models, constraints, and tradeoffs; do not structure or name docs around reviews, fix history, or ablation studies.
+- Put test procedures and performance measurement methods in developer docs.

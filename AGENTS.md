@@ -1,12 +1,12 @@
 # AGENTS.md
 
-## 开发流程
+## Development Workflow
 
-- 未发布功能直接修改，不做旧版兼容或迁移设计、文档
-- metrics 优先复用现有 Prometheus 指标及底层统计；`status`、`--recent` 等展示共用数据源，避免重复计数和口径不一致
-- 自有 Go 代码共用根 `go.mod`，修改插件 API 时同时适配 `plugins/` 下全部自有插件；外部插件配置见 `plugins.cfg` / `go.work`
-- 测试使用自编写的最小夹具，不得擅自引入第三方脚本、模块等外部测试 blob
+- Change unreleased features directly; skip backward compatibility and migration code or docs.
+- Reuse existing Prometheus metrics and underlying statistics. Share data sources across `status`, `--recent`, and other views to avoid double counting and inconsistent semantics.
+- Keep all first-party Go code in the root `go.mod`. Update every first-party plugin under `plugins/` when changing plugin APIs. External plugins use `plugins.cfg` / `go.work`.
+- Use minimal, self-written test fixtures. Do not add third-party test scripts, modules, or blobs without permission.
 
-## 设计目标
+## Design Goal
 
-以 eBPF 减少用户态处理；仅将代理流量及 DNS、MITM 等确需处理的流量导入用户态，并以明确规则限定范围。
+Use eBPF to minimize userspace work. Send only proxy traffic and traffic requiring userspace handling, such as DNS and MITM, to userspace, with explicit rules defining the scope.
