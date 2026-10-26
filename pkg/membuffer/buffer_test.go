@@ -40,6 +40,34 @@ func TestBudgetLimitRegistrationAndConcurrentAdmission(t *testing.T) {
 	}
 }
 
+func TestBufferGrow(t *testing.T) {
+	budget := NewBudget(513)
+	b := &Buffer{Budget: budget, Limit: 1024}
+	if err := b.Grow(513); err != nil || b.Len() != 0 || budget.Status().Used != 513 {
+		t.Fatal(err, b.Len(), budget.Status())
+	}
+	if _, err := b.Write([]byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Grow(509); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatal(err)
+	}
+	if err := b.Grow(-1); !errors.Is(err, ErrTooLarge) {
+		t.Fatal(err)
+	}
+	if b.Len() != 5 || budget.Status().Used != 513 {
+		t.Fatal(b.Len(), budget.Status())
+	}
+	view := b.View()
+	if string(view.Bytes()) != "value" {
+		t.Fatal(view.Bytes())
+	}
+	view.Close()
+	if budget.Status().Used != 0 {
+		t.Fatal(budget.Status())
+	}
+}
+
 func TestBufferFailedGrowthPreservesPreviousOutput(t *testing.T) {
 	budget := NewBudget(8192)
 	w := &Buffer{Budget: budget, Limit: 1 << 20}

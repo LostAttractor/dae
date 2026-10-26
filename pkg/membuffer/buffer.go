@@ -40,9 +40,9 @@ type Buffer struct {
 
 func (b *Buffer) Len() int { return len(b.data) }
 
-// grow reserves space for n additional bytes without changing the length.
+// Grow reserves space for n additional bytes without changing the length.
 // A failed reservation leaves all current bytes and capacity intact.
-func (b *Buffer) grow(n int) error {
+func (b *Buffer) Grow(n int) error {
 	if b.Limit <= 0 || b.Limit > int64(math.MaxInt) || n < 0 || int64(n) > b.Limit-int64(len(b.data)) {
 		return ErrTooLarge
 	}
@@ -70,7 +70,7 @@ func (b *Buffer) grow(n int) error {
 }
 
 func (b *Buffer) Write(p []byte) (int, error) {
-	if err := b.grow(len(p)); err != nil {
+	if err := b.Grow(len(p)); err != nil {
 		return 0, err
 	}
 	b.data = append(b.data, p...)
@@ -103,7 +103,7 @@ func Read(r io.Reader, limit int64, budget *Budget) (*View, error) {
 	b := Buffer{Budget: budget, Limit: limit + 1}
 	for {
 		if len(b.data) == cap(b.data) {
-			if err := b.grow(1); err != nil {
+			if err := b.Grow(1); err != nil {
 				return b.View(), err
 			}
 		}
