@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -18,6 +19,8 @@ const (
 	udpTaskMaxWorkers  = 128
 	udpTaskMaxSources  = 2048
 	udpTaskMaxPending  = 8192
+	// Slow operations leave workers available to unrelated ready sources.
+	maxConcurrentUDPSlowWork = udpTaskMaxWorkers / 4
 )
 
 type queuedUDPTask struct {
@@ -42,6 +45,31 @@ type udpTaskQueue struct {
 type udpWriteSlot struct {
 	mu   sync.Mutex
 	conn net.PacketConn
+	// Only the worker touches these fields; nested setup/write uses one permit.
+	slow      *atomic.Int32
+	slowDepth int
+}
+
+func (s *udpWriteSlot) beginSlow() bool {
+	if s == nil || s.slow == nil {
+		return true
+	}
+	if s.slowDepth == 0 && s.slow.Add(1) > maxConcurrentUDPSlowWork {
+		s.slow.Add(-1)
+		return false
+	}
+	s.slowDepth++
+	return true
+}
+
+func (s *udpWriteSlot) endSlow() {
+	if s == nil || s.slow == nil {
+		return
+	}
+	s.slowDepth--
+	if s.slowDepth == 0 {
+		s.slow.Add(-1)
+	}
 }
 
 // begin publishes conn before rechecking ctx. Paired with interrupt's

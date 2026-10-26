@@ -233,6 +233,9 @@ func TestPacketNewDestinationSocketDial(t *testing.T) {
 					cancel()
 				}
 				<-done
+				if active := plane.udpSlowWork.Load(); active != 0 {
+					t.Fatalf("dial retained %d slow permits", active)
+				}
 				want := time.Second
 				if cancelWork {
 					want = 0

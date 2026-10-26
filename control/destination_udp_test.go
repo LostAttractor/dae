@@ -74,22 +74,22 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 				}
 			}
 			setupDrops := dropSetupCapacity.Load()
-			plane.udpSetups.Store(maxConcurrentUDPSetups)
+			plane.udpSlowWork.Store(maxConcurrentUDPSlowWork)
 			send()
 			if _, ok := endpoints.Get(source); ok || len(recorder.targets) != 0 {
 				t.Fatal("created an association beyond setup capacity")
 			}
-			plane.udpSetups.Store(0)
+			plane.udpSlowWork.Store(0)
 			send()
-			if plane.udpSetups.Load() != 0 {
+			if plane.udpSlowWork.Load() != 0 {
 				t.Fatal("completed setup retained admission")
 			}
-			plane.udpSetups.Store(maxConcurrentUDPSetups)
+			plane.udpSlowWork.Store(maxConcurrentUDPSlowWork)
 			send()
 			if dropSetupCapacity.Load()-setupDrops != 1 || len(recorder.targets) != 1 {
 				t.Fatal("established association passed through setup admission")
 			}
-			plane.udpSetups.Store(0)
+			plane.udpSlowWork.Store(0)
 			endpoint, ok := endpoints.Get(source)
 			if !ok || endpoint.destinations[original].target != target || endpoint.destinationParam.routingResult.Mark != 37 || endpoint.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 || recorder.targets[0] != target.String() {
 				t.Fatalf("initial source lost its target or policy: endpoint=%+v dials=%v", endpoint, recorder.targets)

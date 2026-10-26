@@ -55,7 +55,7 @@ func TestUDPDestinationRecordsEachEstablishedSocketOnce(t *testing.T) {
 	lock, _ := pool.UdpEndpointKeyLocker.Lock(source)
 	defer pool.UdpEndpointKeyLocker.Unlock(source, lock)
 	for _, destination := range []string{"192.0.2.1:443", "192.0.2.1:443", "192.0.2.2:443"} {
-		if _, err := endpoint.socket(t.Context(), time.Time{}, &pool, source, netip.MustParseAddrPort(destination)); err != nil {
+		if _, err := endpoint.socket(t.Context(), time.Time{}, &pool, source, netip.MustParseAddrPort(destination), nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -32,8 +32,6 @@ var (
 )
 
 const (
-	// Reserve workers for established associations; setup admission never waits.
-	maxConcurrentUDPSetups = udpTaskMaxWorkers / 4
 	// Tunnels and large-MTU interfaces can deliver reassembled datagrams
 	// larger than an Ethernet frame. Never forward a truncated payload.
 	udpReceiveBufferSize = 65535
@@ -115,6 +113,17 @@ func writePacketUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlo
 	if n, err := netproxy.TryWriteTo(conn, data, dst); !errors.Is(err, errors.ErrUnsupported) {
 		return n, err
 	}
+	if !slot.beginSlow() {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return 0, context.DeadlineExceeded
+		}
+		dropSlowWriteCapacity.Add(1)
+		return 0, netproxy.ErrPacketDropped
+	}
+	defer slot.endSlow()
 	if !deadline.IsZero() {
 		if conn.SetWriteDeadline(deadline) != nil {
 			return writePacketWithTimer(ctx, deadline, conn, data, dst)
@@ -220,6 +229,12 @@ func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, s
 
 func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, packet *udpPacket, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	data, deadline := packet.data, packet.deadline
+	if slot == nil {
+		slot = new(udpWriteSlot)
+	}
+	if slot.slow != &c.udpSlowWork {
+		slot.slow = &c.udpSlowWork
+	}
 	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -256,12 +271,11 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 		}
 	}
 	if !exists || ue.conn == nil {
-		if c.udpSetups.Add(1) > maxConcurrentUDPSetups {
-			c.udpSetups.Add(-1)
+		if !slot.beginSlow() {
 			dropSetupCapacity.Add(1)
 			return nil
 		}
-		defer c.udpSetups.Add(-1)
+		defer slot.endSlow()
 	}
 	if !exists {
 		// A queued packet may outlive the endpoint whose kernel binding sent
@@ -572,7 +586,7 @@ func (c *ControlPlane) writeUDPPacket(ctx context.Context, slot *udpWriteSlot, u
 		return cause
 	}
 	// The deadline includes the packet's queue time and bounds any new socket.
-	conn, err := ue.socket(ctx, deadline, c.udpEndpoints, src, dst)
+	conn, err := ue.socket(ctx, deadline, c.udpEndpoints, src, dst, slot)
 	var n int
 	if err == nil {
 		// Writes are serialized by the source key lock. Cache the common
@@ -591,10 +605,10 @@ func (c *ControlPlane) writeUDPPacket(ctx context.Context, slot *udpWriteSlot, u
 		} else {
 			n, err = writePacketUntil(ctx, deadline, slot, conn, data, ue.writeAddr)
 		}
-		if err == netproxy.ErrPacketDropped {
-			// Counted by the transport; not uploaded, not a failure.
-			return nil
-		}
+	}
+	if err == netproxy.ErrPacketDropped {
+		// Counted by the rejecting owner; not uploaded, not a failure.
+		return nil
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))

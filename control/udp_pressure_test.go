@@ -71,7 +71,7 @@ func TestUDPSocketPressurePlateausAndReleasesReaders(t *testing.T) {
 	admit := func(n int) {
 		for i, src := range sources {
 			lock, _ := p.UdpEndpointKeyLocker.Lock(src)
-			_, err := endpoints[i].socket(t.Context(), time.Time{}, p, src, netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, byte(n >> 8), byte(n)}), 443))
+			_, err := endpoints[i].socket(t.Context(), time.Time{}, p, src, netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, byte(n >> 8), byte(n)}), 443), nil)
 			p.UdpEndpointKeyLocker.Unlock(src, lock)
 			if err != nil && netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
 				t.Fatal(err)

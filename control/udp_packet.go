@@ -77,9 +77,10 @@ var (
 	dropUploadMemory   = netproxy.NewDrop(netproxy.DropUpload, "packet_memory_limit")
 	dropDownloadMemory = netproxy.NewDrop(netproxy.DropDownload, "packet_memory_limit")
 	// The packet's deadline passed before it was sent.
-	dropExpired       = netproxy.NewDrop(netproxy.DropUpload, "expired")
-	dropSetupCapacity = netproxy.NewDrop(netproxy.DropUpload, "setup_capacity")
-	dropEndpointLimit = netproxy.NewDrop(netproxy.DropUpload, "endpoint_limit")
+	dropExpired           = netproxy.NewDrop(netproxy.DropUpload, "expired")
+	dropSetupCapacity     = netproxy.NewDrop(netproxy.DropUpload, "setup_capacity")
+	dropSlowWriteCapacity = netproxy.NewDrop(netproxy.DropUpload, "slow_write_capacity")
+	dropEndpointLimit     = netproxy.NewDrop(netproxy.DropUpload, "endpoint_limit")
 	// The packet resource budget or the source's socket limit is full.
 	dropResourceLimit = netproxy.NewDrop(netproxy.DropUpload, "packet_resource_limit")
 	dropDNSAdmission  = netproxy.NewDrop(netproxy.DropUpload, "dns_admission")

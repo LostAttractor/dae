@@ -129,7 +129,7 @@ func (ue *UdpEndpoint) socketTarget(dst netip.AddrPort) (netip.AddrPort, error) 
 
 // The caller holds the source lock throughout socket creation and use. ctx
 // carries cancellation only; deadline bounds creating a socket.
-func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEndpointPool, src, dst netip.AddrPort) (net.PacketConn, error) {
+func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEndpointPool, src, dst netip.AddrPort, slot *udpWriteSlot) (net.PacketConn, error) {
 	if ue.sockets == nil || ue.mitm && dst == ue.firstDst {
 		return ue.conn, nil
 	}
@@ -159,6 +159,17 @@ func (ue *UdpEndpoint) socket(ctx context.Context, deadline time.Time, p *UdpEnd
 	if full {
 		return nil, netproxy.PacketCapacityError()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return nil, context.DeadlineExceeded
+	}
+	if !slot.beginSlow() {
+		dropSetupCapacity.Add(1)
+		return nil, netproxy.ErrPacketDropped
+	}
+	defer slot.endSlow()
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)

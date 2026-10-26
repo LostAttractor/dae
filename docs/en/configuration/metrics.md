@@ -58,7 +58,9 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `source_queue_full`, `task_limit`, `source_limit` | `upload` | Per-source queue, global task or backlogged source limit reached |
 | `packet_memory_limit` | both | Shared datagram memory exhausted |
 | `expired` | `upload` | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
-| `setup_capacity`, `endpoint_limit` | `upload` | Concurrent association setup or UDP source endpoint limit reached |
+| `setup_capacity` | `upload` | Shared slow-operation capacity exhausted while initializing an association or opening a destination socket |
+| `slow_write_capacity` | `upload` | Shared slow-operation capacity exhausted before a blocking UDP write |
+| `endpoint_limit` | `upload` | UDP source endpoint limit reached |
 | `packet_resource_limit` | `upload` | No UDP association or socket could be opened: the process-wide packet resource limit or a source's socket limit is reached |
 | `dns_admission` | `upload` | Concurrent DNS query limit reached |
 | `mitm_bridge_full` | both | MITM HTTP/3 bridge queue full |
@@ -92,6 +94,14 @@ written, like a lossy link. If a fragmented datagram encounters a full queue,
 its remaining fragments are not queued and the protocol counts one
 `carrier_queue_full` drop. Previously accepted fragments cannot be retracted.
 TUIC QUIC relay mode and other reliable-stream transports retain backpressure.
+
+Association initialization, destination socket creation and blocking UDP writes
+share 32 slow-operation permits per control plane, leaving capacity in the
+128-worker pool for unrelated ready sources. Nested setup and writes on one
+worker use one permit. Admission never waits or starts another packet worker;
+a refused datagram is counted once without closing the existing association.
+Nonblocking sends do not consume these permits. Waiting for another sniffing
+packet releases the worker and its permit.
 
 ## Plugin metric names
 

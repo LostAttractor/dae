@@ -40,7 +40,9 @@ global {
 | `source_queue_full`、`task_limit`、`source_limit` | `upload` | 每源队列、全局任务数或积压源数已满 |
 | `packet_memory_limit` | 两者 | 共享数据报内存已满 |
 | `expired` | `upload` | 截止前未能发出，包括排队、建立、嗅探超时和阻塞写入；配置换代取消的数据报不计 |
-| `setup_capacity`、`endpoint_limit` | `upload` | 并发建立的关联或 UDP 源端点数已满 |
+| `setup_capacity` | `upload` | 初始化关联或创建目的地 socket 时，共享慢操作额度已满 |
+| `slow_write_capacity` | `upload` | 阻塞 UDP 写入前，共享慢操作额度已满 |
+| `endpoint_limit` | `upload` | UDP 源端点数已满 |
 | `packet_resource_limit` | `upload` | 无法打开 UDP 关联或 socket：进程级数据包资源数或单个源的 socket 数已满 |
 | `dns_admission` | `upload` | 并发 DNS 查询数已满 |
 | `mitm_bridge_full` | 两者 | MITM HTTP/3 桥队列已满 |
@@ -61,6 +63,8 @@ global {
 共享的 8 MiB 数据包内存预算覆盖跨控制面代际的入口包、嗅探待发包、MITM 桥接队列和推送回包积压。移动已有包时连同分配和预算预留一起转交，不再复制整包。解析器私有重组数据、DNS 请求副本、传输内部缓冲、空闲池及内核缓冲另计。
 
 TUIC native UDP 和 Hysteria2 使用非阻塞 QUIC DATAGRAM 接纳。载体队列已满时丢弃应用数据报，而不占住共享 UDP worker；`TryWriteTo` 返回 `ErrPacketDropped`，普通 `WriteTo` 则像有损链路一样报告已写入。分片发送中遇满时停止提交余片，协议计一次 `carrier_queue_full` 丢包；已经接纳的片段不能撤回。TUIC QUIC relay 模式及其他可靠流传输仍保留反压。
+
+关联初始化、目的地 socket 创建和阻塞 UDP 写入共用每个控制面的 32 个慢操作额度，为 128-worker 池中的其他就绪来源保留处理能力。同一 worker 内嵌套的设置和写入只占一份额度；准入不等待，也不为数据包另建 worker。拒绝的数据报计数一次，不关闭已有的关联。非阻塞发送不占这些额度；嗅探等待下一个包时释放 worker 及其额度。
 
 ## 插件指标名称
 
