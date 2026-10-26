@@ -172,14 +172,15 @@ request=type=http-request,pattern=.,script-path=request.js
 	e := p.(*Engine)
 	t.Cleanup(func() { _ = e.Close() })
 	owner := pluginhost.Adopt("node", "surge", p)
-	handler := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+	handler := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(*plugin.Exchange) (*plugin.Response, error) {
 		t.Fatal("synthetic response reached upstream")
 		return nil, nil
 	})
-	response, err := handler(&plugin.Exchange{Request: httptest.NewRequest(http.MethodGet, "https://example.test/", nil)})
+	controlledResponse, err := handler(&plugin.Exchange{Request: plugin.NewRequest(httptest.NewRequest(http.MethodGet, "https://example.test/", nil), e.options.BodyMemory)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	response := takeTestResponse(t, controlledResponse)
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != 201 || string(body) != "nodejs" {

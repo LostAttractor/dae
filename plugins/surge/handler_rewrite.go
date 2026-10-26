@@ -63,8 +63,8 @@ func scriptMatchURLs(target *url.URL, host, sni string) []string {
 	return urls
 }
 
-func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Response, err error) {
-	r, client, setReadDeadline := exchange.Request, exchange.Client, exchange.SetReadDeadline
+func (e *Engine) processRequest(exchange *plugin.Exchange) (response *plugin.Response, err error) {
+	r, client, setReadDeadline := exchange.Request.Head, exchange.Client, exchange.SetReadDeadline
 	finish, err := e.beginHTTPProcessing(r, "http-request")
 	if err != nil {
 		return nil, err
@@ -79,10 +79,16 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		r.Header.Del("Host")
 	}
 	if response, err := e.rewriteURL(r); response != nil || err != nil {
-		return response, err
+		if err != nil {
+			return nil, err
+		}
+		return exchange.NewResponse(response), nil
 	}
 	if response, err := e.mapLocal(r); response != nil || err != nil {
-		return response, err
+		if err != nil {
+			return nil, err
+		}
+		return exchange.NewResponse(response), nil
 	}
 	if err := e.rewriteRequestBody(exchange); err != nil {
 		return nil, err
@@ -100,8 +106,8 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	message := requestMessage(r)
 	canReplaceBody := len(r.TransferEncoding) == 0 && !strings.EqualFold(r.Header.Get("Expect"), "100-continue")
 	var raw *membuffer.View
-	if s.RequiresBody && r.Body != nil {
-		raw, err = e.snapshotHTTPBody(r.Context(), &r.Body, e.scriptBodyLimit(s), setReadDeadline)
+	if s.RequiresBody {
+		raw, err = e.snapshotHTTPBody(r.Context(), exchange.Request.Body(), e.scriptBodyLimit(s), setReadDeadline)
 		if errors.Is(err, membuffer.ErrBudgetExhausted) {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
@@ -114,7 +120,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	ctx, cancel := context.WithTimeout(r.Context(), e.scriptTimeout(s))
 	defer cancel()
 	if raw != nil {
-		body, err := decodeBodyView(ctx, raw, r.Header.Get("Content-Encoding"), e.scriptBodyLimit(s), e.options.BodyMemory)
+		body, err := decodeBodyView(ctx, raw, strings.Join(r.Header.Values("Content-Encoding"), ","), e.scriptBodyLimit(s))
 		if errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
@@ -139,7 +145,11 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	}
 	if result.Response != nil {
 		execution.outcome = "synthetic"
-		return responseFromResult(r, result.Response)
+		response, err := responseFromResult(r, result.Response)
+		if err != nil {
+			return nil, err
+		}
+		return exchange.NewResponse(response), nil
 	}
 	if result.URL != nil {
 		if err := replaceURL(r, *result.URL); err != nil {
@@ -163,13 +173,14 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && canReplaceBody && result.Body != nil {
-		plugin.SetRequestBody(exchange.Request, result.Body)
+		exchange.Request.Body().Replace(result.Body)
 		execution.outcome = "success"
 	}
 	return nil, nil
 }
 
-func (e *Engine) processResponse(r *http.Response, client *http.Client) (err error) {
+func (e *Engine) processResponse(response *plugin.Response, client *http.Client) (err error) {
+	r := response.Head
 	finish, err := e.beginHTTPProcessing(r.Request, "http-response")
 	if err != nil {
 		return err
@@ -178,7 +189,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	if err := e.rewriteHeaders("http-response", r.Request, r.Header); err != nil {
 		return err
 	}
-	if err := e.rewriteResponseBody(r); err != nil {
+	if err := e.rewriteResponseBody(response); err != nil {
 		return err
 	}
 	module, s := e.matchScript("http-response", r.Request)
@@ -199,8 +210,8 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	message := &Message{Status: r.StatusCode, Headers: r.Header}
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
 	var raw *membuffer.View
-	if s.RequiresBody && hasBody && r.Body != nil {
-		raw, err = e.snapshotHTTPBody(r.Request.Context(), &r.Body, e.scriptBodyLimit(s), nil)
+	if s.RequiresBody && hasBody {
+		raw, err = e.snapshotHTTPBody(r.Request.Context(), response.Body(), e.scriptBodyLimit(s), nil)
 		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
@@ -213,7 +224,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
 	defer cancel()
 	if raw != nil {
-		body, err := decodeBodyView(ctx, raw, r.Header.Get("Content-Encoding"), e.scriptBodyLimit(s), e.options.BodyMemory)
+		body, err := decodeBodyView(ctx, raw, strings.Join(r.Header.Values("Content-Encoding"), ","), e.scriptBodyLimit(s))
 		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Request.Context().Err() == nil {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
@@ -268,16 +279,31 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && hasBody && result.Body != nil {
-		plugin.SetResponseBody(r, result.Body)
+		response.Body().Replace(result.Body)
 		execution.outcome = "success"
 	}
-	if !responseHasBody(r.Request.Method, r.StatusCode) {
-		_ = r.Body.Close()
-		r.Body = http.NoBody
-		r.TransferEncoding = nil
+	if hasBody && !responseHasBody(r.Request.Method, r.StatusCode) {
+		empty, err := membuffer.Copy(nil, e.options.BodyMemory)
+		if err != nil {
+			return err
+		}
+		length := r.ContentLength
+		preserved := make(http.Header, 4)
+		for _, name := range []string{"Etag", "Last-Modified", "Content-Encoding", "Repr-Digest"} {
+			if values := r.Header.Values(name); len(values) != 0 {
+				preserved[name] = values
+			}
+		}
+		response.Body().Replace(empty)
+		empty.Close()
+		for name, values := range preserved {
+			r.Header[name] = values
+		}
+		r.ContentLength = length
+		r.Trailer = nil
+		r.Header.Del("Content-Length")
 		if r.StatusCode == http.StatusNoContent {
 			r.ContentLength = 0
-			r.Header.Del("Content-Length")
 		}
 	}
 	return nil

@@ -58,9 +58,9 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var dials, pluginCalls atomic.Int32
 			extension := &controlTestPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: test.scope}}},
-				handle: func(*plugin.Exchange, plugin.Handler) (*http.Response, error) {
+				handle: func(e *plugin.Exchange, _ plugin.Handler) (*plugin.Response, error) {
 					pluginCalls.Add(1)
-					return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
+					return e.NewResponse(&http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}), nil
 				},
 			}
 			plane, _, param := newHTTPRequestRouteTestWithAuthority(t, "", extension,

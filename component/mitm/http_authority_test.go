@@ -55,16 +55,16 @@ func testDomainFrontingAuthorities(t *testing.T, protocol string, preserve bool)
 			mu.Lock()
 			wraps[host]++
 			mu.Unlock()
-			return func(e *plugin.Exchange) (*http.Response, error) {
-				e.Request.Header.Add("X-Test-Scope", host)
-				if e.Request.URL.Path == "/rewrite" {
-					e.Request.URL.Host, e.Request.Host = "rewrite.example", "rewrite.example"
-				} else if e.Request.URL.Path == "/pathrewrite" {
-					e.Request.URL.Path, e.Request.URL.RawQuery = "/changed", "rewritten=true"
+			return func(e *plugin.Exchange) (*plugin.Response, error) {
+				e.Request.Head.Header.Add("X-Test-Scope", host)
+				if e.Request.Head.URL.Path == "/rewrite" {
+					e.Request.Head.URL.Host, e.Request.Head.Host = "rewrite.example", "rewrite.example"
+				} else if e.Request.Head.URL.Path == "/pathrewrite" {
+					e.Request.Head.URL.Path, e.Request.Head.URL.RawQuery = "/changed", "rewritten=true"
 				}
 				resp, err := next(e)
 				if resp != nil {
-					resp.Header.Set("X-Response-Scope", host)
+					resp.Head.Header.Set("X-Response-Scope", host)
 				}
 				return resp, err
 			}

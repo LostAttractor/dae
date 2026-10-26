@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,31 +15,32 @@ import (
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
-func (e *Engine) rewriteResponseBody(r *http.Response) error {
-	if r.Request == nil || r.Request.URL == nil || r.Body == nil || !responseHasBody(r.Request.Method, r.StatusCode) {
+func (e *Engine) rewriteResponseBody(response *plugin.Response) error {
+	r := response.Head
+	if r.Request == nil || r.Request.URL == nil || !responseHasBody(r.Request.Method, r.StatusCode) {
 		return nil
 	}
-	body, err := e.rewriteBody("http-response", r.Request, &r.Body, r.Header, r.ContentLength, nil)
+	body, err := e.rewriteBody("http-response", r.Request, response.Body(), r.Header, r.ContentLength, nil)
 	defer body.Close()
 	if body != nil {
-		plugin.SetResponseBody(r, body)
+		response.Body().Replace(body)
 	}
 	return err
 }
 
 func (e *Engine) rewriteRequestBody(exchange *plugin.Exchange) error {
-	r := exchange.Request
-	body, err := e.rewriteBody("http-request", r, &r.Body, r.Header, r.ContentLength, exchange.SetReadDeadline)
+	r := exchange.Request.Head
+	body, err := e.rewriteBody("http-request", r, exchange.Request.Body(), r.Header, r.ContentLength, exchange.SetReadDeadline)
 	defer body.Close()
 	if body != nil {
-		plugin.SetRequestBody(r, body)
+		exchange.Request.Body().Replace(body)
 	}
 	return err
 }
 
 // Rewrites share one body snapshot and budget. Failed expressions keep the
 // preceding value; response overflow replays the original, request overflow fails.
-func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.ReadCloser, header http.Header, length int64, setReadDeadline func(time.Time) error) (*membuffer.View, error) {
+func (e *Engine) rewriteBody(kind string, request *http.Request, source *plugin.Body, header http.Header, length int64, setReadDeadline func(time.Time) error) (*membuffer.View, error) {
 	type matchedBodyRewrite struct {
 		rule   BodyRewrite
 		module string
@@ -100,7 +100,7 @@ func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.Read
 	defer release()
 	ctx, cancel := context.WithTimeout(request.Context(), e.options.ScriptTimeout)
 	defer cancel()
-	body, err := decodeBodyView(ctx, raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
+	body, err := decodeBodyView(ctx, raw, strings.Join(header.Values("Content-Encoding"), ","), limit)
 	if err != nil {
 		if err := request.Context().Err(); err != nil {
 			return nil, err

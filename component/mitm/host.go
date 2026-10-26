@@ -353,7 +353,7 @@ func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 		if !ok {
 			continue
 		}
-		terminal = httpPlugin.Wrap(flow, func(e *plugin.Exchange) (*http.Response, error) {
+		terminal = httpPlugin.Wrap(flow, func(e *plugin.Exchange) (*plugin.Response, error) {
 			// A plugin's read budget ends when it hands the request downstream,
 			// before another plugin buffers it or the transport streams it.
 			if e.SetReadDeadline != nil {
@@ -363,7 +363,7 @@ func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 			if response != nil {
 				// Every response hook sees its business request, including local
 				// responses and transports using an ingress-bound request copy.
-				response.Request = e.Request
+				response.Head.Request = e.Request.Head
 			}
 			return response, err
 		})

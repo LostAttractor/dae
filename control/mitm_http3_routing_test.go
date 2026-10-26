@@ -30,15 +30,19 @@ func (http3RoutingPlugin) Plan() plugin.Plan {
 }
 
 func (p http3RoutingPlugin) Wrap(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-	return func(e *plugin.Exchange) (*http.Response, error) {
-		switch e.Request.URL.Path {
+	return func(e *plugin.Exchange) (*plugin.Response, error) {
+		switch e.Request.Head.URL.Path {
 		case "/local":
-			return &http.Response{StatusCode: 418, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("local"))}, nil
+			return e.NewResponse(&http.Response{StatusCode: 418, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("local"))}), nil
 		case "/auxiliary":
-			r, _ := http.NewRequestWithContext(e.Request.Context(), "GET", "http://198.51.100.30:8080/", nil)
-			return e.Client.Do(r)
+			r, _ := http.NewRequestWithContext(e.Request.Head.Context(), "GET", "http://198.51.100.30:8080/", nil)
+			response, err := e.Client.Do(r)
+			if err != nil {
+				return nil, err
+			}
+			return e.NewResponse(response), nil
 		default:
-			e.Request.URL.Host, e.Request.Host = p.target, p.target
+			e.Request.Head.URL.Host, e.Request.Head.Host = p.target, p.target
 			return next(e)
 		}
 	}

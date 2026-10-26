@@ -16,11 +16,11 @@ import (
 func TestBodyViewSharesStorageUntilLastOwner(t *testing.T) {
 	budget := membuffer.NewBudget(4096)
 	var body io.ReadCloser = io.NopCloser(strings.NewReader("original"))
-	a, err := SnapshotBody(&body, 64, budget)
+	a, err := snapshotBody(&body, 64, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := SnapshotBody(&body, 64, budget)
+	b, err := snapshotBody(&body, 64, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBodyMemoryPressurePreservesUnreadTail(t *testing.T) {
 		payload := strings.Repeat("abcdef", 3000)
 		original := &countedBody{Reader: strings.NewReader(payload)}
 		var body io.ReadCloser = original
-		_, err := SnapshotBody(&body, 1<<20, budget)
+		_, err := snapshotBody(&body, 1<<20, budget)
 		if !errors.Is(err, membuffer.ErrBudgetExhausted) {
 			t.Fatalf("budget=%d err=%v", size, err)
 		}
@@ -70,8 +70,12 @@ func TestBodyViewRequestAndResponseLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := &http.Request{}
-	SetRequestBody(req, view)
+	request := NewRequest(&http.Request{}, budget)
+	request.Body().Replace(view)
+	req, err := request.Forward()
+	if err != nil {
+		t.Fatal(err)
+	}
 	view.Close()
 	if budget.Status().Used == 0 {
 		t.Fatal("released pending request body")
@@ -86,13 +90,13 @@ func TestBodyViewRequestAndResponseLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := &http.Response{}
-	SetResponseBody(resp, view)
+	resp := NewResponse(&http.Response{}, budget)
+	resp.Body().Replace(view)
 	view.Close()
 	if budget.Status().Used == 0 {
 		t.Fatal("unaccounted output awaiting delivery")
 	}
-	_ = resp.Body.Close() // Client disconnects without reading.
+	_ = resp.Close() // Client disconnects without reading.
 	if budget.Status().Used != 0 {
 		t.Fatal("output leaked after disconnect")
 	}
@@ -105,7 +109,7 @@ func BenchmarkRepeatedBodySnapshot(b *testing.B) {
 	for b.Loop() {
 		var body io.ReadCloser = io.NopCloser(bytes.NewReader(payload))
 		for range 4 {
-			view, err := SnapshotBody(&body, 1<<20, budget)
+			view, err := snapshotBody(&body, 1<<20, budget)
 			if err != nil {
 				b.Fatal(err)
 			}

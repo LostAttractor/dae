@@ -17,13 +17,13 @@ import (
 )
 
 func (s *Service) Wrap(flow plugin.Flow, _ plugin.Handler) plugin.Handler {
-	return func(exchange *plugin.Exchange) (*http.Response, error) {
+	return func(exchange *plugin.Exchange) (*plugin.Response, error) {
 		// Matching a Host header alone cannot produce an interception witness.
 		if flow.Destination.Port() != 443 || !slices.Contains(s.targets[:], flow.Destination.Addr().Unmap()) ||
-			flow.Host != flow.Destination.Addr().Unmap().String() || exchange.Request.URL.Scheme != "https" {
-			return response(http.StatusForbidden, nil, "invalid test destination"), nil
+			flow.Host != flow.Destination.Addr().Unmap().String() || exchange.Request.Head.URL.Scheme != "https" {
+			return exchange.NewResponse(response(http.StatusForbidden, nil, "invalid test destination")), nil
 		}
-		return s.respond(exchange.Request, flow), nil
+		return exchange.NewResponse(s.respond(exchange.Request.Head, flow)), nil
 	}
 }
 

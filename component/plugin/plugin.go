@@ -33,18 +33,14 @@ type Flow struct {
 // Exchange belongs to one synchronous invocation. Background work must copy
 // the required data instead of retaining the request, body or response writer.
 type Exchange struct {
-	Request *http.Request
+	Request *Request
 	Client  *http.Client
 	// SetReadDeadline bounds reads from the intercepted request body. The host
 	// resets the deadline when calling next. Nil means unsupported (e.g. tests).
 	SetReadDeadline func(time.Time) error
 }
 
-// Handler calls next synchronously. On success it returns a valid response
-// with non-nil Header and Body, transferring body ownership to its caller.
-// On error it closes any owned response body and returns nil, err.
-// The host associates next's response with Exchange.Request before returning it.
-type Handler func(*Exchange) (*http.Response, error)
+type Handler func(*Exchange) (*Response, error)
 
 // Plan is immutable after preparation; the host takes ownership without copying it.
 type Plan struct {

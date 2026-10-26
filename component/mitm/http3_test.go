@@ -133,14 +133,14 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 		if !flow.Source.IsValid() || !flow.Destination.IsValid() {
 			t.Errorf("missing original flow addresses: %+v", flow)
 		}
-		return func(e *plugin.Exchange) (*http.Response, error) {
-			connection, request := plugin.IDs(e.Request.Context())
+		return func(e *plugin.Exchange) (*plugin.Response, error) {
+			connection, request := plugin.IDs(e.Request.Head.Context())
 			if connection == "" || request == "" {
 				t.Error("HTTP/3 plugin request has no IDs")
 			}
 			connections.Store(connection, true)
-			if e.Request.URL.Path == "/local" {
-				return response("local"), nil
+			if e.Request.Head.URL.Path == "/local" {
+				return e.NewResponse(response("local")), nil
 			}
 			if err := e.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 				t.Errorf("HTTP/3 body read deadline unsupported: %v", err)
@@ -149,24 +149,25 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			plugin.SetRequestBody(e.Request, view)
+			e.Request.Body().Replace(view)
 			view.Close()
-			e.Request.Header.Set("X-Plugin", "request")
+			e.Request.Head.Header.Set("X-Plugin", "request")
 			r, err := next(e)
 			if err != nil {
 				return nil, err
 			}
-			body, err := io.ReadAll(r.Body)
+			snapshot, err := r.Body().Snapshot(1 << 20)
 			if err != nil {
-				_ = r.Body.Close()
+				_ = r.Close()
 				return nil, err
 			}
-			view, err = membuffer.Copy(append(body, []byte(" modified response")...), bodyMemory)
+			defer snapshot.Close()
+			view, err = membuffer.Copy([]byte(string(snapshot.Bytes())+" modified response"), bodyMemory)
 			if err != nil {
-				_ = r.Body.Close()
+				_ = r.Close()
 				return nil, err
 			}
-			plugin.SetResponseBody(r, view)
+			r.Body().Replace(view)
 			view.Close()
 			return r, nil
 		}
@@ -246,7 +247,7 @@ func TestHTTP3MITMTLSIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			authority, roots := http3TestAuthority(t)
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(name)}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
+				return func(e *plugin.Exchange) (*plugin.Response, error) { return e.NewResponse(response("local")), nil }
 			}}
 			host := testHost(t, Options{Authority: authority}, Instance{Plugin: p})
 			client, _, _ := http3TestClient(t, host, roots, name, nil)
@@ -418,9 +419,9 @@ func TestHTTP3MITMMultipleConnectionsOnOneAssociation(t *testing.T) {
 	var wraps atomic.Int32
 	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 		local := wraps.Add(1)
-		return func(e *plugin.Exchange) (*http.Response, error) {
-			connection, _ := plugin.IDs(e.Request.Context())
-			return response(fmt.Sprintf("%d/%s", local, connection)), nil
+		return func(e *plugin.Exchange) (*plugin.Response, error) {
+			connection, _ := plugin.IDs(e.Request.Head.Context())
+			return e.NewResponse(response(fmt.Sprintf("%d/%s", local, connection))), nil
 		}
 	}}
 	host := testHost(t, Options{Authority: authority}, Instance{Plugin: p})

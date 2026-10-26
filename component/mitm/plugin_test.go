@@ -72,9 +72,9 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 			if flow.Host != "api.example.com" {
 				t.Errorf("mutated connection identity: %+v", flow)
 			}
-			return func(e *plugin.Exchange) (*http.Response, error) {
+			return func(e *plugin.Exchange) (*plugin.Response, error) {
 				calls = append(calls, name+" request")
-				e.Request.URL.Host = "changed.example.com"
+				e.Request.Head.URL.Host = "changed.example.com"
 				r, err := next(e)
 				calls = append(calls, name+" response")
 				return r, err
@@ -83,17 +83,17 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 		instances = append(instances, Instance{ID: name, Type: "test", Plugin: p})
 	}
 	h := testHost(t, Options{Authority: &localca.Authority{}}, instances...)
-	chain := h.chain(plugin.Flow{Host: "api.example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+	chain := h.chain(plugin.Flow{Host: "api.example.com", Port: 443}, func(e *plugin.Exchange) (*plugin.Response, error) {
 		calls = append(calls, "upstream")
-		return response("ok"), nil
+		return e.NewResponse(response("ok")), nil
 	})
 	for range 2 {
 		calls = nil
-		r, err := chain(&plugin.Exchange{Request: httptest.NewRequest("GET", "https://api.example.com/", nil)})
+		r, err := chain(&plugin.Exchange{Request: plugin.NewRequest(httptest.NewRequest("GET", "https://api.example.com/", nil), nil)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.Body.Close()
+		r.Close()
 		want := []string{"a request", "b request", "upstream", "b response", "a response"}
 		if !reflect.DeepEqual(calls, want) {
 			t.Fatalf("got %v want %v", calls, want)
@@ -106,19 +106,27 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 
 func TestPluginLocalResponse(t *testing.T) {
 	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("*")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
+		return func(e *plugin.Exchange) (*plugin.Response, error) { return e.NewResponse(response("local")), nil }
 	}}
 	h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "local", Plugin: p})
-	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*plugin.Response, error) {
 		t.Error("local response reached upstream")
 		return nil, errors.New("unexpected upstream")
 	})
-	r, err := chain(&plugin.Exchange{})
+	r, err := chain(&plugin.Exchange{Request: plugin.NewRequest(httptest.NewRequest("GET", "https://example.com/", nil), nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Body.Close()
-	body, _ := io.ReadAll(r.Body)
+	raw, _, err := r.TakeHTTP()
+	if err != nil {
+		r.Close()
+		t.Fatal(err)
+	}
+	defer raw.Body.Close()
+	body, err := io.ReadAll(raw.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(body) != "local" {
 		t.Fatal(string(body))
 	}
@@ -127,36 +135,36 @@ func TestPluginLocalResponse(t *testing.T) {
 func TestPluginHandoffResetsReadDeadlineAndBindsResponse(t *testing.T) {
 	var deadline time.Time
 	outer := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-		return func(e *plugin.Exchange) (*http.Response, error) {
+		return func(e *plugin.Exchange) (*plugin.Response, error) {
 			_ = e.SetReadDeadline(time.Now().Add(time.Second))
 			r, err := next(e)
-			if err == nil && r.Request != e.Request {
+			if err == nil && r.Head.Request != e.Request.Head {
 				t.Error("downstream response has no associated exchange request")
 			}
 			return r, err
 		}
 	}}
 	inner := &testPlugin{plan: outer.plan, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-		return func(*plugin.Exchange) (*http.Response, error) {
+		return func(e *plugin.Exchange) (*plugin.Response, error) {
 			if !deadline.IsZero() {
 				t.Error("previous plugin's read deadline leaked into the next plugin")
 			}
-			return response("local"), nil
+			return e.NewResponse(response("local")), nil
 		}
 	}}
 	h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{Plugin: outer}, Instance{Plugin: inner})
-	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*plugin.Response, error) {
 		t.Fatal("local response reached upstream")
 		return nil, nil
 	})
 	r, err := chain(&plugin.Exchange{
-		Request:         httptest.NewRequest("GET", "https://example.com/", nil),
+		Request:         plugin.NewRequest(httptest.NewRequest("GET", "https://example.com/", nil), nil),
 		SetReadDeadline: func(value time.Time) error { deadline = value; return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = r.Body.Close()
+	_ = r.Close()
 }
 
 type workerPlugin struct {
@@ -259,7 +267,7 @@ func TestRequestAuthority(t *testing.T) {
 	} {
 		t.Run(test.host+"/"+test.authority, func(t *testing.T) {
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(test.host)}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
+				return func(e *plugin.Exchange) (*plugin.Response, error) { return e.NewResponse(response("local")), nil }
 			}}
 			h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "test", Plugin: p})
 			handler, closeTransport := h.Handler("http", test.host, 80, nil)

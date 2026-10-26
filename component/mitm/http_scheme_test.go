@@ -28,9 +28,9 @@ func TestHTTPSRequestSchemeHandling(t *testing.T) {
 			var calls atomic.Int32
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}},
 				wrap: func(_ plugin.Flow, _ plugin.Handler) plugin.Handler {
-					return func(e *plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						calls.Add(1)
-						return response(e.Request.URL.Scheme), nil
+						return e.NewResponse(response(e.Request.Head.URL.Scheme)), nil
 					}
 				}}
 			h := testHost(t, Options{Authority: ca, Logger: logger}, Instance{Plugin: p})

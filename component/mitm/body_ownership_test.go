@@ -22,16 +22,15 @@ func TestRequestOwnershipEndsAfterUpstreamOrLocalResponse(t *testing.T) {
 			budget := membuffer.NewBudget(1 << 20)
 			payload := strings.Repeat("final", 32768)
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-				return func(e *plugin.Exchange) (*http.Response, error) {
-					// Multiple request plugins can replace and inspect the same body.
+				return func(e *plugin.Exchange) (*plugin.Response, error) {
 					for _, text := range []string{"first", payload} {
 						view, err := membuffer.Copy([]byte(text), budget)
 						if err != nil {
 							return nil, err
 						}
-						plugin.SetRequestBody(e.Request, view)
+						e.Request.Body().Replace(view)
 						view.Close()
-						snapshot, err := plugin.SnapshotBody(&e.Request.Body, int64(len(payload)), budget)
+						snapshot, err := e.Request.Body().Snapshot(int64(len(payload)))
 						snapshot.Close()
 						if err != nil {
 							return nil, err
@@ -39,7 +38,7 @@ func TestRequestOwnershipEndsAfterUpstreamOrLocalResponse(t *testing.T) {
 					}
 					switch outcome {
 					case "local":
-						return response("local"), nil
+						return e.NewResponse(response("local")), nil
 					case "error":
 						return nil, errors.New("plugin failed")
 					case "abort":
@@ -48,7 +47,7 @@ func TestRequestOwnershipEndsAfterUpstreamOrLocalResponse(t *testing.T) {
 					return next(e)
 				}
 			}}
-			h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{Plugin: p})
+			h := testHost(t, Options{Authority: &localca.Authority{}, BodyMemory: budget}, Instance{Plugin: p})
 			upstreamCalls := 0
 			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				upstreamCalls++

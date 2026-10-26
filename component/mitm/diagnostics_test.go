@@ -4,7 +4,6 @@ package mitm
 
 import (
 	"context"
-	"net/http"
 	"reflect"
 	"testing"
 
@@ -84,7 +83,7 @@ func TestExplainHTTPScopeMatchesRuntimeChain(t *testing.T) {
 		host := &Host{instances: []Instance{{ID: "test", Plugin: p, plan: plugin.Plan{Scopes: scopes}}}}
 		for _, port := range []uint16{0, 80, 443} {
 			p.wrapped, explained = false, false
-			host.chain(plugin.Flow{Host: "private.example", Port: port}, func(*plugin.Exchange) (*http.Response, error) { return nil, nil })
+			host.chain(plugin.Flow{Host: "private.example", Port: port}, func(*plugin.Exchange) (*plugin.Response, error) { return nil, nil })
 			host.Explain(t.Context(), api.ExplainRequest{Flow: api.DiagnosticFlow{Destination: api.DiagnosticTarget{IP: "private.example", Port: int(port)}}}, false)
 			if explained != p.wrapped {
 				t.Fatalf("scope mismatch at port %d", port)

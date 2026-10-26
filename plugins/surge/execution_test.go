@@ -48,18 +48,31 @@ func TestHTTPSlowBodyReleasesExecutionSlot(t *testing.T) {
 			go func() {
 				if phase == "http-request" {
 					r.Body = body
-					_, err := e.processRequest(&plugin.Exchange{Request: r})
+					request := plugin.NewRequest(r, budget)
+					_, err := e.processRequest(&plugin.Exchange{Request: request})
+					if err == nil {
+						r = forwardTestRequest(t, request)
+					} else {
+						request.Body().Close()
+					}
 					response.Body = r.Body
 					done <- err
 				} else {
-					done <- e.processResponse(response, nil)
+					controlled := plugin.NewResponse(response, budget)
+					err := e.processResponse(controlled, nil)
+					if err == nil {
+						response = takeTestResponse(t, controlled)
+					} else {
+						controlled.Close()
+					}
+					done <- err
 				}
 			}()
 			<-body.started
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			fast := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://example.com/unmatched", nil)
-			if _, err := e.processRequest(&plugin.Exchange{Request: fast}); err != nil {
+			if _, err := e.processRequest(&plugin.Exchange{Request: plugin.NewRequest(fast, budget)}); err != nil {
 				t.Fatalf("slow body blocked unrelated request: %v", err)
 			}
 			io.WriteString(writer, "before")
@@ -91,7 +104,7 @@ func TestHTTPAdmissionWaitDoesNotFailAtRegexBudget(t *testing.T) {
 	}
 	go func() { time.Sleep(350 * time.Millisecond); release() }()
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/", nil)
-	if _, err := e.processRequest(&plugin.Exchange{Request: r}); err != nil || r.Header.Get("X-Processed") != "yes" {
+	if _, err := e.processRequest(&plugin.Exchange{Request: plugin.NewRequest(r, e.options.BodyMemory)}); err != nil || r.Header.Get("X-Processed") != "yes" {
 		t.Fatalf("queue wait consumed execution budget: %v, %v", err, r.Header)
 	}
 }
@@ -118,7 +131,9 @@ func TestHTTPBodyCancellationInterruptsRead(t *testing.T) {
 	r.Body = body
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.processRequest(&plugin.Exchange{Request: r, SetReadDeadline: server.SetReadDeadline})
+		request := plugin.NewRequest(r, budget)
+		defer request.Body().Close()
+		_, err := e.processRequest(&plugin.Exchange{Request: request, SetReadDeadline: server.SetReadDeadline})
 		done <- err
 	}()
 	<-body.started

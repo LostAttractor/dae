@@ -23,13 +23,13 @@ func TestFrontedRequestPreservesPluginView(t *testing.T) {
 			const businessURL = "https://business.example/path?key=value"
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("business.example")}}}}
 			p.wrap = func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-				return func(e *plugin.Exchange) (*http.Response, error) {
+				return func(e *plugin.Exchange) (*plugin.Response, error) {
 					if clearHost {
-						e.Request.Host = ""
+						e.Request.Head.Host = ""
 					}
 					resp, err := next(e)
-					if err == nil && (resp.Request != e.Request || resp.Request.URL.String() != businessURL) {
-						t.Errorf("response hook saw transport request instead of business request: %s", resp.Request.URL)
+					if err == nil && (resp.Head.Request != e.Request.Head || resp.Head.Request.URL.String() != businessURL) {
+						t.Errorf("response hook saw transport request instead of business request: %s", resp.Head.Request.URL)
 					}
 					return resp, err
 				}

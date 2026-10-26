@@ -96,10 +96,13 @@ func TestSurgeProxyRepeatedCookieHeaders(t *testing.T) {
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("unchanged"))
 				req.Header[name] = []string{"mjclient=YouPin", "serviceToken=abc=123", "youpin_sessionid=session"}
 				original := req.Header.Clone()
-				_, err := engine.processRequest(&plugin.Exchange{Request: req})
+				controlledRequest := plugin.NewRequest(req, engine.options.BodyMemory)
+				defer controlledRequest.Body().Close()
+				_, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest})
 				if err != nil {
 					t.Fatal(err)
 				}
+				req = forwardTestRequest(t, controlledRequest)
 				if got, err := engine.options.Runtime.data.read(t.Context(), "captured"); err != nil || got != "serviceToken=abc=123" {
 					t.Fatalf("captured token=%v error=%v", got, err)
 				}
@@ -152,9 +155,12 @@ rewrite = type=http-response,pattern=.,requires-body=1,binary-body-mode=1,script
 	_ = z.Close()
 	req := httptest.NewRequest("GET", "https://example.com/", nil)
 	response := &http.Response{Request: req, StatusCode: 200, Body: io.NopCloser(bytes.NewReader(compressed.Bytes())), ContentLength: int64(compressed.Len()), Header: http.Header{"Content-Encoding": {"gzip"}, "Etag": {"old"}}, Trailer: http.Header{"Grpc-Status": {"0"}}}
-	if err := engine.processResponse(response, http.DefaultClient); err != nil {
+	controlledResponse := plugin.NewResponse(response, engine.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := engine.processResponse(controlledResponse, http.DefaultClient); err != nil {
 		t.Fatal(err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	body, _ := io.ReadAll(response.Body)
 	if !bytes.Equal(body, []byte{0, 1, 128, 255}) {
 		t.Fatalf("body=%v", body)
@@ -169,7 +175,9 @@ func TestSurgeProxyRejectsOversizedDecompressedBody(t *testing.T) {
 bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.js
 `, `$done({});`)
 	req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader(strings.Repeat("x", 17)))
-	if _, err := engine.processRequest(&plugin.Exchange{Request: req, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != membuffer.ErrTooLarge {
+	controlledRequest := plugin.NewRequest(req, engine.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+	if _, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != membuffer.ErrTooLarge {
 		t.Fatalf("error=%v", err)
 	}
 	var compressed bytes.Buffer
@@ -180,7 +188,7 @@ bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeBodyView(t.Context(), view, "gzip", 16, testBodyMemory); err != membuffer.ErrTooLarge {
+	if _, err := decodeBodyView(t.Context(), view, "gzip", 16); err != membuffer.ErrTooLarge {
 		t.Fatalf("decode error=%v", err)
 	}
 }
@@ -201,9 +209,12 @@ bounded = type=http-response,pattern=.,requires-body=1,max-size=64,script-path=a
 			headers := response.Header.Clone()
 			tracked := &bodyRewriteTrackedReader{Reader: bytes.NewReader(raw)}
 			response.Body = tracked
-			if err := engine.processResponse(response, http.DefaultClient); err != nil {
+			controlledResponse := plugin.NewResponse(response, engine.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledResponse.Close() })
+			if err := engine.processResponse(controlledResponse, http.DefaultClient); err != nil {
 				t.Fatal(err)
 			}
+			response = takeTestResponse(t, controlledResponse)
 			if tracked.closed || tracked.readBytes > 65 {
 				t.Fatalf("response was closed or read beyond buffer limit: %+v", tracked)
 			}
@@ -233,10 +244,13 @@ headers = type=http-response,pattern=.,script-path=a.js
 `, `$done({headers:{"X-Header":"done"}});`)
 	body := &unreadBody{}
 	response := &http.Response{Request: httptest.NewRequest("GET", "https://example.com/", nil), StatusCode: 200, Body: body, Header: make(http.Header)}
-	if err := engine.processResponse(response, http.DefaultClient); err != nil {
+	controlledResponse := plugin.NewResponse(response, engine.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := engine.processResponse(controlledResponse, http.DefaultClient); err != nil {
 		t.Fatal(err)
 	}
-	if response.Body != body || body.read {
+	response = takeTestResponse(t, controlledResponse)
+	if body.read {
 		t.Fatal("header-only script read the streaming body")
 	}
 }
@@ -274,7 +288,9 @@ func TestSurgeProxyAdmissionHonorsCancellation(t *testing.T) {
 			req := httptest.NewRequestWithContext(ctx, "POST", "https://example.com/", nil)
 			req.Body = body
 			start := time.Now()
-			if _, err := engine.processRequest(&plugin.Exchange{Request: req, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != context.DeadlineExceeded {
+			controlledRequest := plugin.NewRequest(req, engine.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+			if _, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != context.DeadlineExceeded {
 				t.Fatalf("error=%v", err)
 			}
 			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
@@ -300,4 +316,22 @@ func proxyTestHost(t *testing.T, engine *Engine) *mitm.Host {
 	}
 	t.Cleanup(func() { _ = host.Close() })
 	return host
+}
+
+func forwardTestRequest(t *testing.T, request *plugin.Request) *http.Request {
+	t.Helper()
+	wire, err := request.Forward()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
+func takeTestResponse(t *testing.T, response *plugin.Response) *http.Response {
+	t.Helper()
+	wire, _, err := response.TakeHTTP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
 }

@@ -67,18 +67,29 @@ func TestSurgeSlowBodyDoesNotConsumeExecutionBudget(t *testing.T) {
 					if phase == "http-request" {
 						request := response.Request
 						request.Body, request.Header, request.ContentLength = response.Body, response.Header, response.ContentLength
-						var synthetic *http.Response
-						synthetic, err = e.processRequest(&plugin.Exchange{Request: request})
+						controlled := plugin.NewRequest(request, e.options.BodyMemory)
+						defer controlled.Body().Close()
+						var synthetic *plugin.Response
+						synthetic, err = e.processRequest(&plugin.Exchange{Request: controlled})
 						if synthetic != nil {
 							t.Fatal("script unexpectedly synthesized a response")
 						}
-						response.Body, response.Header = request.Body, request.Header
-					} else if phase == "body-rewrite" {
-						err = e.rewriteResponseBody(response)
+						if err == nil {
+							request = forwardTestRequest(t, controlled)
+							response.Body, response.Header = request.Body, request.Header
+						}
 					} else {
-						err = e.processResponse(response, nil)
+						controlled := plugin.NewResponse(response, e.options.BodyMemory)
+						defer controlled.Close()
+						if phase == "body-rewrite" {
+							err = e.rewriteResponseBody(controlled)
+						} else {
+							err = e.processResponse(controlled, nil)
+						}
+						if err == nil {
+							response = takeTestResponse(t, controlled)
+						}
 					}
-					defer response.Body.Close()
 					switch outcome {
 					case "complete":
 						if err != nil {

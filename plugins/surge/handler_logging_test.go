@@ -273,10 +273,10 @@ func TestRequestCancellationAndUpstreamErrorsDoNotWarn(t *testing.T) {
 			cancel()
 		}
 		r := httptest.NewRequest(http.MethodGet, "http://example.test/", nil).WithContext(ctx)
-		handler := engine.Wrap(plugin.Flow{Host: "example.test", Port: 80}, func(*plugin.Exchange) (*http.Response, error) {
+		handler := engine.Wrap(plugin.Flow{Host: "example.test", Port: 80}, func(*plugin.Exchange) (*plugin.Response, error) {
 			return nil, errors.New("upstream unavailable")
 		})
-		_, _ = handler(&plugin.Exchange{Request: r})
+		_, _ = handler(&plugin.Exchange{Request: plugin.NewRequest(r, engine.options.BodyMemory)})
 		cancel()
 		if len(capture.warnings) != 0 {
 			t.Fatalf("canceled=%t: request failure emitted script warning: %v", canceled, capture.warnings)

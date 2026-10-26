@@ -90,7 +90,7 @@ func TestUpstreamFailureDiagnostics(t *testing.T) {
 
 func TestLocalPluginErrorIsNotAnUpstreamFailure(t *testing.T) {
 	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, _ plugin.Handler) plugin.Handler {
-		return func(*plugin.Exchange) (*http.Response, error) {
+		return func(*plugin.Exchange) (*plugin.Response, error) {
 			return nil, &plugin.HTTPError{Status: 413, Err: errors.New("plugin rejected body")}
 		}
 	}}

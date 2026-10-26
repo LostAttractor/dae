@@ -200,14 +200,14 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 	}
 	e := cronTestEngine(t, module, sources, 2)
 	// Warm regexp2's process-wide real-time clock outside synctest.
-	chain := e.Wrap(plugin.Flow{Host: "notify.test", Port: 443}, func(exchange *plugin.Exchange) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Request: exchange.Request, Header: make(http.Header), Body: http.NoBody}, nil
+	chain := e.Wrap(plugin.Flow{Host: "notify.test", Port: 443}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
+		return exchange.NewResponse(&http.Response{StatusCode: 200, Request: exchange.Request.Head, Header: make(http.Header), Body: http.NoBody}), nil
 	})
-	response, err := chain(&plugin.Exchange{Request: httptest.NewRequestWithContext(t.Context(), "GET", "https://notify.test/", nil)})
+	response, err := chain(&plugin.Exchange{Request: plugin.NewRequest(httptest.NewRequestWithContext(t.Context(), "GET", "https://notify.test/", nil), e.options.BodyMemory)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	response.Close()
 	query := new(dns.Msg).SetQuestion("notify.test.", dns.TypeA)
 	_, err = e.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		t.Fatal("DNS script unexpectedly fell through")

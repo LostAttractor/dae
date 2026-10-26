@@ -123,7 +123,7 @@ func scriptHTTPResponse(ctx context.Context, req *http.Request, resp *http.Respo
 	if encoding != "" && responseHasBody(req.Method, resp.StatusCode) && len(raw.Bytes()) != 0 {
 		// Routed transports preserve wire bytes. Decode before text/binary
 		// delivery, applying the same size and shared-memory limits to each layer.
-		data, err = decodeBodyView(ctx, raw, encoding, maxBody, budget)
+		data, err = decodeBodyView(ctx, raw, encoding, maxBody)
 		defer data.Close()
 		if err != nil {
 			return "", membuffer.Reservation{}, fmt.Errorf("decode $httpClient response: %w", err)

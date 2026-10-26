@@ -5,6 +5,7 @@ package surge
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 func TestScriptMatchesHostAndSNIAfterScopeAdmission(t *testing.T) {
@@ -46,17 +48,23 @@ if (!Array.isArray(headers)) throw Error("full headers missing");
 headers.push({field:"X-Processed",value:"yes"}); $done({headers});`)
 	request := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
 	request.Header["X-Repeat"] = []string{"first", "second"}
-	if _, err := engine.processRequest(&plugin.Exchange{Request: request, Client: http.DefaultClient}); err != nil {
+	controlledRequest := plugin.NewRequest(request, engine.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+	if _, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest, Client: http.DefaultClient}); err != nil {
 		t.Fatal(err)
 	}
+	request = forwardTestRequest(t, controlledRequest)
 	if request.Header.Get("X-Processed") != "yes" || !reflect.DeepEqual(request.Header.Values("X-Repeat"), []string{"first", "second"}) {
 		t.Fatalf("request fields lost: %v", request.Header)
 	}
 	response := &http.Response{Request: request, StatusCode: 200, Header: http.Header{"Set-Cookie": {"one=1; Path=/", "two=2; Expires=Wed, 21 Oct 2037 07:28:00 GMT"}}, Body: http.NoBody}
 	cookies := response.Header.Values("Set-Cookie")
-	if err := engine.processResponse(response, http.DefaultClient); err != nil {
+	controlledResponse := plugin.NewResponse(response, engine.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := engine.processResponse(controlledResponse, http.DefaultClient); err != nil {
 		t.Fatal(err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	if response.Header.Get("X-Processed") != "yes" || !reflect.DeepEqual(response.Header.Values("Set-Cookie"), cookies) {
 		t.Fatalf("response cookies lost: %v", response.Header)
 	}
@@ -66,7 +74,9 @@ func TestScriptBodyRules(t *testing.T) {
 	t.Run("response requires-body", func(t *testing.T) {
 		engine := testProxyEngine(t, "[Script]\na=type=http-response,pattern=.,script-path=a.js", `$done({body:"invalid"});`)
 		response := &http.Response{Request: httptest.NewRequest(http.MethodGet, "https://example.com/", nil), StatusCode: 200, Header: make(http.Header), Body: http.NoBody}
-		if err := engine.processResponse(response, http.DefaultClient); !errors.Is(err, errScriptAbort) {
+		controlledResponse := plugin.NewResponse(response, engine.options.BodyMemory)
+		t.Cleanup(func() { _ = controlledResponse.Close() })
+		if err := engine.processResponse(controlledResponse, http.DefaultClient); !errors.Is(err, errScriptAbort) {
 			t.Fatalf("unbuffered body did not abort: %v", err)
 		}
 	})
@@ -79,9 +89,12 @@ func TestScriptBodyRules(t *testing.T) {
 			} else {
 				request.Header.Set("Expect", "100-continue")
 			}
-			if _, err := engine.processRequest(&plugin.Exchange{Request: request, Client: http.DefaultClient}); err != nil {
+			controlledRequest := plugin.NewRequest(request, engine.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+			if _, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest, Client: http.DefaultClient}); err != nil {
 				t.Fatal(err)
 			}
+			request = forwardTestRequest(t, controlledRequest)
 			body, err := io.ReadAll(request.Body)
 			request.Body.Close()
 			if err != nil || string(body) != "original" || request.Header.Get("X-Processed") != "yes" {
@@ -98,5 +111,142 @@ cron=type=cron,cronexp="* * * * *",script-path=missing.js,enable=false
 dns=type=dns,script-path=missing.js,enable=false`, "/module", nil, nil)
 	if err != nil || len(module.Scripts)+len(module.TaskScripts) != 0 {
 		t.Fatalf("disabled scripts: %+v %v", module, err)
+	}
+}
+
+type bodylessStatusSource struct {
+	io.Reader
+	reads, closes int
+}
+
+func (s *bodylessStatusSource) Read(p []byte) (int, error) {
+	s.reads++
+	return s.Reader.Read(p)
+}
+func (s *bodylessStatusSource) Close() error { s.closes++; return nil }
+
+func TestHTTPStatusOmitsBodyPreservesRepresentation(t *testing.T) {
+	for _, status := range []int{http.StatusNotModified, http.StatusNoContent} {
+		for _, replace := range []bool{false, true} {
+			t.Run(fmt.Sprintf("status=%d/replace=%t", status, replace), func(t *testing.T) {
+				module := "[Script]\nrewrite=type=http-response,pattern=.,script-path=a.js"
+				bodyResult := ""
+				if replace {
+					module += ",requires-body=true"
+					bodyResult = `,body:"replacement"`
+				}
+				engine := testProxyEngine(t, module, fmt.Sprintf(`$done({status:%d,trailers:{"X-Script":"tail"}%s});`, status, bodyResult))
+				budget := membuffer.NewBudget(8 << 20)
+				engine.options.BodyMemory = budget
+				encoded := encodeRuntimeHTTPBody(t, []byte("original"), "gzip")
+				source := &bodylessStatusSource{Reader: strings.NewReader(string(encoded))}
+				request := httptest.NewRequest(http.MethodGet, "https://example.com/item", nil)
+				request.Header.Set("If-None-Match", `"original"`)
+				preserved := http.Header{
+					"Etag": {`"original"`}, "Last-Modified": {"Mon, 26 Oct 2026 00:00:00 GMT"},
+					"Content-Encoding": {"gzip"}, "Repr-Digest": {"sha-256=:representation:"},
+				}
+				header := preserved.Clone()
+				header.Set("Content-Digest", "sha-256=:content:")
+				header.Set("Content-MD5", "content")
+				header.Set("Trailer", "X-Upstream")
+				header.Set("Cache-Control", "max-age=60")
+				response := plugin.NewResponse(&http.Response{
+					Request: request, StatusCode: http.StatusOK, Header: header,
+					Body: source, ContentLength: int64(len(encoded)),
+					Trailer: http.Header{"X-Upstream": {"tail"}},
+				}, budget)
+				defer response.Close()
+				response.SetDelivery(plugin.DeliveryStreaming)
+				if err := engine.processResponse(response, nil); err != nil {
+					t.Fatal(err)
+				}
+				for name, values := range preserved {
+					want := values
+					if replace {
+						want = nil
+					}
+					if got := response.Head.Header.Values(name); !reflect.DeepEqual(got, want) {
+						t.Errorf("%s=%v want=%v", name, got, want)
+					}
+				}
+				for _, name := range []string{"Content-Length", "Transfer-Encoding", "Trailer", "Content-Digest", "Content-MD5"} {
+					if response.Head.Header.Get(name) != "" {
+						t.Errorf("bodyless response retained %s", name)
+					}
+				}
+				if len(response.Head.Trailer) != 0 || len(response.Head.TransferEncoding) != 0 || response.Head.Header.Get("Cache-Control") != "max-age=60" {
+					t.Fatal("incorrect metadata for a bodyless status", response.Head)
+				}
+				if response.Head.Body != nil || response.Delivery() != plugin.DeliveryDefault || !replace && source.reads != 0 || source.closes != 1 {
+					t.Fatal("incorrect body ownership or delivery", source.reads, source.closes)
+				}
+				if status == http.StatusNoContent && response.Head.ContentLength != 0 || status == http.StatusNotModified && !replace && response.Head.ContentLength != int64(len(encoded)) {
+					t.Fatal("incorrect content length for a bodyless status", response.Head.ContentLength)
+				}
+				wire := takeTestResponse(t, response)
+				data, err := io.ReadAll(wire.Body)
+				_ = wire.Body.Close()
+				_ = response.Close()
+				if err != nil || len(data) != 0 || wire.StatusCode != status || source.closes != 1 || budget.Status().Used != 0 {
+					t.Fatal(string(data), err, wire.StatusCode, source.closes, budget.Status())
+				}
+			})
+		}
+	}
+}
+
+func TestHTTPMessageBodyOwnershipAndDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, source, want string
+		status                     int
+		requiresBody               bool
+		delivery                   plugin.Delivery
+	}{
+		{"headers-only", http.MethodGet, `$done({});`, "original", 200, false, plugin.DeliveryStreaming},
+		{"snapshot", http.MethodGet, `$done({});`, "original", 200, true, plugin.DeliveryStreaming},
+		{"replacement", http.MethodGet, `$done({body:"rewritten"});`, "rewritten", 200, true, plugin.DeliveryDefault},
+		{"head", http.MethodHead, `$done({});`, "", 200, true, plugin.DeliveryStreaming},
+		{"not-modified", http.MethodGet, `$done({});`, "", 304, true, plugin.DeliveryStreaming},
+		{"status-removes-body", http.MethodGet, `$done({status:204});`, "", 200, false, plugin.DeliveryDefault},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			module := "[Script]\nrewrite=type=http-response,pattern=.,script-path=a.js"
+			if tc.requiresBody {
+				module += ",requires-body=true"
+			}
+			engine := testProxyEngine(t, module, tc.source)
+			budget := membuffer.NewBudget(1 << 20)
+			engine.options.BodyMemory = budget
+			body := io.NopCloser(strings.NewReader("original"))
+			if !responseHasBody(tc.method, tc.status) {
+				body = http.NoBody
+			}
+			response := plugin.NewResponse(&http.Response{
+				Request:    httptest.NewRequest(tc.method, "https://example.com/", nil),
+				StatusCode: tc.status, Header: http.Header{"Etag": {`"original"`}},
+				ContentLength: 8, Body: body,
+			}, budget)
+			defer response.Close()
+			response.SetDelivery(plugin.DeliveryStreaming)
+			if err := engine.processResponse(response, nil); err != nil {
+				t.Fatal(err)
+			}
+			if response.Head.Body != nil || response.Delivery() != tc.delivery {
+				t.Fatalf("incorrect body ownership or delivery policy: %+v delivery=%v", response.Head, response.Delivery())
+			}
+			if tc.delivery == plugin.DeliveryStreaming && (response.Head.Header.Get("Etag") != `"original"` || response.Head.ContentLength != 8) {
+				t.Fatal("unchanged representation lost validators or content length")
+			}
+			if replaced := tc.name == "replacement"; (response.Head.Header.Get("Etag") == "") != replaced {
+				t.Fatal("representation validators do not match body replacement semantics")
+			}
+			wire := takeTestResponse(t, response)
+			got, err := io.ReadAll(wire.Body)
+			wire.Body.Close()
+			if err != nil || string(got) != tc.want || budget.Status().Used != 0 {
+				t.Fatalf("body=%q err=%v budget=%+v", got, err, budget.Status())
+			}
+		})
 	}
 }

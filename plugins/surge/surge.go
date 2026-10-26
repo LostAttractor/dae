@@ -193,28 +193,28 @@ func (e *Engine) Plan() plugin.Plan {
 
 func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 	e = e.forConnection(flow.Host, flow.Port)
-	return func(exchange *plugin.Exchange) (response *http.Response, err error) {
-		r := exchange.Request
+	return func(exchange *plugin.Exchange) (response *plugin.Response, err error) {
+		r := exchange.Request.Head
 		e.traceRequest(r, "request_begin", "protocol", r.Proto)
 		response, err = e.processRequest(exchange)
 		if err != nil {
 			e.logRequest(r, "Surge request rewrite failed", err)
 		}
 		if err == nil && response != nil {
-			e.traceRequest(r, "response_local", "status", response.StatusCode)
+			e.traceRequest(r, "response_local", "status", response.Head.StatusCode)
 			return response, nil
 		}
 		if err == nil {
 			e.traceRequest(r, "request_forward")
 			response, err = next(exchange)
 			if err == nil {
-				e.traceRequest(r, "upstream_response", "status", response.StatusCode)
+				e.traceRequest(r, "upstream_response", "status", response.Head.StatusCode)
 				err = e.processResponse(response, exchange.Client)
 				if err != nil {
 					e.logRequest(r, "Surge response rewrite failed", err)
 				}
-				if err != nil && response.Body != nil {
-					_ = response.Body.Close()
+				if err != nil {
+					_ = response.Close()
 					response = nil
 				}
 			}

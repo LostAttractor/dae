@@ -81,9 +81,9 @@ func TestHTTP1PendingUploadEarlyResponse(t *testing.T) {
 					plan = func(*http.Request) (UpstreamPlan, error) { return UpstreamPlan{}, errors.New("no route") }
 				}
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: plugin.Scope{{Host: "example.com", Ports: []uint16{80}}}}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-					return func(e *plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						if outcome == "local" {
-							return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
+							return e.NewResponse(&http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}), nil
 						}
 						return next(e)
 					}
@@ -292,8 +292,12 @@ func TestHTTP1ExpectContinueLocalEcho(t *testing.T) {
 		p := &testPlugin{
 			plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: plugin.Scope{{Host: "example.com", Ports: []uint16{80}}}}}},
 			wrap: func(_ plugin.Flow, _ plugin.Handler) plugin.Handler {
-				return func(e *plugin.Exchange) (*http.Response, error) {
-					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: e.Request.Body, ContentLength: -1}, nil
+				return func(e *plugin.Exchange) (*plugin.Response, error) {
+					upload, err := e.Request.Forward()
+					if err != nil {
+						return nil, err
+					}
+					return e.NewResponse(&http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: upload.Body, ContentLength: -1}), nil
 				}
 			},
 		}
@@ -512,103 +516,114 @@ func (b *closeWaitsForRead) Close() error {
 }
 
 func TestHTTPUpgradeHalfClose(t *testing.T) {
-	for _, encrypted := range []bool{false, true} {
-		for _, first := range []string{"client", "upstream"} {
-			t.Run(fmt.Sprintf("tls=%t/%s-first", encrypted, first), func(t *testing.T) {
-				authority, roots := http3TestAuthority(t)
-				finished := make(chan error, 1)
-				backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					c, rw, err := http.NewResponseController(w).Hijack()
-					if err != nil {
-						finished <- err
-						return
-					}
-					defer c.Close()
-					_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-					_, err = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
-					if err == nil {
-						err = rw.Flush()
-					}
-					if err != nil {
-						finished <- err
-						return
-					}
-					if first == "upstream" {
-						_, err = io.WriteString(c, "prefix")
+	for _, observe := range []bool{false, true} {
+		for _, encrypted := range []bool{false, true} {
+			for _, first := range []string{"client", "upstream"} {
+				t.Run(fmt.Sprintf("observe=%t/tls=%t/%s-first", observe, encrypted, first), func(t *testing.T) {
+					authority, roots := http3TestAuthority(t)
+					finished := make(chan error, 1)
+					backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						c, rw, err := http.NewResponseController(w).Hijack()
+						if err != nil {
+							finished <- err
+							return
+						}
+						defer c.Close()
+						_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+						_, err = io.WriteString(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
 						if err == nil {
-							err = netproxy.CloseWrite(c)
+							err = rw.Flush()
 						}
 						if err != nil {
 							finished <- err
 							return
 						}
+						if first == "upstream" {
+							_, err = io.WriteString(c, "prefix")
+							if err == nil {
+								err = netproxy.CloseWrite(c)
+							}
+							if err != nil {
+								finished <- err
+								return
+							}
+						}
+						body, err := io.ReadAll(rw)
+						if err == nil && string(body) != "payload" {
+							err = fmt.Errorf("upload=%q", body)
+						}
+						if err == nil && first == "client" {
+							_, err = fmt.Fprintf(c, "ack:%s", body)
+						}
+						finished <- err
+					}))
+					backend.TLS = authority.TLSConfig("example.com")
+					if encrypted {
+						backend.StartTLS()
+					} else {
+						backend.Start()
 					}
-					body, err := io.ReadAll(rw)
-					if err == nil && string(body) != "payload" {
-						err = fmt.Errorf("upload=%q", body)
+					defer backend.Close()
+					p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
+						return func(e *plugin.Exchange) (*plugin.Response, error) {
+							response, err := next(e)
+							if err == nil && observe {
+								response.Body().Observe(64, func([]byte) { t.Error("observer processed an upgraded connection") })
+							}
+							return response, err
+						}
+					}}
+					h := testHost(t, Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}}, Instance{Plugin: p})
+					protocol := "http"
+					if encrypted {
+						protocol = "https"
 					}
-					if err == nil && first == "client" {
-						_, err = fmt.Fprintf(c, "ack:%s", body)
+					client, _ := tcpDrainClient(t, h, roots, protocol, testUpstream(func(ctx context.Context, _, _ string) (net.Conn, error) {
+						return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
+					}))
+					c, err := client.Transport.(*http.Transport).DialContext(t.Context(), "tcp", "example.com:80")
+					if err != nil {
+						t.Fatal(err)
 					}
-					finished <- err
-				}))
-				backend.TLS = authority.TLSConfig("example.com")
-				if encrypted {
-					backend.StartTLS()
-				} else {
-					backend.Start()
-				}
-				defer backend.Close()
-				h := testHost(t, Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}})
-				protocol := "http"
-				if encrypted {
-					protocol = "https"
-				}
-				client, _ := tcpDrainClient(t, h, roots, protocol, testUpstream(func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
-				}))
-				c, err := client.Transport.(*http.Transport).DialContext(t.Context(), "tcp", "example.com:80")
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer c.Close()
-				_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-				if encrypted {
-					c = tls.Client(c, &tls.Config{RootCAs: roots, ServerName: "example.com", NextProtos: []string{"http/1.1"}})
-				}
-				if _, err := io.WriteString(c, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n"); err != nil {
-					t.Fatal(err)
-				}
-				reader := bufio.NewReader(c)
-				resp, err := http.ReadResponse(reader, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if resp.StatusCode != 101 {
-					t.Fatalf("upgrade status=%d", resp.StatusCode)
-				}
-				if first == "upstream" {
-					body, err := io.ReadAll(reader)
-					if err != nil || string(body) != "prefix" {
-						t.Fatalf("response=%q read=%v", body, err)
+					defer c.Close()
+					_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+					if encrypted {
+						c = tls.Client(c, &tls.Config{RootCAs: roots, ServerName: "example.com", NextProtos: []string{"http/1.1"}})
 					}
-				}
-				if _, err := io.WriteString(c, "payload"); err != nil {
-					t.Fatal(err)
-				}
-				if err := netproxy.CloseWrite(c); err != nil {
-					t.Fatal(err)
-				}
-				if first == "client" {
-					body, err := io.ReadAll(reader)
-					if err != nil || string(body) != "ack:payload" {
-						t.Fatalf("trailing response=%q read=%v", body, err)
+					if _, err := io.WriteString(c, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n"); err != nil {
+						t.Fatal(err)
 					}
-				}
-				if err := <-finished; err != nil {
-					t.Fatal(err)
-				}
-			})
+					reader := bufio.NewReader(c)
+					resp, err := http.ReadResponse(reader, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if resp.StatusCode != 101 {
+						t.Fatalf("upgrade status=%d", resp.StatusCode)
+					}
+					if first == "upstream" {
+						body, err := io.ReadAll(reader)
+						if err != nil || string(body) != "prefix" {
+							t.Fatalf("response=%q read=%v", body, err)
+						}
+					}
+					if _, err := io.WriteString(c, "payload"); err != nil {
+						t.Fatal(err)
+					}
+					if err := netproxy.CloseWrite(c); err != nil {
+						t.Fatal(err)
+					}
+					if first == "client" {
+						body, err := io.ReadAll(reader)
+						if err != nil || string(body) != "ack:payload" {
+							t.Fatalf("trailing response=%q read=%v", body, err)
+						}
+					}
+					if err := <-finished; err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
 		}
 	}
 }

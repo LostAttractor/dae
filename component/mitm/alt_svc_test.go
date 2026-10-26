@@ -78,13 +78,13 @@ func TestHandlerAltSvc(t *testing.T) {
 					{Host: "other.example", Ports: []uint16{443}},
 				}}}},
 				wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-					return func(*plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						r := response("ok")
 						for _, value := range test.values {
 							r.Header.Add("Alt-Svc", value)
 						}
 						r.Header.Set("X-Upstream", "unchanged")
-						return r, nil
+						return e.NewResponse(r), nil
 					}
 				},
 			}

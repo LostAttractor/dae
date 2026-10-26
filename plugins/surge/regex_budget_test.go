@@ -54,9 +54,12 @@ func TestRegexBudgetAcrossHTTPDirections(t *testing.T) {
 	e := testProxyEngine(t, "[Header Rewrite]\nhttp-request . header-add X-Request yes\nhttp-response . header-add X-Response yes", "")
 	e.slots = make(chan struct{}, 1)
 	r := httptest.NewRequestWithContext(t.Context(), "GET", "https://example.test/", nil)
-	if _, err := e.processRequest(&plugin.Exchange{Request: r}); err != nil {
+	controlledRequest := plugin.NewRequest(r, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+	if _, err := e.processRequest(&plugin.Exchange{Request: controlledRequest}); err != nil {
 		t.Fatal(err)
 	}
+	r = forwardTestRequest(t, controlledRequest)
 	b := r.Context().Value(regexBudgetKey{}).(*regexBudget)
 	if b.operations != 1 {
 		t.Fatal("request did not consume shared budget", b.operations)
@@ -66,7 +69,9 @@ func TestRegexBudgetAcrossHTTPDirections(t *testing.T) {
 	}
 	b.spent = regexWorkLimit
 	response := &http.Response{Request: r, StatusCode: 200, Header: make(http.Header), Body: http.NoBody}
-	if err := e.processResponse(response, nil); !errors.Is(err, errRegexBudget) || response.Header.Get("X-Response") != "" {
+	controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.processResponse(controlledResponse, nil); !errors.Is(err, errRegexBudget) || response.Header.Get("X-Response") != "" {
 		t.Fatalf("response reset request budget: %v %v", err, response.Header)
 	}
 	if len(e.slots) != 0 || r.Context().Value(executionSlotKey{}) != nil {
@@ -81,7 +86,9 @@ func TestRegexAdmissionPrecedesMatching(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 	r := httptest.NewRequestWithContext(ctx, "GET", "https://example.test/", nil)
-	if _, err := e.processRequest(&plugin.Exchange{Request: r}); !errors.Is(err, context.DeadlineExceeded) || r.Header.Get("X-Rewrite") != "" {
+	controlledRequest := plugin.NewRequest(r, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+	if _, err := e.processRequest(&plugin.Exchange{Request: controlledRequest}); !errors.Is(err, context.DeadlineExceeded) || r.Header.Get("X-Rewrite") != "" {
 		t.Fatalf("rules ran before admission: %v %v", err, r.Header)
 	}
 }
@@ -92,7 +99,9 @@ func TestRegexAggregateCPUIsBounded(t *testing.T) {
 	url := "https://example.test/" + strings.Repeat("a", 60)
 	r := httptest.NewRequestWithContext(t.Context(), "GET", url, nil)
 	start := time.Now()
-	_, err := e.processRequest(&plugin.Exchange{Request: r})
+	request := plugin.NewRequest(r, e.options.BodyMemory)
+	defer request.Body().Close()
+	_, err := e.processRequest(&plugin.Exchange{Request: request})
 	if !errors.Is(err, errRegexBudget) || time.Since(start) > 2*time.Second {
 		t.Fatalf("unbounded HTTP rule work: %v (%v)", err, time.Since(start))
 	}

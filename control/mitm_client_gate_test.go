@@ -41,13 +41,13 @@ var mitmTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0.
 func mitmClientTestHost(t *testing.T, authority *localca.Authority, upstreamTLS *tls.Config, observe func()) *mitm.Host {
 	t.Helper()
 	extension := mitmRoutingPlugin("example.com")
-	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
+	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*plugin.Response, error) {
 		if observe != nil {
 			observe()
 		}
 		response, err := next(e)
 		if err == nil {
-			response.Header.Set("X-Dae-Mitm", "selected")
+			response.Head.Header.Set("X-Dae-Mitm", "selected")
 		}
 		return response, err
 	}

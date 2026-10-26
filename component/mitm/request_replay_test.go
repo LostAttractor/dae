@@ -24,14 +24,19 @@ func TestRequestReplayPreservesRepresentationAndSharesSnapshots(t *testing.T) {
 				Header:  http.Header{"Content-Encoding": {"gzip"}, "Content-Digest": {"digest"}, "Trailer": {"X-Checksum"}},
 				Trailer: http.Header{"X-Checksum": {"checksum"}}}
 			metadata := r.Clone(t.Context())
+			request := plugin.NewRequest(r, budget)
 			var snapshotStorage *byte
 			if snapshot {
-				view, err := plugin.SnapshotBody(&r.Body, 64, budget)
+				view, err := request.Body().Snapshot(64)
 				if err != nil {
 					t.Fatal(err)
 				}
 				snapshotStorage = &view.Bytes()[0]
 				view.Close()
+			}
+			r, err := request.Forward()
+			if err != nil {
+				t.Fatal(err)
 			}
 			release := prepareRequestReplay(r, budget)
 			defer release()

@@ -10,10 +10,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
-// SnapshotBody lends immutable bytes and restores consumed input, including a
-// partial prefix on failure. The caller closes the view; forwarding owns the
-// replacement body. Only untouched, complete snapshots can be shared.
-func SnapshotBody(body *io.ReadCloser, limit int64, budget *membuffer.Budget) (*membuffer.View, error) {
+func snapshotBody(body *io.ReadCloser, limit int64, budget *membuffer.Budget) (*membuffer.View, error) {
 	if *body == nil {
 		return (&membuffer.Buffer{Budget: budget, Limit: limit}).View(), nil
 	}

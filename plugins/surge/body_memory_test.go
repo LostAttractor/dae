@@ -30,7 +30,8 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 					logs = append(logs, fmt.Sprint(entry.Data["error"]))
 				})
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("original"))
-				exchange := &plugin.Exchange{Request: req, Client: http.DefaultClient}
+				exchange := &plugin.Exchange{Request: plugin.NewRequest(req, budget), Client: http.DefaultClient}
+				defer exchange.Request.Body().Close()
 				defer func() { _ = req.Body.Close() }()
 				var body io.ReadCloser
 				var header http.Header
@@ -38,12 +39,16 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 					if _, err := e.processRequest(exchange); err != nil {
 						t.Fatal(err)
 					}
+					req = forwardTestRequest(t, exchange.Request)
 					body, header = req.Body, req.Header
 				} else {
 					resp := bodyRewriteResponse([]byte("original"), "")
-					if err := e.processResponse(resp, http.DefaultClient); err != nil {
+					controlled := plugin.NewResponse(resp, budget)
+					defer controlled.Close()
+					if err := e.processResponse(controlled, http.DefaultClient); err != nil {
 						t.Fatal(err)
 					}
+					resp = takeTestResponse(t, controlled)
 					body, header = resp.Body, resp.Header
 				}
 				got, err := io.ReadAll(body)
@@ -77,9 +82,12 @@ func TestBodyMemoryPressurePreservesCompressedAndJQResponse(t *testing.T) {
 			e.options.BodyMemory = budget
 			original := encodeBodyRewriteTest(t, []byte(`{"value":2}`), encoding)
 			resp := bodyRewriteResponse(original, encoding)
-			if err := e.rewriteResponseBody(resp); err != nil {
+			controlled := plugin.NewResponse(resp, budget)
+			defer controlled.Close()
+			if err := e.rewriteResponseBody(controlled); err != nil {
 				t.Fatal(err)
 			}
+			resp = takeTestResponse(t, controlled)
 			got, err := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if err != nil || string(got) != string(original) || resp.Header.Get("Etag") != `"original"` || resp.Header.Get("Content-Encoding") != encoding {

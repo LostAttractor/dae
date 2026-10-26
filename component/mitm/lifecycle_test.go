@@ -71,14 +71,14 @@ func TestMITMDrain(t *testing.T) {
 				authority, roots := http3TestAuthority(t)
 				started, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-					return func(e *plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						close(started)
 						select {
 						case <-release:
-							return response("completed during drain"), nil
-						case <-e.Request.Context().Done():
+							return e.NewResponse(response("completed during drain")), nil
+						case <-e.Request.Head.Context().Done():
 							close(canceled)
-							return nil, e.Request.Context().Err()
+							return nil, e.Request.Head.Context().Err()
 						}
 					}
 				}}
@@ -231,12 +231,12 @@ func TestMITMDrainWaitsForCleanup(t *testing.T) {
 	p := &drainCleanupPlugin{testPlugin: &testPlugin{
 		plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}},
 		wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-			return func(e *plugin.Exchange) (*http.Response, error) {
+			return func(e *plugin.Exchange) (*plugin.Response, error) {
 				close(started)
-				<-e.Request.Context().Done()
+				<-e.Request.Head.Context().Done()
 				close(canceled)
 				<-release // Cleanup must finish before retiring plugin resources.
-				return nil, e.Request.Context().Err()
+				return nil, e.Request.Head.Context().Err()
 			}
 		},
 	}, close: func() error { close(pluginClosed); return cleanupErr }}

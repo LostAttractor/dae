@@ -203,9 +203,9 @@ func TestScriptHTTPDecodingErrorsReleaseMemory(t *testing.T) {
 			budget    int64
 			wantError error
 		}{
-			{"truncated", valid[:len(valid)-1], 8192, 1 << 20, nil},
+			{"truncated", valid[:len(valid)-1], 8192, 64 << 20, nil},
 			{"wire-limit", valid, 8, 1 << 20, membuffer.ErrTooLarge},
-			{"decoded-limit", valid, 128, 1 << 20, membuffer.ErrTooLarge},
+			{"decoded-limit", valid, 128, 64 << 20, membuffer.ErrTooLarge},
 			{"decoded-budget", valid, 8192, 750, membuffer.ErrBudgetExhausted},
 		} {
 			t.Run(encoding+"/"+test.name, func(t *testing.T) {

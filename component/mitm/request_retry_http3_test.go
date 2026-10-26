@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,14 +126,14 @@ func TestHTTP3RequestRetry(t *testing.T) {
 				authority, roots := http3TestAuthority(t)
 				peer, attempts := retryTestHTTP3Peer(t, authority.TLSConfig("example.com"), code, "grpc-request")
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-					return func(e *plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						if mode != "passthrough" {
-							view, err := plugin.SnapshotBody(&e.Request.Body, 64, bodyMemory)
+							view, err := e.Request.Body().Snapshot(64)
 							if err != nil {
 								return nil, err
 							}
 							if mode == "rewrite" {
-								plugin.SetRequestBody(e.Request, view)
+								e.Request.Body().Replace(view)
 							}
 							view.Close()
 						}

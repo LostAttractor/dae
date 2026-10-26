@@ -82,35 +82,35 @@ func TestZeroLengthRequestTrailerFraming(t *testing.T) {
 }
 
 func TestRequestTrailersThroughBufferedMiddlewareAndReplay(t *testing.T) {
-	for _, mode := range []string{"snapshot", "empty_snapshot", "drained"} {
+	for _, mode := range []string{"snapshot", "empty_snapshot", "released_snapshot"} {
 		t.Run(mode, func(t *testing.T) {
 			payload := ""
 			if mode == "snapshot" {
 				payload = "upload"
 			}
-			testRequestTrailerRewrite(t, mode != "drained", payload)
+			testRequestTrailerRewrite(t, mode != "released_snapshot", payload)
 		})
 	}
 }
 
-func testRequestTrailerRewrite(t *testing.T, snapshot bool, payload string) {
+func testRequestTrailerRewrite(t *testing.T, retainSnapshot bool, payload string) {
 	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}},
 		wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-			return func(e *plugin.Exchange) (*http.Response, error) {
-				if snapshot {
-					view, err := plugin.SnapshotBody(&e.Request.Body, 1024, bodyMemory)
-					if err != nil {
-						return nil, err
-					}
-					defer view.Close()
-				} else if _, err := io.Copy(io.Discard, e.Request.Body); err != nil {
+			return func(e *plugin.Exchange) (*plugin.Response, error) {
+				view, err := e.Request.Body().Snapshot(1024)
+				if err != nil {
 					return nil, err
 				}
-				if e.Request.Trailer.Get("X-Checksum") != "original" {
-					t.Errorf("middleware lost decoded trailers: %v", e.Request.Trailer)
+				if retainSnapshot {
+					defer view.Close()
+				} else {
+					view.Close()
+				}
+				if e.Request.Head.Trailer.Get("X-Checksum") != "original" {
+					t.Errorf("middleware lost decoded trailers: %v", e.Request.Head.Trailer)
 				}
 				// An intentional middleware rewrite must survive replay too.
-				e.Request.Trailer.Set("X-Checksum", "rewritten")
+				e.Request.Head.Trailer.Set("X-Checksum", "rewritten")
 				return next(e)
 			}
 		}}
@@ -159,15 +159,15 @@ func TestBufferedEmptyRequestFraming(t *testing.T) {
 				scope := plugin.Scope{{Host: "example.com", Ports: []uint16{80}}}
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope}}},
 					wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-						return func(e *plugin.Exchange) (*http.Response, error) {
+						return func(e *plugin.Exchange) (*plugin.Response, error) {
 							var view *membuffer.View
 							var err error
 							if mode == "snapshot" {
-								view, err = plugin.SnapshotBody(&e.Request.Body, 1024, budget)
+								view, err = e.Request.Body().Snapshot(1024)
 							} else {
 								view, err = membuffer.Copy(nil, budget)
 								if err == nil {
-									plugin.SetRequestBody(e.Request, view)
+									e.Request.Body().Replace(view)
 								}
 							}
 							if err != nil {
@@ -214,7 +214,12 @@ func TestBufferedEmptyRequestFraming(t *testing.T) {
 func TestIncompleteSnapshotKeepsRequestReadError(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "https://example.com/", nil)
 	r.Body = failedRequestBody{err: io.ErrUnexpectedEOF}
-	if _, err := plugin.SnapshotBody(&r.Body, 1024, membuffer.NewBudget(4096)); !errors.Is(err, io.ErrUnexpectedEOF) {
+	request := plugin.NewRequest(r, membuffer.NewBudget(4096))
+	if _, err := request.Body().Snapshot(1024); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatal(err)
+	}
+	r, err := request.Forward()
+	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Body.Close()

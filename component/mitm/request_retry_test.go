@@ -145,15 +145,15 @@ func TestHTTP2RequestRetry(t *testing.T) {
 					var proxy *httptest.Server
 					if mode != "direct" {
 						p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-							return func(e *plugin.Exchange) (*http.Response, error) {
+							return func(e *plugin.Exchange) (*plugin.Response, error) {
 								if method == "POST" && (mode == "snapshot" || mode == "rewrite") {
-									view, err := plugin.SnapshotBody(&e.Request.Body, 1<<16, bodyMemory)
+									view, err := e.Request.Body().Snapshot(1 << 16)
 									if err != nil {
 										return nil, err
 									}
 									defer view.Close()
 									if mode == "rewrite" {
-										plugin.SetRequestBody(e.Request, view)
+										e.Request.Body().Replace(view)
 									}
 								}
 								resp, err := next(e)

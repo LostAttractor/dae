@@ -29,7 +29,7 @@ func TestBodySnapshotReplay(t *testing.T) {
 	for _, data := range []string{"", "12345678", "1234567890123456"} {
 		original := &countedBody{Reader: strings.NewReader(data)}
 		var body io.ReadCloser = original
-		snapshot, err := SnapshotBody(&body, 8, membuffer.NewBudget(1<<20))
+		snapshot, err := snapshotBody(&body, 8, membuffer.NewBudget(1<<20))
 		if len(data) > 8 {
 			if !errors.Is(err, membuffer.ErrTooLarge) {
 				t.Fatalf("overflow: %v", err)
@@ -64,7 +64,7 @@ func (r *onceReadError) Read(p []byte) (int, error) {
 func TestSnapshotPreservesReadError(t *testing.T) {
 	original := &countedBody{Reader: &onceReadError{}}
 	var body io.ReadCloser = original
-	if _, err := SnapshotBody(&body, 32, membuffer.NewBudget(1<<20)); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := snapshotBody(&body, 32, membuffer.NewBudget(1<<20)); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatal(err)
 	}
 	replay, err := io.ReadAll(body)
@@ -80,12 +80,12 @@ func TestSnapshotInvalidLimitAndRepeatedReads(t *testing.T) {
 	original := &countedBody{Reader: strings.NewReader("abc")}
 	var body io.ReadCloser = original
 	for _, limit := range []int64{-1, 0, math.MaxInt64} {
-		if _, err := SnapshotBody(&body, limit, membuffer.NewBudget(1<<20)); err == nil || body != original || original.reads != 0 {
+		if _, err := snapshotBody(&body, limit, membuffer.NewBudget(1<<20)); err == nil || body != original || original.reads != 0 {
 			t.Fatal("invalid limit consumed body")
 		}
 	}
 	for range 2 {
-		raw, err := SnapshotBody(&body, 8, membuffer.NewBudget(1<<20))
+		raw, err := snapshotBody(&body, 8, membuffer.NewBudget(1<<20))
 		if err != nil || string(raw.Bytes()) != "abc" {
 			t.Fatalf("repeat: %v", err)
 		}
@@ -113,7 +113,12 @@ func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		SetResponseBody(response, view)
+		managed := NewResponse(response, view.Budget())
+		managed.Body().Replace(view)
+		response, _, err = managed.TakeHTTP()
+		if err != nil {
+			t.Fatal(err)
+		}
 		view.Close()
 		if original.closes != 1 || len(response.TransferEncoding) != 0 {
 			t.Fatal("ownership/framing not updated")
@@ -141,7 +146,12 @@ func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	SetRequestBody(request, view)
+	managed := NewRequest(request, view.Budget())
+	managed.Body().Replace(view)
+	request, err = managed.Forward()
+	if err != nil {
+		t.Fatal(err)
+	}
 	view.Close()
 	got, err := io.ReadAll(request.Body)
 	if err != nil || !bytes.Equal(got, []byte("retry")) {

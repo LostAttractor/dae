@@ -181,8 +181,8 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			extension := mitmRoutingPlugin("original.example")
 			extension.plan.Scopes[0].PreserveRoute = false
-			extension.handle = func(*plugin.Exchange, plugin.Handler) (*http.Response, error) {
-				return &http.Response{StatusCode: test.status, Header: http.Header{"Location": {"http://new.example/"}}, Body: http.NoBody}, nil
+			extension.handle = func(e *plugin.Exchange, _ plugin.Handler) (*plugin.Response, error) {
+				return e.NewResponse(&http.Response{StatusCode: test.status, Header: http.Header{"Location": {"http://new.example/"}}, Body: http.NoBody}), nil
 			}
 			plane, _, param := newHTTPRequestRouteTest(t, "dport(80) -> block", extension, func(context.Context, string, string) (net.Conn, error) {
 				t.Error("unexpected upstream dial")

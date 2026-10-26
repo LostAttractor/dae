@@ -3,7 +3,6 @@
 package control
 
 import (
-	"net/http"
 	"net/url"
 	"testing"
 
@@ -17,7 +16,7 @@ import (
 // Control tests exercise the host contract without a concrete plugin runtime.
 type controlTestPlugin struct {
 	plan    plugin.Plan
-	handle  func(*plugin.Exchange, plugin.Handler) (*http.Response, error)
+	handle  func(*plugin.Exchange, plugin.Handler) (*plugin.Response, error)
 	details any
 }
 
@@ -27,7 +26,7 @@ func (p *controlTestPlugin) Wrap(_ plugin.Flow, next plugin.Handler) plugin.Hand
 	if p.handle == nil {
 		return next
 	}
-	return func(e *plugin.Exchange) (*http.Response, error) { return p.handle(e, next) }
+	return func(e *plugin.Exchange) (*plugin.Response, error) { return p.handle(e, next) }
 }
 
 func (p *controlTestPlugin) Report() any { return p.details }
@@ -52,11 +51,10 @@ func rewriteTestPlugin(t *testing.T, targets map[string]string) *controlTestPlug
 	}
 	p := mitmRoutingPlugin("original.example")
 	p.plan.Scopes[0].PreserveRoute = false
-	p.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
-		if target := urls[e.Request.URL.Path]; target != nil {
-			rewritten := *target
-			e.Request.URL = &rewritten
-			e.Request.Host = rewritten.Host
+	p.handle = func(e *plugin.Exchange, next plugin.Handler) (*plugin.Response, error) {
+		if target := urls[e.Request.Head.URL.Path]; target != nil {
+			e.Request.Head.URL = target.Clone()
+			e.Request.Head.Host = target.Host
 		}
 		return next(e)
 	}

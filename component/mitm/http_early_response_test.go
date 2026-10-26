@@ -48,9 +48,9 @@ func TestEmptyRequestTrailersAllowEarlyResponse(t *testing.T) {
 				}
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}}
 				p.wrap = func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-					return func(e *plugin.Exchange) (*http.Response, error) {
+					return func(e *plugin.Exchange) (*plugin.Response, error) {
 						if strings.HasPrefix(destination, "local") {
-							return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
+							return e.NewResponse(&http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}), nil
 						}
 						return next(e)
 					}

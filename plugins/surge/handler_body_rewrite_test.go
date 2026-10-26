@@ -35,9 +35,12 @@ request = type=http-request, pattern=., requires-body=true, script-path=test.js
 		t.Run(encoding, func(t *testing.T) {
 			request := httptest.NewRequest("POST", "http://example.com/", bytes.NewReader(encodeBodyRewriteTest(t, []byte(`{"value":2}`), encoding)))
 			request.Header.Set("Content-Encoding", encoding)
-			if _, err := e.processRequest(&plugin.Exchange{Request: request}); err != nil {
+			controlledRequest := plugin.NewRequest(request, e.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+			if _, err := e.processRequest(&plugin.Exchange{Request: controlledRequest}); err != nil {
 				t.Fatal(err)
 			}
+			request = forwardTestRequest(t, controlledRequest)
 			body, err := io.ReadAll(request.Body)
 			request.Body.Close()
 			if err != nil || string(body) != `{"seen":4}` || request.ContentLength != int64(len(body)) || request.Header.Get("Content-Encoding") != "" {
@@ -54,9 +57,12 @@ http-request . '^erase$' ''
 http-response . '^erase$' ''`, "")
 	for _, input := range []string{"", "erase"} {
 		r := httptest.NewRequest("POST", "http://example.com/", strings.NewReader(input))
-		if err := e.rewriteRequestBody(&plugin.Exchange{Request: r}); err != nil {
+		controlledRequest := plugin.NewRequest(r, e.options.BodyMemory)
+		t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+		if err := e.rewriteRequestBody(&plugin.Exchange{Request: controlledRequest}); err != nil {
 			t.Fatal(err)
 		}
+		r = forwardTestRequest(t, controlledRequest)
 		body, _ := io.ReadAll(r.Body)
 		r.Body.Close()
 		want := ""
@@ -68,9 +74,12 @@ http-response . '^erase$' ''`, "")
 		}
 	}
 	response := bodyRewriteResponse([]byte("erase"), "")
-	if err := e.rewriteResponseBody(response); err != nil {
+	controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.rewriteResponseBody(controlledResponse); err != nil {
 		t.Fatal(err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
 	if len(body) != 0 || response.ContentLength != 0 {
@@ -85,15 +94,20 @@ http-response . '^erase$' ''`, "")
 		} else {
 			r.Header.Set("Expect", "100-continue")
 		}
-		if err := e.rewriteRequestBody(&plugin.Exchange{Request: r}); err != nil || reader.readBytes != 0 {
+		controlledRequest := plugin.NewRequest(r, e.options.BodyMemory)
+		t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+		if err := e.rewriteRequestBody(&plugin.Exchange{Request: controlledRequest}); err != nil || reader.readBytes != 0 {
 			t.Fatalf("%s body was consumed: %v", framing, err)
 		}
+		r = forwardTestRequest(t, controlledRequest)
 	}
 	e.options.MaxBodySize = 2
 	for _, length := range []int64{-1, 5} {
 		r := httptest.NewRequest("POST", "http://example.com/", strings.NewReader("erase"))
 		r.ContentLength = length
-		err := e.rewriteRequestBody(&plugin.Exchange{Request: r})
+		request := plugin.NewRequest(r, e.options.BodyMemory)
+		err := e.rewriteRequestBody(&plugin.Exchange{Request: request})
+		request.Body().Close()
 		r.Body.Close()
 		if !errors.Is(err, membuffer.ErrTooLarge) {
 			t.Fatalf("oversized request with length %d: %v", length, err)
@@ -150,9 +164,12 @@ func TestProxyBodyRewriteCompressedAndOrdered(t *testing.T) {
 			response := bodyRewriteResponse(encodeBodyRewriteTest(t, []byte(`{"value":2}`), encoding), encoding)
 			response.Trailer = http.Header{"Digest": {"stale"}, "X-Request-Id": {"retain-me"}}
 			response.TransferEncoding = []string{"chunked"}
-			if err := e.rewriteResponseBody(response); err != nil {
+			controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledResponse.Close() })
+			if err := e.rewriteResponseBody(controlledResponse); err != nil {
 				t.Fatal(err)
 			}
+			response = takeTestResponse(t, controlledResponse)
 			body, err := io.ReadAll(response.Body)
 			_ = response.Body.Close()
 			if err != nil {
@@ -196,9 +213,12 @@ func TestProxyBodyRewritePreservesOriginalOnFailure(t *testing.T) {
 			}
 			originalHeaders := response.Header.Clone()
 			e := bodyRewriteEngine(t, test.limit, test.expression)
-			if err := e.rewriteResponseBody(response); err != nil {
+			controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledResponse.Close() })
+			if err := e.rewriteResponseBody(controlledResponse); err != nil {
 				t.Fatal(err)
 			}
+			response = takeTestResponse(t, controlledResponse)
 			body, err := io.ReadAll(response.Body)
 			_ = response.Body.Close()
 			if err != nil || !bytes.Equal(body, raw) || !reflect.DeepEqual(response.Header, originalHeaders) || response.ContentLength != int64(len(raw)) {
@@ -234,9 +254,12 @@ func TestProxyBodyRewriteStreamsOversizedOriginal(t *testing.T) {
 				response.Header.Del("Content-Length")
 			}
 			e := bodyRewriteEngine(t, 64, ".keep=null")
-			if err := e.rewriteResponseBody(response); err != nil {
+			controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+			t.Cleanup(func() { _ = controlledResponse.Close() })
+			if err := e.rewriteResponseBody(controlledResponse); err != nil {
 				t.Fatal(err)
 			}
+			response = takeTestResponse(t, controlledResponse)
 			if tracked.closed || tracked.readBytes > 65 || knownLength && tracked.readBytes != 0 {
 				t.Fatalf("oversized response was consumed/closed: bytes=%d closed=%t", tracked.readBytes, tracked.closed)
 			}
@@ -259,9 +282,12 @@ func TestProxyBodyRewriteSkipsBodylessResponses(t *testing.T) {
 		tracked := &bodyRewriteTrackedReader{Reader: strings.NewReader("must not be consumed")}
 		response.Body = tracked
 		e := bodyRewriteEngine(t, 64, ".x=1")
-		if err := e.rewriteResponseBody(response); err != nil || tracked.readBytes != 0 || tracked.closed {
+		controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+		t.Cleanup(func() { _ = controlledResponse.Close() })
+		if err := e.rewriteResponseBody(controlledResponse); err != nil || tracked.readBytes != 0 || tracked.closed {
 			t.Fatalf("bodyless status %d was consumed: bytes=%d closed=%t err=%v", status, tracked.readBytes, tracked.closed, err)
 		}
+		response = takeTestResponse(t, controlledResponse)
 	}
 }
 
@@ -271,9 +297,12 @@ func TestProxyBodyRewriteDeadlinePreservesBodyAndReleasesSlot(t *testing.T) {
 	raw := []byte(`{"keep":true}`)
 	response := bodyRewriteResponse(raw, "")
 	start := time.Now()
-	if err := e.rewriteResponseBody(response); err != nil {
+	controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.rewriteResponseBody(controlledResponse); err != nil {
 		t.Fatal(err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("jq did not stop at deadline: %v", elapsed)
 	}
@@ -288,9 +317,12 @@ func TestProxyBodyRewriteDeadlinePreservesBodyAndReleasesSlot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	response.Request = response.Request.WithContext(ctx)
-	if err := e.rewriteResponseBody(response); !errors.Is(err, context.DeadlineExceeded) {
+	controlledResponse = plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.rewriteResponseBody(controlledResponse); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queue did not honor request cancellation: %v", err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	body, _ = io.ReadAll(response.Body)
 	response.Body.Close()
 	if !bytes.Equal(body, raw) {

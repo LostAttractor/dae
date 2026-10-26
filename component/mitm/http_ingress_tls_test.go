@@ -61,9 +61,9 @@ func TestDomainFrontingRejectsInvalidUpstreamTLS(t *testing.T) {
 					}
 					p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("business.example")}}}}
 					p.wrap = func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
-						return func(e *plugin.Exchange) (*http.Response, error) {
+						return func(e *plugin.Exchange) (*plugin.Response, error) {
 							if rewrite {
-								e.Request.URL.Host = target
+								e.Request.Head.URL.Host = target
 							}
 							return next(e)
 						}

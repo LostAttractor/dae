@@ -377,14 +377,14 @@ if (typeof $request !== "undefined") {
 				})}
 				req := httptest.NewRequest("POST", "https://example.test/query", nil)
 				req.Header["Cookie"] = []string{"token=fixture"}
-				chain := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(exchange *plugin.Exchange) (*http.Response, error) {
-					return &http.Response{StatusCode: 204, Request: exchange.Request, Header: make(http.Header), Body: http.NoBody}, nil
+				chain := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
+					return exchange.NewResponse(&http.Response{StatusCode: 204, Request: exchange.Request.Head, Header: make(http.Header), Body: http.NoBody}), nil
 				})
-				response, err := chain(&plugin.Exchange{Request: req, Client: client})
+				response, err := chain(&plugin.Exchange{Request: plugin.NewRequest(req, e.options.BodyMemory), Client: client})
 				if err != nil {
 					t.Fatal(err)
 				}
-				response.Body.Close()
+				response.Close()
 				if data, err := e.options.Runtime.data.read(t.Context(), "task_cookie"); err != nil || data == nil {
 					t.Fatalf("capture did not populate persistent store: %v", err)
 				}

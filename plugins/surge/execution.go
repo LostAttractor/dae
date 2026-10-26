@@ -4,7 +4,6 @@ package surge
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"time"
 
@@ -101,7 +100,7 @@ func (e *Engine) beginHTTPProcessing(r *http.Request, kind string) (func(*error)
 // snapshotHTTPBody retains the original representation for forwarding. Only
 // request cancellation interrupts a network read; execution timeouts begin
 // after this function returns. Memory and body-size limits still bound storage.
-func (e *Engine) snapshotHTTPBody(ctx context.Context, body *io.ReadCloser, limit int64, setReadDeadline func(time.Time) error) (view *membuffer.View, err error) {
+func (e *Engine) snapshotHTTPBody(ctx context.Context, body *plugin.Body, limit int64, setReadDeadline func(time.Time) error) (view *membuffer.View, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -117,7 +116,6 @@ func (e *Engine) snapshotHTTPBody(ctx context.Context, body *io.ReadCloser, limi
 			}
 		}()
 	}
-	original := *body
 	closed := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(closed)
@@ -125,11 +123,9 @@ func (e *Engine) snapshotHTTPBody(ctx context.Context, body *io.ReadCloser, limi
 		if setReadDeadline != nil {
 			_ = setReadDeadline(time.Now())
 		}
-		if original != nil {
-			_ = original.Close()
-		}
+		_ = body.Close()
 	})
-	view, err = plugin.SnapshotBody(body, limit, e.options.BodyMemory)
+	view, err = body.Snapshot(limit)
 	if !stop() {
 		<-closed
 	}

@@ -43,22 +43,30 @@ func TestMITMWitnessRequiresVirtualDestinationAndDeviceMAC(t *testing.T) {
 		t.Fatal("another MAC read the test")
 	}
 	flow := plugin.Flow{Host: DefaultIPv4, Port: 443, Source: netip.MustParseAddrPort("192.0.2.3:40000"), SourceMAC: [6]byte{2, 3}, Destination: netip.MustParseAddrPort(DefaultIPv4 + ":443")}
-	result, err := service.Wrap(flow, nil)(&plugin.Exchange{Request: r})
+	result, err := service.Wrap(flow, nil)(&plugin.Exchange{Request: plugin.NewRequest(r, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result.Body.Close()
-	if result.StatusCode != 404 {
+	result.Close()
+	if result.Head.StatusCode != 404 {
 		t.Fatal("another source completed the challenge")
 	}
 	// A device can choose a different source IP when reaching an external target.
 	flow.SourceMAC = mac
-	result, err = service.Wrap(flow, nil)(&plugin.Exchange{Request: r})
+	result, err = service.Wrap(flow, nil)(&plugin.Exchange{Request: plugin.NewRequest(r, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer result.Body.Close()
-	data, _ := io.ReadAll(result.Body)
+	raw, _, err := result.TakeHTTP()
+	if err != nil {
+		result.Close()
+		t.Fatal(err)
+	}
+	defer raw.Body.Close()
+	data, err := io.ReadAll(raw.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var proof api.MITMTestProof
 	if err := json.Unmarshal(data, &proof); err != nil || proof.ID != test.ID || proof.CAFingerprint != test.CAFingerprint {
 		t.Fatalf("MITM proof: %s, %v", data, err)
@@ -123,14 +131,14 @@ func TestMITMChallengeBindsOriginDestinationAndGeneration(t *testing.T) {
 				case "invalidated":
 					service.Invalidate()
 				}
-				response, err := service.Wrap(flow, nil)(&plugin.Exchange{Request: r})
+				response, err := service.Wrap(flow, nil)(&plugin.Exchange{Request: plugin.NewRequest(r, nil)})
 				if err != nil {
 					t.Fatal(err)
 				}
-				response.Body.Close()
-				success := response.StatusCode == http.StatusOK
+				response.Close()
+				success := response.Head.StatusCode == http.StatusOK
 				if success != (invalid == "") {
-					t.Fatalf("status=%d", response.StatusCode)
+					t.Fatalf("status=%d", response.Head.StatusCode)
 				}
 				current, _ := service.Get(test.ID, ip, mac)
 				if current.MITMObserved != success {

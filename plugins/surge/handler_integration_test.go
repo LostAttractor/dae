@@ -411,6 +411,11 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
 		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {
 			_, trust, dial := integrationUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("ETag", `"original"`)
+				w.Header().Set("Last-Modified", "Mon, 26 Oct 2026 00:00:00 GMT")
+				if strings.HasPrefix(r.URL.Path, "/to") {
+					w.Header().Set("Trailer", "X-Upstream")
+				}
 				if r.URL.Path == "/204" {
 					w.WriteHeader(http.StatusNoContent)
 					return
@@ -454,6 +459,12 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
 				_ = response.Body.Close()
 				if err != nil || response.StatusCode != test.status || len(body) != 0 || response.Header.Get("X-Script") != "ran" {
 					t.Fatalf("%s %s: status=%d body=%q headers=%v err=%v", test.method, test.path, response.StatusCode, body, response.Header, err)
+				}
+				if response.Header.Get("ETag") != `"original"` || response.Header.Get("Last-Modified") == "" || response.Header.Get("Content-Encoding") != "gzip" {
+					t.Fatalf("%s %s: representation metadata lost: %v", test.method, test.path, response.Header)
+				}
+				if response.Header.Get("Trailer") != "" || len(response.Trailer) != 0 || len(response.TransferEncoding) != 0 {
+					t.Fatalf("%s %s: bodyless response retained trailers or transfer framing: %+v", test.method, test.path, response)
 				}
 			}
 		})

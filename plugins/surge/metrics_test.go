@@ -62,9 +62,12 @@ func TestProtocolUpgradeFinishesMatchedScriptOnce(t *testing.T) {
 	e := testProxyEngine(t, "[Script]\nresponse = type=http-response,pattern=.,script-path=response.js", `throw Error("must not execute")`)
 	registry := surgeRegistry(t, e)
 	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: make(http.Header), Body: http.NoBody, Request: httptest.NewRequest("GET", "http://example.test/", nil)}
-	if err := e.processResponse(response, http.DefaultClient); err != nil {
+	controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.processResponse(controlledResponse, http.DefaultClient); err != nil {
 		t.Fatal(err)
 	}
+	response = takeTestResponse(t, controlledResponse)
 	if got := surgeMetric(t, registry, "surge_scripts_total", map[string]string{"phase": "http-response", "result": "skipped"}).GetCounter().GetValue(); got != 1 {
 		t.Fatal(got)
 	}
@@ -94,14 +97,14 @@ func TestScriptMetricsWithoutTraceAndSharedByConnections(t *testing.T) {
 			registry := surgeRegistry(t, e)
 			for _, host := range []string{"a.test", "b.test"} {
 				forwarded := false
-				handler := e.Wrap(plugin.Flow{Host: host, Port: 80}, func(ex *plugin.Exchange) (*http.Response, error) {
+				handler := e.Wrap(plugin.Flow{Host: host, Port: 80}, func(ex *plugin.Exchange) (*plugin.Response, error) {
 					forwarded = true
-					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: http.NoBody, Request: ex.Request}, nil
+					return ex.NewResponse(&http.Response{StatusCode: 200, Header: make(http.Header), Body: http.NoBody, Request: ex.Request.Head}), nil
 				})
 				request := httptest.NewRequest("GET", "http://"+host+"/", nil)
-				response, err := handler(&plugin.Exchange{Request: request})
+				response, err := handler(&plugin.Exchange{Request: plugin.NewRequest(request, e.options.BodyMemory)})
 				if response != nil {
-					_ = response.Body.Close()
+					_ = response.Close()
 				}
 				if forwarded != test.forwards || errors.Is(err, plugin.ErrAbort) != test.aborts || err != nil && !test.aborts {
 					t.Fatalf("forward=%t error=%v", forwarded, err)
@@ -133,9 +136,12 @@ func TestScriptMetricsDistinguishSkippedFromExecuted(t *testing.T) {
 				reason = "buffer_memory_limit"
 				request := httptest.NewRequest("POST", "http://a.test/", strings.NewReader("original"))
 				defer func() { _ = request.Body.Close() }()
-				if _, err := e.processRequest(&plugin.Exchange{Request: request}); err != nil {
+				controlledRequest := plugin.NewRequest(request, e.options.BodyMemory)
+				t.Cleanup(func() { _ = controlledRequest.Body().Close() })
+				if _, err := e.processRequest(&plugin.Exchange{Request: controlledRequest}); err != nil {
 					t.Fatal(err)
 				}
+				request = forwardTestRequest(t, controlledRequest)
 				body, err := io.ReadAll(request.Body)
 				if err != nil || string(body) != "original" {
 					t.Fatalf("fallback body=%q error=%v", body, err)
@@ -143,9 +149,12 @@ func TestScriptMetricsDistinguishSkippedFromExecuted(t *testing.T) {
 			} else {
 				response := bodyRewriteResponse([]byte(strings.Repeat("x", 32)), "")
 				defer func() { _ = response.Body.Close() }()
-				if err := e.processResponse(response, nil); err != nil {
+				controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+				t.Cleanup(func() { _ = controlledResponse.Close() })
+				if err := e.processResponse(controlledResponse, nil); err != nil {
 					t.Fatal(err)
 				}
+				response = takeTestResponse(t, controlledResponse)
 				body, err := io.ReadAll(response.Body)
 				if err != nil || len(body) != 32 {
 					t.Fatalf("response truncated: %d %v", len(body), err)
@@ -180,7 +189,7 @@ func TestBodyRewriteDecodeFailureMetrics(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			module := moduleScopeModule(t, "rewrite", "example.test", "[Body Rewrite]\nhttp-response-jq . '.x=1'", nil)
 			e := moduleScopeEngine(t, module)
-			budget := membuffer.NewBudget(1 << 20)
+			budget := membuffer.NewBudget(64 << 20)
 			e.options.BodyMemory, e.options.MaxBodySize = budget, test.bodyLimit
 			var capture proxyTraceCapture
 			e.options.Logger = capture.logger()
@@ -193,7 +202,9 @@ func TestBodyRewriteDecodeFailureMetrics(t *testing.T) {
 			defer func() { _ = response.Body.Close() }()
 			// Complete the compressed snapshot first, so limits are encountered
 			// during decoding rather than while buffering the original response.
-			snapshot, err := plugin.SnapshotBody(&response.Body, test.bodyLimit, budget)
+			controlledResponse := plugin.NewResponse(response, budget)
+			t.Cleanup(func() { _ = controlledResponse.Close() })
+			snapshot, err := controlledResponse.Body().Snapshot(test.bodyLimit)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,9 +213,10 @@ func TestBodyRewriteDecodeFailureMetrics(t *testing.T) {
 				limit := budget.UseLimit(budget.Status().Used)
 				defer limit.Close()
 			}
-			if err := e.rewriteResponseBody(response); err != nil {
+			if err := e.rewriteResponseBody(controlledResponse); err != nil {
 				t.Fatal(err)
 			}
+			response = takeTestResponse(t, controlledResponse)
 			body, err := io.ReadAll(response.Body)
 			_ = response.Body.Close()
 			if err != nil || !bytes.Equal(body, raw) || response.Header.Get("Content-Encoding") != test.encoding || response.ContentLength != int64(len(raw)) {
@@ -263,17 +275,17 @@ func TestSurgeRuleMetricsConcurrentScopes(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, host := range []string{"a.test", "b.test"} {
 		wg.Go(func() {
-			handler := e.Wrap(plugin.Flow{Host: host, Port: 80}, func(ex *plugin.Exchange) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: http.NoBody, Request: ex.Request}, nil
+			handler := e.Wrap(plugin.Flow{Host: host, Port: 80}, func(ex *plugin.Exchange) (*plugin.Response, error) {
+				return ex.NewResponse(&http.Response{StatusCode: 200, Header: make(http.Header), Body: http.NoBody, Request: ex.Request.Head}), nil
 			})
 			for range 50 {
 				request := httptest.NewRequest("GET", "http://"+host+"/", nil)
-				response, err := handler(&plugin.Exchange{Request: request})
+				response, err := handler(&plugin.Exchange{Request: plugin.NewRequest(request, e.options.BodyMemory)})
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				_ = response.Body.Close()
+				_ = response.Close()
 				if request.Header.Get("X-Test") != "yes" {
 					t.Error("rule did not execute")
 				}

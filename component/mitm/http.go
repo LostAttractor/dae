@@ -48,9 +48,20 @@ func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, plan UpstreamPlan
 func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.RoundTripper, client *http.Client) http.Handler {
 	host := flow.Host
 	chainFor := h.chainsForFlow(flow, func(incoming plugin.Flow) plugin.Handler {
-		return func(e *plugin.Exchange) (*http.Response, error) {
-			request := upstreamRequest(e.Request, scheme, incoming, flow)
-			return h.roundTrip(transport, request)
+		return func(e *plugin.Exchange) (*plugin.Response, error) {
+			wire, err := e.Request.Forward()
+			if err != nil {
+				return nil, err
+			}
+			request := upstreamRequest(wire, scheme, incoming, flow)
+			response, err := h.roundTrip(transport, request)
+			if err != nil {
+				if response != nil && response.Body != nil {
+					_ = response.Body.Close()
+				}
+				return nil, err
+			}
+			return e.NewResponse(response), nil
 		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,29 +138,45 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		}
 		r.URL.Scheme, r.URL.Host = scheme, r.Host
 		r.RequestURI = ""
-		exchange := &plugin.Exchange{Request: r, Client: client, SetReadDeadline: setReadDeadline}
+		exchange := &plugin.Exchange{Client: client, SetReadDeadline: setReadDeadline}
 		defer func() {
-			if exchange.Request.Body != nil {
-				_ = exchange.Request.Body.Close()
+			if exchange.Request != nil {
+				_ = exchange.Request.Body().Close()
 			}
 		}()
-		proxy := &httputil.ReverseProxy{
+		delivery := plugin.DeliveryDefault
+		proxy := &httputil.ReverseProxy{}
+		*proxy = httputil.ReverseProxy{
 			// The destination is already set. Director preserves forwarding
 			// headers and the raw query; request preparation can fail in RoundTrip.
 			Director: func(*http.Request) {},
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				exchange.Request = req
 				forwardRequestTrailers(req, source)
+				exchange.Request = plugin.NewRequest(req, h.options.bodyMemory())
 				response, err := chain(exchange)
 				_ = setReadDeadline(time.Time{})
 				if err != nil {
+					if response != nil {
+						_ = response.Close()
+					}
 					return nil, err
 				}
-				// Also associate responses for authorities without plugin hooks.
-				response.Request = req
-				return response, nil
+				if response == nil {
+					return nil, errors.New("mitm: handler returned no response")
+				}
+				response.Head.Request = exchange.Request.Head
+				wire, mode, err := response.TakeHTTP()
+				if err != nil {
+					_ = response.Close()
+					return nil, err
+				}
+				delivery = mode
+				return wire, nil
 			}),
 			ModifyResponse: func(response *http.Response) error {
+				if delivery == plugin.DeliveryStreaming {
+					proxy.FlushInterval = -1
+				}
 				// A missing upstream type must remain missing. Set the writer's
 				// sentinel: ReverseProxy does not copy nil-valued header entries.
 				if len(response.Header["Content-Type"]) == 0 {

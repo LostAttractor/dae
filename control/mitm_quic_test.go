@@ -23,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
@@ -89,21 +90,25 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	go func() { upstreamDone <- upstream.Serve(upstreamPackets) }()
 	defer func() { _ = upstream.Close(); <-upstreamDone }()
 	extension := mitmRoutingPlugin("video.example")
-	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
-		e.Request.Header.Set("X-Plugin", "request")
+	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*plugin.Response, error) {
+		e.Request.Head.Header.Set("X-Plugin", "request")
 		response, err := next(e)
 		if err != nil {
 			return nil, err
 		}
-		body, err := io.ReadAll(response.Body)
-		response.Body.Close()
+		snapshot, err := response.Body().Snapshot(1 << 20)
 		if err != nil {
+			response.Close()
 			return nil, err
 		}
-		body = append(body, []byte(" rewritten")...)
-		response.Body = io.NopCloser(strings.NewReader(string(body)))
-		response.ContentLength = int64(len(body))
-		response.Header.Del("Content-Length")
+		defer snapshot.Close()
+		view, err := membuffer.Copy([]byte(string(snapshot.Bytes())+" rewritten"), snapshot.Budget())
+		if err != nil {
+			response.Close()
+			return nil, err
+		}
+		defer view.Close()
+		response.Body().Replace(view)
 		return response, nil
 	}
 	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}}, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
