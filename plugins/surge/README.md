@@ -177,9 +177,9 @@ partial/stale data. Console and notification log messages are limited to 4096
 UTF-8 bytes per entry; truncated entries carry `truncated=true`.
 
 See [configuration](../../docs/en/configuration/surge-module.md),
-[supported features](../../docs/zh/configuration/surge-module-support.md), and
+[supported features (Chinese)](../../docs/zh/configuration/surge-module-support.md), and
 [the common plugin contract](../../component/plugin/README.md).
-The [script compatibility boundaries](../../docs/zh/development/surge-compatibility.md)
+The [script compatibility boundaries (Chinese)](../../docs/zh/development/surge-compatibility.md)
 describe execution ownership, kernel passthrough and rule/event limitations.
 
 ## Body representation and decoding

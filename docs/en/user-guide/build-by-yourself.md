@@ -529,7 +529,7 @@ composition package; command and daemon code receive its definitions.
 `plugins.cfg` and generated registries are ignored by Git; the example and
 all-plugin configurations and generator are tracked. An existing local selection is never
 overwritten by generation.
-See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
+See [instance configuration](../configuration/mitm-plugins.md) and the
 [plugin API](../../../component/plugin/README.md). DNS plugin examples are in [DNS configuration](../configuration/dns.md).
 
 ## Config parser generation

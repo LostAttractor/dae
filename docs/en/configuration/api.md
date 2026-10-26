@@ -2,7 +2,7 @@
 
 See [API and independent clients](api-client.md) for standalone builds, TUI integration and wire semantics, and the [OpenAPI document](../../api/openapi.json) for machine-readable definitions.
 
-See [Decision explanations and client management](explain.md) for read-only routing/subsystem analysis, membership previews and administrative MAC management.
+See [Decision explanations and client management](explain.md) for read-only routing/subsystem analysis, membership previews and administrative MAC management. The [access-control design](../design/api-access-control.md) describes trust boundaries and listener/session lifecycles.
 
 ```text
 global {
@@ -71,7 +71,7 @@ For selector groups, `dae status` (including verbose/JSON) includes only selecte
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authorized selector reads and certificate downloads remain available.
 - **This Device Status**: Active/total connections, upload/download totals, recent rates and used outbounds for the visiting device. IPv4/IPv6 share the ingress MAC identity; administrator login is unnecessary. These are userspace upstream counters, including splice acceleration, excluding kernel passthrough, local HTTP/DNS responses and daemon-originated work. Totals survive reload. Devices with no active connections are retired after their last minute of history expires; returning devices start a new observation period identified by `started_at`. Process restart resets all counters.
 - **Global Status**: Version, uptime, global connections/traffic, outbound/node state, domain tables and plugins. User authorization applies; logout clears data when anonymous LAN access is unavailable.
-- **HTTPS Modules**: Choose **Router default**, **On** or **Off** for this device. **Router default** follows `mitm.client_source_address` and shows its current value; **On** and **Off** override it, including explicit disabling. Install and trust the CA before turning modules on: without it, the device's HTTPS connections fail. The section warns until this browser verifies the CA. While modules are on, the page tests the CA by itself and shows a red alert when verification fails. **Test certificate** separately checks CA acceptance by this browser and the transparent MITM path.
+- **HTTPS Modules**: Choose **Router default**, **On** or **Off** for this device. **Router default** follows `mitm.client_source_address` and shows its current value; **On** and **Off** override it, including explicit disabling. [Install and trust the CA](certificate.md) before turning modules on: without it, the device's HTTPS connections fail. The section warns until this browser verifies the CA. While modules are on, the page tests the CA by itself and shows a red alert when verification fails. **Test certificate** separately checks CA acceptance by this browser and the transparent MITM path.
 
 Visible pages refresh device and authorized global state every two seconds. Rates use five-second samples covering up to one minute. Hidden pages pause polling; failed reads display their retry state.
 
@@ -219,7 +219,7 @@ or `canceled`), `trigger` (`api` or `automatic`), queue/start/finish timestamps,
 as `operation` and the next check as `next_check`; `operation` is omitted before
 the first refresh. The result reports how many resource groups retained their
 previous contents after download or validation failures. See
-[resource caching](../../zh/configuration/cache-directory.md#全局资源缓存) for the
+[resource caching (Chinese)](../../zh/configuration/cache-directory.md#全局资源缓存) for the
 automatic check interval and fallback rules.
 
 `POST /api/operations` accepts `{"kind":"reload"}`, `{"kind":"suspend"}` or

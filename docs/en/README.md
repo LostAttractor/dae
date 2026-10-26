@@ -2,7 +2,7 @@
 
 [**简体中文**](../zh/README.md) | [**English**](README.md)
 
-The [full configuration example](../../example.dae) includes the [management API](configuration/api.md), optional [plugin instances](../zh/configuration/mitm-plugins.md) with [Surge compatibility](configuration/surge-module.md), [DNS relay/plugins](configuration/dns.md), and [destination overrides](../zh/configuration/destination-rules.md). External plugins use the [public Go contract](../../component/plugin/README.md).
+The [full configuration example](../../example.dae) includes the [management API](configuration/api.md), optional [plugin instances](configuration/mitm-plugins.md) with [Surge compatibility](configuration/surge-module.md), [DNS relay/plugins](configuration/dns.md), and [destination overrides (Chinese)](../zh/configuration/destination-rules.md). External plugins use the [public Go contract](../../component/plugin/README.md).
 
 ## Linux Kernel Requirement
 

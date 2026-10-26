@@ -4,11 +4,10 @@ The built-in `surge` plugin selects its JavaScript backend at build time: QuickJ
 
 ## Configuration and Operation
 
-Add the following settings to the main configuration. dae automatically initializes a persistent CA; have clients [install and trust the certificate](../../zh/configuration/certificate.md) before adding them to `client_source_address`:
+Add the following settings to the main configuration. dae automatically initializes a persistent CA; have clients [install and trust the certificate](certificate.md) before adding them to `client_source_address`:
 
 ```text
 global {
-  api_port: 9080
   resource_cache: true # Enabled by default; shared cache for subscriptions, modules, and remote dependencies
 }
 
@@ -28,7 +27,7 @@ plugins {
 }
 ```
 
-Plugin instances belong in `plugins {}`. See [plugin configuration](../../zh/configuration/mitm-plugins.md) for multiple instances.
+Plugin instances belong in `plugins {}`. See [plugin configuration](mitm-plugins.md) for multiple instances.
 
 Declare modules as `name: 'source'` or an anonymous `'source'`; argument configuration is covered in the next section. Names must be unique. The display name uses the configured name first, then `#!name`, then the filename.
 
@@ -264,7 +263,7 @@ Literal IP mappings apply to both direct and proxy connections, take precedence 
 client_source_address: '-02:00:00:00:00:10,all'
 ```
 
-You can also select **On** or **Off** for a device in the **HTTPS Modules** area of the [global page/API](api.md). Device overrides take precedence over configuration; **Router default** clears the override. See the [certificate guide](../../zh/configuration/certificate.md) for installation steps.
+You can also select **On** or **Off** for a device in the **HTTPS Modules** area of the [global page/API](api.md). Device overrides take precedence over configuration; **Router default** clears the override. See the [certificate guide](certificate.md) for installation steps.
 
 Enable only devices that trust the CA. dae does not detect trust or retry with passthrough after a TLS failure. Disabled clients pass through along their original route. An unknown MAC can be matched by IP/CIDR in the configuration.
 
@@ -328,7 +327,7 @@ Query the current modules while dae is running:
 ./dae plugins surge status
 ```
 
-The query reuses the daemon's status service and does not require `global.api_port`. `disabled` means module conditions are not satisfied; `loaded` means resources are loaded; `cached` means the entire module uses the last complete snapshot; `cached dependencies` means some dependencies use cached content. Loading failures report specific causes, and `debug` shows each module's loaded, failed, or pending progress. Queries after a failed reload still show the old running instance. Load status does not imply that a script has matched or executed.
+The query reuses the daemon's status service and does not require `api.listen`. `disabled` means module conditions are not satisfied; `loaded` means resources are loaded; `cached` means the entire module uses the last complete snapshot; `cached dependencies` means some dependencies use cached content. Loading failures report specific causes, and `debug` shows each module's loaded, failed, or pending progress. Queries after a failed reload still show the old running instance. Load status does not imply that a script has matched or executed.
 
 `IP MAPS` shows the number of IP mapping entries. Inspect actual rewrites in `debug` routing logs: `destination_ip` is the original destination, `destination` is the dial target, and `outbound` is the outbound.
 

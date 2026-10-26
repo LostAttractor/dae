@@ -380,7 +380,7 @@ client {
 # Domain capture needs DNS mappings. Literal IP scopes do not; final HTTP matching still uses Host/SNI.
 # Request-transforming modules run before final upstream routing, including block.
 # Pure inspection retains the kernel route. Excluded clients follow ordinary routing.
-# See docs/zh/configuration/mitm-plugins.md and docs/zh/configuration/surge-module.md.
+# See docs/en/configuration/mitm-plugins.md and docs/en/configuration/surge-module.md.
 # Optional explicit CA shared by API HTTPS and MITM. Omit for the persistent
 # automatically generated CA in $DAE_LOCATION_CACHE/pki (default /var/lib/dae/pki).
 # certificate {

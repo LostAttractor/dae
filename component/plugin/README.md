@@ -708,7 +708,7 @@ after the operation ends; they must coordinate host selection with retirement.
 DNS observers run inside the admitted request's finalizer, before that admission
 is released.
 
-See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
+See [configuration](../../docs/en/configuration/mitm-plugins.md) and
 [status fields](../../docs/en/configuration/api.md).
 
 ## Interface observations
