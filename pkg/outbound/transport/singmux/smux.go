@@ -34,20 +34,15 @@ const (
 	// MaxFrameSize, and smuxFullFrame the size of such a frame.
 	smuxMaxFrame  = 32 << 10
 	smuxFullFrame = smuxHeaderSize + smuxMaxFrame
-	// Stream data goes in frames of smuxFrame bytes, header included, and
-	// the writer takes about smuxBatch bytes per carrier write: frames as
-	// short as the batch keep a sparse flow's frame from waiting behind a
-	// long one.
-	smuxFrame = 16 << 10
-	smuxBatch = 16 << 10
 	// smuxReceiveBuffer is the payload a session holds for its readers
 	// before it stops reading the carrier, the server's MaxReceiveBuffer. v1
 	// has no per-stream flow control: a stalled reader stalls the session.
 	smuxReceiveBuffer = 4 << 20
-	// smuxCoalesce: a shorter write joins its stream's last queued frame if
-	// that has room, and its own frame has room for more, so that small
-	// writes behind a busy carrier share frames.
-	smuxCoalesce     = 2 << 10
+	// smuxCoalesce is the smallest data buffer while queue space permits;
+	// later writes fill its unused capacity before allocating another frame.
+	smuxCoalesce = 2 << 10
+	// Closed streams retain their send ownership; stop replacing them while
+	// the carrier is stalled, without a FIFO budget for live stream writers.
 	smuxRetiredLimit = smuxReceiveBuffer / fq.StreamLimit
 )
 
@@ -83,12 +78,19 @@ func putFrame(f []byte) { pool.PutBuffer(f) }
 // frames into per-stream buffers, and sendLoop, woken only when the send
 // queue turns non-empty, writes queued frames in batches. Streams queue
 // frames in order, so SYN precedes and FIN follows a stream's data; the
-// scheduler fq shares the carrier among the streams by bytes. A frame is
-// one pooled buffer, its header and payload; a datagram is one buffer of
-// one or more frames.
+// scheduler fq shares the carrier among the streams by bytes, and the gate
+// holds each batch until the carrier's kernel queue is short, so that the
+// batch is chosen when it can leave. A frame is one pooled buffer, its
+// header and payload; a datagram is one buffer of one or more frames. Batches
+// may split buffers, but a started buffer finishes before another starts.
 type smuxSession struct {
 	conn    *monitoredConn
 	buffers netproxy.BuffersWriter // the carrier's vectorised writer, if any
+	gate    *netproxy.CarrierGate  // used by sendLoop only
+	// frame is the size, header included, of the frames stream data goes
+	// in: the gate's batch, at most smuxMaxFrame of payload, so that a
+	// batch is not one long frame.
+	frame atomic.Int32
 
 	mu      sync.Mutex
 	streams map[uint32]*smuxStream // receive or retain send ownership until FIN leaves
@@ -116,6 +118,7 @@ func newSmuxSession(conn *monitoredConn) *smuxSession {
 	s := &smuxSession{
 		conn:       conn,
 		buffers:    netproxy.BuffersWriterOf(conn.Conn),
+		gate:       netproxy.NewCarrierGate(conn.Conn),
 		streams:    make(map[uint32]*smuxStream),
 		nextID:     1,
 		wake:       make(chan struct{}, 1),
@@ -123,6 +126,7 @@ func newSmuxSession(conn *monitoredConn) *smuxSession {
 		die:        make(chan struct{}),
 	}
 	s.fq.Release, s.fq.Delay = s.releaseFrame, smuxQueueDelay
+	s.frame.Store(int32(min(s.gate.Unit(), smuxMaxFrame)))
 	s.budget.Store(smuxReceiveBuffer)
 	go s.recvLoop()
 	go s.sendLoop()
@@ -221,7 +225,6 @@ func (s *smuxSession) abort() error {
 // The carrier monitor records why the session failed.
 func (*smuxSession) closeErr() error { return nil }
 
-// smux v1 has no per-stream window to grow.
 func (*smuxSession) saturated() bool { return false }
 
 // shutdown kills the session with err once, dropping queued frames and closing
@@ -322,17 +325,18 @@ func (s *smuxSession) recvLoop() {
 
 func (s *smuxSession) sendLoop() {
 	var batch [][]byte
+	var rate float64 // the scheduler's, read with each batch
 	for {
 		select {
 		case <-s.wake:
 		case <-s.die:
 			return
 		}
-		for {
+		for busy := false; ; {
 			s.mu.Lock()
-			batch = s.fq.Take(time.Now(), smuxBatch, batch[:0])
-			if len(batch) == 0 {
+			if !s.fq.Queued() || s.dead {
 				s.writing = false
+
 				s.sealed = s.closing
 				if s.flushed != nil {
 					close(s.flushed)
@@ -342,7 +346,27 @@ func (s *smuxSession) sendLoop() {
 				break
 			}
 			s.mu.Unlock()
-			err := s.write(batch)
+			// RawConn.Write (the gate) and carrier Write use this same deadline.
+			if err := s.conn.SetWriteDeadline(time.Now().Add(netproxy.DialTimeout)); err != nil {
+				s.fail(err)
+				return
+			}
+			s.gate.Adjust(time.Now(), rate)
+			if err := s.gate.Wait(busy); err != nil {
+				s.conn.report(err)
+				s.shutdown(err)
+				return
+			}
+			unit := s.gate.Unit()
+			s.frame.Store(int32(min(unit, smuxMaxFrame)))
+			s.mu.Lock()
+			batch = s.fq.Take(time.Now(), unit, batch[:0])
+			busy, rate = s.fq.Queued(), s.fq.Rate()
+			s.mu.Unlock()
+			var err error
+			if len(batch) != 0 {
+				err = s.write(batch)
+			}
 			clear(batch)
 			s.mu.Lock()
 			s.fq.ReleaseBatch()
@@ -354,6 +378,18 @@ func (s *smuxSession) sendLoop() {
 			}
 		}
 	}
+}
+
+// releaseFrame ends send ownership only after the writer returns its buffer.
+func (s *smuxSession) releaseFrame(f []byte) {
+	if f[1] == smuxCmdFIN {
+		id := binary.LittleEndian.Uint32(f[4:])
+		if st := s.streams[id]; st != nil && st.closed {
+			delete(s.streams, id)
+			s.retired--
+		}
+	}
+	putFrame(f)
 }
 
 // wakeLocked wakes sendLoop for frames just queued.
@@ -449,7 +485,8 @@ func (st *smuxStream) Write(b []byte) (int, error) {
 	return written, nil
 }
 
-// writeFrame fills existing capacity before allocating within the queue budget.
+// writeFrame fills existing capacity first, then allocates only what fits the
+// queued budget. Waiting writers retain no unaccounted pooled copy.
 func (st *smuxStream) writeFrame(b []byte) (int, error) {
 	s := st.session
 	s.mu.Lock()
@@ -466,7 +503,7 @@ func (st *smuxStream) writeFrame(b []byte) (int, error) {
 			return 0, os.ErrDeadlineExceeded
 		default:
 		}
-		frame := smuxFrame
+		frame := int(s.frame.Load())
 		if tail := st.flow.Tail(); tail != nil && (*tail)[1] == smuxCmdPSH {
 			n := min(len(b), min(cap(*tail), frame)-len(*tail))
 			if n > 0 {
@@ -715,16 +752,4 @@ func (st *smuxStream) SetReadDeadline(t time.Time) error {
 func (st *smuxStream) SetWriteDeadline(t time.Time) error {
 	st.writeDeadline.Set(t)
 	return nil
-}
-
-// releaseFrame ends send ownership when the writer returns its buffer.
-func (s *smuxSession) releaseFrame(f []byte) {
-	if f[1] == smuxCmdFIN {
-		id := binary.LittleEndian.Uint32(f[4:])
-		if st := s.streams[id]; st != nil && st.closed {
-			delete(s.streams, id)
-			s.retired--
-		}
-	}
-	putFrame(f)
 }

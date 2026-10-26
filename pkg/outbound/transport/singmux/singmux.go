@@ -159,6 +159,7 @@ func (c *monitoredConn) cause() error {
 }
 
 func (c *monitoredConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
+func (c *monitoredConn) WriteThrough() net.Conn           { return c.Conn }
 
 type Config struct {
 	Protocol       Protocol

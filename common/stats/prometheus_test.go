@@ -199,3 +199,22 @@ func TestStoreExportsUDPQueueDelay(t *testing.T) {
 	}
 	t.Fatal("queue delay not exported")
 }
+
+// Carrier gate waits are exported from process start.
+func TestStoreExportsCarrierGateWaits(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(newStoreAt(time.Now()))
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() == "dae_carrier_gate_waits_total" {
+			if got := family.GetMetric()[0].GetCounter().GetValue(); got != float64(netproxy.GateWaits()) {
+				t.Fatalf("exported %v, want %d", got, netproxy.GateWaits())
+			}
+			return
+		}
+	}
+	t.Fatal("carrier gate waits not exported")
+}

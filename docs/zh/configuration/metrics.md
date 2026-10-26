@@ -68,6 +68,7 @@ TUIC native UDP 和 Hysteria2 使用非阻塞 QUIC DATAGRAM 接纳。载体队�
 关联初始化、目的地 socket 创建和阻塞 UDP 写入共用每个控制面的 32 个慢操作额度，为 128-worker 池中的其他就绪来源保留处理能力。同一 worker 内嵌套的设置和写入只占一份额度；准入不等待，也不为数据包另建 worker。拒绝的数据报计数一次，不关闭已有的关联。非阻塞发送不占这些额度；嗅探等待下一个包时释放 worker 及其额度。
 
 `dae_udp_queue_delay_seconds{transport}` 是传输层发出的数据报在其发送队列中等待时长的直方图，按进程生命周期累计，桶从 1 ms 到 1 s。`transport` 为 `smux`。
+`dae_carrier_gate_waits_total` 统计共享承载（例如 smux 会话）的写者在继续写入前等待承载 TCP socket 发出已有数据的次数；满载的承载每秒等待数百次。
 
 ## 插件指标名称
 

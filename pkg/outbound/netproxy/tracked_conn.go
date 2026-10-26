@@ -52,6 +52,7 @@ type trackedConn struct {
 
 func (c *trackedConn) Close() error            { defer c.release(); return c.Conn.Close() }
 func (c *trackedConn) CloseWrite() error       { return CloseWrite(c.Conn) }
+func (c *trackedConn) WriteThrough() net.Conn  { return c.Conn }
 func (c *trackedConn) DependencyLease() *Lease { return DependencyOf(c.Conn) }
 
 type trackedPacketConn struct {
@@ -126,6 +127,26 @@ func ReadSocket(conn net.Conn) *net.TCPConn {
 		if inner := c.ReadPassthrough(); inner != nil {
 			return ReadSocket(inner)
 		}
+	}
+	return nil
+}
+
+// WriteThrough is implemented by adapters that write what they are given,
+// framed or encrypted, to one connection: WriteThrough returns it. The
+// NetConn method of a crypto/tls connection serves as well.
+type WriteThrough interface{ WriteThrough() net.Conn }
+
+// SendSocket returns the TCP socket whose send queue takes conn's writes,
+// or nil. Like ReadSocket it looks through adapters, so the socket only
+// suits send tuning and polling, never writing.
+func SendSocket(conn net.Conn) *net.TCPConn {
+	switch c := conn.(type) {
+	case *net.TCPConn:
+		return c
+	case WriteThrough:
+		return SendSocket(c.WriteThrough())
+	case interface{ NetConn() net.Conn }:
+		return SendSocket(c.NetConn())
 	}
 	return nil
 }

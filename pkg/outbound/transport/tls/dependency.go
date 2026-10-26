@@ -28,6 +28,7 @@ func (c *leasedUTLSConn) DependencyLease() *netproxy.Lease { return c.lease }
 func (c *leasedUTLSConn) TLSConn() net.Conn                { return c.UConn }
 func (c *leasedUTLSConn) NegotiatedProtocol() string       { return c.ConnectionState().NegotiatedProtocol }
 func (c *FragmentConn) DependencyLease() *netproxy.Lease   { return netproxy.DependencyOf(c.Conn) }
+func (c *FragmentConn) WriteThrough() net.Conn             { return c.Conn }
 func (c *RealityUConn) DependencyLease() *netproxy.Lease   { return c.lease }
 func (c *RealityUConn) TLSConn() net.Conn                  { return c.UConn }
 func (c *RealityUConn) NegotiatedProtocol() string         { return c.ConnectionState().NegotiatedProtocol }

@@ -96,6 +96,12 @@ var (
 		[]string{"direction", "reason"},
 		nil,
 	)
+	carrierGateWaitsDesc = prometheus.NewDesc(
+		"dae_carrier_gate_waits_total",
+		"Process-lifetime times a shared carrier's writer waited for its kernel socket to send what it held.",
+		nil,
+		nil,
+	)
 	udpQueueDelayDesc = prometheus.NewDesc(
 		"dae_udp_queue_delay_seconds",
 		"Process-lifetime time that UDP datagrams waited in a transport's send queue.",
@@ -116,6 +122,7 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 		processTimestampDesc,
 		udpPacketDropsDesc,
 		udpQueueDelayDesc,
+		carrierGateWaitsDesc,
 	} {
 		ch <- descriptor
 	}
@@ -197,6 +204,7 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 	for drop := range netproxy.Drops() {
 		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
 	}
+	ch <- prometheus.MustNewConstMetric(carrierGateWaitsDesc, prometheus.CounterValue, float64(netproxy.GateWaits()))
 	for delay := range netproxy.QueueDelays() {
 		count, sum, cumulative := delay.Snapshot()
 		buckets := make(map[float64]uint64, len(cumulative))

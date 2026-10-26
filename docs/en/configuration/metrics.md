@@ -108,6 +108,10 @@ packet releases the worker and its permit.
 `dae_udp_queue_delay_seconds{transport}` is the histogram of how long the
 datagrams a transport sent had waited in its send queue, for the process
 lifetime, with buckets from 1 ms to 1 s. `transport` is `smux`.
+`dae_carrier_gate_waits_total` counts the times the writer of a shared
+carrier, such as an smux session, waited for the carrier's TCP socket to
+send what it held before writing more; a saturated carrier waits a few
+hundred times a second.
 
 ## Plugin metric names
 

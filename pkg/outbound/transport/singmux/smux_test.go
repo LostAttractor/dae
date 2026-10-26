@@ -136,17 +136,21 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-carrier.entered // SYN a is being written
-	frame := func(c byte) []byte { return bytes.Repeat([]byte{c}, smuxFrame-smuxHeaderSize) }
-	if _, err := a.Write(append(frame('a'), frame('A')...)); err != nil {
-		t.Fatal(err)
+	// Ten quanta each; the SYN and two frames fit a stream's queue.
+	frame := func(c byte) []byte { return bytes.Repeat([]byte{c}, (16<<10)-smuxHeaderSize) }
+	write := func(st net.Conn, fills ...byte) {
+		for _, fill := range fills {
+			if _, err := st.Write(frame(fill)); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+	write(a, 'a', 'A')
 	b, err := s.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Write(append(frame('b'), frame('B')...)); err != nil {
-		t.Fatal(err)
-	}
+	write(b, 'b', 'B')
 	_ = a.Close()
 	_ = b.Close()
 	frames := readFrames(remote)
@@ -168,6 +172,9 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 		}
 	}
 }
+
+// smuxFrame is the frame size of a session whose carrier has no socket.
+const smuxFrame = netproxy.MaxUnit
 
 // fqStreamBytes is the stream data that fills a stream's queue: whole
 // frames up to fq.StreamLimit of buffers.
@@ -204,12 +211,12 @@ func TestSmuxWriteWaitsForQueue(t *testing.T) {
 
 	// More than the old 1 MiB session queue held. Their SYNs queue too.
 	frames := func(n int) []byte { return make([]byte, n*(smuxFrame-smuxHeaderSize)) }
-	for range 24 {
+	for range 40 {
 		other, err := s.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := other.Write(frames(3)); err != nil {
+		if _, err := other.Write(frames(1)); err != nil {
 			t.Fatal(err)
 		}
 		defer other.Close()
@@ -218,7 +225,7 @@ func TestSmuxWriteWaitsForQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Write(frames(3)); err != nil {
+	if _, err := other.Write(frames(1)); err != nil {
 		t.Fatal(err)
 	}
 	written := make(chan error, 1)
@@ -669,6 +676,54 @@ func TestSmuxStreamIDsRunOut(t *testing.T) {
 	}
 	if _, err := s.OpenStream(t.Context()); !idsExhausted(err) {
 		t.Fatalf("open after the last ID = %v", err)
+	}
+}
+
+// A session finds the TCP socket under its carrier monitor and gates it:
+// its frames are the gate's batch, shorter than those of a pipe.
+func TestSmuxSessionGatesTCPCarrier(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestSmuxSession(netproxy.TrackConn(conn, func() {}))
+	defer s.Close()
+	if frame := int(s.frame.Load()); frame != netproxy.MinUnsent/2 {
+		t.Fatalf("frames of %d bytes over TCP, want the gate's %d", frame, netproxy.MinUnsent/2)
+	}
+}
+
+type chunkRecordingCarrier struct {
+	net.Conn
+	data    bytes.Buffer
+	largest int
+}
+
+func (c *chunkRecordingCarrier) Write(b []byte) (int, error) {
+	c.largest = max(c.largest, len(b))
+	return c.data.Write(b)
+}
+
+func TestSmuxLargeDatagramRespectsGateUnit(t *testing.T) {
+	carrier := new(chunkRecordingCarrier)
+	s := &smuxSession{conn: &monitoredConn{Conn: carrier}, gate: netproxy.NewCarrierGate(carrier)}
+	data := bytes.Repeat([]byte("payload"), 10000)
+	s.fq.Release = putFrame
+	s.fq.Force(new(fq.Flow), time.Now(), data)
+	for s.fq.Queued() {
+		batch := s.fq.Take(time.Now(), 8192, nil)
+		if err := s.write(batch); err != nil {
+			t.Fatal(err)
+		}
+		s.fq.ReleaseBatch()
+	}
+	if carrier.largest > 8192 || !bytes.Equal(carrier.data.Bytes(), data) {
+		t.Fatalf("largest write %d, delivered %d of %d bytes", carrier.largest, carrier.data.Len(), len(data))
 	}
 }
 
