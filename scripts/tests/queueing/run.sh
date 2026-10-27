@@ -26,6 +26,7 @@
 #   QEXP_DOWNLOAD=stall|slow   a TCP download that stalls or reads 1 MiB/s
 #   QEXP_MAX_CONNECTIONS=0     smux sessions (0: the default)
 #   QEXP_UDP=mux               UDP flows through smux, or direct: a socket each
+#   QEXP_SOCKET_SAMPLES=true  10 ms socket sampling; false for CPU comparisons
 #   QEXP_WRITER_DELAY=0s       CPU spin before each carrier write
 #   QEXP_MPTCP=0               dial carriers with MPTCP, remembered per server
 #   QEXP_WARMUP=3s QEXP_DURATION=20s
@@ -104,7 +105,8 @@ for _ in $(seq 50); do
 done
 
 env DAE_QUEUE_EXP=1 QEXP_SERVER=10.77.0.2 QEXP_CAKE_DEV=qexpa QEXP_LAN_RATE="${LAN_RATE:-}" QEXP_OUT="$report.tmp" QEXP_RETURN_DELAY="$RETURN_DELAY" QEXP_LABEL="$LABEL" \
-	QEXP_BINARY="$(sha256sum "$BIN" | cut -d' ' -f1)" ip netns exec "$client" taskset -c "$client_cpus" \
+	QEXP_RATE="$RATE" QEXP_CC="$CC" QEXP_ECN="$ECN" \
+	QEXP_BINARY="${QEXP_BINARY:-$(sha256sum "$BIN" | cut -d' ' -f1)}" ip netns exec "$client" taskset -c "$client_cpus" \
 	"$BIN" -test.run '^TestQueueingExperimentClient$' -test.timeout=${minutes}m >"$OUT/$LABEL.client.log" 2>&1 &
 pids+=($!)
 wait "${pids[-1]}" || { tail -20 "$OUT/$LABEL.client.log" >&2; exit 1; }

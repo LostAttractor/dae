@@ -209,3 +209,13 @@ func TestQueueingExperimentFloodLANLossAccounting(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueingExperimentWriterPreservesSocket(t *testing.T) {
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+	writer := &qexpBusyWriter{Conn: local}
+	if writer.ReadPassthrough() != local || writer.WriteThrough() != local {
+		t.Fatal("writer-cost fixture hid its underlying socket")
+	}
+}

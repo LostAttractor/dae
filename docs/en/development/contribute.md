@@ -29,6 +29,9 @@ For documentation changes, run `pnpm install --frozen-lockfile`,
 run `make -C web test` with Chromium installed. Both use the root pnpm lockfile;
 commit manifest and lockfile changes together when changing dependencies.
 
+Queueing changes use the [scenario-specific validation goals](queueing-tests.md),
+including matched build conditions and loss-aware latency interpretation.
+
 ## Pinned kernel state
 
 The persistent maps are `tcp_flow_map` (LRU hash, 40-byte key and 16-byte value)

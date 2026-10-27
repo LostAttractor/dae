@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -506,6 +507,9 @@ func (c *qexpBusyWriter) Write(b []byte) (int, error) {
 // ReadPassthrough keeps receive tuning: reads are unchanged.
 func (c *qexpBusyWriter) ReadPassthrough() net.Conn { return c.Conn }
 
+// Preserve the send socket in variants that gate a wrapped carrier.
+func (c *qexpBusyWriter) WriteThrough() net.Conn { return c.Conn }
+
 // qexpFlow is a LAN UDP source: its endpoint's replies arrive on replies.
 type qexpFlow struct {
 	src, dst netip.AddrPort
@@ -743,6 +747,11 @@ func qexpReportLoss(report map[string]any, workload map[string]int, udp string, 
 // QEXP_OUT.
 func TestQueueingExperimentClient(t *testing.T) {
 	host := qexpEnv(t, "QEXP_SERVER", "127.0.0.1")
+	rate := qexpRate(t, qexpEnv(t, "QEXP_RATE", ""))
+	socketSamples, err := strconv.ParseBool(qexpEnv(t, "QEXP_SOCKET_SAMPLES", "true"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	warmup, duration := qexpDuration(t, "QEXP_WARMUP", "3s"), qexpDuration(t, "QEXP_DURATION", "20s")
 	returnDelay, writerDelay := qexpDuration(t, "QEXP_RETURN_DELAY", "0s"), qexpDuration(t, "QEXP_WRITER_DELAY", "0s")
 	maxConnections, err := strconv.Atoi(qexpEnv(t, "QEXP_MAX_CONNECTIONS", "0"))
@@ -1122,12 +1131,14 @@ func TestQueueingExperimentClient(t *testing.T) {
 		}
 		rec.followProbes(flow, name, returnDelay, counter)
 	}
-	// The fullest carrier: idle ones would dilute its percentiles.
-	every(10*time.Millisecond, func() {
-		if samples := carriers.notsent(); len(samples) > 0 {
-			rec.add("notsent_bytes", qexpNow(), slices.Max(samples))
-		}
-	})
+	// Socket inspection is optional: its per-carrier cost is not forwarding work.
+	if socketSamples {
+		every(10*time.Millisecond, func() {
+			if samples := carriers.notsent(); len(samples) > 0 {
+				rec.add("notsent_bytes", qexpNow(), slices.Max(samples))
+			}
+		})
+	}
 
 	cpu := func() time.Duration {
 		var usage unix.Rusage
@@ -1183,7 +1194,17 @@ func TestQueueingExperimentClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := map[string]any{
-		"elapsed_s": time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
+		"conditions": map[string]any{
+			"rate_bps": rate, "return_delay": returnDelay.String(),
+			"cc": qexpEnv(t, "QEXP_CC", ""), "ecn": qexpEnv(t, "QEXP_ECN", ""),
+			"workload": workload, "max_connections": maxConnections,
+			"writer_delay": writerDelay.String(), "socket_samples": socketSamples,
+			"udp": udp, "mptcp": option.Mptcp, "download": os.Getenv("QEXP_DOWNLOAD"),
+			"lan_rate": os.Getenv("QEXP_LAN_RATE"), "warmup_s": warmup.Seconds(), "duration_s": duration.Seconds(),
+			"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH,
+		},
+		"game_window_sent": windowProbes.Load(),
+		"elapsed_s":        time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
 		"carriers": len(carriers.notsent()), "datagram_memory_peak": udpPacketMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
 	}
 	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "LAN_RATE", "RETURN_DELAY", "LABEL", "BINARY"} {
@@ -1196,8 +1217,12 @@ func TestQueueingExperimentClient(t *testing.T) {
 	report["late"] = rec.late
 	windowEchoed := len(rec.samples["game_up_ms"])
 	rec.mu.Unlock()
-	// The process also runs the LAN's QUIC client and the writer's spin.
-	qexpReportUploads(report, counters, duration, cpuUsed, workload["quic"] == 0 && writerDelay == 0)
+	// Instrumentation and synthetic CPU work must not be sold as forwarding cost.
+	cpuComparable := workload["quic"] == 0 && writerDelay == 0 && !socketSamples
+	qexpReportUploads(report, counters, duration, cpuUsed, cpuComparable)
+	if cpuComparable && len(workload) == 1 && workload["game"] > 0 && windowProbes.Load() > 0 {
+		report["cpu_us_per_game_packet"] = cpuUsed.Seconds() * 1e6 / float64(windowProbes.Load())
+	}
 	var lostUpload, lostDownload int64
 	for _, flow := range []*qexpFlow{game, flood} {
 		if flow == nil {
