@@ -1196,7 +1196,8 @@ func TestQueueingExperimentClient(t *testing.T) {
 	report := map[string]any{
 		"conditions": map[string]any{
 			"rate_bps": rate, "return_delay": returnDelay.String(),
-			"cc": qexpEnv(t, "QEXP_CC", ""), "ecn": qexpEnv(t, "QEXP_ECN", ""),
+			"server_frame_writes": smuxtest.FrameWriteMode,
+			"cc":                  qexpEnv(t, "QEXP_CC", ""), "ecn": qexpEnv(t, "QEXP_ECN", ""),
 			"workload": workload, "max_connections": maxConnections,
 			"writer_delay": writerDelay.String(), "socket_samples": socketSamples,
 			"udp": udp, "mptcp": option.Mptcp, "download": os.Getenv("QEXP_DOWNLOAD"),

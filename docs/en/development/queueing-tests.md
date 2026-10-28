@@ -53,6 +53,13 @@ measured carrier RTT; neither it nor the fixture's netem delay establishes a
 real node's RTT. Association setup is bypassed by this fixture and needs its own
 lifecycle tests. See the [detailed fixture guide](../../zh/development/testing-and-performance.md).
 
+The smux test server passes each complete frame to its carrier in one write,
+without waiting to batch multiple frames. Splitting a frame header and payload
+into separate carrier writes can create extra encrypted records, reads and
+wakeups at the client. Carrier packetization is part of the fixture, not a
+universal property of real servers; compare packetization variants explicitly
+when attributing small-packet CPU costs.
+
 The default comparison scenarios disable 10 ms socket inspection with the
 test-only `QEXP_SOCKET_SAMPLES=false`. This avoids charging a variant for more
 observation syscalls merely because it has more carriers. Diagnostic scenarios
@@ -61,9 +68,16 @@ omitted when socket sampling, synthetic writer spin or the LAN-side QUIC client
 is active. Pure-game runs expose `cpu_us_per_game_packet` using the window's
 offered probes; it must be read with delivery and loss counts.
 
+The client process also generates traffic and records probe replies. Its CPU
+is a comparative fixture metric, not an isolated daemon measurement. Delivery
+patterns can change generator and recorder wakeups; use stack attribution or
+references providing the same isolation before attributing a mixed-load CPU
+delta entirely to queue scheduling.
+
 ## Report validity
 
 Reports include resolved `conditions`: topology, workload, carrier limit,
+server frame packetization,
 writer delay, sampling mode, measurement window and runtime platform. The
 summarizer excludes incomplete measurement intervals, late samples, missing required loss
 accounting and unaccounted losses from performance aggregates. It does not pair

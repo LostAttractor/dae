@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// FrameWriteMode identifies carrier packetization in experiment reports.
+const FrameWriteMode = "joined-frame"
+
 const (
 	Version = 1
 	CmdSYN  = 0
@@ -33,7 +36,7 @@ var ErrProtocol = errors.New("smuxtest: invalid frame")
 type Session struct {
 	conn    net.Conn
 	writeMu sync.Mutex
-	header  [headerSize]byte // guarded by writeMu
+	frame   []byte // guarded by writeMu
 	accept  chan *Stream
 	done    chan struct{}
 
@@ -79,13 +82,21 @@ func (s *Session) Close() error {
 func (s *Session) WriteFrame(version, cmd byte, sid uint32, payload []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	s.header = [headerSize]byte{version, cmd}
-	binary.LittleEndian.PutUint16(s.header[2:], uint16(len(payload)))
-	binary.LittleEndian.PutUint32(s.header[4:], sid)
-	if _, err := s.conn.Write(s.header[:]); err != nil || len(payload) == 0 {
-		return err
+	// Do not add a separate encrypted record just for the smux header.
+	size := headerSize + len(payload)
+	if cap(s.frame) < size {
+		s.frame = make([]byte, size)
+	} else {
+		s.frame = s.frame[:size]
 	}
-	_, err := s.conn.Write(payload)
+	s.frame[0], s.frame[1] = version, cmd
+	binary.LittleEndian.PutUint16(s.frame[2:], uint16(len(payload)))
+	binary.LittleEndian.PutUint32(s.frame[4:], sid)
+	copy(s.frame[headerSize:], payload)
+	n, err := s.conn.Write(s.frame)
+	if err == nil && n != len(s.frame) {
+		err = io.ErrShortWrite
+	}
 	return err
 }
 

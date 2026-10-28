@@ -41,7 +41,7 @@ WORST = {"upload_unaccounted", "download_unaccounted", "late", "settle_timeout"}
 
 
 CONDITIONS = {
-    "rate_bps", "return_delay", "cc", "ecn", "workload", "max_connections",
+    "rate_bps", "return_delay", "server_frame_writes", "cc", "ecn", "workload", "max_connections",
     "writer_delay", "socket_samples", "udp", "mptcp", "download", "lan_rate",
     "warmup_s", "duration_s", "go_version", "goos", "goarch",
 }

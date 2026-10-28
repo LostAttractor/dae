@@ -35,7 +35,7 @@ class SummaryTest(unittest.TestCase):
     def report(self, cpu=10):
         return {
             "conditions": {
-                "rate_bps": 40_000_000, "return_delay": "90ms", "cc": "bbr", "ecn": "0",
+                "rate_bps": 40_000_000, "return_delay": "90ms", "server_frame_writes": "joined-frame", "cc": "bbr", "ecn": "0",
                 "workload": {"game": 1, "bulk": 4}, "max_connections": 0,
                 "writer_delay": "0s", "socket_samples": False, "udp": "mux", "mptcp": False,
                 "download": "", "lan_rate": "", "warmup_s": 3, "duration_s": 20,
@@ -76,7 +76,7 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("excluded invalid pair", errors)
 
     def test_different_conditions_are_not_paired(self):
-        for key, changed in [("rate_bps", 200_000_000), ("socket_samples", True), ("writer_delay", "4ms"), ("go_version", "other-go")]:
+        for key, changed in [("rate_bps", 200_000_000), ("socket_samples", True), ("writer_delay", "4ms"), ("go_version", "other-go"), ("server_frame_writes", "split-header")]:
             with self.subTest(key=key):
                 before, after = self.report(), self.report(1)
                 after["conditions"][key] = changed

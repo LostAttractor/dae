@@ -40,7 +40,7 @@ cp "$VALID_REPORT" "$OUT/$label.json"
                 path.chmod(0o755)
             report = {
                 "conditions": {
-                    "rate_bps": 40_000_000, "return_delay": "90ms", "cc": "bbr", "ecn": "0",
+                    "rate_bps": 40_000_000, "return_delay": "90ms", "server_frame_writes": "joined-frame", "cc": "bbr", "ecn": "0",
                     "workload": {"game": 1}, "max_connections": 0, "writer_delay": "0s",
                     "socket_samples": False, "udp": "mux", "mptcp": False, "download": "", "lan_rate": "",
                     "warmup_s": 3, "duration_s": 20, "go_version": "test-go", "goos": "linux", "goarch": "amd64",
