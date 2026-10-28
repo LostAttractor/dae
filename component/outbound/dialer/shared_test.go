@@ -178,13 +178,19 @@ func TestSharedLateMemberWaitsForPreparation(t *testing.T) {
 
 func TestSharedLifetimeWithRetainedCaller(t *testing.T) {
 	d, transport := newLifetimeDialer(t)
+	d.RegisterDialerGroup(new(testGroup), DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
+	binding := d.group
 	other := shareTestDialer(t, d)
+	otherObserver := other.group.observer
 	release, err := d.Retain()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	_ = d.Close()
+	if d.group != binding || binding.observer != nil || other.group.observer != otherObserver {
+		t.Fatal("closing a shared member must release only its observer, preserving statistics and other members")
+	}
 	if _, err := d.Retain(); !errors.Is(err, net.ErrClosed) {
 		t.Fatal("closed member accepted another retain")
 	}

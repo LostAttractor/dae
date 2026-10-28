@@ -16,6 +16,70 @@ type refreshTransport func(*http.Request) (*http.Response, error)
 
 func (f refreshTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestRefreshCachePersistenceSwitches(t *testing.T) {
+	var store RefreshStore
+	revision := "v1"
+	client := &http.Client{Transport: refreshTransport(func(r *http.Request) (*http.Response, error) {
+		if revision == "offline" {
+			return nil, errors.New("offline")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(revision)), Request: r}, nil
+	})}
+	dir := t.TempDir()
+	for _, step := range []struct {
+		dir, revision, want string
+	}{
+		{dir, "v1", "v1"},
+		{"", "offline", "v1"},
+		{"", "v2", "v2"},
+		{dir, "offline", "v2"},
+		{t.TempDir(), "offline", "v2"},
+	} {
+		revision = step.revision
+		ctx, session := store.Begin(t.Context(), time.Hour, false)
+		value, status, err := (Cache{Namespace: "subscriptions", Dir: step.dir}).Load(ctx, client, LoadOptions{Key: "https://example.test/nodes", MaxBytes: 128}, func(read ReadFunc) (Result, error) {
+			return read(Source{Location: "https://example.test/nodes"}, ReadOptions{MaxBytes: 128})
+		})
+		if err != nil || string(value.Data) != step.want || (status.RefreshError != nil) != (revision == "offline") || status.WriteError != nil {
+			t.Fatalf("cache directory=%q upstream=%q: value=%q status=%+v err=%v", step.dir, revision, value.Data, status, err)
+		}
+		session.Commit()
+		if len(store.groups) != 1 {
+			t.Fatal("changing persistence settings changed the in-memory resource identity")
+		}
+	}
+}
+
+func TestRefreshNamespacesKeepIndependentSnapshots(t *testing.T) {
+	var store RefreshStore
+	revision := ""
+	client := &http.Client{Transport: refreshTransport(func(r *http.Request) (*http.Response, error) {
+		if revision == "offline" {
+			return nil, errors.New("offline")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(revision)), Request: r}, nil
+	})}
+	for _, offline := range []bool{false, true} {
+		ctx, session := store.Begin(t.Context(), time.Hour, false)
+		for _, namespace := range []string{"subscriptions", "surge"} {
+			revision = namespace
+			if offline {
+				revision = "offline"
+			}
+			value, status, err := (Cache{Namespace: namespace}).Load(ctx, client, LoadOptions{Key: "https://example.test/resource", MaxBytes: 128}, func(read ReadFunc) (Result, error) {
+				return read(Source{Location: "https://example.test/resource"}, ReadOptions{MaxBytes: 128})
+			})
+			if err != nil || string(value.Data) != namespace || (status.RefreshError != nil) != offline {
+				t.Fatalf("namespace=%q offline=%t: value=%q status=%+v err=%v", namespace, offline, value.Data, status, err)
+			}
+		}
+		session.Commit()
+		if len(store.groups) != 2 {
+			t.Fatal("resources with different interpretations shared an in-memory snapshot")
+		}
+	}
+}
+
 func TestRefreshRetriesUnavailableInitialResource(t *testing.T) {
 	var store RefreshStore
 	client := &http.Client{Transport: refreshTransport(func(*http.Request) (*http.Response, error) { return nil, errors.New("offline") })}

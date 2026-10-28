@@ -78,6 +78,9 @@ func (d *Dialer) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.closed = true
+		if d.group != nil {
+			d.group.observer = nil
+		}
 		delete(d.members, d)
 		if len(d.members) != 0 {
 			d.updateCheckDemandLocked()

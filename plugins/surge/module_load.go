@@ -52,7 +52,7 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 	if err != nil {
 		return nil, err
 	}
-	cache := resource.Cache{Dir: options.CacheDir}
+	cache := resource.Cache{Namespace: "surge", Dir: options.CacheDir}
 	m, status, err := cache.Load(ctx, client, resource.LoadOptions{
 		Key: string(key), MaxBytes: MaxModuleBytes + MaxModuleScriptBytes,
 		RefreshDeadline: deadline, Timeout: resourceTimeout,

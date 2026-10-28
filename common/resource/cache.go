@@ -20,7 +20,11 @@ import (
 // Cache persists complete validated resource groups. An empty Dir disables disk
 // access; RefreshStore independently retains the accepted groups in memory.
 // Callers supply their routed HTTP client and content validation.
-type Cache struct{ Dir string }
+type Cache struct {
+	Dir string
+	// Namespace isolates snapshots by interpretation, independent of persistence.
+	Namespace string
+}
 
 type LoadOptions struct {
 	// Key includes the source and all options affecting interpretation.
@@ -76,7 +80,7 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 	}
 	candidate := cacheSnapshot{Version: 1, Key: opts.Key, Resources: make(map[string]Result)}
 	session := refreshSession(ctx)
-	groupKey := c.Dir + "\x00" + opts.Key
+	groupKey := c.Namespace + "\x00" + opts.Key
 	previous := session.previous[groupKey]
 	checks := make(map[string]refreshCheck)
 	attempted := make(map[string]bool)

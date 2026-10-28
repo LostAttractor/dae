@@ -354,7 +354,7 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, option
 		}
 		return tag, nodes, nil
 	}
-	cache := resource.Cache{Dir: options.CacheDir}
+	cache := resource.Cache{Namespace: "subscriptions", Dir: options.CacheDir}
 	nodes, status, err := cache.Load(ctx, client, resource.LoadOptions{
 		Key: source.Location, MaxBytes: maxRemoteSubscriptionSize, RefreshDeadline: options.RefreshDeadline,
 	}, func(read resource.ReadFunc) ([]string, error) {
