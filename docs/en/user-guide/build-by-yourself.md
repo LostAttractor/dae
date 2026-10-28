@@ -407,10 +407,11 @@ Interface capacity, the per-trie LPM limit, process metadata and API observation
 tables remain internal constants. `MAX_LPM_NUM` is derived from
 `MAX_MATCH_SET_LEN + 8`. These are not independent make configuration parameters.
 
-After generating objects with a nondefault `MAX_MATCH_SET_LEN`, direct `go build`
-or `go test` commands also need
-`-ldflags '-X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=2048'`
-(replace `2048` with your chosen value). The make targets set this automatically.
+Make defines the capacity defaults once and generates the Go routing limit with
+the BPF objects. After `make ebpf MAX_MATCH_SET_LEN=2048`, direct `go build` and
+`go test` commands use that generated limit without extra linker flags.
+A nondefault build updates `internal/routingabi/abi_generated.go`; run
+`make ebpf` without capacity overrides to regenerate the default layout.
 
 `make ebpf`, `make test`, `make ebpf-test` and `make ebpf-audit` propagate the same
 settings. Rebuild and restart the daemon to create maps at the new sizes;

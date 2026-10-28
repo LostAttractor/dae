@@ -96,7 +96,8 @@ usage, peak, limit and OOM-kill counts appear in `dae plugins surge status`,
 `dae plugins status --verbose` and raw JSON reports. Core `dae status` and
 `status --recent` do not expand plugin runtime reports. Collectors and status
 queries read cached values without process I/O. Sample coverage and age identify
-partial/stale data.
+partial/stale data. Console and notification log messages are limited to 4096
+UTF-8 bytes per entry; truncated entries carry `truncated=true`.
 
 See [configuration](../../docs/zh/configuration/surge-module.md),
 [supported features](../../docs/zh/configuration/surge-module-support.md), and
@@ -110,15 +111,18 @@ HTTP plugins observe, snapshot and replace bodies only through the managed messa
 `Body()`; `Head` carries metadata only. Generic content decoding uses
 `component/plugin/codec` with the input View's actual budget, which also accounts for
 compression workspaces. `decodeBodyView` consumes the input View and releases it even
-on failure; the caller closes the View returned on success.
+on failure; the caller closes the View returned on success. Unsupported or corrupt
+encodings skip body-dependent scripts and replay the original representation.
+Oversized request bodies still fail with 413, and request cancellation propagates.
 
 Valid bodyless responses may carry encoding headers. Surge treats empty input as
 identity; this compatibility policy is not part of the shared codec. Originally
 bodyless HEAD/304 responses update only the required metadata, without using body
-replacement that would incorrectly remove their validators. When a script changes
-a response with a body to 204/304, `Body.Replace` releases the original body,
-restores default delivery and clears framing/trailers. Omitting the transmitted
-body is not the same as replacing the selected representation, so ETag,
+replacement that would incorrectly remove their validators. Shared
+`Response.TakeHTTP()` discards forbidden bodies and trailers after all plugin edits,
+including synthetic responses and script status changes to 204/304. It releases
+the original body and its budget without changing the delivery policy. Omitting
+the transmitted body is not the same as replacing the selected representation, so ETag,
 Last-Modified, Content-Encoding and Repr-Digest remain if still valid, but digests
 of the original message content do not. Fields already cleared by an actual body
 replacement are not restored.

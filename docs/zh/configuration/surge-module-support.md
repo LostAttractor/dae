@@ -69,6 +69,8 @@
 
 ## 资源限制
 
+console 与通知写入日志的单条正文最多 4096 个 UTF-8 字节，截断日志带 `truncated=true`。HTTP 叠加编码最多四层非 identity 编码；不支持的编码、层数超限或损坏的压缩正文会跳过依赖正文的脚本并转发原文，请求正文大小超限仍返回 413。
+
 近期通知每脚本最多 50 条，并共享每实例 1 MiB 保守 JSON 编码预算；超限时优先淘汰较长历史中的最旧记录，数量相同则淘汰最旧的一条。详见[近期通知](surge-module.md#近期通知)。
 
 [配置指南](surge-module.md#配置与运行)列出主要限制。脚本 HTTP 并发上限 20，不设累计次数上限；请求/响应正文与 ungzip 输出限 min(memory_limit/4, 32 MiB)，HTML 限 min(memory_limit/4, 8 MiB)，持久存储单值 4 MiB、实例 JSON 总计 64 MiB。同时待处理定时器最多 64 个；另有 DOM 节点、规则展开和声明数上限。JavaScript 堆限制不覆盖 Go 缓冲或进程 RSS。jq 的解析、编译和求值由受 cgroup v2 限制的独立工作进程执行，每进程 128 MiB、共享池 512 MiB，禁用 swap；无法建立限制时拒绝加载包含 jq 的模块，执行超限则保留前一步正文。Node.js 的 `memory_limit` 仅限制每个工作进程的 V8 老生代，不覆盖 ArrayBuffer 等外部内存。Node.js 不提供恶意脚本的安全隔离保证，执行与部署边界见[Node.js 后端](surge-module.md#nodejs-后端)。

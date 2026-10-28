@@ -103,6 +103,10 @@ copies a local message. `MessageCopy()` returns an owned editable message, or ni
 when strict decoding fails; assign `exchange.DNSPacket = plugin.DNSMessage(m)` to
 publish an edit. There is no separate Wire field to synchronize. `Wire()` returns
 read-only bytes or a local encoding error; `IsWire()` identifies exact packets.
+The core compresses unsigned local replies and truncates them to the client's UDP
+limit when needed. Local replies with TSIG or SIG(0) retain their compression
+choice and are not truncated after signing. Use `DNSWire` when exact preservation
+of a received signed packet is required.
 
 Resolver transports call `exchange.ExchangeUpstream(ctx, upstream, transport)`
 for a single candidate, after request policy and before response policy. Pass the
@@ -249,8 +253,9 @@ and forwards normally (including its Alt-Svc). Middleware
 is selected for that incoming authority, before rewrites; changing URL/Host in a
 plugin does not activate another scope. `Flow.Host` identifies this admitted
 authority, while `Flow.Source` and `Flow.Destination` remain the original captured
-tuple. The original middleware chain is retained; up to 32 additional authority
-chains are cached per connection, with further names built per invocation.
+tuple. The original middleware chain is retained; the 32 most recently used
+additional authority chains are cached per connection. Chain construction for
+one authority does not block requests for other authorities.
 The business authority does not trigger DNS or route selection. Only an explicit
 URL scheme/host/port rewrite changes the network target; path/query and Host-only
 changes retain the original ingress. An explicit URL scheme mismatch, invalid authority,
@@ -326,6 +331,12 @@ passing the request to the next layer.
   transferred, do not use or close raw's body.
 - The host uses `Request.Forward()` to lend an upload cursor and
   `Response.TakeHTTP()` to consume the final response and its delivery policy.
+  The latter closes forbidden bodies without reading them and removes trailers
+  and transfer framing for HEAD, 204, 304 and non-upgrade informational responses.
+  HEAD emits a known representation length from `Head.ContentLength`, except for
+  304: that status may retain an explicit Content-Length, normalized from the same
+  field, but does not synthesize one. 204 and informational responses have no Content-Length. A 101
+  response retains its duplex body. This normalization happens after all plugin edits.
   Plugins must not export and rewrap messages to bypass body operations. After
   forwarding, body installation and changes to committed metadata are forbidden,
   but reading the request Head and stopping observations remain allowed.
@@ -423,7 +434,9 @@ options or another body access path.
   decoding starts on the first Read. Both support identity, gzip, deflate (zlib/raw)
   and br. Join multiple `Content-Encoding` lines with
   `strings.Join(head.Header.Values("Content-Encoding"), ",")`; stacked encodings are
-  decoded in reverse order.
+  decoded in reverse order, with at most four non-identity layers. A streaming
+  reader reserves at most 40 MiB of decoder workspace; either limit returns
+  `ErrUnsupported`. View decoding releases each layer's workspace before the next.
 - `GRPCDecoder(source, grpcEncoding)` returns a complete `Message` from `Next()`;
   `Wire()` is the original frame and `Payload()` is the decompressed, read-only
   payload. Slices are valid only until Message is closed; callers must explicitly
@@ -638,6 +651,20 @@ owner cancels that instance's worker. Retired protocol hosts drain requests; aft
 5 seconds of draining they cancel requests and close connections. An instance is
 closed only after its last protocol host releases it and its worker exits.
 
+The control plane selects a host and registers DNS or protocol-connection work
+under one short admission lock. New work waits for instance replacement to finish,
+respecting its context; already admitted work keeps its original protocol host.
+Each routing generation owns its protocol connections even when it shares plugin
+instances with another generation. When routing replacement also rebuilds plugin
+instances, late TCP/QUIC setups and DNS requests requiring admission to the old
+host fail with `net.ErrClosed`; clients must retry on the new generation. This
+includes ordinary TCP setup, since it also consults the host's DNS-address policy.
+Rebuilt instances never run with old routing policies or outbounds. Reused
+instances retain the normal setup grace period. Direct host embedders can use `Host.Admit` and release the returned admission
+after the operation ends; they must coordinate host selection with retirement.
+DNS observers run inside the admitted request's finalizer, before that admission
+is released.
+
 See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 [status fields](../../docs/en/configuration/api.md).
 
@@ -659,12 +686,14 @@ plugins requiring live interface observations then own their monitor and close i
 ## Persistent storage
 
 `Services.ResourceCacheDir` is the shared configuration-resource cache root, or
-empty when `global.resource_cache` is disabled. Use `common/resource.Cache` in a
-plugin-specific subdirectory with `PrepareClient` to load and validate HTTP/HTTPS
-resource groups. It publishes complete snapshots atomically and falls back only
-after a failed refresh. Local files always use current contents. Include source
-URLs and interpretation options in the cache key; report cache warnings after a
-successful load. This cache is separate from plugin execution state.
+empty when `global.resource_cache` is disabled. Use `common/resource.Cache` with
+`PrepareClient` to load and validate HTTP/HTTPS resource groups. Set a stable,
+plugin-specific `Namespace` for in-memory snapshots and a plugin-specific `Dir`,
+or an empty `Dir` to disable persistence. Changing persistence does not change
+in-memory resource identity. Complete snapshots are published atomically and used
+as fallback only after a failed refresh. Local files always use current contents.
+Include source URLs and interpretation options in the cache key; report cache
+warnings after a successful load. This cache is separate from plugin execution state.
 
 `Services.Storage` provides instance-scoped `Get(key)`, `Put(key, []byte)` and
 `Delete(key)` operations for small persistent state. The daemon supplies it
@@ -722,8 +751,13 @@ writes in a worker and flush in `Close` after requests/workers have drained;
 generation: the factory must not write state, and a failed/abandoned preparation's
 `Close` must not flush an unactivated snapshot. Restore mutable runtime state
 after activation so the old generation's final flush and invalidations are seen.
-The daemon closes the old host before starting the successor. Direct embedders
-must preserve that ordering or coordinate concurrent writers themselves.
+When replacing an instance, the daemon waits for all old protocol hosts to release
+it and complete its final `Close` before starting the successor. Reused instances
+keep their workers running and do not restore state again. Direct embedders must
+first retire earlier hosts, call `old.DrainFor(next, abort)`, and call the returned
+release function after starting or abandoning the successor. `abort` skips the
+request drain grace period, not final cleanup. Otherwise, embedders must coordinate
+concurrent writers themselves.
 
 ## Prometheus metrics
 

@@ -33,6 +33,9 @@ dae performs traffic splitting in the interface BPF programs. On an interface co
 
 ### Proxy Mechanism
 
+For state ownership and reload ordering, see
+[Connection State and Reload Lifecycles](design/connection-lifecycle.md).
+
 The LAN/WAN programs redirect selected packets into a private L2 link pair. dae prefers Netkit with native hooks; when the kernel does not support Netkit, it uses veth with TCX ingress hooks on both ends. Both paths prepare packets for local delivery in dae's network namespace, where a BPF SK_LOOKUP program assigns the TCP or UDP listener from dae's socket map. Both preserve the original destination and return path. The backend does not change capture predicates or send unrelated direct traffic through userspace.
 
 Captured connections that select native TCP direct forwarding use two concurrent Go `io.Copy` workers, allowing the standard library to use Linux `splice(2)`. The upload worker first flushes sniffed bytes while the download worker is already running. EOF half-closes the destination; an error or owner/policy abort closes both endpoints. MPTCP, protocol adapters and connections without usable kernel counters use the ordinary buffered relay. Ingress still uses a listener SOCKMAP and SK_LOOKUP; established relay sockets are not registered in a SOCKHASH.
