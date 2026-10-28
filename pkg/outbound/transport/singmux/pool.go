@@ -384,7 +384,7 @@ func (p *sessionPool) Connect(ctx context.Context) error {
 	}
 	p.observeSlotLocked(slot, lifecycle.Snapshot())
 	p.scheduleIdleLocked(slot)
-	if err == nil && !p.hasSpareLocked() {
+	if err == nil {
 		// A consumed spare's request may have coalesced with this connection.
 		p.expandLocked(laneSpare)
 	}
@@ -418,40 +418,51 @@ func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]str
 	var best *sessionSlot
 	var handle *netproxy.SingleSessionHandle[*sessionResource]
 	placement := placeOwn
-	if !user {
-		for _, l := range []lane{laneInteractive, laneSpare, laneBulk, laneStream} {
-			if best, handle, _ = p.leastLoadedLocked(excluded, l, true); best != nil {
-				break
+	order := [laneCount]lane{laneInteractive, laneSpare, laneBulk, laneStream}
+	if user {
+		order = [laneCount]lane{want, laneSpare}
+		copy(order[2:], fallbacks[want])
+	}
+	// Prefer progress over lane affinity; saturation is only a last resort.
+	for _, allowSaturated := range [...]bool{false, true} {
+		for _, l := range order {
+			candidate, candidateHandle, loaded := p.leastLoadedLocked(excluded, l, true)
+			if candidate == nil || !allowSaturated && candidateHandle.Resource().session.saturated() {
+				continue
+			}
+			best, handle = candidate, candidateHandle
+			if user {
+				switch l {
+				case want:
+					if loaded && p.freeLocked() > p.reservedLocked() {
+						p.expandLocked(want)
+					}
+				case laneSpare:
+					best.lane, placement = want, placeSpare
+				default:
+					placement = placeFallback
+				}
+			}
+			break
+		}
+		if best == nil {
+			// A busy untagged carrier is not a clean spare, but is still usable.
+			candidate, candidateHandle, _ := p.leastLoadedLocked(excluded, laneSpare, false)
+			if candidate != nil && (allowSaturated || !candidateHandle.Resource().session.saturated()) {
+				best, handle, placement = candidate, candidateHandle, placeFallback
+				if user {
+					best.lane = want
+				}
 			}
 		}
-	} else if own, ownHandle, loaded := p.leastLoadedLocked(excluded, want, true); own != nil {
-		best, handle = own, ownHandle
-		if loaded && p.freeLocked() > p.reservedLocked() {
-			p.expandLocked(want)
-		}
-	} else if spare, spareHandle, _ := p.leastLoadedLocked(excluded, laneSpare, true); spare != nil {
-		best, handle, placement = spare, spareHandle, placeSpare
-		best.lane = want
-	} else {
-		placement = placeFallback
-		for _, l := range fallbacks[want] {
-			if best, handle, _ = p.leastLoadedLocked(excluded, l, true); best != nil {
-				break
-			}
+		if best != nil {
+			break
 		}
 	}
-	if best == nil {
-		// A busy untagged carrier is not a clean spare, but is still usable.
-		best, handle, _ = p.leastLoadedLocked(excluded, laneSpare, false)
-		placement = placeFallback
-		if user && best != nil {
-			best.lane = want
-		}
-	}
-	if user && (best == nil || best.lane != want) {
+	if user && (best == nil || best.lane != want || handle.Resource().session.saturated()) {
 		p.expandLocked(want)
 	}
-	if user && !p.hasSpareLocked() {
+	if user {
 		p.expandLocked(laneSpare)
 	}
 	p.publishStateLocked(nil)
@@ -550,6 +561,9 @@ func (p *sessionPool) reservedLocked() int {
 // an active slot is unconnected, the outstanding request is only kept
 // wanted.
 func (p *sessionPool) expandLocked(l lane) {
+	if l == laneSpare && p.hasSpareLocked() {
+		return
+	}
 	var vacant *sessionSlot
 	pending := false
 	for _, slot := range p.slots {
@@ -602,9 +616,7 @@ func (p *sessionPool) releaseLaneLocked(slot *sessionSlot) {
 			slot.draining = nil
 			p.releaseLaneLocked(slot)
 			p.scheduleIdleLocked(slot)
-			if !p.hasSpareLocked() {
-				p.expandLocked(laneSpare)
-			}
+			p.expandLocked(laneSpare)
 			p.publishStateLocked(nil)
 		})
 		return

@@ -714,8 +714,11 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 		_ = grown[0].Close()
 		_ = grown[1].Close()
 		open()
+		if got := loads(); got[0] != 2 || got[1] != 1 {
+			t.Fatalf("new stream ignored a ready spare: loads=%v", got)
+		}
 		if !mux.Snapshot().RecoveryRequired {
-			t.Fatalf("saturated session did not ask for another session: loads=%v", loads())
+			t.Fatalf("used spare was not replaced: loads=%v", loads())
 		}
 		if err := mux.Connect(ctx); err != nil {
 			t.Fatal(err)
@@ -724,7 +727,7 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 		for range expandStreams + 1 {
 			open()
 		}
-		if got := loads(); len(got) != 3 || got[0] != 3 || got[2] != expandStreams+1 {
+		if got := loads(); len(got) != 3 || got[0] != 2 || got[1] != expandStreams+2 {
 			t.Fatalf("streams were placed on the saturated session: loads=%v", got)
 		}
 		if last := download(open()); last > first*5/4 {

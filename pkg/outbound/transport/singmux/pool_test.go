@@ -267,6 +267,45 @@ func TestPoolReplacesSpareAfterCoalescedRequest(t *testing.T) {
 	}
 }
 
+func TestPoolSpareDemandIsIdempotent(t *testing.T) {
+	h := newPoolHarness(t, DefaultMaxConnections, nil)
+	h.open(t.Context())
+	p := h.dialer.pool()
+	for _, connected := range []bool{false, true} {
+		if connected {
+			h.replenish()
+		}
+		p.mu.Lock()
+		spare := p.slots[1]
+		before := spare.lastUsed
+		p.expandLocked(laneSpare)
+		unchanged := spare.lastUsed == before && p.slots[2].lifecycle == nil
+		p.mu.Unlock()
+		if !unchanged {
+			t.Fatalf("connected=%v: repeated spare demand changed capacity or idle time", connected)
+		}
+	}
+}
+
+func TestPoolUsesHealthyFallbackBeforeSaturatedOwnLane(t *testing.T) {
+	h := newPoolHarness(t, 2, nil)
+	h.open(t.Context())
+	h.replenish()
+	h.openUDP(t.Context(), false)
+	resource, err := h.dialer.pool().slots[0].lifecycle.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := resource.session.(*smuxSession)
+	s.budget.Store(0)
+	defer func() { s.budget.Store(smuxReceiveBuffer); signal(s.budgetWake) }()
+	before := placements[laneStream][placeFallback].Load()
+	h.open(t.Context())
+	if loads := h.loads(); loads[0] != 1 || loads[1] != 2 || placements[laneStream][placeFallback].Load() != before+1 {
+		t.Fatalf("healthy fallback was not used: loads=%v", loads)
+	}
+}
+
 // TCP that came first does not take the spare from a game that comes
 // later: the game lands on a session of its own.
 func TestPoolKeepsSpareForLateLane(t *testing.T) {
@@ -453,24 +492,35 @@ func TestPoolKeepsSoleUsableIdleSession(t *testing.T) {
 // A session whose receive buffer is full is saturated: new streams of its
 // lane go to another session although it carries fewer.
 func TestPoolAvoidsSaturatedSmuxSessions(t *testing.T) {
-	h := newPoolHarness(t, 6, nil)
-	ctx := t.Context()
-	h.open(ctx)
-	h.replenish()
-	h.open(ctx)
-	resource, err := h.dialer.pool().slots[0].lifecycle.Current()
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource.session.(*smuxSession).budget.Store(0) // as behind a stalled reader
-	h.open(ctx)
-	if !h.dialer.Snapshot().RecoveryRequired {
-		t.Fatal("a saturated session did not ask for another")
-	}
-	h.replenish()
-	h.openN(ctx, expandStreams+1)
-	if loads := h.loads(); loads[0] != 3 || loads[2] != expandStreams+1 {
-		t.Fatalf("streams were placed on the saturated session: loads=%v", loads)
+	for _, capacity := range []int{1, 2, DefaultMaxConnections, 6} {
+		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+			h := newPoolHarness(t, capacity, nil)
+			ctx := t.Context()
+			h.open(ctx)
+			h.replenish()
+			h.open(ctx)
+			resource, err := h.dialer.pool().slots[0].lifecycle.Current()
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := resource.session.(*smuxSession)
+			s.budget.Store(0) // as behind a stalled reader
+			defer func() { s.budget.Store(smuxReceiveBuffer); signal(s.budgetWake) }()
+			h.open(ctx)
+			if loads := h.loads(); capacity > 1 && (loads[0] != 2 || loads[1] != 1) {
+				t.Fatalf("new stream ignored a ready spare: loads=%v", loads)
+			}
+			h.replenish()
+			h.openN(ctx, expandStreams+1)
+			loads := h.loads()
+			if capacity == 1 {
+				if loads[0] != expandStreams+4 {
+					t.Fatalf("single carrier stopped accepting streams: loads=%v", loads)
+				}
+			} else if loads[0] != 2 || loads[1] != expandStreams+2 {
+				t.Fatalf("streams returned to the saturated session: loads=%v", loads)
+			}
+		})
 	}
 }
 
