@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -273,10 +274,10 @@ func decodedSurge(t *testing.T, conf *config.Config) Config {
 func TestSurgePluginDefaultsAndLimits(t *testing.T) {
 	c := parseConfig(t, `global {} plugins { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
 	s := decodedSurge(t, c)
-	if !s.Store || s.ScriptTimeout != DefaultScriptTimeout || s.MaxBodySize != defaultMaxBodySize || s.MemoryLimit != defaultMemoryLimit || s.MaxConcurrentScripts != defaultMaxConcurrentScripts {
+	if !s.Store || s.NodePath != "node" || s.ScriptTimeout != DefaultScriptTimeout || s.MaxBodySize != defaultMaxBodySize || s.MemoryLimit != defaultMemoryLimit || s.MaxConcurrentScripts != defaultMaxConcurrentScripts {
 		t.Fatalf("defaults: %+v", s)
 	}
-	for _, limit := range []string{"script_timeout: 0s", "script_timeout: 61s", "memory_limit: 1", "memory_limit: 1073741825", "max_body_size: 0", "max_body_size: 268435457", "max_concurrent_scripts: 0", "max_concurrent_scripts: 257", "ca_cert: 'x'", "client_source_address: all", "store: 'old-store.json'", "store: ''"} {
+	for _, limit := range []string{"script_timeout: 0s", "script_timeout: 61s", "memory_limit: 0", "memory_limit: 1", "memory_limit: 1073741825", "max_body_size: 0", "max_body_size: 268435457", "max_concurrent_scripts: 0", "max_concurrent_scripts: 257", "ca_cert: 'x'", "client_source_address: all", "store: 'old-store.json'", "store: ''"} {
 		sections, err := config_parser.Parse("surge { module { 'file:module.sgmodule' }\n" + limit + "\n}")
 		if err != nil {
 			t.Fatal(err)
@@ -284,6 +285,32 @@ func TestSurgePluginDefaultsAndLimits(t *testing.T) {
 		if _, err := ParseConfig(sections[0]); err == nil {
 			t.Errorf("accepted invalid plugin setting: %s", limit)
 		}
+	}
+}
+
+func TestSurgePluginOverrides(t *testing.T) {
+	sections, err := config_parser.Parse(`surge {
+		module { 'file:module.sgmodule' }
+		store: false
+		script_timeout: 250ms
+		memory_limit: 67108864
+		max_body_size: 1048576
+		max_concurrent_scripts: 2
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseConfig(sections[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Config{
+		Modules: []ModuleSource{{Link: "file:module.sgmodule"}},
+		Store:   false, NodePath: "node", ScriptTimeout: 250 * time.Millisecond,
+		MemoryLimit: 64 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 2,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("config = %+v, want %+v", got, want)
 	}
 }
 

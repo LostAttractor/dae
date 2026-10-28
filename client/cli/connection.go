@@ -24,7 +24,7 @@ func (c *Connection) Bind(flags *pflag.FlagSet) {
 		endpoint = client.DefaultEndpoint
 	}
 	flags.StringVar(&c.endpoint, "api", endpoint, "API origin or unix:///absolute/socket/path (DAE_API_ENDPOINT)")
-	flags.DurationVar(&c.timeout, "timeout", 10*time.Second, "API request timeout")
+	flags.DurationVar(&c.timeout, "timeout", client.DefaultTimeout, "API request timeout")
 }
 
 func (c *Connection) Status(ctx context.Context) (*api.StatusSnapshot, error) {

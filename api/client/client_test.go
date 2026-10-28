@@ -126,6 +126,27 @@ func TestErrorsCancellationAndRedirects(t *testing.T) {
 	}
 }
 
+func TestClientTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		timeout, want time.Duration
+	}{
+		{"default", 0, DefaultTimeout},
+		{"explicit", 250 * time.Millisecond, 250 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := New(Options{Timeout: test.timeout})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if c.http.Timeout != test.want {
+				t.Fatalf("timeout = %v, want %v", c.http.Timeout, test.want)
+			}
+		})
+	}
+}
+
 func TestEndpointValidation(t *testing.T) {
 	for _, endpoint := range []string{"/var/run/dae.sock", "unix://host/tmp/sock", "unix:///", "http://user:pass@127.0.0.1", "http://127.0.0.1/api", "http://127.0.0.1?", "http://127.0.0.1/#token"} {
 		if c, err := New(Options{Endpoint: endpoint}); err == nil {

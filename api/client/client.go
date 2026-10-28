@@ -21,6 +21,10 @@ import (
 )
 
 const DefaultEndpoint = "unix:///var/run/dae.sock"
+
+// DefaultTimeout bounds API requests when Options.Timeout is zero.
+const DefaultTimeout = 10 * time.Second
+
 const maxResponseSize = 32 << 20
 
 // Options are immutable after New. A Client can be shared by concurrent callers.
@@ -74,7 +78,7 @@ func New(options Options) (*Client, error) {
 	default:
 		return nil, fmt.Errorf("API endpoint requires unix, http, or https scheme")
 	}
-	timeout := cmp.Or(options.Timeout, 10*time.Second)
+	timeout := cmp.Or(options.Timeout, DefaultTimeout)
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}

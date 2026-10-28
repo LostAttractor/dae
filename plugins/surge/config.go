@@ -25,12 +25,12 @@ type ModuleSource struct {
 // Config configures modules for HTTP processing, routing and IP rewrites. Sizes are bytes.
 type Config struct {
 	Modules              []ModuleSource `mapstructure:"_"`
-	Store                bool           `mapstructure:"store" default:"true"`
-	NodePath             string         `mapstructure:"node_path" default:"node"`
-	ScriptTimeout        time.Duration  `mapstructure:"script_timeout" default:"5s"`
-	MemoryLimit          int64          `mapstructure:"memory_limit" default:"134217728"`
-	MaxBodySize          int64          `mapstructure:"max_body_size" default:"33554432"`
-	MaxConcurrentScripts int            `mapstructure:"max_concurrent_scripts" default:"16"`
+	Store                bool           `mapstructure:"store"`
+	NodePath             string         `mapstructure:"node_path"`
+	ScriptTimeout        time.Duration  `mapstructure:"script_timeout"`
+	MemoryLimit          int64          `mapstructure:"memory_limit"`
+	MaxBodySize          int64          `mapstructure:"max_body_size"`
+	MaxConcurrentScripts int            `mapstructure:"max_concurrent_scripts"`
 	HTTPPolicies         []string       `mapstructure:"http_policies"`
 }
 
@@ -42,9 +42,16 @@ const (
 
 // ParseConfig interprets only the settings owned by a Surge instance.
 func ParseConfig(section *config_parser.Section) (Config, error) {
-	var c Config
 	if section == nil {
-		return c, fmt.Errorf("surge configuration is required")
+		return Config{}, fmt.Errorf("surge configuration is required")
+	}
+	c := Config{
+		Store:                true,
+		NodePath:             "node",
+		ScriptTimeout:        DefaultScriptTimeout,
+		MemoryLimit:          defaultMemoryLimit,
+		MaxBodySize:          defaultMaxBodySize,
+		MaxConcurrentScripts: defaultMaxConcurrentScripts,
 	}
 	settings := &config_parser.Section{Name: section.Name}
 	for _, item := range section.Items {
