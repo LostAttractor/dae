@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pkg/cert"
 	proto "github.com/daeuniverse/dae/pkg/outbound/pkg/gun_proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
@@ -323,7 +323,7 @@ func (d *Dialer) dialOptions(record func(error)) ([]grpc.DialOption, error) {
 	if d.TLSConfig != nil {
 		config := d.TLSConfig.Clone()
 		if config.RootCAs == nil && !config.InsecureSkipVerify {
-			roots, err := cert.GetSystemCertPool()
+			roots, err := x509.SystemCertPool()
 			if err != nil {
 				return nil, fmt.Errorf("failed to get system certificate pool: %w", err)
 			}

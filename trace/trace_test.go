@@ -42,7 +42,6 @@ func TestTraceBPFSpec(t *testing.T) {
 		"kprobe_skb_5",
 		"kprobe_skb_lifetime_termination",
 		"raw_tracepoint_consume_skb",
-		"raw_tracepoint_kfree_skb_legacy",
 		"raw_tracepoint_kfree_skb_reason",
 		"raw_tracepoint_napi_gro_receive_entry",
 		"raw_tracepoint_napi_gro_receive_exit",
@@ -70,14 +69,13 @@ func TestTraceBPFSpec(t *testing.T) {
 		}
 	}
 	for name := range spec.Programs {
-		if strings.HasPrefix(name, "kprobe_skb_drop_") {
+		if strings.HasPrefix(name, "kprobe_skb_drop_") || name == "raw_tracepoint_kfree_skb_legacy" {
 			t.Errorf("obsolete terminal/drop program %q remains", name)
 		}
 	}
 	for _, name := range []string{
 		"kprobe_skb_lifetime_termination",
 		"raw_tracepoint_consume_skb",
-		"raw_tracepoint_kfree_skb_legacy",
 		"raw_tracepoint_kfree_skb_reason",
 		"raw_tracepoint_napi_gro_receive_exit",
 		"raw_tracepoint_napi_gro_frags_exit",
@@ -218,65 +216,158 @@ func programCallsHelper(program *ebpf.ProgramSpec, helper asm.BuiltinFunc) bool 
 }
 
 func TestRawKfreeReasonABIDetection(t *testing.T) {
-	voidType := &btf.Void{}
-	skb := &btf.Struct{Name: "sk_buff", Size: 1}
+	voidPointer := &btf.Pointer{Target: &btf.Void{}}
 	dropReason := &btf.Enum{Name: "skb_drop_reason", Size: 4}
-	legacy := &btf.Typedef{Name: "btf_trace_kfree_skb", Type: &btf.Pointer{Target: &btf.FuncProto{Params: []btf.FuncParam{
-		{Name: "data", Type: &btf.Pointer{Target: voidType}},
-		{Name: "skb", Type: &btf.Pointer{Target: skb}},
-		{Name: "location", Type: &btf.Pointer{Target: voidType}},
-	}}}}
-	withReason := &btf.Typedef{Name: "btf_trace_kfree_skb", Type: &btf.Pointer{Target: &btf.FuncProto{Params: []btf.FuncParam{
-		{Name: "data", Type: &btf.Pointer{Target: voidType}},
-		{Name: "skb", Type: &btf.Pointer{Target: skb}},
-		{Name: "location", Type: &btf.Pointer{Target: voidType}},
-		{Name: "reason", Type: &btf.Const{Type: dropReason}},
-	}}}}
-
-	if typeHasDropReason(legacy) {
-		t.Fatal("legacy kfree_skb tracepoint incorrectly has a reason")
+	params := []btf.FuncParam{
+		{Name: "data", Type: voidPointer},
+		{Name: "skb", Type: &btf.Pointer{Target: &btf.Struct{Name: "sk_buff", Size: 1}}},
+		{Name: "location", Type: voidPointer},
 	}
-	if !typeHasDropReason(withReason) {
-		t.Fatal("reason-aware kfree_skb tracepoint was not detected")
+	traceType := func(extra ...btf.FuncParam) btf.Type {
+		return &btf.Typedef{Name: "btf_trace_kfree_skb", Type: &btf.Pointer{Target: &btf.FuncProto{
+			Params: append(slices.Clone(params), extra...),
+		}}}
 	}
-
 	fixtures := []struct {
-		name       string
-		traceType  btf.Type
-		reasons    *btf.Enum
-		wantReason bool
+		name      string
+		traceType btf.Type
+		wantError string
 	}{
 		{
-			name:      "legacy ABI",
-			traceType: legacy,
-			reasons:   &btf.Enum{Name: "skb_drop_reason", Size: 4},
+			name:      "not a pointer",
+			traceType: dropReason,
+			wantError: "expected a function pointer",
 		},
 		{
-			name:      "Linux 5.17 reason ABI without not-dropped sentinel",
-			traceType: withReason,
-			reasons: &btf.Enum{Name: "skb_drop_reason", Size: 4, Values: []btf.EnumValue{
-				{Name: "SKB_DROP_REASON_NOT_SPECIFIED", Value: 0},
-				{Name: "SKB_DROP_REASON_NO_SOCKET", Value: 2},
-			}},
+			name:      "not a function prototype",
+			traceType: voidPointer,
+			wantError: "missing reason argument",
 		},
 		{
-			name:      "reason ABI with classification sentinels",
-			traceType: withReason,
-			reasons: &btf.Enum{Name: "skb_drop_reason", Size: 4, Values: []btf.EnumValue{
-				{Name: "SKB_NOT_DROPPED_YET", Value: 0},
-				{Name: "SKB_CONSUMED", Value: 1},
-			}},
-			wantReason: true,
+			name:      "legacy ABI without reason",
+			traceType: traceType(),
+			wantError: "missing reason argument",
+		},
+		{
+			name: "reason in wrong argument",
+			traceType: traceType(
+				btf.FuncParam{Name: "other", Type: voidPointer},
+				btf.FuncParam{Name: "reason", Type: dropReason},
+			),
+			wantError: "argument 3 must be a 32-bit skb_drop_reason",
+		},
+		{
+			name:      "wrong enum",
+			traceType: traceType(btf.FuncParam{Name: "reason", Type: &btf.Enum{Name: "other_reason", Size: 4}}),
+			wantError: "argument 3 must be a 32-bit skb_drop_reason",
+		},
+		{
+			name:      "wrong enum size",
+			traceType: traceType(btf.FuncParam{Name: "reason", Type: &btf.Enum{Name: "skb_drop_reason", Size: 8}}),
+			wantError: "argument 3 must be a 32-bit skb_drop_reason",
+		},
+		{
+			name:      "reason ABI with qualifiers",
+			traceType: traceType(btf.FuncParam{Name: "reason", Type: &btf.Const{Type: dropReason}}),
+		},
+		{
+			name: "reason ABI with additional arguments",
+			traceType: traceType(
+				btf.FuncParam{Name: "reason", Type: dropReason},
+				btf.FuncParam{Name: "rx_sk", Type: voidPointer},
+			),
 		},
 	}
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
-			_, config, err := dropReasonsFromEnum(fixture.reasons)
+			err := validateKfreeReasonABI(fixture.traceType)
+			if fixture.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), fixture.wantError) {
+					t.Fatalf("ABI validation = %v, want %q", err, fixture.wantError)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestDropReasonClassificationRequirements(t *testing.T) {
+	fixtures := []struct {
+		name         string
+		enumName     string
+		values       []btf.EnumValue
+		wantConsumed uint32
+		wantError    string
+	}{
+		{
+			name:      "missing reason enum",
+			enumName:  "unrelated_enum",
+			wantError: "required 'skb_drop_reason' enum",
+		},
+		{
+			name:     "Linux 5.17 without not-dropped sentinel",
+			enumName: "skb_drop_reason",
+			values: []btf.EnumValue{
+				{Name: "SKB_DROP_REASON_NOT_SPECIFIED", Value: 0},
+				{Name: "SKB_DROP_REASON_NO_SOCKET", Value: 2},
+			},
+			wantError: "missing required SKB_NOT_DROPPED_YET",
+		},
+		{
+			name:     "classification sentinels",
+			enumName: "skb_drop_reason",
+			values: []btf.EnumValue{
+				{Name: "SKB_NOT_DROPPED_YET", Value: 0},
+				{Name: "SKB_CONSUMED", Value: 1},
+				{Name: "SKB_DROP_REASON_NO_SOCKET", Value: 2},
+			},
+			wantConsumed: 1,
+		},
+		{
+			name:     "optional consumed sentinel absent",
+			enumName: "skb_drop_reason",
+			values: []btf.EnumValue{
+				{Name: "SKB_NOT_DROPPED_YET", Value: 0},
+				{Name: "SKB_DROP_REASON_NO_SOCKET", Value: 2},
+			},
+			wantConsumed: unavailableDropReason,
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			builder, err := btf.NewBuilder([]btf.Type{&btf.Enum{Name: fixture.enumName, Size: 4, Values: fixture.values}}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := canClassifyKfreeReason(fixture.traceType, config); got != fixture.wantReason {
-				t.Fatalf("reason classifier selected = %t, want %t", got, fixture.wantReason)
+			data, err := builder.Marshal(nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := btf.LoadSpecFromReader(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reasons, config, err := getDropReasons(spec)
+			if fixture.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), fixture.wantError) {
+					t.Fatalf("drop reasons = %v, want %q", err, fixture.wantError)
+				}
+				if fixture.enumName != "skb_drop_reason" && !errors.Is(err, btf.ErrNotFound) {
+					t.Fatalf("missing enum error lost its cause: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.notDropped != 0 || config.consumed != fixture.wantConsumed {
+				t.Fatalf("classification config = %+v, want notDropped=0 consumed=%d", config, fixture.wantConsumed)
+			}
+			for _, value := range fixture.values {
+				if got := reasons[uint32(value.Value)]; got != value.Name {
+					t.Fatalf("reason %d = %q, want %q", value.Value, got, value.Name)
+				}
 			}
 		})
 	}
@@ -286,20 +377,18 @@ func TestKernelTracepointDiscovery(t *testing.T) {
 	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); err != nil {
 		t.Skipf("kernel BTF is unavailable: %v", err)
 	}
-	targets, reasons, config, hasReason, err := searchAvailableTargets()
+	targets, reasons, config, err := searchAvailableTargets()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(targets) == 0 {
 		t.Fatal("no generic skb probe targets discovered")
 	}
-	if hasReason {
-		if got := reasons[config.notDropped]; got != "SKB_NOT_DROPPED_YET" {
-			t.Fatalf("not-dropped reason = %q", got)
-		}
-		if consumed, ok := findDropReason(reasons, "SKB_CONSUMED"); ok && config.consumed != consumed {
-			t.Fatalf("consumed reason = %d, want %d", config.consumed, consumed)
-		}
+	if got := reasons[config.notDropped]; got != "SKB_NOT_DROPPED_YET" {
+		t.Fatalf("not-dropped reason = %q", got)
+	}
+	if consumed, ok := findDropReason(reasons, "SKB_CONSUMED"); ok && config.consumed != consumed {
+		t.Fatalf("consumed reason = %d, want %d", config.consumed, consumed)
 	}
 }
 
@@ -307,11 +396,11 @@ func TestTraceBPFVerifierLoad(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("loading trace BPF requires root")
 	}
-	unsetReason := ^uint32(0)
-	objs, multiLoaded, err := rewriteAndLoadBpf(4, syscall.IPPROTO_UDP, 53, dropReasonConfig{
-		notDropped: unsetReason,
-		consumed:   unsetReason,
-	}, false)
+	_, _, reasons, err := searchAvailableTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, multiLoaded, err := rewriteAndLoadBpf(4, syscall.IPPROTO_UDP, 53, reasons, false)
 	if err != nil {
 		t.Fatal(err)
 	}

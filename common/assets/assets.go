@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -79,33 +78,19 @@ func (c *LocationFinder) GetLocationAsset(filename string) (path string, err err
 		searchDirs = append(searchDirs, location)
 		// add /etc/dae to search path
 		searchDirs = append(searchDirs, c.externDirs...)
-		// additional paths for non windows platforms
-		if runtime.GOOS != "windows" {
-			searchDirs = append(
-				searchDirs,
-				filepath.Join("/usr/local/share", folder),
-				filepath.Join("/usr/share", folder),
-			)
-		}
-		searchDirs = append(searchDirs, c.externDirs...)
+		searchDirs = append(
+			searchDirs,
+			filepath.Join("/usr/local/share", folder),
+			filepath.Join("/usr/share", folder),
+		)
 	} else {
 		// add /etc/dae to search path
 		searchDirs = append(searchDirs, c.externDirs...)
-		if runtime.GOOS != "windows" {
-			// Search XDG data directories on non windows platform
-			xdgDirs := append([]string{xdg.DataHome}, xdg.DataDirs...)
-			for i := range xdgDirs {
-				xdgDirs[i] = filepath.Join(xdgDirs[i], folder)
-			}
-			searchDirs = append(searchDirs, xdgDirs...)
-		} else {
-			// fallback to the old behavior of using only current dir on Windows
-			pwd := "./"
-			if absPath, e := filepath.Abs(pwd); e == nil {
-				pwd = absPath
-			}
-			searchDirs = append(searchDirs, pwd)
+		xdgDirs := append([]string{xdg.DataHome}, xdg.DataDirs...)
+		for i := range xdgDirs {
+			xdgDirs[i] = filepath.Join(xdgDirs[i], folder)
 		}
+		searchDirs = append(searchDirs, xdgDirs...)
 	}
 	log.Tracef(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
 	for _, searchDir := range searchDirs {

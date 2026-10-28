@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/daeuniverse/dae/pkg/ebpf_internal/internal/unix"
+	"golang.org/x/sys/unix"
 )
 
 var (

@@ -174,7 +174,7 @@ func TestNAPIKernelReturnAttach(t *testing.T) {
 	if _, exists := kallsymsByName["__napi_kfree_skb"]; !exists {
 		t.Skip("kernel has no deferred NAPI free function")
 	}
-	_, _, reasons, _, err := searchAvailableTargets()
+	_, _, reasons, err := searchAvailableTargets()
 	if err != nil {
 		t.Fatal(err)
 	}

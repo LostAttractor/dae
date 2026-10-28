@@ -755,15 +755,6 @@ int raw_tracepoint_kfree_skb_reason(struct trace_raw_args *ctx)
 	return handle_skb(skb, location, flags, reason);
 }
 
-SEC("raw_tracepoint/kfree_skb")
-int raw_tracepoint_kfree_skb_legacy(struct trace_raw_args *ctx)
-{
-	struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
-	__u64 location = ctx->args[1];
-
-	return handle_skb(skb, location, EVENT_F_TERMINAL | EVENT_F_DROP, 0);
-}
-
 SEC("raw_tracepoint/consume_skb")
 int raw_tracepoint_consume_skb(struct trace_raw_args *ctx)
 {

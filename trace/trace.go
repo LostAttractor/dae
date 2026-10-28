@@ -63,7 +63,7 @@ type traceObjects struct {
 
 	skbPrograms [2][5]*ebpf.Program
 	consumeSkb  *ebpf.Program
-	kfreeSkb    [2]*ebpf.Program
+	kfreeSkb    *ebpf.Program
 	lifetimeEnd *ebpf.Program
 	napiEntry   *ebpf.Program
 	napiExit    *ebpf.Program
@@ -92,8 +92,6 @@ const (
 
 	singleProbeProgram = 0
 	multiProbeProgram  = 1
-	legacyKfreeProgram = 0
-	reasonKfreeProgram = 1
 )
 
 type pendingTrace struct {
@@ -276,7 +274,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	if err := kernel.CheckVersion(); err != nil {
 		return err
 	}
-	targets, dropReasons, reasonConfig, useKfreeReason, err := searchAvailableTargets()
+	targets, dropReasons, reasonConfig, err := searchAvailableTargets()
 	if err != nil {
 		return
 	}
@@ -305,7 +303,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 			log.WithFields(log.Fields{"targets": len(targets), "omitted": omitted}).Debug("Multi-kprobe unavailable; limiting trace coverage for bounded shutdown")
 		}
 	}
-	links, attachedTargets, err := attachBpfToTargets(objs, targets, useKfreeReason, useKprobeMulti)
+	links, attachedTargets, err := attachBpfToTargets(objs, targets, useKprobeMulti)
 	if err != nil {
 		return
 	}
@@ -401,6 +399,7 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 	objs := &traceObjects{
 		collection:  collection,
 		consumeSkb:  collection.Programs["raw_tracepoint_consume_skb"],
+		kfreeSkb:    collection.Programs["raw_tracepoint_kfree_skb_reason"],
 		lifetimeEnd: collection.Programs["kprobe_skb_lifetime_termination"],
 		napiEntry:   collection.Programs["kprobe_napi_retire"],
 		napiExit:    collection.Programs["kretprobe_napi_retire"],
@@ -412,8 +411,6 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 		objs.skbPrograms[singleProbeProgram][i] = collection.Programs[fmt.Sprintf("kprobe_skb_%d", i+1)]
 		objs.skbPrograms[multiProbeProgram][i] = collection.Programs[fmt.Sprintf("kprobe_multi_skb_%d", i+1)]
 	}
-	objs.kfreeSkb[legacyKfreeProgram] = collection.Programs["raw_tracepoint_kfree_skb_legacy"]
-	objs.kfreeSkb[reasonKfreeProgram] = collection.Programs["raw_tracepoint_kfree_skb_reason"]
 	objs.groEntry[0] = collection.Programs["raw_tracepoint_napi_gro_receive_entry"]
 	objs.groExit[0] = collection.Programs["raw_tracepoint_napi_gro_receive_exit"]
 	objs.groEntry[1] = collection.Programs["raw_tracepoint_napi_gro_frags_entry"]
@@ -522,35 +519,31 @@ func classifyFunction(fn *btf.Func) (probeTarget, bool) {
 	return target, target.name != "" && target.skbPosition > 0 && target.skbPosition <= 5
 }
 
-func typeHasDropReason(typ btf.Type) bool {
+func validateKfreeReasonABI(typ btf.Type) error {
 	ptr, ok := btf.UnderlyingType(typ).(*btf.Pointer)
 	if !ok {
-		return false
+		return fmt.Errorf("unsupported kfree_skb raw tracepoint ABI: expected a function pointer")
 	}
 	proto, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto)
-	if !ok {
-		return false
+	if !ok || len(proto.Params) < 4 {
+		return fmt.Errorf("unsupported kfree_skb raw tracepoint ABI: missing reason argument")
 	}
-	for _, param := range proto.Params {
-		if enum, ok := btf.UnderlyingType(param.Type).(*btf.Enum); ok && enum.Name == "skb_drop_reason" {
-			return true
-		}
+	// BTF includes the callback's data pointer before the raw tracepoint arguments.
+	reason, ok := btf.UnderlyingType(proto.Params[3].Type).(*btf.Enum)
+	if !ok || reason.Name != "skb_drop_reason" || reason.Size != 4 {
+		return fmt.Errorf("unsupported kfree_skb raw tracepoint ABI: argument 3 must be a 32-bit skb_drop_reason")
 	}
-	return false
+	return nil
 }
 
-func canClassifyKfreeReason(traceType btf.Type, config dropReasonConfig) bool {
-	return typeHasDropReason(traceType) && config.notDropped != unavailableDropReason
-}
-
-func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]string, reasonConfig dropReasonConfig, useKfreeReason bool, err error) {
+func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]string, reasonConfig dropReasonConfig, err error) {
 	targetsByName := make(map[string]probeTarget)
 	reasonConfig.notDropped = unavailableDropReason
 	reasonConfig.consumed = unavailableDropReason
 
 	btfSpec, err := btf.LoadKernelSpec()
 	if err != nil {
-		return nil, nil, reasonConfig, false, fmt.Errorf("failed to load kernel BTF: %+v\n", err)
+		return nil, nil, reasonConfig, fmt.Errorf("failed to load kernel BTF: %+v\n", err)
 	}
 
 	if dropReasons, reasonConfig, err = getDropReasons(btfSpec); err != nil {
@@ -558,12 +551,11 @@ func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]str
 	}
 	traceType, typeErr := btfSpec.AnyTypeByName("btf_trace_kfree_skb")
 	if typeErr != nil {
-		return nil, nil, reasonConfig, false, fmt.Errorf("failed to inspect kfree_skb raw tracepoint ABI: %w", typeErr)
+		return nil, nil, reasonConfig, fmt.Errorf("failed to inspect kfree_skb raw tracepoint ABI: %w", typeErr)
 	}
-	// Linux 5.17 has the reason-aware tracepoint ABI but no
-	// SKB_NOT_DROPPED_YET sentinel. Reading only the first two arguments is ABI
-	// safe and preserves the legacy behavior of treating kfree_skb as a drop.
-	useKfreeReason = canClassifyKfreeReason(traceType, reasonConfig)
+	if err = validateKfreeReasonABI(traceType); err != nil {
+		return
+	}
 	if typ, err := btfSpec.AnyTypeByName("__napi_kfree_skb"); err == nil {
 		if fn, ok := typ.(*btf.Func); ok {
 			if proto, ok := fn.Type.(*btf.FuncProto); ok && len(proto.Params) > 1 {
@@ -614,16 +606,13 @@ func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]str
 			return 0
 		}
 	})
-	return targets, dropReasons, reasonConfig, useKfreeReason, nil
+	return targets, dropReasons, reasonConfig, nil
 }
 
 func getDropReasons(spec *btf.Spec) (map[uint32]string, dropReasonConfig, error) {
 	var dropReasonsEnum *btf.Enum
 	if err := spec.TypeByName("skb_drop_reason", &dropReasonsEnum); err != nil {
-		if errors.Is(err, btf.ErrNotFound) {
-			return nil, dropReasonConfig{notDropped: unavailableDropReason, consumed: unavailableDropReason}, nil
-		}
-		return nil, dropReasonConfig{}, fmt.Errorf("failed to find 'skb_drop_reason' enum: %v", err)
+		return nil, dropReasonConfig{}, fmt.Errorf("failed to find required 'skb_drop_reason' enum: %w", err)
 	}
 	return dropReasonsFromEnum(dropReasonsEnum)
 }
@@ -642,6 +631,9 @@ func dropReasonsFromEnum(dropReasonsEnum *btf.Enum) (map[uint32]string, dropReas
 		}
 	}
 
+	if config.notDropped == unavailableDropReason {
+		return nil, config, fmt.Errorf("skb_drop_reason enum is missing required SKB_NOT_DROPPED_YET classification sentinel")
+	}
 	return ret, config, nil
 }
 
