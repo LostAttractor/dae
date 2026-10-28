@@ -19,14 +19,28 @@ import (
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
-const httpFlateWorkspace = 1 << 20
+const (
+	httpFlateWorkspace = 1 << 20
+	maxHTTPLayers      = 4
+	// Allow a maximum-window Brotli decoder plus three flate decoders.
+	maxHTTPWorkspace = 40 << 20
+)
 
 func httpEncodings(encoding string) ([]string, error) {
 	var layers []string
-	for part := range strings.SplitSeq(strings.ToLower(encoding), ",") {
-		switch part = strings.TrimSpace(part); part {
+	compressed := 0
+	for part := range strings.SplitSeq(encoding, ",") {
+		switch part = strings.ToLower(strings.TrimSpace(part)); part {
 		case "":
-		case "identity", "gzip", "deflate", "br":
+		case "identity":
+			if len(layers) == 0 || layers[len(layers)-1] != part {
+				layers = append(layers, part)
+			}
+		case "gzip", "deflate", "br":
+			compressed++
+			if compressed > maxHTTPLayers {
+				return nil, fmt.Errorf("%w: too many Content-Encoding layers", ErrUnsupported)
+			}
 			layers = append(layers, part)
 		default:
 			return nil, fmt.Errorf("%w: Content-Encoding %q", ErrUnsupported, part)
@@ -130,6 +144,7 @@ type httpReader struct {
 	bounds                  []*httpBoundedReader
 	closers                 []io.Closer
 	memory                  []membuffer.Reservation
+	workspace               int64
 	terminal                error
 }
 
@@ -160,6 +175,7 @@ func (r *httpReader) release() {
 		r.memory[i].Close()
 	}
 	r.memory = nil
+	r.workspace = 0
 }
 
 func (r *httpReader) bounded(input io.Reader, limit int64) *httpBoundedReader {
@@ -184,10 +200,14 @@ func (r *httpReader) reserve(size int64) error {
 	if err := r.codec.ctx.Err(); err != nil {
 		return err
 	}
+	if size > maxHTTPWorkspace-r.workspace {
+		return fmt.Errorf("%w: Content-Encoding workspace limit exceeded", ErrUnsupported)
+	}
 	memory, err := r.codec.budget.Reserve(size)
 	if err != nil {
 		return err
 	}
+	r.workspace += size
 	r.memory = append(r.memory, memory)
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,94 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
+
+func TestSyntheticResponseDiscardsForbiddenBody(t *testing.T) {
+	for _, test := range []struct {
+		method string
+		status int
+	}{
+		{http.MethodHead, http.StatusOK},
+		{http.MethodHead, http.StatusNoContent},
+		{http.MethodHead, http.StatusNotModified},
+		{http.MethodGet, http.StatusNoContent},
+		{http.MethodGet, http.StatusNotModified},
+	} {
+		t.Run(fmt.Sprintf("%s/%d", test.method, test.status), func(t *testing.T) {
+			budget := membuffer.NewBudget(1 << 16)
+			body, err := membuffer.Read(strings.NewReader("x"), 1024, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := &Result{Status: test.status, Body: body, Trailers: http.Header{"X-Example": {"unused"}}}
+			raw, err := responseFromResult(httptest.NewRequest(test.method, "https://example.com/", nil), result)
+			result.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := takeTestResponse(t, plugin.NewResponse(raw, budget))
+			defer response.Body.Close()
+			if response.Body != http.NoBody || len(response.TransferEncoding) != 0 || len(response.Trailer) != 0 || budget.Status().Used != 0 {
+				t.Fatalf("forbidden body still retains resources: response=%+v budget=%+v", response, budget.Status())
+			}
+			if test.status == http.StatusNoContent {
+				if response.ContentLength != 0 || response.Header.Get("Content-Length") != "" {
+					t.Fatalf("204 retained a content length: %+v", response)
+				}
+			} else if response.ContentLength != 1 || test.method == http.MethodHead && test.status != http.StatusNotModified && response.Header.Get("Content-Length") != "1" {
+				t.Fatalf("representation length was lost: %+v", response)
+			}
+		})
+	}
+}
+
+func TestSyntheticBodylessRepresentationLength(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		body   *string
+		header []string
+		want   int64
+	}{
+		{"declared", nil, []string{"1234"}, 1234},
+		{"unknown", nil, nil, -1},
+		{"declared empty", nil, []string{"0"}, 0},
+		{"explicit empty", new(""), []string{"1234"}, 0},
+		{"explicit body", new("x"), []string{"1234"}, 1},
+		{"negative", nil, []string{"-1"}, -1},
+		{"signed", nil, []string{"+1234"}, -1},
+		{"overflow", nil, []string{"9223372036854775808"}, -1},
+		{"conflicting", nil, []string{"1234", "5678"}, -1},
+	} {
+		for _, method := range []string{http.MethodHead, http.MethodGet} {
+			t.Run(test.name+"/"+method, func(t *testing.T) {
+				result := &Result{Headers: http.Header{"Content-Length": test.header}}
+				if method == http.MethodGet {
+					result.Status = http.StatusNotModified
+				}
+				if test.body != nil {
+					var err error
+					result.Body, err = membuffer.Copy([]byte(*test.body), testBodyMemory)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				defer result.Close()
+				raw, err := responseFromResult(httptest.NewRequest(method, "https://example.com/", nil), result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := takeTestResponse(t, plugin.NewResponse(raw, testBodyMemory))
+				defer response.Body.Close()
+				wantHeader := ""
+				if test.want >= 0 {
+					wantHeader = strconv.FormatInt(test.want, 10)
+				}
+				if response.Body != http.NoBody || response.ContentLength != test.want || response.Header.Get("Content-Length") != wantHeader {
+					t.Fatalf("incorrect representation length: response=%+v want=%d", response, test.want)
+				}
+			})
+		}
+	}
+}
 
 func testUpstream(dial mitm.DialContext) mitm.UpstreamPlanner {
 	return func(*http.Request) (mitm.UpstreamPlan, error) {

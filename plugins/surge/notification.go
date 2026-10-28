@@ -37,6 +37,17 @@ type scriptNotifications struct {
 	entries []surgeapi.SurgeNotification
 }
 
+func truncateScriptText(text string, limit int) (string, bool) {
+	if len(text) <= limit {
+		return text, false
+	}
+	// Preserve valid UTF-8 and release the potentially large input string.
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return strings.Clone(text[:limit]), true
+}
+
 func notificationBytes(n surgeapi.SurgeNotification) int {
 	// JSON can expand each text byte to a six-byte escape. Leave room for
 	// field names, timestamps, IDs and separators without allocating JSON here.
@@ -51,14 +62,9 @@ func (h *notificationHistory) add(notification surgeapi.SurgeNotification) {
 		if field == &notification.Body {
 			limit = maxNotificationBody
 		}
-		if len(*field) > limit {
-			// Preserve valid UTF-8 and release the potentially large input string.
-			for limit > 0 && !utf8.RuneStart((*field)[limit]) {
-				limit--
-			}
-			*field = strings.Clone((*field)[:limit])
-			notification.Truncated = true
-		}
+		text, truncated := truncateScriptText(*field, limit)
+		*field = text
+		notification.Truncated = notification.Truncated || truncated
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()

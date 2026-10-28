@@ -52,6 +52,36 @@ type runtimeTimer struct {
 	when time.Time
 }
 
+const maxScriptLogText = 4096
+
+func (s *scriptExecution) log(level log.Level, parts ...string) {
+	if s.runtime.opts.Logger == nil || !s.runtime.opts.Logger.Logger.IsLevelEnabled(level) {
+		return
+	}
+	var text strings.Builder
+	truncated := false
+	for i, part := range parts {
+		if i > 0 {
+			if text.Len() == maxScriptLogText {
+				truncated = true
+				break
+			}
+			text.WriteByte(' ')
+		}
+		value, cut := truncateScriptText(part, maxScriptLogText-text.Len())
+		text.WriteString(value)
+		if cut {
+			truncated = true
+			break
+		}
+	}
+	entry := s.runtime.opts.Logger.WithFields(log.Fields{"script": s.scriptName, "module": s.moduleName, "session_id": s.sessionID})
+	if truncated {
+		entry = entry.WithField("truncated", true)
+	}
+	entry.Log(level, text.String())
+}
+
 func (s *scriptExecution) hostCall(args []string) (any, error) {
 	if err := s.ctx.Err(); err != nil {
 		return nil, err
@@ -88,18 +118,14 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		if err != nil || level < log.ErrorLevel {
 			return nil, errors.New("invalid script log level")
 		}
-		if s.runtime.opts.Logger != nil {
-			s.runtime.opts.Logger.WithFields(log.Fields{"script": s.scriptName, "module": s.moduleName, "session_id": s.sessionID}).Log(level, arg(2))
-		}
+		s.log(level, arg(2))
 		return nil, nil
 	case "notify":
 		s.runtime.notifications.add(surgeapi.SurgeNotification{
 			Module: s.moduleName, Script: s.scriptName, ScriptType: s.scriptType,
 			Title: arg(1), Subtitle: arg(2), Body: arg(3),
 		})
-		if s.runtime.opts.Logger != nil {
-			s.runtime.opts.Logger.Info(strings.Join([]string{arg(1), arg(2), arg(3)}, " "))
-		}
+		s.log(log.InfoLevel, arg(1), arg(2), arg(3))
 		return nil, nil
 	case "read":
 		return s.runtime.data.read(s.ctx, arg(1))

@@ -100,7 +100,7 @@ func TestSnapshotInvalidLimitAndRepeatedReads(t *testing.T) {
 func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 	for _, withTrailers := range []bool{false, true} {
 		original := &countedBody{Reader: strings.NewReader("old")}
-		response := &http.Response{Body: original, Header: make(http.Header), TransferEncoding: []string{"chunked"}}
+		response := &http.Response{StatusCode: http.StatusOK, Body: original, Header: make(http.Header), TransferEncoding: []string{"chunked"}}
 		for _, key := range []string{"Content-Encoding", "Content-MD5", "Content-Digest", "Repr-Digest", "ETag", "Content-Length", "Trailer"} {
 			response.Header.Set(key, "old")
 		}

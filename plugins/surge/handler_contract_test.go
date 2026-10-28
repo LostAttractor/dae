@@ -161,30 +161,34 @@ func TestHTTPStatusOmitsBodyPreservesRepresentation(t *testing.T) {
 				if err := engine.processResponse(response, nil); err != nil {
 					t.Fatal(err)
 				}
+				wire := takeTestResponse(t, response)
 				for name, values := range preserved {
 					want := values
 					if replace {
 						want = nil
 					}
-					if got := response.Head.Header.Values(name); !reflect.DeepEqual(got, want) {
+					if got := wire.Header.Values(name); !reflect.DeepEqual(got, want) {
 						t.Errorf("%s=%v want=%v", name, got, want)
 					}
 				}
-				for _, name := range []string{"Content-Length", "Transfer-Encoding", "Trailer", "Content-Digest", "Content-MD5"} {
-					if response.Head.Header.Get(name) != "" {
+				for _, name := range []string{"Transfer-Encoding", "Trailer", "Content-Digest", "Content-MD5"} {
+					if wire.Header.Get(name) != "" {
 						t.Errorf("bodyless response retained %s", name)
 					}
 				}
-				if len(response.Head.Trailer) != 0 || len(response.Head.TransferEncoding) != 0 || response.Head.Header.Get("Cache-Control") != "max-age=60" {
-					t.Fatal("incorrect metadata for a bodyless status", response.Head)
+				if len(wire.Trailer) != 0 || len(wire.TransferEncoding) != 0 || wire.Header.Get("Cache-Control") != "max-age=60" {
+					t.Fatal("incorrect metadata for a bodyless status", wire)
 				}
-				if response.Head.Body != nil || response.Delivery() != plugin.DeliveryDefault || !replace && source.reads != 0 || source.closes != 1 {
+				wantDelivery := plugin.DeliveryStreaming
+				if replace {
+					wantDelivery = plugin.DeliveryDefault
+				}
+				if response.Head.Body != nil || response.Delivery() != wantDelivery || !replace && source.reads != 0 || source.closes != 1 {
 					t.Fatal("incorrect body ownership or delivery", source.reads, source.closes)
 				}
-				if status == http.StatusNoContent && response.Head.ContentLength != 0 || status == http.StatusNotModified && !replace && response.Head.ContentLength != int64(len(encoded)) {
-					t.Fatal("incorrect content length for a bodyless status", response.Head.ContentLength)
+				if status == http.StatusNoContent && (wire.ContentLength != 0 || wire.Header.Get("Content-Length") != "") || status == http.StatusNotModified && !replace && wire.ContentLength != int64(len(encoded)) {
+					t.Fatal("incorrect content length for a bodyless status", wire)
 				}
-				wire := takeTestResponse(t, response)
 				data, err := io.ReadAll(wire.Body)
 				_ = wire.Body.Close()
 				_ = response.Close()
@@ -208,7 +212,7 @@ func TestHTTPMessageBodyOwnershipAndDelivery(t *testing.T) {
 		{"replacement", http.MethodGet, `$done({body:"rewritten"});`, "rewritten", 200, true, plugin.DeliveryDefault},
 		{"head", http.MethodHead, `$done({});`, "", 200, true, plugin.DeliveryStreaming},
 		{"not-modified", http.MethodGet, `$done({});`, "", 304, true, plugin.DeliveryStreaming},
-		{"status-removes-body", http.MethodGet, `$done({status:204});`, "", 200, false, plugin.DeliveryDefault},
+		{"status-removes-body", http.MethodGet, `$done({status:204});`, "", 200, false, plugin.DeliveryStreaming},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			module := "[Script]\nrewrite=type=http-response,pattern=.,script-path=a.js"

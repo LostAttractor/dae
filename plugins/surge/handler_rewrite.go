@@ -121,13 +121,16 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *plugin.Res
 	defer cancel()
 	if raw != nil {
 		body, err := decodeBodyView(ctx, raw, strings.Join(r.Header.Values("Content-Encoding"), ","), e.scriptBodyLimit(s))
-		if errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
+		if err != nil {
+			if r.Context().Err() != nil {
+				return nil, r.Context().Err()
+			}
+			if errors.Is(err, membuffer.ErrTooLarge) {
+				return nil, err
+			}
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
 			return nil, nil
-		}
-		if err != nil {
-			return nil, err
 		}
 		defer body.Close()
 		message.Body = body.Bytes()
@@ -225,13 +228,13 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 	defer cancel()
 	if raw != nil {
 		body, err := decodeBodyView(ctx, raw, strings.Join(r.Header.Values("Content-Encoding"), ","), e.scriptBodyLimit(s))
-		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Request.Context().Err() == nil {
+		if err != nil {
+			if r.Request.Context().Err() != nil {
+				return r.Request.Context().Err()
+			}
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
 			return nil
-		}
-		if err != nil {
-			return err
 		}
 		defer body.Close()
 		message.Body = body.Bytes()
@@ -283,27 +286,8 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 		execution.outcome = "success"
 	}
 	if hasBody && !responseHasBody(r.Request.Method, r.StatusCode) {
-		empty, err := membuffer.Copy(nil, e.options.BodyMemory)
-		if err != nil {
-			return err
-		}
-		length := r.ContentLength
-		preserved := make(http.Header, 4)
-		for _, name := range []string{"Etag", "Last-Modified", "Content-Encoding", "Repr-Digest"} {
-			if values := r.Header.Values(name); len(values) != 0 {
-				preserved[name] = values
-			}
-		}
-		response.Body().Replace(empty)
-		empty.Close()
-		for name, values := range preserved {
-			r.Header[name] = values
-		}
-		r.ContentLength = length
-		r.Trailer = nil
-		r.Header.Del("Content-Length")
-		if r.StatusCode == http.StatusNoContent {
-			r.ContentLength = 0
+		for _, name := range []string{"Content-MD5", "Digest", "Content-Digest"} {
+			r.Header.Del(name)
 		}
 	}
 	return nil
@@ -353,7 +337,6 @@ func applyURLRewrite(r *http.Request, rewrite URLRewrite, target string) (*http.
 		if err := replaceURL(r, target); err != nil {
 			return nil, err
 		}
-		r.Host = r.URL.Host
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported URL rewrite type %q", rewrite.Type)
@@ -426,7 +409,7 @@ func replaceURL(r *http.Request, target string) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return errors.New("script URL must be an absolute HTTP(S) URL without credentials or fragment")
 	}
-	r.URL = u
+	r.URL, r.Host = u, u.Host
 	return nil
 }
 
@@ -435,7 +418,9 @@ func syntheticResponse(request *http.Request, status int, header http.Header, bo
 		header = make(http.Header)
 	}
 	removeHopHeaders(header)
-	header.Del("Content-Length")
+	if status != http.StatusNotModified {
+		header.Del("Content-Length")
+	}
 	return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request}
 }
 
@@ -451,13 +436,22 @@ func responseFromResult(request *http.Request, result *Result) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	var body []byte
-	if result.Body != nil {
-		body = result.Body.Bytes()
-	}
-	response := syntheticResponse(request, status, header, body)
+	removeHopHeaders(header)
+	response := &http.Response{StatusCode: status, Header: header, Body: http.NoBody, Request: request}
 	if result.Body != nil {
 		response.Body = result.Body.Open()
+		response.ContentLength = int64(len(result.Body.Bytes()))
+	} else if request.Method == http.MethodHead || status == http.StatusNotModified {
+		// An omitted body says nothing about the GET representation's size.
+		response.ContentLength = -1
+		if values := header.Values("Content-Length"); len(values) == 1 {
+			if length, err := strconv.ParseUint(strings.TrimSpace(values[0]), 10, 63); err == nil {
+				response.ContentLength = int64(length)
+			}
+		}
+	}
+	if status != http.StatusNotModified || response.ContentLength < 0 {
+		header.Del("Content-Length")
 	}
 	if result.Trailers != nil {
 		response.Trailer, err = resultTrailers(result.Trailers)

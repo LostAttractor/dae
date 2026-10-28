@@ -5,7 +5,10 @@ package plugin
 import (
 	"errors"
 	"io"
+	"maps"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/daeuniverse/dae/internal/pluginctx"
@@ -100,7 +103,29 @@ func (r *Response) TakeHTTP() (*http.Response, Delivery, error) {
 	wire := new(http.Response)
 	*wire = *r.Head
 	wire.Body = r.body.reader
-	if wire.StatusCode != http.StatusSwitchingProtocols {
+	if wire.StatusCode == http.StatusSwitchingProtocols {
+		return wire, r.delivery, nil
+	}
+	head := wire.Request != nil && wire.Request.Method == http.MethodHead
+	if head || wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent || wire.StatusCode == http.StatusNotModified {
+		_ = wire.Body.Close()
+		r.body.reader, wire.Body = http.NoBody, http.NoBody
+		wire.TransferEncoding, wire.Trailer = nil, nil
+		wire.Header.Del("Transfer-Encoding")
+		wire.Header.Del("Trailer")
+		maps.DeleteFunc(wire.Header, func(name string, _ []string) bool {
+			return strings.HasPrefix(name, http.TrailerPrefix)
+		})
+		if wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent {
+			wire.ContentLength = 0
+			wire.Header.Del("Content-Length")
+		} else if wire.ContentLength < 0 {
+			wire.Header.Del("Content-Length")
+		} else if wire.StatusCode != http.StatusNotModified || len(wire.Header.Values("Content-Length")) != 0 {
+			// HEAD and 304 can describe the corresponding representation's length.
+			wire.Header.Set("Content-Length", strconv.FormatInt(wire.ContentLength, 10))
+		}
+	} else {
 		wire.Body = &responseTrailerBody{ReadCloser: wire.Body, head: r.Head, wire: wire}
 	}
 	return wire, r.delivery, nil
