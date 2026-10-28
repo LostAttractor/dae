@@ -1,14 +1,11 @@
 package shadowsocks_2022
 
 import (
-	"net"
-
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 )
 
 func (c *TCPConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
-func (c *TCPConn) WriteThrough() net.Conn           { return c.Conn }
 func (c *UdpConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 
 // Invalid encrypted frames belong to this proxy stream or datagram; they do

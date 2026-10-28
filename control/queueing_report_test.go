@@ -215,7 +215,7 @@ func TestQueueingExperimentWriterPreservesSocket(t *testing.T) {
 	defer local.Close()
 	defer remote.Close()
 	writer := &qexpBusyWriter{Conn: local}
-	if writer.ReadPassthrough() != local || writer.WriteThrough() != local {
+	if writer.ReadPassthrough() != local {
 		t.Fatal("writer-cost fixture hid its underlying socket")
 	}
 }

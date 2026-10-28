@@ -112,10 +112,6 @@ lifetime, with buckets from 1 ms to 1 s. `transport` is `smux`.
 multiplexed node placed by `lane` (`interactive`, `bulk_datagram`, `stream`)
 and `result`: `own` on a session of its lane, `spare` on the spare session,
 `fallback` on another lane's session.
-`dae_carrier_gate_waits_total` counts the times the writer of a shared
-carrier, such as an smux session, waited for the carrier's TCP socket to
-send what it held before writing more; a saturated carrier waits a few
-hundred times a second.
 
 ## Plugin metric names
 

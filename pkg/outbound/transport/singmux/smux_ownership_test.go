@@ -46,10 +46,64 @@ func TestSmuxBlockedCarrierExpires(t *testing.T) {
 	})
 }
 
+func TestSmuxCloseSharesDrainNotification(t *testing.T) {
+	for _, observerFirst := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			local, remote := net.Pipe()
+			defer remote.Close()
+			s := newTestSmuxSession(local)
+			defer s.abort()
+			st, err := s.OpenStream(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.Write([]byte("tail")); err != nil {
+				t.Fatal(err)
+			}
+			_ = st.Close()
+			synctest.Wait()
+			var draining <-chan struct{}
+			if observerFirst {
+				draining = s.drained()
+			}
+			closed := make(chan struct{})
+			go func() { _ = s.Close(); close(closed) }()
+			synctest.Wait()
+			if !observerFirst {
+				draining = s.drained()
+			}
+			s.mu.Lock()
+			shared := draining != nil && draining == s.draining && s.closing
+			s.mu.Unlock()
+			if !shared {
+				t.Fatalf("observerFirst=%v: Close replaced or missed the drain event", observerFirst)
+			}
+			select {
+			case <-draining:
+				t.Fatal("blocked carrier was reported drained")
+			default:
+			}
+			frames := readFrames(remote)
+			for _, cmd := range []byte{smuxCmdSYN, smuxCmdPSH, smuxCmdFIN} {
+				if f := nextFrame(t, frames); f.cmd != cmd || cmd == smuxCmdPSH && string(f.data) != "tail" {
+					t.Fatalf("unexpected frame: %+v", f)
+				}
+			}
+			synctest.Wait()
+			select {
+			case <-draining:
+			default:
+				t.Fatal("FIN left without notifying the drain observer")
+			}
+			_ = remote.Close()
+			<-closed
+		})
+	}
+}
+
 func TestSmuxBatchUsesAvailablePoolCapacity(t *testing.T) {
 	carrier := new(chunkRecordingCarrier)
 	s := &smuxSession{conn: &monitoredConn{Conn: carrier}, wake: make(chan struct{}, 1)}
-	s.frame.Store(smuxMaxFrame)
 	s.fq.Release = putFrame
 	defer s.fq.Clear()
 	st := &smuxStream{session: s, id: 1}
@@ -110,7 +164,7 @@ func (c *deadlineCountingConn) SetWriteDeadline(t time.Time) error {
 }
 func (c *deadlineCountingConn) Write(b []byte) (int, error) { c.writes.Add(1); return c.Conn.Write(b) }
 
-func TestSmuxIdleSenderDoesNotEnterGate(t *testing.T) {
+func TestSmuxIdleSenderDoesNotSetDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		local, remote := net.Pipe()
 		defer remote.Close()
@@ -125,7 +179,7 @@ func TestSmuxIdleSenderDoesNotEnterGate(t *testing.T) {
 		_ = st.Close()
 		synctest.Wait()
 		if deadlines, writes := carrier.deadlines.Load(), carrier.writes.Load(); writes == 0 || deadlines != writes {
-			t.Fatalf("deadline/gate attempts=%d carrier writes=%d", deadlines, writes)
+			t.Fatalf("deadline updates=%d carrier writes=%d", deadlines, writes)
 		}
 		if s.drained() != nil {
 			t.Fatal("empty sender did not become idle")

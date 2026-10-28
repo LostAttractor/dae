@@ -21,9 +21,17 @@ Separate these from performance objectives:
 | Overload or failure | Resource ceilings, progress by unrelated ready sources, rejection, cancellation and recovery | Do not require normal throughput or an unconditional latency ceiling |
 | Mechanism diagnosis | Controlled changes to batches, a single carrier or synthetic writer cost | Explain a mechanism; do not treat the fixture as production CPU efficiency |
 
-For comparable steady bulk workloads, 97% of baseline throughput and 105% of
-baseline CPU/GB are initial regression budgets, not universal guarantees.
-Measurements whose paired variation crosses a budget are inconclusive.
+Prefer the fewest queueing states and feedback mechanisms that satisfy the
+constraints and provide the required isolation. Do not add adaptive controls
+solely to improve a benchmark ratio.
+
+Declare screening thresholds for the scenario before measuring. For example,
+97% of baseline throughput and 105% of baseline CPU/GB can flag regressions in
+comparable steady bulk workloads, but are not universal acceptance gates.
+Evaluate CPU changes with absolute CPU time, available processing capacity,
+throughput and latency benefits, and implementation complexity. A threshold
+crossing calls for that assessment, not automatic acceptance or rejection;
+paired variation across a threshold remains inconclusive.
 There is no universal 120 ms game-p99 acceptance rule. Evaluate latency together
 with loss, missing probes, sample count and maximum delay; dropping slow probes
 must not manufacture an apparent improvement.

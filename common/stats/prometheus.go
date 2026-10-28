@@ -96,12 +96,6 @@ var (
 		[]string{"direction", "reason"},
 		nil,
 	)
-	carrierGateWaitsDesc = prometheus.NewDesc(
-		"dae_carrier_gate_waits_total",
-		"Process-lifetime times a shared carrier's writer waited for its kernel socket to send what it held.",
-		nil,
-		nil,
-	)
 	muxLanePlacementsDesc = prometheus.NewDesc(
 		"dae_mux_lane_placements_total",
 		"Process-lifetime user streams a multiplexed transport placed in a lane: on a session of the lane, a spare session, or one of another lane.",
@@ -128,7 +122,6 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 		processTimestampDesc,
 		udpPacketDropsDesc,
 		udpQueueDelayDesc,
-		carrierGateWaitsDesc,
 		muxLanePlacementsDesc,
 	} {
 		ch <- descriptor
@@ -211,7 +204,6 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 	for drop := range netproxy.Drops() {
 		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
 	}
-	ch <- prometheus.MustNewConstMetric(carrierGateWaitsDesc, prometheus.CounterValue, float64(netproxy.GateWaits()))
 	for placement := range netproxy.LanePlacements() {
 		ch <- prometheus.MustNewConstMetric(muxLanePlacementsDesc, prometheus.CounterValue, float64(placement.Load()), placement.Lane(), placement.Result())
 	}

@@ -27,7 +27,6 @@ COLUMNS = [
     ("bulk_jain", None), ("quic_share", None), ("notsent_bytes", "P99"),
     ("cpu_ms", None), ("uploaded_bytes", None), ("cpu_us_per_game_packet", None),
     ("cpu_ms_per_gb", None), ("datagram_memory_peak", None), ("maxrss_kb", None),
-    ("notsent_limit_ratio", "P99"), ("unsent_limit_bytes", "P50"), ("gate_waits_per_s", None),
     ("flood_up_ms", "P50"), ("flood_up_ms", "P99"), ("flood_mbit", None), ("drops_upload", None),
     ("drops_download", None), ("qdisc_drops", None), ("flood_lost", None),
     ("game_echoed", None), ("game_sent", None), ("game_window_sent", None), ("game_window_unechoed", None),

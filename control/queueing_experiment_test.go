@@ -468,10 +468,9 @@ func (d *qexpCarriers) DialContext(ctx context.Context, network, addr string) (n
 // notsent samples the bytes each carrier holds that it has not sent. On a
 // fallen back MPTCP socket SIOCOUTQNSD also counts the subflow's bytes in
 // flight, which TCP_INFO (the subflow's) gives.
-func (d *qexpCarriers) notsent(rec *qexpRecorder) (samples []float64) {
+func (d *qexpCarriers) notsent() (samples []float64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var ratio, largestLimit float64
 	for _, raw := range d.sockets {
 		_ = raw.Control(func(fd uintptr) {
 			n, err := unix.IoctlGetInt(int(fd), unix.SIOCOUTQNSD)
@@ -486,22 +485,12 @@ func (d *qexpCarriers) notsent(rec *qexpRecorder) (samples []float64) {
 				n -= int(info.Bytes_sent - info.Bytes_retrans - info.Bytes_acked)
 			}
 			samples = append(samples, float64(n))
-			if limit, err := unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_NOTSENT_LOWAT); err == nil && limit > 0 {
-				ratio = max(ratio, float64(n)/float64(limit))
-				largestLimit = max(largestLimit, float64(limit))
-			}
 		})
-	}
-	if rec != nil && largestLimit > 0 {
-		rec.add("notsent_limit_ratio", qexpNow(), ratio)
-		rec.add("unsent_limit_bytes", qexpNow(), largestLimit)
 	}
 	return samples
 }
 
-// qexpBusyWriter must expose its carrier's socket to every lookup the
-// carrier path makes, as ReadPassthrough does for reads; otherwise the
-// variant would measure a carrier that lost its socket, not a busy writer.
+// qexpBusyWriter adds writer cost without hiding receive-side socket tuning.
 type qexpBusyWriter struct {
 	net.Conn
 	delay time.Duration
@@ -515,9 +504,6 @@ func (c *qexpBusyWriter) Write(b []byte) (int, error) {
 
 // ReadPassthrough keeps receive tuning: reads are unchanged.
 func (c *qexpBusyWriter) ReadPassthrough() net.Conn { return c.Conn }
-
-// Preserve the send socket in variants that gate a wrapped carrier.
-func (c *qexpBusyWriter) WriteThrough() net.Conn { return c.Conn }
 
 // qexpFlow is a LAN UDP source: its endpoint's replies arrive on replies.
 type qexpFlow struct {
@@ -1147,7 +1133,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 	// Socket inspection is optional: its per-carrier cost is not forwarding work.
 	if socketSamples {
 		every(10*time.Millisecond, func() {
-			if samples := carriers.notsent(rec); len(samples) > 0 {
+			if samples := carriers.notsent(); len(samples) > 0 {
 				rec.add("notsent_bytes", qexpNow(), slices.Max(samples))
 			}
 		})
@@ -1161,14 +1147,14 @@ func TestQueueingExperimentClient(t *testing.T) {
 		return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 	}
 	time.Sleep(time.Until(from))
-	cpuFrom, gateWaitsFrom := cpu(), netproxy.GateWaits()
+	cpuFrom := cpu()
 	for _, list := range counters {
 		for _, c := range list {
 			c.first.Store(c.latest.Load())
 		}
 	}
 	time.Sleep(time.Until(to))
-	cpuUsed, gateWaits := cpu()-cpuFrom, netproxy.GateWaits()-gateWaitsFrom
+	cpuUsed := cpu() - cpuFrom
 	for _, list := range counters {
 		for _, c := range list {
 			c.last.Store(c.latest.Load())
@@ -1219,8 +1205,7 @@ func TestQueueingExperimentClient(t *testing.T) {
 		},
 		"game_window_sent": windowProbes.Load(),
 		"elapsed_s":        time.Since(start).Seconds(), "settle_s": time.Duration(rec.stopped.Load() - rec.to).Seconds(), "settle_timeout": settleTimeout,
-		"carriers": len(carriers.notsent(nil)), "datagram_memory_peak": netproxy.DatagramMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
-		"gate_waits_per_s": float64(gateWaits) / duration.Seconds(),
+		"carriers": len(carriers.notsent()), "datagram_memory_peak": netproxy.DatagramMemory.Status().Peak, "maxrss_kb": usage.Maxrss,
 	}
 	for _, name := range []string{"WORKLOAD", "MAX_CONNECTIONS", "WRITER_DELAY", "MPTCP", "DOWNLOAD", "UDP", "LAN_RATE", "RETURN_DELAY", "LABEL", "BINARY"} {
 		report[strings.ToLower(name)] = os.Getenv("QEXP_" + name)

@@ -69,7 +69,6 @@ TUIC native UDP 和 Hysteria2 使用非阻塞 QUIC DATAGRAM 接纳。载体队�
 
 `dae_udp_queue_delay_seconds{transport}` 是传输层发出的数据报在其发送队列中等待时长的直方图，按进程生命周期累计，桶从 1 ms 到 1 s。`transport` 为 `smux`。
 `dae_mux_lane_placements_total{lane,result}` 统计多路复用节点放置的用户流，按 `lane`（`interactive`、`bulk_datagram`、`stream`）和 `result` 区分：`own` 为放在本 lane 的 session，`spare` 为放在热备 session，`fallback` 为放在其他 lane 的 session。
-`dae_carrier_gate_waits_total` 统计共享承载（例如 smux 会话）的写者在继续写入前等待承载 TCP socket 发出已有数据的次数；满载的承载每秒等待数百次。
 
 ## 插件指标名称
 

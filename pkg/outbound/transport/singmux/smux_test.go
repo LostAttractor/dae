@@ -124,7 +124,7 @@ func nextFrame(t *testing.T, frames <-chan wireFrame) wireFrame {
 }
 
 // Streams send SYN, their data and FIN in order; the writer shares the
-// carrier among them by bytes, a batch of about smuxBatch bytes per carrier
+// carrier among them by bytes, a batch of up to smuxWriteBatch bytes per carrier
 // write.
 func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 	local, remote := net.Pipe()
@@ -173,8 +173,8 @@ func TestSmuxFramesKeepStreamOrderAndAlternate(t *testing.T) {
 	}
 }
 
-// smuxFrame is the frame size of a session whose carrier has no socket.
-const smuxFrame = netproxy.MaxUnit
+// smuxFrame includes the header in a pooled stream frame.
+const smuxFrame = smuxMaxFrame
 
 // fqStreamBytes is the stream data that fills a stream's queue: whole
 // frames up to fq.StreamLimit of buffers.
@@ -283,7 +283,10 @@ func TestSmuxSparseStreamGoesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	carrier.step <- struct{}{}
-	<-carrier.entered // the first data frame
+	<-carrier.entered // the first data batch is already committed
+	if _, err := bulk.Write(make([]byte, fqStreamBytes)); err != nil {
+		t.Fatal(err)
+	}
 	sparse, err := s.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +311,7 @@ func TestSmuxSparseStreamGoesFirst(t *testing.T) {
 	for i, want := range []struct {
 		cmd byte
 		sid uint32
-	}{{smuxCmdSYN, 1}, {smuxCmdPSH, 1}, {smuxCmdSYN, 3}, {smuxCmdPSH, 3}, {smuxCmdPSH, 1}} {
+	}{{smuxCmdSYN, 1}, {smuxCmdPSH, 1}, {smuxCmdPSH, 1}, {smuxCmdSYN, 3}, {smuxCmdPSH, 3}, {smuxCmdPSH, 1}, {smuxCmdPSH, 1}} {
 		if f := nextFrame(t, frames); f.cmd != want.cmd || f.sid != want.sid {
 			t.Fatalf("frame %d = cmd %d sid %d, want cmd %d sid %d", i, f.cmd, f.sid, want.cmd, want.sid)
 		}
@@ -679,25 +682,6 @@ func TestSmuxStreamIDsRunOut(t *testing.T) {
 	}
 }
 
-// A session finds the TCP socket under its carrier monitor and gates it:
-// its frames are the gate's batch, shorter than those of a pipe.
-func TestSmuxSessionGatesTCPCarrier(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	conn, err := net.Dial("tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := newTestSmuxSession(netproxy.TrackConn(conn, func() {}))
-	defer s.Close()
-	if frame := int(s.frame.Load()); frame != netproxy.MinUnsent/2 {
-		t.Fatalf("frames of %d bytes over TCP, want the gate's %d", frame, netproxy.MinUnsent/2)
-	}
-}
-
 type chunkRecordingCarrier struct {
 	net.Conn
 	data    bytes.Buffer
@@ -709,20 +693,24 @@ func (c *chunkRecordingCarrier) Write(b []byte) (int, error) {
 	return c.data.Write(b)
 }
 
-func TestSmuxLargeDatagramRespectsGateUnit(t *testing.T) {
+func TestSmuxLargeDatagramRespectsBatchLimit(t *testing.T) {
 	carrier := new(chunkRecordingCarrier)
-	s := &smuxSession{conn: &monitoredConn{Conn: carrier}, gate: netproxy.NewCarrierGate(carrier)}
+	s := &smuxSession{conn: &monitoredConn{Conn: carrier}}
 	data := bytes.Repeat([]byte("payload"), 10000)
 	s.fq.Release = putFrame
-	s.fq.Force(new(fq.Flow), time.Now(), data)
+	if !s.fq.Force(new(fq.Flow), time.Now(), data) {
+		t.Fatal("datagram admission failed")
+	}
+	defer s.fq.Clear()
 	for s.fq.Queued() {
-		batch := s.fq.Take(time.Now(), 8192, nil)
-		if err := s.write(batch); err != nil {
+		batch := s.fq.Take(time.Now(), smuxWriteBatch, nil)
+		err := s.write(batch)
+		s.fq.ReleaseBatch()
+		if err != nil {
 			t.Fatal(err)
 		}
-		s.fq.ReleaseBatch()
 	}
-	if carrier.largest > 8192 || !bytes.Equal(carrier.data.Bytes(), data) {
+	if carrier.largest != smuxWriteBatch || !bytes.Equal(carrier.data.Bytes(), data) {
 		t.Fatalf("largest write %d, delivered %d of %d bytes", carrier.largest, carrier.data.Len(), len(data))
 	}
 }

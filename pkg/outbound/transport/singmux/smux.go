@@ -34,6 +34,8 @@ const (
 	// MaxFrameSize, and smuxFullFrame the size of such a frame.
 	smuxMaxFrame  = 32 << 10
 	smuxFullFrame = smuxHeaderSize + smuxMaxFrame
+	// smuxWriteBatch bounds each carrier write without changing socket policy.
+	smuxWriteBatch = 64 << 10
 	// smuxReceiveBuffer is the payload a session holds for its readers
 	// before it stops reading the carrier, the server's MaxReceiveBuffer. v1
 	// has no per-stream flow control: a stalled reader stalls the session.
@@ -78,19 +80,13 @@ func putFrame(f []byte) { pool.PutBuffer(f) }
 // frames into per-stream buffers, and sendLoop, woken only when the send
 // queue turns non-empty, writes queued frames in batches. Streams queue
 // frames in order, so SYN precedes and FIN follows a stream's data; the
-// scheduler fq shares the carrier among the streams by bytes, and the gate
-// holds each batch until the carrier's kernel queue is short, so that the
-// batch is chosen when it can leave. A frame is one pooled buffer, its
+// scheduler fq shares the carrier among the streams by bytes. The carrier
+// write provides backpressure. A frame is one pooled buffer, its
 // header and payload; a datagram is one buffer of one or more frames. Batches
 // may split buffers, but a started buffer finishes before another starts.
 type smuxSession struct {
 	conn    *monitoredConn
 	buffers netproxy.BuffersWriter // the carrier's vectorised writer, if any
-	gate    *netproxy.CarrierGate  // used by sendLoop only
-	// frame is the size, header included, of the frames stream data goes
-	// in: the gate's batch, at most smuxMaxFrame of payload, so that a
-	// batch is not one long frame.
-	frame atomic.Int32
 
 	mu      sync.Mutex
 	streams map[uint32]*smuxStream // receive or retain send ownership until FIN leaves
@@ -101,7 +97,6 @@ type smuxSession struct {
 	writing  bool          // sendLoop is busy; enqueuers wake it otherwise
 	draining chan struct{} // closed when queued and in-flight frames have left
 	closing  bool          // Close is writing the queue; only FIN may join
-	flushed  chan struct{} // closed once sendLoop idles while closing
 	sealed   bool          // flushed while closing; not even a FIN joins
 	dead     bool
 	err      error // why the session died; set before die closes
@@ -119,7 +114,6 @@ func newSmuxSession(conn *monitoredConn) *smuxSession {
 	s := &smuxSession{
 		conn:       conn,
 		buffers:    netproxy.BuffersWriterOf(conn.Conn),
-		gate:       netproxy.NewCarrierGate(conn.Conn),
 		streams:    make(map[uint32]*smuxStream),
 		nextID:     1,
 		wake:       make(chan struct{}, 1),
@@ -127,7 +121,6 @@ func newSmuxSession(conn *monitoredConn) *smuxSession {
 		die:        make(chan struct{}),
 	}
 	s.fq.Release, s.fq.Delay = s.releaseFrame, smuxQueueDelay
-	s.frame.Store(int32(min(s.gate.Unit(), smuxMaxFrame)))
 	s.budget.Store(smuxReceiveBuffer)
 	go s.recvLoop()
 	go s.sendLoop()
@@ -196,12 +189,14 @@ func (s *smuxSession) Close() error {
 	if !s.dead && !s.closing {
 		s.closing = true
 		if s.writing {
-			s.flushed = make(chan struct{})
+			if s.draining == nil {
+				s.draining = make(chan struct{})
+			}
 		} else {
 			s.sealed = true
 		}
 	}
-	flushed := s.flushed
+	flushed := s.draining
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), netproxy.CloseLinger)
 	defer cancel()
@@ -342,14 +337,13 @@ func (s *smuxSession) recvLoop() {
 
 func (s *smuxSession) sendLoop() {
 	var batch [][]byte
-	var rate float64 // the scheduler's, read with each batch
 	for {
 		select {
 		case <-s.wake:
 		case <-s.die:
 			return
 		}
-		for busy := false; ; {
+		for {
 			s.mu.Lock()
 			if !s.fq.Queued() || s.dead {
 				s.writing = false
@@ -358,30 +352,16 @@ func (s *smuxSession) sendLoop() {
 					s.draining = nil
 				}
 				s.sealed = s.closing
-				if s.flushed != nil {
-					close(s.flushed)
-					s.flushed = nil
-				}
 				s.mu.Unlock()
 				break
 			}
 			s.mu.Unlock()
-			// RawConn.Write (the gate) and carrier Write use this same deadline.
 			if err := s.conn.SetWriteDeadline(time.Now().Add(netproxy.DialTimeout)); err != nil {
 				s.fail(err)
 				return
 			}
-			s.gate.Adjust(time.Now(), rate)
-			if err := s.gate.Wait(busy); err != nil {
-				s.conn.report(err)
-				s.shutdown(err)
-				return
-			}
-			unit := s.gate.Unit()
-			s.frame.Store(int32(min(unit, smuxMaxFrame)))
 			s.mu.Lock()
-			batch = s.fq.Take(time.Now(), unit, batch[:0])
-			busy, rate = s.fq.Queued(), s.fq.Rate()
+			batch = s.fq.Take(time.Now(), smuxWriteBatch, batch[:0])
 			s.mu.Unlock()
 			var err error
 			if len(batch) != 0 {
@@ -523,7 +503,8 @@ func (st *smuxStream) writeFrame(b []byte) (int, error) {
 			return 0, os.ErrDeadlineExceeded
 		default:
 		}
-		frame := int(s.frame.Load())
+		// Include the header in the pooled frame capacity.
+		const frame = smuxMaxFrame
 		if tail := st.flow.Tail(); tail != nil && (*tail)[1] == smuxCmdPSH {
 			n := min(len(b), min(cap(*tail), frame)-len(*tail))
 			if n > 0 {

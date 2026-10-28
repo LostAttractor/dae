@@ -9,8 +9,6 @@ import (
 
 func (c *HTTPObfs) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 func (c *TLSObfs) DependencyLease() *netproxy.Lease  { return netproxy.DependencyOf(c.Conn) }
-func (c *HTTPObfs) WriteThrough() net.Conn           { return c.Conn }
-func (c *TLSObfs) WriteThrough() net.Conn            { return c.Conn }
 func isTimeout(err error) bool {
 	var timeout net.Error
 	return errors.As(err, &timeout) && timeout.Timeout()
