@@ -156,10 +156,6 @@ type heldFrame struct {
 	entry
 }
 
-// Rate estimates in bytes per second how fast the carrier takes frames
-// while the scheduler holds some.
-func (s *Scheduler) Rate() float64 { return s.rate }
-
 // Queued reports whether frames are queued.
 func (s *Scheduler) Queued() bool { return s.entries > 0 || s.partial.frame != nil }
 
@@ -219,14 +215,18 @@ func (s *Scheduler) AllocateDatagram(f *Flow, now time.Time, size int, force boo
 }
 
 func (s *Scheduler) reserveDatagram(size int) (membuffer.Reservation, bool) {
-	if memory, err := netproxy.DatagramMemory.Reserve(int64(size)); err == nil {
-		return memory, true
-	}
-	if g := s.fattest(nil, 0); g != nil {
+	for {
+		if memory, err := netproxy.DatagramMemory.Reserve(int64(size)); err == nil {
+			return memory, true
+		}
+		if int64(size) > netproxy.DatagramMemory.Status().Limit {
+			break
+		}
+		g := s.fattest(nil, 0)
+		if g == nil {
+			break
+		}
 		s.dropOldest(g, false, netproxy.DropUploadMemory)
-	}
-	if memory, err := netproxy.DatagramMemory.Reserve(int64(size)); err == nil {
-		return memory, true
 	}
 	netproxy.DropUploadMemory.Add(1)
 	return membuffer.Reservation{}, false
@@ -469,7 +469,8 @@ func (s *Scheduler) dequeue(f *Flow, now time.Time) (entry, bool) {
 // a datagram whose sojourn has stayed above target for an interval. With
 // cake's guard (sch_cake.c), a sojourn within twice a frame time per bulk
 // flow, or four frame times, is not above target: on a carrier shared by
-// many flows, that is the wait of a flow within its fair share.
+// many flows, this estimates fair-share waiting. Large batches or stream
+// frames can still make a flow at its average fair share exceed the guard.
 func (s *Scheduler) overTarget(f *Flow, now time.Time) bool {
 	c := &f.codel
 	if f.queue.Len() == 0 || f.queue.Peek().kind != datagram {

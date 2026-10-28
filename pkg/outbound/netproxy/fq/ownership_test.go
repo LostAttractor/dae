@@ -85,6 +85,47 @@ func TestStreamCapacityIncludesInFlight(t *testing.T) {
 	s.Clear()
 }
 
+func TestDatagramAdmissionReclaimsEnoughCapacity(t *testing.T) {
+	limit := netproxy.DatagramMemory.UseLimit(4096)
+	defer limit.Close()
+	s := new(Scheduler)
+	defer s.Clear()
+	flow := new(Flow)
+	for range 4 {
+		if !s.Offer(flow, epoch, make([]byte, 1024)) {
+			t.Fatal("small datagram rejected")
+		}
+	}
+	before := netproxy.DropUploadMemory.Load()
+	if s.AllocateDatagram(new(Flow), epoch, 2048, false) == nil {
+		t.Fatal("larger datagram rejected despite reclaimable capacity")
+	}
+	if dropped := netproxy.DropUploadMemory.Load() - before; dropped != 2 || flow.queue.Len() != 2 {
+		t.Fatalf("dropped=%d queued=%d, want two evictions", dropped, flow.queue.Len())
+	}
+	if used := netproxy.DatagramMemory.Status().Used; used != 4096 {
+		t.Fatalf("used=%d, want 4096", used)
+	}
+}
+
+func TestImpossibleAdmissionKeepsQueuedDatagrams(t *testing.T) {
+	limit := netproxy.DatagramMemory.UseLimit(1024)
+	defer limit.Close()
+	s := new(Scheduler)
+	defer s.Clear()
+	flow := new(Flow)
+	if !s.Offer(flow, epoch, make([]byte, 1024)) {
+		t.Fatal("small datagram rejected")
+	}
+	before := netproxy.DropUploadMemory.Load()
+	if s.AllocateDatagram(new(Flow), epoch, 2048, false) != nil {
+		t.Fatal("admitted a datagram larger than the budget")
+	}
+	if dropped := netproxy.DropUploadMemory.Load() - before; dropped != 1 || flow.queue.Len() != 1 {
+		t.Fatalf("impossible admission evicted queued data: drops=%d queued=%d", dropped, flow.queue.Len())
+	}
+}
+
 func TestForcedAdmissionDoesNotExceedSharedBudget(t *testing.T) {
 	limit := netproxy.DatagramMemory.UseLimit(64)
 	defer limit.Close()

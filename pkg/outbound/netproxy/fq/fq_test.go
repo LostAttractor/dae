@@ -404,14 +404,14 @@ func TestRateWhileBacklogged(t *testing.T) {
 	for f.queue.Len() > 0 {
 		c.take(16 << 10)
 	}
-	if r := c.s.Rate(); math.Abs(r-5e6) > 0.05*5e6 {
+	if r := c.s.rate; math.Abs(r-5e6) > 0.05*5e6 {
 		t.Fatalf("rate %.0f while backlogged, want 5e6", r)
 	}
 	c.now = c.now.Add(10 * time.Second)
 	c.s.Push(f, make([]byte, 16<<10))
 	c.take(16 << 10)
 	c.take(16 << 10)
-	if r := c.s.Rate(); math.Abs(r-5e6) > 0.05*5e6 {
+	if r := c.s.rate; math.Abs(r-5e6) > 0.05*5e6 {
 		t.Fatalf("rate %.0f after an idle carrier, want 5e6", r)
 	}
 }
