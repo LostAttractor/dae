@@ -67,7 +67,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
 | `flow_queue_full` | `upload` | A smux stream queued more than 64 KiB of datagrams; its oldest droppable datagram is evicted |
 | `carrier_queue_full` | `upload` | A smux session exceeded 256 KiB of datagrams and evicted the oldest droppable datagram of its fattest stream, or a QUIC DATAGRAM send queue was full |
-| `codel` | `upload` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond the wait of a stream within its fair share of the session |
+| `codel` | `upload` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond its rate- and active-flow-based delay estimate |
 | `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
 | `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
 | `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |

@@ -49,7 +49,7 @@ global {
 | `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
 | `flow_queue_full` | `upload` | smux 单流排队的数据报超过 64 KiB，淘汰该流最早的可丢数据报 |
 | `carrier_queue_full` | `upload` | smux 会话的数据报超过 256 KiB，淘汰其积压最多流的最早可丢数据报；或 QUIC DATAGRAM 发送队列已满 |
-| `codel` | `upload` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过该流在会话内公平份额下应有的等待 |
+| `codel` | `upload` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过基于速率和活跃流数估计的保护阈值 |
 | `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
 | `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
 | `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |

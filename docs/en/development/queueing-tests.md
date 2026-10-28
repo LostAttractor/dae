@@ -82,6 +82,36 @@ patterns can change generator and recorder wakeups; use stack attribution or
 references providing the same isolation before attributing a mixed-load CPU
 delta entirely to queue scheduling.
 
+## Mechanism ablation
+
+`ablate.py` generates isolated Go overlays for the full scheduler, disabled
+CoDel, and CoDel without the rate-based fair-share guard. It requires a new
+output directory and refuses source that no longer matches its transformations.
+It does not edit production files or add runtime configuration. The variants
+retain dependent state and tests: they identify policy effects, not the CPU or
+memory savings of a complete deletion.
+
+Inside the development environment:
+
+```sh
+work=$(mktemp -d)
+python3 scripts/tests/queueing/ablate.py "$work/variants"
+for variant in base no-codel no-rate-guard; do
+  GOWORK=off go test -count=1 -overlay="$work/variants/$variant.json" \
+    ./pkg/outbound/netproxy/fq -run '^TestDatagramQueueScenarios$' -v
+done
+```
+
+The deterministic carrier scenarios cover a standing queue below the byte
+limit, a datagram flow offered its byte-fair share alongside 16 stream flows,
+a slower carrier, and a datagram spanning batches. Mixed-flow scenarios use
+64 KiB batches. Reported queue times end at the first dequeue, not at the last
+byte written; serialization and network RTT are excluded. Sent, dropped and
+pending datagrams must account for every offer, and the shared budget must be
+released after cleanup. Read queue-time distributions together with losses.
+These are mechanism checks, not real-network performance acceptance. The full
+policy-specific tests can intentionally fail for an ablated policy.
+
 ## Report validity
 
 Reports include resolved `conditions`: topology, workload, carrier limit,
