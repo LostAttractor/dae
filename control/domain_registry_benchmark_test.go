@@ -182,6 +182,40 @@ func BenchmarkDomainRegistryGC(b *testing.B) {
 	b.ReportMetric(float64(worst), "max-call-ns")
 }
 
+// Renewal layout changes ordinal delta widths, not the locations written.
+// frame-bytes includes framing but excludes filesystem write amplification.
+func BenchmarkDomainRegistryRenewalLayout(b *testing.B) {
+	const renewed = 1446
+	for _, total := range []int{28042, 100000, 1000000} {
+		rng := rand.New(rand.NewPCG(1, 2))
+		seen := make(map[uint32]bool, renewed)
+		var scattered []uint32
+		for len(scattered) < renewed {
+			ordinal := uint32(rng.IntN(total))
+			if !seen[ordinal] {
+				seen[ordinal] = true
+				scattered = append(scattered, ordinal)
+			}
+		}
+		front, back := make([]uint32, renewed), make([]uint32, renewed)
+		for i := range renewed {
+			front[i], back[i] = uint32(i), uint32(total-renewed+i)
+		}
+		for _, layout := range []struct {
+			name     string
+			ordinals []uint32
+		}{{"scattered", scattered}, {"hot-first", front}, {"hot-last", back}} {
+			b.Run(fmt.Sprintf("pairs=%d/%s", total, layout.name), func(b *testing.B) {
+				var size int
+				for b.Loop() {
+					size = len(encodeDomainRenew(1_800_000_000_000_000_000, layout.ordinals, nil)) + 8
+				}
+				b.ReportMetric(float64(size), "frame-bytes")
+			})
+		}
+	}
+}
+
 // Compaction copies all pairs under the lock, then encodes and publishes a
 // baseline with its fsyncs. The retained-history fixture is shared with
 // activity benchmarks.

@@ -319,11 +319,37 @@ func (g *DomainRegistry) compact(l *domainLog, now time.Time) {
 	for _, r := range g.byName {
 		pairs += len(r.addresses)
 	}
-	entries := make([]domainLogEntry, 0, pairs)
+	// Reuse renewal marks from this or the just-closed window; reads stay cold.
+	hot := func(pair *domainPair) bool { return pair.listed != 0 && l.window-pair.listed <= 1 }
+	entries := make([]domainLogEntry, pairs)
+	front, back := 0, pairs
 	for name, r := range g.byName {
+		active := false
+		for _, pair := range r.addresses {
+			if hot(pair) {
+				active = true
+				break
+			}
+		}
+		// Partition whole domain groups without a sort or another allocation.
+		start := front
+		if active {
+			front += len(r.addresses)
+		} else {
+			back -= len(r.addresses)
+			start = back
+		}
+		end := start + len(r.addresses)
 		for ip, pair := range r.addresses {
-			pair.ordinal = uint32(len(entries))
-			entries = append(entries, domainLogEntry{name, ip, pair.retainUntil.UnixNano()})
+			index := start
+			if hot(pair) {
+				start++
+			} else {
+				end--
+				index = end
+			}
+			pair.ordinal = uint32(index)
+			entries[index] = domainLogEntry{name, ip, pair.retainUntil.UnixNano()}
 		}
 	}
 	l.next, l.rebuild = uint32(len(entries)), false
