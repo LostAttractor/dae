@@ -70,14 +70,10 @@ func (p DialerSelectionPolicy) WithDefaults() DialerSelectionPolicy {
 }
 
 func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
-	fs, err := config.ParseFunctionListOrString(param.Policy)
-	if err != nil {
-		return nil, fmt.Errorf("invalid group policy: %w", err)
+	f := param.Policy
+	if f == nil {
+		return nil, fmt.Errorf("policy function must not be nil")
 	}
-	if len(fs) != 1 {
-		return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(fs))
-	}
-	f := fs[0]
 	if (param.TrackAll || param.Present["track_all"]) && f.Name != string(consts.DialerSelectionPolicy_Selector) {
 		return nil, fmt.Errorf("track_all requires selector policy")
 	}

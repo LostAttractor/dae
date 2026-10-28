@@ -8,7 +8,6 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	dns "github.com/miekg/dns"
 )
@@ -23,8 +22,8 @@ func TestExplainUsesProductionPredicatesAndPreservesUnknowns(t *testing.T) {
 		rules = append(rules, item.Value.(*config_parser.RoutingRule))
 	}
 	conf := &Config{}
-	conf.Routing.Request.Fallback = config.FunctionOrString("reject")
-	conf.Routing.Response.Fallback = config.FunctionOrString("accept")
+	conf.Routing.Request.Fallback = &config_parser.Function{Name: "reject"}
+	conf.Routing.Response.Fallback = &config_parser.Function{Name: "accept"}
 	policy, err := New(conf, rules, nil, &NewOption{})
 	if err != nil {
 		t.Fatal(err)

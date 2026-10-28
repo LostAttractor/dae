@@ -33,7 +33,7 @@ var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
 
 func parseMITM(to *MITM, section *config_parser.Section) error {
 	*to = MITM{}
-	if err := ParamParser(reflect.ValueOf(to), section, nil); err != nil {
+	if err := ParamParser(reflect.ValueOf(to), section); err != nil {
 		return fmt.Errorf("mitm: %w", err)
 	}
 	bufferLimitSet := slices.ContainsFunc(section.Items, func(item *config_parser.Item) bool {

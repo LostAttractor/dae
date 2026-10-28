@@ -16,12 +16,14 @@ func TestSelectionPolicyConfiguration(t *testing.T) {
 		group config.Group
 		valid bool
 	}{
-		{"failover", config.Group{Policy: "failover"}, true},
-		{"settings", config.Group{Policy: "failover", FailureRecovery: time.Second, ProbeTimeout: time.Second, SelectionTimeout: 5 * time.Second}, true},
-		{"zero recovery", config.Group{Policy: "failover", Present: map[string]bool{"failure_recovery": true}}, false},
-		{"negative timeout", config.Group{Policy: "failover", ProbeTimeout: -time.Second}, false},
-		{"backoff bounds", config.Group{Policy: "failover", UpgradeInterval: time.Hour, UpgradeIntervalMax: time.Minute}, false},
-		{"manual settings", config.Group{Policy: "selector", ProbeTimeout: time.Second}, false},
+		{"missing policy", config.Group{}, false},
+		{"empty policy", config.Group{Policy: &config_parser.Function{}}, false},
+		{"failover", config.Group{Policy: &config_parser.Function{Name: "failover"}}, true},
+		{"settings", config.Group{Policy: &config_parser.Function{Name: "failover"}, FailureRecovery: time.Second, ProbeTimeout: time.Second, SelectionTimeout: 5 * time.Second}, true},
+		{"zero recovery", config.Group{Policy: &config_parser.Function{Name: "failover"}, Present: map[string]bool{"failure_recovery": true}}, false},
+		{"negative timeout", config.Group{Policy: &config_parser.Function{Name: "failover"}, ProbeTimeout: -time.Second}, false},
+		{"backoff bounds", config.Group{Policy: &config_parser.Function{Name: "failover"}, UpgradeInterval: time.Hour, UpgradeIntervalMax: time.Minute}, false},
+		{"manual settings", config.Group{Policy: &config_parser.Function{Name: "selector"}, ProbeTimeout: time.Second}, false},
 		{"obsolete penalty", config.Group{Policy: &config_parser.Function{Name: "min", Params: []*config_parser.Param{{Val: "10m"}}}}, false},
 		{"alpha", config.Group{Policy: &config_parser.Function{Name: "min_moving_avg", Params: []*config_parser.Param{{Key: "alpha", Val: "0.5"}}}}, true},
 		{"NaN alpha", config.Group{Policy: &config_parser.Function{Name: "min_moving_avg", Params: []*config_parser.Param{{Key: "alpha", Val: "NaN"}}}}, false},
@@ -39,13 +41,11 @@ func TestSelectionPolicyConfiguration(t *testing.T) {
 }
 
 func TestIndexedSelectionPolicy(t *testing.T) {
-	for _, input := range []config.FunctionListOrString{"selector", &config_parser.Function{Name: "selector"}} {
-		policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: input})
-		if err != nil || policy.Policy != "selector" || policy.FixedIndex != 0 || policy.FixedIndexSet {
-			t.Fatalf("selector without index = %+v, %v", policy, err)
-		}
+	policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: &config_parser.Function{Name: "selector"}})
+	if err != nil || policy.Policy != "selector" || policy.FixedIndex != 0 || policy.FixedIndexSet {
+		t.Fatalf("selector without index = %+v, %v", policy, err)
 	}
-	if _, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: "fixed"}); err == nil {
+	if _, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: &config_parser.Function{Name: "fixed"}}); err == nil {
 		t.Fatal("fixed without an index was accepted")
 	}
 	for _, name := range []string{"fixed", "selector"} {
@@ -71,7 +71,7 @@ func TestIndexedSelectionPolicy(t *testing.T) {
 func TestTrackAllRequiresSelector(t *testing.T) {
 	for _, name := range []string{"selector", "random", "failover"} {
 		for _, enabled := range []bool{false, true} {
-			policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: name, TrackAll: enabled, Present: map[string]bool{"track_all": true}})
+			policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: &config_parser.Function{Name: name}, TrackAll: enabled, Present: map[string]bool{"track_all": true}})
 			if name != "selector" {
 				if err == nil {
 					t.Fatal("non-selector accepted track_all")

@@ -128,7 +128,7 @@ func TestMITMRefreshesGeodataWithSharedInstances(t *testing.T) {
 			if !plane.CanReplaceMITM(suspended) || !host.SameRuntime(suspended.Host) {
 				t.Fatal("suspend lost accepted resources")
 			}
-			rules := preparedRules{routing: testRoutingConfig(nil, "direct"), destinations: suspended.plan.Destinations}
+			rules := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "direct"}), destinations: suspended.plan.Destinations}
 			rules.enableMITMPlan(suspended.plan)
 			if _, err := rules.compileRouting(map[string]uint8{"direct": 0, "block": 1}, nil, nil); err != nil {
 				t.Fatalf("compilation reopened geodata: %v", err)

@@ -9,7 +9,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
 )
@@ -70,7 +69,7 @@ type matcherBuilder[Action ~int16 | ~uint8, Ifindex any] struct {
 	stage              string
 }
 
-func (b *matcherBuilder[Action, Ifindex]) applyRules(builder *routing.RulesBuilder, rules []*config_parser.RoutingRule, fallback config.FunctionOrString) error {
+func (b *matcherBuilder[Action, Ifindex]) applyRules(builder *routing.RulesBuilder, rules []*config_parser.RoutingRule, fallback *config_parser.Function) error {
 	b.sources = make(map[int]*config_parser.RoutingRule)
 	for _, rule := range rules {
 		b.sources[len(b.rules)] = rule
@@ -138,10 +137,9 @@ func (b *matcherBuilder[Action, Ifindex]) addIpSet(f *config_parser.Function, ci
 	return nil
 }
 
-func (b *matcherBuilder[Action, Ifindex]) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	fallback, err := config.ParseFunctionOrString(fallbackOutbound)
-	if err != nil {
-		return fmt.Errorf("invalid DNS %s fallback: %w", b.stage, err)
+func (b *matcherBuilder[Action, Ifindex]) addFallback(fallback *config_parser.Function) (err error) {
+	if fallback == nil {
+		return fmt.Errorf("invalid DNS %s fallback: function must not be nil", b.stage)
 	}
 	upstream, err := routing.ParseOutbound(fallback)
 	if err != nil {

@@ -12,7 +12,6 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -20,7 +19,7 @@ type ResponseMatcherBuilder struct {
 	matcherBuilder[DnsResponseOutboundIndex, struct{}]
 }
 
-func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
+func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback *config_parser.Function) (b *ResponseMatcherBuilder, err error) {
 	b = &ResponseMatcherBuilder{upstreamName2Id: upstreamName2Id}
 	b.resolve = b.upstreamToId
 	b.stage = "response"

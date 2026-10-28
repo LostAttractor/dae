@@ -29,7 +29,7 @@ func loadConfig(cmd *cobra.Command, path *string) (*config.Config, []string, err
 		if err == nil {
 			return conf, includes, nil
 		}
-		renamed, repaired, repairErr := repairConfigFile(reader, output, err)
+		renamed, repaired, repairErr := repairConfigFile(reader, output, *path, err)
 		if repairErr != nil {
 			return nil, nil, fmt.Errorf("%w; repair config: %w", err, repairErr)
 		}
@@ -42,10 +42,17 @@ func loadConfig(cmd *cobra.Command, path *string) (*config.Config, []string, err
 	}
 }
 
-func repairConfigFile(input *bufio.Reader, output io.Writer, loadErr error) (renamed string, repaired bool, err error) {
+func repairConfigFile(input *bufio.Reader, output io.Writer, entry string, loadErr error) (renamed string, repaired bool, err error) {
 	var path, question string
 	if filenameErr, ok := errors.AsType[*config.InvalidFilenameError](loadErr); ok && filepath.Ext(filenameErr.Path) == "" {
 		path = filenameErr.Path
+		entry, err = filepath.Abs(entry)
+		if err != nil {
+			return "", false, err
+		}
+		if path != entry {
+			return "", false, fmt.Errorf("cannot rename included config file %q; update its include references manually", path)
+		}
 		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 			return "", false, nil
 		}

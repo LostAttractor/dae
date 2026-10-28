@@ -17,22 +17,18 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func testRoutingConfig(rules []*config_parser.RoutingRule, fallback config.FunctionOrString) *config.Routing {
-	fallbackFunction, err := config.ParseFunctionOrString(fallback)
-	if err != nil {
-		panic(err) // Test fixture programming error.
-	}
+func testRoutingConfig(rules []*config_parser.RoutingRule, fallback *config_parser.Function) *config.Routing {
 	statements := make([]config.RoutingStatement, 0, len(rules))
 	for _, rule := range rules {
 		statements = append(statements, config.RoutingStatement{Kind: config.RoutingStatementRule, Rule: rule})
 	}
-	return &config.Routing{Policies: []config.RoutingPolicy{{Statements: statements, Fallback: fallbackFunction}}}
+	return &config.Routing{Policies: []config.RoutingPolicy{{Statements: statements, Fallback: fallback}}}
 }
 
 // Tests use the same preparation and compilation path as a control plane.
 func compileTestRouting(input preparedRules, outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceScope) (*RoutingMatcherBuilder, error) {
 	if input.routing == nil {
-		input.routing = testRoutingConfig(nil, "direct")
+		input.routing = testRoutingConfig(nil, &config_parser.Function{Name: "direct"})
 	}
 	conf, err := prepareRoutingConfig(input.routing, routing.NewDatReaderOptimizer(context.Background(), assets.NewLocationFinder(nil)))
 	if err != nil {

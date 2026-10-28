@@ -45,7 +45,7 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 			}, {
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}},
 				Outbound:     config_parser.Function{Name: "block"},
-			}}, "direct")}
+			}}, &config_parser.Function{Name: "direct"})}
 			prepared.destinations = rules
 			prepared.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "dip('"+test.target+"') -> must", "").routing.Policies[0].Rules
 			matcher, _ := routingMatcherForTest(t, prepared)

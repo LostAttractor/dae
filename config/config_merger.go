@@ -50,6 +50,7 @@ type Merger struct {
 	entry             string
 	entryDir          string
 	entryToSectionMap map[string]map[string][]*config_parser.Item
+	activeEntries     map[string]bool
 	mergedBytes       int64
 	initErr           error
 }
@@ -63,6 +64,7 @@ func NewMerger(entry string) *Merger {
 		entry:             entry,
 		entryDir:          filepath.Dir(entry),
 		entryToSectionMap: map[string]map[string][]*config_parser.Item{},
+		activeEntries:     make(map[string]bool),
 		initErr:           err,
 	}
 }
@@ -77,6 +79,7 @@ func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, e
 	}
 	defer opener.Close()
 	m.mergedBytes = 0
+	clear(m.entryToSectionMap)
 
 	err = m.dfsMerge(opener, m.entry, "", 0)
 	if err != nil {
@@ -102,11 +105,6 @@ func (m *Merger) relativeEntryPath(entry string) (string, error) {
 }
 
 func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
-	// Check circular include.
-	_, exist := m.entryToSectionMap[entry]
-	if exist {
-		return ErrCircularInclude
-	}
 	if len(m.entryToSectionMap) == maxConfigFiles {
 		return fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
 	}
@@ -168,12 +166,27 @@ func unsqueezeEntries(patternEntries []string, limit int) (unsqueezed []string, 
 		return nil, fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
 	}
 	unsqueezed = make([]string, 0, min(len(patternEntries), limit))
+	seen := make(map[string]bool)
+	seenPatterns := make(map[string]bool)
 	for _, pattern := range patternEntries {
-		files, err := globConfigFiles(pattern, limit-len(unsqueezed))
+		if seenPatterns[pattern] {
+			continue
+		}
+		seenPatterns[pattern] = true
+		files, err := globConfigFiles(pattern, limit)
 		if err != nil {
 			return nil, err
 		}
-		unsqueezed = append(unsqueezed, files...)
+		for _, file := range files {
+			if seen[file] {
+				continue
+			}
+			if len(unsqueezed) == limit {
+				return nil, fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
+			}
+			seen[file] = true
+			unsqueezed = append(unsqueezed, file)
+		}
 	}
 	if len(unsqueezed) == 0 {
 		unsqueezed = nil
@@ -266,14 +279,18 @@ func globConfigFiles(pattern string, limit int) ([]string, error) {
 }
 
 func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry string, depth int) (err error) {
+	if m.activeEntries[entry] {
+		return fmt.Errorf("%w: %v -> %v -> ... -> %v", ErrCircularInclude, fatherEntry, entry, fatherEntry)
+	}
+	if _, merged := m.entryToSectionMap[entry]; merged {
+		return nil
+	}
 	if depth > maxIncludeDepth {
 		return fmt.Errorf("configuration include depth exceeds %d at %v", maxIncludeDepth, entry)
 	}
-	// Read entry and check circular include.
+	m.activeEntries[entry] = true
+	defer delete(m.activeEntries, entry)
 	if err = m.readEntry(opener, entry); err != nil {
-		if errors.Is(err, ErrCircularInclude) {
-			return fmt.Errorf("%w: %v -> %v -> ... -> %v", err, fatherEntry, entry, fatherEntry)
-		}
 		return err
 	}
 	sectionMap := m.entryToSectionMap[entry]
@@ -297,7 +314,7 @@ func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry st
 		}
 	}
 	// DFS and merge children recursively.
-	childEntries, err := unsqueezeEntries(patterEntries, maxConfigFiles-len(m.entryToSectionMap))
+	childEntries, err := unsqueezeEntries(patterEntries, maxConfigFiles)
 	if err != nil {
 		return err
 	}

@@ -187,19 +187,7 @@ func parseRoutingBlock(section *config_parser.Section, policy bool) (statements 
 }
 
 func parseRoutingFallback(param *config_parser.Param) (*config_parser.Function, error) {
-	if param.AndFunctions == nil && len(param.ValueList) != 1 {
-		return nil, fmt.Errorf("fallback requires exactly one outbound")
-	}
-	var raw FunctionOrString
-	switch {
-	case param.AndFunctions != nil:
-		raw = param.AndFunctions
-	case param.Quoted:
-		raw = QuotedString(param.Val)
-	default:
-		raw = param.Val
-	}
-	fallback, err := ParseFunctionOrString(raw)
+	fallback, err := ParseFunctionParam(param)
 	if err != nil {
 		return nil, fmt.Errorf("invalid fallback: %w", err)
 	}

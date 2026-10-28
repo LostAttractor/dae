@@ -14,72 +14,26 @@ import (
 
 func FuzzyDecode(to any, val string) bool {
 	v := reflect.Indirect(reflect.ValueOf(to))
+	if !v.IsValid() || !v.CanSet() {
+		return false
+	}
+	if v.Type() == reflect.TypeFor[time.Duration]() {
+		duration, err := time.ParseDuration(val)
+		if err != nil {
+			return false
+		}
+		v.SetInt(int64(duration))
+		return true
+	}
 	switch v.Kind() {
-	case reflect.Int:
-		i, err := strconv.ParseInt(val, 0, strconv.IntSize)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, err := strconv.ParseInt(val, 0, v.Type().Bits())
 		if err != nil {
 			return false
 		}
 		v.SetInt(i)
-	case reflect.Int8:
-		i, err := strconv.ParseInt(val, 0, 8)
-		if err != nil {
-			return false
-		}
-		v.SetInt(i)
-	case reflect.Int16:
-		i, err := strconv.ParseInt(val, 0, 16)
-		if err != nil {
-			return false
-		}
-		v.SetInt(i)
-	case reflect.Int32:
-		i, err := strconv.ParseInt(val, 0, 32)
-		if err != nil {
-			return false
-		}
-		v.SetInt(i)
-	case reflect.Int64:
-		switch v.Interface().(type) {
-		case time.Duration:
-			duration, err := time.ParseDuration(val)
-			if err != nil {
-				return false
-			}
-			v.Set(reflect.ValueOf(duration))
-		default:
-			i, err := strconv.ParseInt(val, 0, 64)
-			if err != nil {
-				return false
-			}
-			v.SetInt(i)
-		}
-	case reflect.Uint:
-		i, err := strconv.ParseUint(val, 0, strconv.IntSize)
-		if err != nil {
-			return false
-		}
-		v.SetUint(i)
-	case reflect.Uint8:
-		i, err := strconv.ParseUint(val, 0, 8)
-		if err != nil {
-			return false
-		}
-		v.SetUint(i)
-	case reflect.Uint16:
-		i, err := strconv.ParseUint(val, 0, 16)
-		if err != nil {
-			return false
-		}
-		v.SetUint(i)
-	case reflect.Uint32:
-		i, err := strconv.ParseUint(val, 0, 32)
-		if err != nil {
-			return false
-		}
-		v.SetUint(i)
-	case reflect.Uint64:
-		i, err := strconv.ParseUint(val, 0, 64)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		i, err := strconv.ParseUint(val, 0, v.Type().Bits())
 		if err != nil {
 			return false
 		}

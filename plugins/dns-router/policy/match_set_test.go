@@ -23,7 +23,7 @@ func TestRequestAndResponseMatchCompoundRules(t *testing.T) {
 		rules = append(rules, item.Value.(*config_parser.RoutingRule))
 	}
 	names := map[string]uint8{"hit": 1, "otherwise": 2}
-	requestBuilder, err := NewRequestMatcherBuilder(rules, names, "otherwise", nil)
+	requestBuilder, err := NewRequestMatcherBuilder(rules, names, &config_parser.Function{Name: "otherwise"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestRequestAndResponseMatchCompoundRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseBuilder, err := NewResponseMatcherBuilder(rules, names, "otherwise")
+	responseBuilder, err := NewResponseMatcherBuilder(rules, names, &config_parser.Function{Name: "otherwise"})
 	if err != nil {
 		t.Fatal(err)
 	}

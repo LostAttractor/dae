@@ -203,14 +203,73 @@ func TestMergerAllowsEntrySymlinkOutsideEntryDirectory(t *testing.T) {
 	}
 }
 
+func TestMergerIncludesEachFileOnce(t *testing.T) {
+	for _, test := range []struct {
+		name, includes string
+		want           []string
+		files          int
+	}{
+		{name: "duplicate", includes: "shared.dae shared.dae", want: []string{"root", "shared"}, files: 2},
+		{name: "normalized duplicate", includes: "shared.dae ./shared.dae", want: []string{"root", "shared"}, files: 2},
+		{name: "normalized duplicate glob", includes: "s*.dae ./s*.dae s*.dae", want: []string{"root", "shared"}, files: 2},
+		{name: "overlapping glob", includes: "shared.dae s*.dae", want: []string{"root", "shared"}, files: 2},
+		{name: "diamond", includes: "left.dae right.dae", want: []string{"root", "left", "shared", "right"}, files: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			entry := filepath.Join(dir, "config.dae")
+			writeConfigFile(t, entry, "include { "+test.includes+" }\nglobal { lan_interface: root }\nrouting { fallback: direct }\n")
+			writeConfigFile(t, filepath.Join(dir, "shared.dae"), "global { lan_interface: shared }\n")
+			writeConfigFile(t, filepath.Join(dir, "left.dae"), "include { shared.dae }\nglobal { lan_interface: left }\n")
+			writeConfigFile(t, filepath.Join(dir, "right.dae"), "include { shared.dae }\nglobal { lan_interface: right }\n")
+			merger := NewMerger(entry)
+			for range 2 {
+				sections, entries, err := merger.Merge()
+				if err != nil {
+					t.Fatal(err)
+				}
+				conf, err := New(sections)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(conf.Global.LanInterface, test.want) || len(entries) != test.files {
+					t.Fatalf("interfaces = %v, files = %v; want %v in %d files", conf.Global.LanInterface, entries, test.want, test.files)
+				}
+			}
+		})
+	}
+}
+
 func TestMergerPreservesCircularIncludeDetection(t *testing.T) {
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "config.dae")
-	writeConfigFile(t, filepath.Join(dir, "config.d", "child.dae"), "include { config.dae }\n")
-	writeConfigFile(t, entry, "include { config.d/child.dae }\nglobal {}\nrouting { fallback: direct }\n")
+	writeConfigFile(t, filepath.Join(dir, "config.d", "child.dae"), "include { config.dae ./config.dae }\n")
+	writeConfigFile(t, entry, "include { config.d/child.dae ./config.d/*.dae config.d/*.dae }\nglobal {}\nrouting { fallback: direct }\n")
 
 	if _, _, err := NewMerger(entry).Merge(); !errors.Is(err, ErrCircularInclude) {
 		t.Fatalf("error = %v, want ErrCircularInclude", err)
+	}
+}
+
+func TestMergerCountsDistinctFilesAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "config.dae")
+	writeConfigFile(t, entry, "include { parts/*.dae parts/0000.dae }\nrouting { fallback: direct }\n")
+	for i := range maxConfigFiles - 1 {
+		content := ""
+		if i == 0 {
+			content = "global {}\n"
+		} else if i == maxConfigFiles-2 {
+			content = "include { parts/0000.dae }\n"
+		}
+		writeConfigFile(t, filepath.Join(dir, "parts", fmt.Sprintf("%04d.dae", i)), content)
+	}
+	if _, entries, err := Load(entry); err != nil || len(entries) != maxConfigFiles {
+		t.Fatalf("Load at file limit: %d entries, %v", len(entries), err)
+	}
+	writeConfigFile(t, filepath.Join(dir, "parts", "extra.dae"), "")
+	if _, _, err := Load(entry); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("Load over file limit error = %v, want file limit", err)
 	}
 }
 
@@ -238,7 +297,7 @@ func TestUnsqueezeEntriesEnforcesFileLimit(t *testing.T) {
 	}
 }
 
-func TestUnsqueezeEntriesPreservesGlobOrderingAndDuplicates(t *testing.T) {
+func TestUnsqueezeEntriesPreservesGlobOrderingWithoutDuplicates(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.dae")
 	b := filepath.Join(dir, "nested", "b.dae")
@@ -246,13 +305,35 @@ func TestUnsqueezeEntriesPreservesGlobOrderingAndDuplicates(t *testing.T) {
 	writeConfigFile(t, b, "global {}\n")
 	writeConfigFile(t, filepath.Join(dir, "nested", "ignored.txt"), "ignored\n")
 
-	got, err := unsqueezeEntries([]string{b, filepath.Join(dir, "*", "*.dae"), filepath.Join(dir, "*.dae")}, 3)
+	nestedPattern := filepath.Join(dir, "*", "*.dae")
+	got, err := unsqueezeEntries([]string{b, nestedPattern, filepath.Join(dir, "*.dae"), nestedPattern}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{b, b, a}
+	want := []string{b, a}
 	if !slices.Equal(got, want) {
 		t.Fatalf("unsqueezeEntries = %v, want %v", got, want)
+	}
+}
+
+func BenchmarkUnsqueezeEntriesRepeatedPatterns(b *testing.B) {
+	dir := b.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.dae"), nil, 0600); err != nil {
+		b.Fatal(err)
+	}
+	for _, count := range []int{1, 100} {
+		b.Run(fmt.Sprintf("patterns=%d", count), func(b *testing.B) {
+			patterns := make([]string, count)
+			for i := range patterns {
+				patterns[i] = filepath.Join(dir, "*.dae")
+			}
+			for b.Loop() {
+				entries, err := unsqueezeEntries(patterns, 1)
+				if err != nil || len(entries) != 1 {
+					b.Fatalf("unsqueezeEntries = %v, %v; want one file", entries, err)
+				}
+			}
+		})
 	}
 }
 

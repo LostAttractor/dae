@@ -103,7 +103,7 @@ func TestRoutingMatcherBuilderRejectsSkipWhileNoaliveOnBuiltins(t *testing.T) {
 				},
 			}}
 
-			_, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules, consts.OutboundDirect.String())}, outboundName2ID, nil, nil)
+			_, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules, &config_parser.Function{Name: consts.OutboundDirect.String()})}, outboundName2ID, nil, nil)
 			if err == nil {
 				t.Fatal("expected configuration error")
 			}
@@ -142,7 +142,7 @@ func TestRoutingMatcherBuilderCriticalOutbounds(t *testing.T) {
 		rule("82", "mixed", true),
 		rule("83", "mixed", false),
 	},
-		"fallback")}, map[string]uint8{
+		&config_parser.Function{Name: "fallback"})}, map[string]uint8{
 		"critical":  criticalID,
 		"skip-only": skipOnlyID,
 		"mixed":     mixedID,

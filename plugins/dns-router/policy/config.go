@@ -9,12 +9,12 @@ import (
 
 type RequestRouting struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback config.FunctionOrString      `mapstructure:"fallback"`
+	Fallback *config_parser.Function      `mapstructure:"fallback"`
 }
 
 type ResponseRouting struct {
 	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback config.FunctionOrString      `mapstructure:"fallback"`
+	Fallback *config_parser.Function      `mapstructure:"fallback"`
 }
 
 type Routing struct {

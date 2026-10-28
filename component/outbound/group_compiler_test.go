@@ -73,8 +73,8 @@ func proxyPath(stages ...*config_parser.Param) *config_parser.ProxyPath {
 	return &config_parser.ProxyPath{Stages: stages}
 }
 
-func randomPolicy() config.FunctionListOrString {
-	return "random"
+func randomPolicy() *config_parser.Function {
+	return &config_parser.Function{Name: "random"}
 }
 
 func annotation(key, value string) *config_parser.Param {
@@ -544,7 +544,7 @@ func TestGroupCompilerRejectsTrackingWithoutSelectorPolicy(t *testing.T) {
 	for _, group := range []config.Group{
 		{Name: "logical", TrackAll: true},
 		{Name: "logical", Present: map[string]bool{"track_all": true}},
-		{Name: "automatic", Policy: "random", TrackAll: true},
+		{Name: "automatic", Policy: &config_parser.Function{Name: "random"}, TrackAll: true},
 	} {
 		if _, err := NewGroupCompiler(set, []config.Group{group}, []string{group.Name}); err == nil || !strings.Contains(err.Error(), "track_all requires selector") {
 			t.Fatalf("tracking option accepted without selector: %v", err)
@@ -664,8 +664,8 @@ func TestGroupCompilerExpansionLimits(t *testing.T) {
 
 func TestGroupCompilerRejectsInvalidReselectBehavior(t *testing.T) {
 	for _, group := range []config.Group{
-		{Name: "bad", Policy: "min", ReselectBehavior: "migrate"},
-		{Name: "bad", Policy: "random", ReselectBehavior: "close"},
+		{Name: "bad", Policy: &config_parser.Function{Name: "min"}, ReselectBehavior: "migrate"},
+		{Name: "bad", Policy: &config_parser.Function{Name: "random"}, ReselectBehavior: "close"},
 	} {
 		if _, err := NewGroupCompiler(&DialerSet{}, []config.Group{group}, nil); err == nil {
 			t.Fatalf("accepted invalid reselect configuration: %+v", group)

@@ -45,16 +45,12 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		sniffingTimeout = 0
 	}
 
-	if err := config.ValidateConnectionBehavior("route_change_behavior", global.RouteChangeBehavior); err != nil {
+	if err := global.ValidateConnectionBehaviors(); err != nil {
 		return nil, err
 	}
-	var noConnectivityOutbound consts.OutboundIndex
+	noConnectivityOutbound := consts.OutboundBlock
 	if global.NoConnectivityBehavior == "direct" {
 		noConnectivityOutbound = consts.OutboundDirect
-	} else if global.NoConnectivityBehavior == "block" {
-		noConnectivityOutbound = consts.OutboundBlock
-	} else {
-		return nil, fmt.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
 	wanInterface, autoWan := splitWanInterfaces(global.WanInterface)

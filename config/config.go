@@ -63,64 +63,6 @@ type Utls struct {
 	Imitate string `mapstructure:"imitate"`
 }
 
-type FunctionOrString any
-
-// QuotedString preserves a routing target's explicit quoting so names using
-// reserved must spellings can be resolved literally.
-type QuotedString string
-
-func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error) {
-	switch fs := fs.(type) {
-	case string:
-		return &config_parser.Function{Name: fs}, nil
-	case QuotedString:
-		return &config_parser.Function{Name: string(fs), Quoted: true}, nil
-	case *config_parser.Function:
-		if fs == nil {
-			return nil, fmt.Errorf("function must not be nil")
-		}
-		return fs, nil
-	case []*config_parser.Function:
-		if len(fs) != 1 {
-			return nil, fmt.Errorf("expected exactly 1 function, got %d", len(fs))
-		}
-		if fs[0] == nil {
-			return nil, fmt.Errorf("function must not be nil")
-		}
-		return fs[0], nil
-	default:
-		return nil, fmt.Errorf("unsupported function-or-string value type: %T", fs)
-	}
-}
-
-type FunctionListOrString any
-
-func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Function, error) {
-	switch fs := fs.(type) {
-	case string:
-		return []*config_parser.Function{{Name: fs}}, nil
-	case QuotedString:
-		return []*config_parser.Function{{Name: string(fs), Quoted: true}}, nil
-	case *config_parser.Function:
-		if fs == nil {
-			return nil, fmt.Errorf("function must not be nil")
-		}
-		return []*config_parser.Function{fs}, nil
-	case []*config_parser.Function:
-		if fs == nil {
-			return nil, fmt.Errorf("function list must not be nil")
-		}
-		for i, f := range fs {
-			if f == nil {
-				return nil, fmt.Errorf("function at index %d must not be nil", i)
-			}
-		}
-		return fs, nil
-	default:
-		return nil, fmt.Errorf("unsupported function-list-or-string value type: %T", fs)
-	}
-}
-
 type Group struct {
 	Name string `mapstructure:"_"`
 	// Present records explicitly configured fields whose zero values would
@@ -128,7 +70,7 @@ type Group struct {
 	Present map[string]bool `mapstructure:"_" json:"-"`
 
 	Paths  []*config_parser.ProxyPath `mapstructure:"path"`
-	Policy FunctionListOrString       `mapstructure:"policy"`
+	Policy *config_parser.Function    `mapstructure:"policy"`
 
 	UdpCheckDns        []string      `mapstructure:"udp_check_dns"`
 	CheckInterval      time.Duration `mapstructure:"check_interval"`
@@ -142,6 +84,13 @@ type Group struct {
 	SelectionTimeout   time.Duration `mapstructure:"selection_timeout"`
 	UpgradeInterval    time.Duration `mapstructure:"upgrade_interval"`
 	UpgradeIntervalMax time.Duration `mapstructure:"upgrade_interval_max"`
+}
+
+func (g Global) ValidateConnectionBehaviors() error {
+	if g.NoConnectivityBehavior != "direct" && g.NoConnectivityBehavior != "block" {
+		return fmt.Errorf("invalid no_connectivity_behavior: %v", g.NoConnectivityBehavior)
+	}
+	return ValidateConnectionBehavior("route_change_behavior", g.RouteChangeBehavior)
 }
 
 func ValidateConnectionBehavior(name, value string) error {
@@ -206,16 +155,6 @@ type Config struct {
 	Group        []Group        `mapstructure:"group"`
 	Client       []Client       `mapstructure:"client"`
 	Routing      Routing        `mapstructure:"routing" required:""`
-}
-
-func sectionHasParam(section *config_parser.Section, key string) bool {
-	for _, item := range section.Items {
-		param, ok := item.Value.(*config_parser.Param)
-		if ok && param.Key == key {
-			return true
-		}
-	}
-	return false
 }
 
 // New params from sections. This func assumes merging (section "include") and deduplication for section names has been executed.

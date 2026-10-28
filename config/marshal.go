@@ -230,11 +230,24 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 			m.writeLine(depth, key+":"+strconv.Quote(strings.Join(vals, ",")))
 		case *config_parser.Function:
 			var vals []string
-			for i := 0; i < from.Len(); i++ {
-				v := from.Index(i).Interface().(*config_parser.Function)
-				vals = append(vals, v.String(true, true, false))
+			separator := ","
+			for i := range from.Len() {
+				function := from.Index(i).Interface().(*config_parser.Function)
+				value, err := marshalRoutingOutbound(function)
+				if err != nil {
+					return err
+				}
+				currentSeparator := ","
+				if len(function.Params) != 0 {
+					currentSeparator = "&&"
+				}
+				if i > 0 && currentSeparator != separator {
+					return fmt.Errorf("field %q cannot mix literals and functions", key)
+				}
+				separator = currentSeparator
+				vals = append(vals, value)
 			}
-			m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
+			m.writeLine(depth, key+":"+strings.Join(vals, separator))
 		case *config_parser.ProxyPath:
 			for i := 0; i < from.Len(); i++ {
 				m.writeLine(depth, from.Index(i).Interface().(*config_parser.ProxyPath).String(true, true))
@@ -251,27 +264,19 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 	default:
 		switch val := from.Interface().(type) {
 		case string:
-			if key == "fallback" {
-				m.writeLine(depth, key+":"+(&config_parser.Function{Name: val}).String(true, true, true))
-			} else {
-				m.writeLine(depth, key+":"+strconv.Quote(val))
-			}
+			m.writeLine(depth, key+":"+strconv.Quote(val))
 		case fmt.Stringer,
 			uint8, uint16, uint32, uint64,
 			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			m.writeLine(depth, key+":"+strconv.Quote(fmt.Sprintf("%v", val)))
-		case QuotedString:
-			m.writeLine(depth, key+":"+strconv.Quote(string(val)))
 		case *config_parser.Function:
-			m.writeLine(depth, key+":"+val.String(true, true, false))
-		case []*config_parser.Function:
-			var vals []string
-			for _, function := range val {
-				vals = append(vals, function.String(true, true, false))
+			value, err := marshalRoutingOutbound(val)
+			if err != nil {
+				return err
 			}
-			m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
+			m.writeLine(depth, key+":"+value)
 		default:
 			// Named string types (e.g., consts.RerouteMode).
 			if from.Kind() == reflect.String {

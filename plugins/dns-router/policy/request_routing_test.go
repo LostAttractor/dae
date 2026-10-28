@@ -28,7 +28,7 @@ func buildIPRequestMatcher(t *testing.T, functionName, value string) *RequestMat
 			Outbound: config_parser.Function{Name: "matched"},
 		}},
 		map[string]uint8{"matched": 1},
-		DnsRequestOutboundIndex_AsIs.String(),
+		&config_parser.Function{Name: DnsRequestOutboundIndex_AsIs.String()},
 		nil,
 	)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestRequestMatcherResolvesInterfaceName(t *testing.T) {
 			Outbound: config_parser.Function{Name: "matched"},
 		}},
 		map[string]uint8{"matched": 1},
-		DnsRequestOutboundIndex_AsIs.String(),
+		&config_parser.Function{Name: DnsRequestOutboundIndex_AsIs.String()},
 		ifmgr,
 	)
 	if err != nil {

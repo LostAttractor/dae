@@ -64,8 +64,10 @@ func TestValidateRepairsConfig(t *testing.T) {
 		mode                  os.FileMode
 		include               bool
 		symlink               bool
+		relative              bool
 	}{
 		{name: "rename", answers: "y\n", mode: 0600},
+		{name: "relative rename", answers: "y\n", mode: 0600, relative: true},
 		{name: "permissions", suffix: ".dae", answers: "YES\n", mode: 0644},
 		{name: "rename then permissions", answers: "y\nyes\n", mode: 0644},
 		{name: "include permissions", suffix: ".dae", answers: "y\n", mode: 0660, include: true},
@@ -98,7 +100,12 @@ func TestValidateRepairsConfig(t *testing.T) {
 			command := newValidateCommand(nil)
 			command.SetIn(terminal)
 			command.SetErr(terminal)
-			command.SetArgs([]string{"-c", entry})
+			entryArg := entry
+			if test.relative {
+				t.Chdir(filepath.Dir(entry))
+				entryArg = filepath.Base(entry)
+			}
+			command.SetArgs([]string{"-c", entryArg})
 			if err := command.ExecuteContext(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -135,7 +142,7 @@ func TestConfigRepairRequiresExplicitConsent(t *testing.T) {
 				writeRepairConfig(t, path, 0644)
 				_, _, loadErr := config.Load(path)
 				var output bytes.Buffer
-				renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader(answer)), &output, loadErr)
+				renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader(answer)), &output, path, loadErr)
 				if err != nil || repaired || renamed != "" {
 					t.Fatalf("unconfirmed repair: renamed=%q repaired=%v err=%v", renamed, repaired, err)
 				}
@@ -165,11 +172,37 @@ func TestConfigRepairSkipsUnsupportedPaths(t *testing.T) {
 			}
 			_, _, loadErr := config.Load(path)
 			var output bytes.Buffer
-			renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), &output, loadErr)
+			renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), &output, path, loadErr)
 			if err != nil || repaired || renamed != "" || output.Len() != 0 {
 				t.Fatalf("unsupported path prompted or repaired: %q, %v, %v, %q", renamed, repaired, err, &output)
 			}
 		})
+	}
+}
+
+func TestConfigRepairRefusesIncludedFileRename(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "config.dae")
+	child := filepath.Join(dir, "child")
+	content := "include { child }\nglobal {}\nrouting { fallback: block }\n"
+	if err := os.WriteFile(entry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeRepairConfig(t, child, 0600)
+	loadErr := fmt.Errorf("load include: %w", &config.InvalidFilenameError{Path: child})
+	var output bytes.Buffer
+	renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), &output, entry, loadErr)
+	if err == nil || !strings.Contains(err.Error(), "included config") || repaired || renamed != "" || output.Len() != 0 {
+		t.Fatalf("included file rename was not refused: %q, %v, %v, %q", renamed, repaired, err, &output)
+	}
+	if _, err := os.Stat(child); err != nil {
+		t.Fatalf("included file was moved: %v", err)
+	}
+	if _, err := os.Stat(child + ".dae"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rename destination exists: %v", err)
+	}
+	if got, err := os.ReadFile(entry); err != nil || string(got) != content {
+		t.Fatalf("main config changed: %q, %v", got, err)
 	}
 }
 
@@ -181,7 +214,7 @@ func TestConfigRenamePreservesExistingDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, loadErr := config.Load(path)
-	_, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), io.Discard, loadErr)
+	_, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), io.Discard, path, loadErr)
 	if repaired || !errors.Is(err, os.ErrExist) {
 		t.Fatalf("existing target was not rejected: repaired=%v err=%v", repaired, err)
 	}

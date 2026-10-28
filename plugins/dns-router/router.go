@@ -66,10 +66,10 @@ func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 		conf.Upstream = append(conf.Upstream, config.KeyableString(value))
 	}
 	if conf.Routing.Request.Fallback == nil {
-		conf.Routing.Request.Fallback = "asis"
+		conf.Routing.Request.Fallback = &config_parser.Function{Name: "asis"}
 	}
 	if conf.Routing.Response.Fallback == nil {
-		conf.Routing.Response.Fallback = "accept"
+		conf.Routing.Response.Fallback = &config_parser.Function{Name: "accept"}
 	}
 	var prefer uint16
 	switch conf.IPVersionPrefer {
@@ -97,18 +97,15 @@ func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 	return conf, prefer, policy.Validate(&conf)
 }
 
-func decodeRoutingSettings(section *config_parser.Section, rules *[]*config_parser.RoutingRule, fallback *config.FunctionOrString) error {
+func decodeRoutingSettings(section *config_parser.Section, rules *[]*config_parser.RoutingRule, fallback **config_parser.Function) error {
 	return plugin.DecodeSettingsFields(section, map[string]any{
 		"_": rules,
 		"fallback": func(param *config_parser.Param) error {
-			switch {
-			case param.AndFunctions != nil:
-				*fallback = param.AndFunctions
-			case param.Quoted:
-				*fallback = config.QuotedString(param.Val)
-			default:
-				*fallback = param.Val
+			function, err := config.ParseFunctionParam(param)
+			if err != nil {
+				return err
 			}
+			*fallback = function
 			return nil
 		},
 	})

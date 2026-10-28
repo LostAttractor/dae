@@ -14,7 +14,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/trie"
 	"github.com/vishvananda/netlink"
@@ -34,7 +33,7 @@ type RequestMatcherBuilder struct {
 func NewRequestMatcherBuilder(
 	rules []*config_parser.RoutingRule,
 	upstreamName2Id map[string]uint8,
-	fallback config.FunctionOrString,
+	fallback *config_parser.Function,
 	ifmgr *network.InterfaceScope,
 ) (b *RequestMatcherBuilder, err error) {
 	b = &RequestMatcherBuilder{upstreamName2Id: upstreamName2Id, ifmgr: ifmgr}

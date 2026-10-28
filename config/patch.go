@@ -66,7 +66,10 @@ func validateControlModes(params *Config) error {
 	if err := consts.VerifyRerouteMode(string(params.Global.RerouteMode)); err != nil {
 		return err
 	}
-	return consts.VerifySniffVerifyMode(string(params.Global.SniffVerifyMode))
+	if err := consts.VerifySniffVerifyMode(string(params.Global.SniffVerifyMode)); err != nil {
+		return err
+	}
+	return params.Global.ValidateConnectionBehaviors()
 }
 
 func validateCheckIntervals(params *Config) error {

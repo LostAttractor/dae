@@ -8,6 +8,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -298,5 +299,71 @@ func TestMarshalLiteralFallbackRoundTrip(t *testing.T) {
 				t.Fatalf("literal fallback changed after round trip:\n%s", b)
 			}
 		})
+	}
+}
+
+func TestMarshalFunctionFieldsRoundTrip(t *testing.T) {
+	type settings struct {
+		Policy   []*config_parser.Function `mapstructure:"policy"`
+		Fallback *config_parser.Function   `mapstructure:"fallback"`
+	}
+	for _, test := range []struct {
+		policy   string
+		fallback string
+	}{
+		{"random", "direct"},
+		{`"random"`, `"must"`},
+		{`"a,b"`, `"must_direct"`},
+		{`""`, `""`},
+		{"random,min", `"dnat"`},
+		{"fixed(0)", "direct(mark: 0x100)"},
+		{"fixed(0) && fixed(1)", `"must"(mark: 1)`},
+	} {
+		t.Run(test.policy+"/"+test.fallback, func(t *testing.T) {
+			sections, err := config_parser.Parse("settings { policy: " + test.policy + "\nfallback: " + test.fallback + " }")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var before settings
+			if err := ParamParser(reflect.ValueOf(&before), sections[0]); err != nil {
+				t.Fatal(err)
+			}
+			m := Marshaller{IndentSpace: 2}
+			if err := m.MarshalSection("settings", reflect.ValueOf(before), 0); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(m.Bytes()), "()") {
+				t.Fatalf("emitted unsupported empty function: %s", m.Bytes())
+			}
+			sections, err = config_parser.Parse(string(m.Bytes()))
+			if err != nil {
+				t.Fatalf("parse marshaled config: %v\n%s", err, m.Bytes())
+			}
+			var after settings
+			if err := ParamParser(reflect.ValueOf(&after), sections[0]); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(before, after); diff != "" {
+				t.Fatalf("function fields changed (-before +after):\n%s", diff)
+			}
+		})
+	}
+	if _, err := config_parser.Parse("settings { policy: random() }"); err == nil {
+		t.Fatal("parser unexpectedly accepted an empty function call")
+	}
+}
+
+func TestMarshalRejectsInvalidFunctionFields(t *testing.T) {
+	for _, value := range []any{
+		(*config_parser.Function)(nil),
+		[]*config_parser.Function{nil},
+		&config_parser.Function{Name: "random", Not: true},
+		&config_parser.Function{Name: "fixed", Params: []*config_parser.Param{nil}},
+		[]*config_parser.Function{{Name: "random"}, {Name: "fixed", Params: []*config_parser.Param{{Val: "1"}}}},
+	} {
+		m := Marshaller{}
+		if err := m.marshalLeaf("policy", reflect.ValueOf(value), 0); err == nil {
+			t.Fatalf("invalid function field accepted: %#v", value)
+		}
 	}
 }

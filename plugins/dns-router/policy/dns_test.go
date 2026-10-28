@@ -10,10 +10,18 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	dnsmessage "github.com/miekg/dns"
 )
+
+func TestMatchersRejectNilFallback(t *testing.T) {
+	if _, err := NewRequestMatcherBuilder(nil, nil, nil, nil); err == nil {
+		t.Fatal("request matcher accepted nil fallback")
+	}
+	if _, err := NewResponseMatcherBuilder(nil, nil, nil); err == nil {
+		t.Fatal("response matcher accepted nil fallback")
+	}
+}
 
 func TestGetUpstreamValidatesIndex(t *testing.T) {
 	raw, err := url.Parse("udp://192.0.2.1")
@@ -71,10 +79,10 @@ func TestNewSupportsOnlyCanonicalInterfaceRequestRule(t *testing.T) {
 			conf := &Config{Routing: Routing{
 				Request: RequestRouting{
 					Rules:    []*config_parser.RoutingRule{rule},
-					Fallback: config.FunctionOrString(DnsRequestOutboundIndex_AsIs.String()),
+					Fallback: &config_parser.Function{Name: DnsRequestOutboundIndex_AsIs.String()},
 				},
 				Response: ResponseRouting{
-					Fallback: config.FunctionOrString(DnsResponseOutboundIndex_Accept.String()),
+					Fallback: &config_parser.Function{Name: DnsResponseOutboundIndex_Accept.String()},
 				},
 			}}
 
@@ -87,7 +95,7 @@ func TestNewSupportsOnlyCanonicalInterfaceRequestRule(t *testing.T) {
 }
 
 func TestResponseSelectOnlyMatches(t *testing.T) {
-	builder, err := NewResponseMatcherBuilder(nil, map[string]uint8{"next": 0}, config.FunctionOrString("next"))
+	builder, err := NewResponseMatcherBuilder(nil, map[string]uint8{"next": 0}, &config_parser.Function{Name: "next"})
 	if err != nil {
 		t.Fatal(err)
 	}

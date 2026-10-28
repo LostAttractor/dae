@@ -134,7 +134,10 @@ func marshalRoutingOutbound(function *config_parser.Function) (string, error) {
 	if function == nil {
 		return "", fmt.Errorf("routing function must not be nil")
 	}
-	if !function.Not && len(function.Params) == 0 {
+	if len(function.Params) == 0 {
+		if function.Not {
+			return "", fmt.Errorf("negated function requires parameters")
+		}
 		if function.Quoted {
 			return config_parser.QuoteLiteral(function.Name), nil
 		}

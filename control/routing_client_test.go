@@ -32,7 +32,7 @@ func clientRule(name string, not bool, outbound string, extra ...*config_parser.
 func buildClientMatcher(t *testing.T, rules ...*config_parser.RoutingRule) (*RoutingMatcherBuilder, *RoutingMatcher) {
 	t.Helper()
 	b, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules,
-		"direct")}, map[string]uint8{
+		&config_parser.Function{Name: "direct"})}, map[string]uint8{
 		"proxy": uint8(consts.OutboundUserDefinedMin), "direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
 	}, nil, nil)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestClientSetRejectsInvalidSyntax(t *testing.T) {
 		rule := clientRule("", false, "proxy")
 		rule.AndFunctions[0].Params = params
 		if _, err := compileTestRouting(preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{rule},
-			"direct")}, map[string]uint8{
+			&config_parser.Function{Name: "direct"})}, map[string]uint8{
 			"proxy": uint8(consts.OutboundUserDefinedMin), "direct": uint8(consts.OutboundDirect),
 		}, nil, nil); err == nil {
 			t.Errorf("accepted invalid client parameters: %+v", params)

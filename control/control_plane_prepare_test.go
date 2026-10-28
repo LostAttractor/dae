@@ -18,7 +18,7 @@ func TestPrepareRoutingRulesPreparesEveryTreeWithoutMutatingConfig(t *testing.T)
 		AndFunctions: []*config_parser.Function{{Name: consts.Function_Domain, Params: []*config_parser.Param{{Val: "example.com"}}}},
 		Outbound:     config_parser.Function{Name: "direct"},
 	}
-	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{routingRule}, "direct")
+	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{routingRule}, &config_parser.Function{Name: "direct"})
 	prepared, err := prepareRoutingRules(context.Background(), routingConfig, nil)
 	if err != nil {
 		t.Fatal(err)

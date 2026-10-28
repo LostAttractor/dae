@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -25,7 +24,7 @@ func buildInterfaceRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatche
 		}},
 		Outbound: config_parser.Function{Name: "matched"},
 	}},
-		"fallback")}, map[string]uint8{
+		&config_parser.Function{Name: "fallback"})}, map[string]uint8{
 		"matched":  uint8(consts.OutboundUserDefinedMin),
 		"fallback": uint8(consts.OutboundDirect),
 	},
@@ -131,7 +130,7 @@ func TestRoutingMatcherRejectsRemovedInterfaceFunctions(t *testing.T) {
 				AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "1"}}}},
 				Outbound:     config_parser.Function{Name: "matched"},
 			}},
-				config.FunctionOrString("direct"))}, map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
+				&config_parser.Function{Name: "direct"})}, map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
 				nil,
 				nil,
 			)

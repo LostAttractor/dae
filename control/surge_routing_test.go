@@ -46,7 +46,7 @@ func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_p
 	t.Helper()
 	plan := engine.Plan()
 	rules := slices.Concat(plan.EarlyRoutes, userRules, plan.Routes)
-	builder, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules, "proxy")}, map[string]uint8{
+	builder, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules, &config_parser.Function{Name: "proxy"})}, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock), "proxy": uint8(consts.OutboundUserDefinedMin),
 	}, nil, nil)
 	if err != nil {

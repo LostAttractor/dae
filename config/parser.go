@@ -33,7 +33,47 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 	return nil
 }
 
-func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []reflect.Type) error {
+// ParseFunctionParam normalizes a single literal or function at the AST boundary.
+func ParseFunctionParam(param *config_parser.Param) (*config_parser.Function, error) {
+	functions, err := parseFunctionListParam(param)
+	if err != nil {
+		return nil, err
+	}
+	if len(functions) != 1 {
+		return nil, fmt.Errorf("expected exactly 1 function, got %d", len(functions))
+	}
+	return functions[0], nil
+}
+
+func parseFunctionListParam(param *config_parser.Param) ([]*config_parser.Function, error) {
+	if param == nil {
+		return nil, fmt.Errorf("function parameter must not be nil")
+	}
+	if len(param.Annotation) != 0 {
+		return nil, fmt.Errorf("field %q does not support annotations", param.Key)
+	}
+	if param.AndFunctions != nil {
+		if len(param.AndFunctions) == 0 {
+			return nil, fmt.Errorf("function list must not be empty")
+		}
+		for i, function := range param.AndFunctions {
+			if function == nil {
+				return nil, fmt.Errorf("function at index %d must not be nil", i)
+			}
+		}
+		return param.AndFunctions, nil
+	}
+	if len(param.ValueList) == 0 {
+		return nil, fmt.Errorf("function parameter requires a literal or function")
+	}
+	functions := make([]*config_parser.Function, 0, len(param.ValueList))
+	for _, value := range param.ValueList {
+		functions = append(functions, &config_parser.Function{Name: value, Quoted: param.Quoted})
+	}
+	return functions, nil
+}
+
+func ParamParser(to reflect.Value, section *config_parser.Section) error {
 	if to.Kind() != reflect.Pointer {
 		return fmt.Errorf("ParamParser can only unmarshal section to *struct")
 	}
@@ -44,10 +84,9 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 
 	// keyToField is for further parsing use.
 	type Field struct {
-		Val        reflect.Value
-		Index      int
-		Set        bool
-		Repeatable bool
+		Val   reflect.Value
+		Index int
+		Set   bool
 	}
 	var keyToField = make(map[string]*Field)
 	tot := to.Type()
@@ -63,8 +102,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			// omit
 			continue
 		}
-		_, repeatable := structField.Tag.Lookup("repeatable")
-		keyToField[key] = &Field{Val: field, Index: i, Repeatable: repeatable}
+		keyToField[key] = &Field{Val: field, Index: i}
 
 		// Fill in default value before parsing section.
 		defaultValue, ok := structField.Tag.Lookup("default")
@@ -81,12 +119,6 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		}
 	}
 
-	// Convert ignoreType from list to set.
-	ignoreTypeSet := make(map[reflect.Type]struct{})
-	for _, typ := range ignoreType {
-		ignoreTypeSet[typ] = struct{}{}
-	}
-
 	// Parse section.
 	for _, item := range section.Items {
 		switch itemVal := item.Value.(type) {
@@ -101,28 +133,28 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if len(itemVal.Annotation) > 0 {
 				return fmt.Errorf("field %q does not support annotations", itemVal.Key)
 			}
-			if itemVal.AndFunctions != nil {
-				// AndFunctions.
-				// If field is any or types equal, we can assign.
-				if field.Val.Kind() == reflect.Interface ||
-					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
-					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
-				} else if field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeOf(itemVal.AndFunctions)) {
-					// If field is slice and repeatable, and slice element types match, we can append.
-					field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal.AndFunctions)))
-				} else {
-					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
+			switch field.Val.Type() {
+			case reflect.TypeFor[*config_parser.Function]():
+				function, err := ParseFunctionParam(itemVal)
+				if err != nil {
+					return fmt.Errorf("failed to parse %q: %w", itemVal.Key, err)
 				}
-			} else {
+				field.Val.Set(reflect.ValueOf(function))
+			case reflect.TypeFor[[]*config_parser.Function]():
+				functions, err := parseFunctionListParam(itemVal)
+				if err != nil {
+					return fmt.Errorf("failed to parse %q: %w", itemVal.Key, err)
+				}
+				field.Val.Set(reflect.ValueOf(functions))
+			default:
+				if itemVal.AndFunctions != nil {
+					return fmt.Errorf("failed to parse %q: functions cannot be converted to %v", itemVal.Key, field.Val.Type())
+				}
 				// String value.
 				switch field.Val.Kind() {
 				case reflect.Interface:
 					// Field is any, we can assign.
-					if itemVal.Key == "fallback" && itemVal.Quoted {
-						field.Val.Set(reflect.ValueOf(QuotedString(itemVal.Val)))
-					} else {
-						field.Val.Set(reflect.ValueOf(itemVal.Val))
-					}
+					field.Val.Set(reflect.ValueOf(itemVal.Val))
 				case reflect.Slice:
 					// Field is not any, we can decode.
 					values := strings.Split(itemVal.Val, ",")
@@ -180,9 +212,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal)))
 			field.Set = true
 		default:
-			if _, ignore := ignoreTypeSet[reflect.TypeOf(itemVal)]; !ignore {
-				return fmt.Errorf("unexpected type %v: %v", item.TypeName(), item.String(false, false))
-			}
+			return fmt.Errorf("unexpected type %v: %v", item.TypeName(), item.String(false, false))
 		}
 	}
 
@@ -257,7 +287,7 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		}
 	case reflect.Struct:
 		// Section.
-		return ParamParser(to.Addr(), section, nil)
+		return ParamParser(to.Addr(), section)
 	default:
 		goto unsupported
 	}

@@ -128,7 +128,7 @@ func TestMITMCapturePreservesUserspaceRoute(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
-			rules := preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}
+			rules := preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, &config_parser.Function{Name: "direct"})}
 			if test.must {
 				rules.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "domain(full: service.example) -> must", "").routing.Policies[0].Rules
 			}
@@ -204,7 +204,7 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
 	}
 	for _, port := range []uint16{8081, 0} {
-		prepared := preparedRules{routing: testRoutingConfig(nil, "proxy")}
+		prepared := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "proxy"})}
 		prepared.enableMITMPlan(mitmRoutingPlugin("service.example").Plan())
 		prepared.bypassAPI(port, addresses)
 		builder, err := compileTestRouting(prepared, map[string]uint8{

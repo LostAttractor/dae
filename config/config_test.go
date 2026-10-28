@@ -6,6 +6,7 @@
 package config
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -492,6 +493,52 @@ routing { fallback: direct }
 		if _, err := New(sections); err == nil {
 			t.Errorf("%s=%s unexpectedly succeeded", field, value)
 		}
+	}
+}
+
+func TestConfigValidatesControlPolicies(t *testing.T) {
+	for _, test := range []struct {
+		name, body, wantError string
+	}{
+		{name: "defaults", body: `global {}`},
+		{name: "block and keep", body: `global { no_connectivity_behavior: block route_change_behavior: keep }`},
+		{name: "direct and close", body: `global { no_connectivity_behavior: direct route_change_behavior: close }`},
+		{name: "invalid connectivity", body: `global { no_connectivity_behavior: keep }`, wantError: "no_connectivity_behavior"},
+		{name: "invalid route change", body: `global { route_change_behavior: direct }`, wantError: "route_change_behavior"},
+		{name: "valid clients", body: `global {} mitm { enabled: true client_source_address: '192.0.2.0/24', '-2001:db8::1', '02:00:00:00:00:01', all }`},
+		{name: "invalid enabled client", body: `global {} mitm { enabled: true client_source_address: invalid }`, wantError: "mitm.client_source_address"},
+		{name: "invalid disabled client", body: `global {} mitm { enabled: false client_source_address: invalid }`, wantError: "mitm.client_source_address"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			text := test.body + "\nrouting { fallback: direct }\n"
+			sections, err := config_parser.Parse(text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.dae")
+			writeConfigFile(t, path, text)
+			for _, load := range []struct {
+				name string
+				fn   func() (*Config, error)
+			}{
+				{name: "New", fn: func() (*Config, error) { return New(sections) }},
+				{name: "Load", fn: func() (*Config, error) {
+					conf, _, err := Load(path)
+					return conf, err
+				}},
+			} {
+				t.Run(load.name, func(t *testing.T) {
+					_, err := load.fn()
+					if test.wantError == "" {
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), test.wantError) {
+						t.Fatalf("error = %v, want %q", err, test.wantError)
+					}
+				})
+			}
+		})
 	}
 }
 
