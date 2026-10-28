@@ -2,8 +2,13 @@ package juicity
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -13,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/shadowsocks"
+	"github.com/daeuniverse/quic-go"
 )
 
 func TestClientMetadataWireFormat(t *testing.T) {
@@ -37,6 +43,86 @@ func TestClientMetadataWireFormat(t *testing.T) {
 			got, err := readMetadata(buf)
 			if err != nil || got.Hostname != m.Hostname || got.Port != m.Port || got.Type != m.Type {
 				t.Fatalf("decoded=%+v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestStreamUDPReadReportsTruncation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	listener, err := quic.ListenAddr("127.0.0.1:0", recoveryTLS(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := quic.DialAddr(ctx, listener.Addr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"juicity-test"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseWithError(0, "")
+	server, err := listener.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.CloseWithError(0, "")
+	for _, tc := range []struct {
+		size       int
+		incomplete bool
+	}{
+		{size: 0}, {size: 1}, {size: 4}, {size: 8}, {size: 1, incomplete: true},
+	} {
+		t.Run(fmt.Sprintf("buffer=%d/incomplete=%v", tc.size, tc.incomplete), func(t *testing.T) {
+			remote, err := server.OpenStreamSync(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire bytes.Buffer
+			metadata, _ := protocol.ParseMetadata("127.0.0.1:53")
+			m := Metadata{Metadata: metadata, Network: "udp"}
+			for _, payload := range []string{"data", "next"} {
+				if err := m.appendTo(&wire); err != nil {
+					t.Fatal(err)
+				}
+				wire.Write(binary.BigEndian.AppendUint16(nil, uint16(len(payload))))
+				if tc.incomplete {
+					wire.WriteString(payload[:2])
+					break
+				}
+				wire.WriteString(payload)
+			}
+			if _, err := remote.Write(wire.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			_ = remote.Close()
+			stream, err := client.AcceptStream(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = stream.SetReadDeadline(time.Now().Add(time.Second))
+			conn := &PacketConn{Conn: &Conn{Stream: stream, lease: netproxy.NewLease(netproxy.NewResourceRef())}}
+			defer conn.Close()
+			buf := make([]byte, tc.size)
+			n, addr, err := conn.ReadFrom(buf)
+			var wantErr error
+			if tc.size < 4 {
+				wantErr = io.ErrShortBuffer
+			}
+			if tc.incomplete {
+				wantErr = io.EOF
+			}
+			if n != min(tc.size, 4) || string(buf[:n]) != "data"[:n] || addr == nil || addr.String() != "127.0.0.1:53" || !errors.Is(err, wantErr) {
+				t.Fatalf("ReadFrom = %q, %v, %v; want %v", buf[:n], addr, err, wantErr)
+			}
+			if tc.incomplete {
+				return
+			}
+			if !conn.lease.Valid() {
+				t.Fatal("truncation invalidated the stream")
+			}
+			buf = make([]byte, 8)
+			if n, _, err := conn.ReadFrom(buf); err != nil || string(buf[:n]) != "next" {
+				t.Fatalf("next datagram = %q, %v", buf[:n], err)
 			}
 		})
 	}

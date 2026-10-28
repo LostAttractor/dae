@@ -2,6 +2,7 @@ package juicity
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,7 +25,7 @@ func (c *PacketConn) Write(b []byte) (int, error) {
 func (c *PacketConn) Read(b []byte) (int, error) { n, _, err := c.ReadFrom(b); return n, err }
 func (c *PacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	defer func() {
-		if err == nil || err == io.EOF {
+		if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrShortBuffer) {
 			return
 		}
 		failure := netproxy.ClassifyFailure(err)
@@ -47,7 +48,9 @@ func (c *PacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	length := int(binary.BigEndian.Uint16(header[:]))
 	n, err = io.ReadFull(c.Conn, p[:min(len(p), length)])
 	if err == nil && length > n {
-		_, err = io.CopyN(io.Discard, c.Conn, int64(length-n))
+		if _, err = io.CopyN(io.Discard, c.Conn, int64(length-n)); err == nil {
+			err = io.ErrShortBuffer
+		}
 	}
 	return n, netproxy.NewAddr("udp", net.JoinHostPort(m.Hostname, strconv.Itoa(int(m.Port)))), err
 }

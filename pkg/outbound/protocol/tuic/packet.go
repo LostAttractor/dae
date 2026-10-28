@@ -3,6 +3,7 @@ package tuic
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	mathrand "math/rand/v2"
 	"net"
 	"os"
@@ -170,7 +171,11 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 				}
 			}
 			if packet.FRAG_TOTAL == 1 {
-				return copy(p, packet.DATA), packet.ADDR.netAddr(), nil
+				n := copy(p, packet.DATA)
+				if n < len(packet.DATA) {
+					return n, packet.ADDR.netAddr(), io.ErrShortBuffer
+				}
+				return n, packet.ADDR.netAddr(), nil
 			}
 			if q.fragments == nil {
 				q.fragments = make(map[uint16]*deFragger)
@@ -186,6 +191,9 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			}
 			if n, addr, ready := d.Feed(packet, p); ready {
 				delete(q.fragments, packet.PKT_ID)
+				if n < d.size {
+					return n, addr, io.ErrShortBuffer
+				}
 				return n, addr, nil
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -22,7 +23,9 @@ type Conn struct {
 	packetAddr bool
 
 	onceRead  bool
+	writeMu   sync.Mutex
 	onceWrite bool
+	writeErr  error
 }
 
 const maxRejectionMessageBytes = 1024
@@ -84,9 +87,22 @@ func WriteStreamRequest(buf *bytes.Buffer, streamRequest *StreamRequest) error {
 	return socks5.WriteAddr(streamRequest.Destination, buf)
 }
 
-func (c *Conn) Write(b []byte) (n int, err error) {
+func (c *Conn) Write(b []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.write(b)
+}
+
+func (c *Conn) write(b []byte) (n int, err error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
 	if c.onceWrite {
-		return c.Conn.Write(b)
+		n, err = c.Conn.Write(b)
+		if err == nil && n != len(b) {
+			err = io.ErrShortWrite
+		}
+		return n, err
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
@@ -98,10 +114,19 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 	if err != nil {
 		return
 	}
-	c.onceWrite = true
+	headerLen := buf.Len()
 	buf.Write(b)
-	_, err = c.Conn.Write(buf.Bytes())
-	return len(b), err
+	n, err = c.Conn.Write(buf.Bytes())
+	if err == nil && n != buf.Len() {
+		err = io.ErrShortWrite
+	}
+	if n >= headerLen {
+		c.onceWrite = true
+	} else if n > 0 {
+		// Neither resending nor skipping a partial request preserves framing.
+		c.writeErr = err
+	}
+	return max(0, n-headerLen), err
 }
 
 // CloseWrite half-closes the stream, first sending the stream request if no
@@ -110,8 +135,10 @@ func (c *Conn) CloseWrite() error {
 	if !halfCloses(c.Conn) {
 		return errors.ErrUnsupported
 	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if !c.onceWrite {
-		if _, err := c.Write(nil); err != nil {
+		if _, err := c.write(nil); err != nil {
 			return err
 		}
 	}

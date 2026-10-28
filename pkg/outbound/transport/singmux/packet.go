@@ -47,18 +47,23 @@ func (c *UDPConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 }
 
 func (c *UDPConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
+	if len(b) > math.MaxUint16 {
+		return 0, syscall.EMSGSIZE
+	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	if len(b) > 0 {
-		err = socks5.WriteNetAddr(addr, buf)
-		if err != nil {
-			return 0, err
-		}
-		binary.Write(buf, binary.BigEndian, uint16(len(b)))
-		buf.Write(b)
+	if err = socks5.WriteNetAddr(addr, buf); err != nil {
+		return 0, err
 	}
-	_, err = c.Conn.Write(buf.Bytes())
-	return len(b), err
+	binary.Write(buf, binary.BigEndian, uint16(len(b)))
+	buf.Write(b)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	n, err = c.write(buf.Bytes())
+	if n > 0 && n < buf.Len() {
+		c.writeErr = err
+	}
+	return max(0, n-(buf.Len()-len(b))), err
 }
 
 // smuxPacketConn writes datagrams to an smux stream without waiting: each is
@@ -100,9 +105,6 @@ func (c *smuxPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 }
 
 func (c *smuxPacketConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
 	if !c.requested.Load() {
 		c.mu.Lock()
 		defer c.mu.Unlock()

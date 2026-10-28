@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
@@ -39,11 +40,142 @@ func TestConnWritesRequestOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestConnFirstWriteFailure(t *testing.T) {
+	var request bytes.Buffer
+	if err := WriteStreamRequest(&request, &StreamRequest{Destination: "example.org:443"}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("payload")
+	headerLen := request.Len()
+	for _, written := range []int{0, 1, headerLen - 1, headerLen, headerLen + 2, headerLen + len(payload)} {
+		for _, writeErr := range []error{nil, errors.New("write interrupted")} {
+			t.Run(fmt.Sprintf("written=%d/error=%v", written, writeErr), func(t *testing.T) {
+				var wire bytes.Buffer
+				calls := 0
+				conn := &Conn{Conn: streamWriteFunc{write: func(p []byte) (int, error) {
+					calls++
+					if calls == 1 {
+						wire.Write(p[:written])
+						return written, writeErr
+					}
+					return wire.Write(p)
+				}}, addr: "example.org:443"}
+				wantErr := writeErr
+				if wantErr == nil && written < headerLen+len(payload) {
+					wantErr = io.ErrShortWrite
+				}
+				if n, err := conn.Write(payload); n != max(0, written-headerLen) || !errors.Is(err, wantErr) {
+					t.Fatalf("first Write = %d, %v; want %d, %v", n, err, max(0, written-headerLen), wantErr)
+				}
+				if written > 0 && written < headerLen {
+					if n, err := conn.Write(payload); n != 0 || !errors.Is(err, wantErr) || calls != 1 {
+						t.Fatalf("write after incomplete request = %d, %v; carrier writes %d", n, err, calls)
+					}
+					return
+				}
+				if n, err := conn.Write(payload); n != len(payload) || err != nil {
+					t.Fatalf("next Write = %d, %v", n, err)
+				}
+				want := bytes.Clone(request.Bytes())
+				want = append(want, payload[:max(0, written-headerLen)]...)
+				want = append(want, payload...)
+				if !bytes.Equal(wire.Bytes(), want) {
+					t.Fatalf("wire = %x, want %x", wire.Bytes(), want)
+				}
+			})
+		}
+	}
+}
+
+func TestConnConcurrentWritesSendOneRequest(t *testing.T) {
+	const writers, size = 32, 128
+	var wire bytes.Buffer
+	conn := &Conn{Conn: streamWriteFunc{write: wire.Write}, addr: "example.org:443"}
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() {
+			if n, err := conn.Write(bytes.Repeat([]byte{byte(i)}, size)); n != size || err != nil {
+				t.Errorf("Write = %d, %v", n, err)
+			}
+		})
+	}
+	wg.Wait()
+	var request bytes.Buffer
+	if err := WriteStreamRequest(&request, &StreamRequest{Destination: conn.addr}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wire.Next(request.Len()), request.Bytes()) {
+		t.Fatal("invalid stream request")
+	}
+	seen := make(map[byte]bool)
+	for wire.Len() > 0 {
+		payload := wire.Next(size)
+		if len(payload) != size || !bytes.Equal(payload, bytes.Repeat(payload[:1], size)) || seen[payload[0]] {
+			t.Fatalf("interleaved or duplicate payload: %x", payload)
+		}
+		seen[payload[0]] = true
+	}
+	if len(seen) != writers {
+		t.Fatalf("received %d writes, want %d", len(seen), writers)
+	}
+}
+
 func TestConnEstablishedWritePreservesPartialFailure(t *testing.T) {
-	want := errors.New("write interrupted")
-	conn := &Conn{Conn: streamWriteFunc{write: func([]byte) (int, error) { return 3, want }}, onceWrite: true}
-	if n, err := conn.Write([]byte("payload")); n != 3 || !errors.Is(err, want) {
-		t.Fatalf("Write = %d, %v; want underlying partial result", n, err)
+	for _, writeErr := range []error{nil, errors.New("write interrupted")} {
+		conn := &Conn{Conn: streamWriteFunc{write: func([]byte) (int, error) { return 3, writeErr }}, onceWrite: true}
+		want := writeErr
+		if want == nil {
+			want = io.ErrShortWrite
+		}
+		if n, err := conn.Write([]byte("payload")); n != 3 || !errors.Is(err, want) {
+			t.Fatalf("Write = %d, %v; want underlying partial result", n, err)
+		}
+	}
+}
+
+type closeWriteFunc struct {
+	streamWriteFunc
+	closeWrite func() error
+}
+
+func (c closeWriteFunc) CloseWrite() error { return c.closeWrite() }
+
+func TestConnConcurrentWriteAndCloseWrite(t *testing.T) {
+	var wire bytes.Buffer
+	closed := false
+	conn := &Conn{Conn: closeWriteFunc{
+		write: func(p []byte) (int, error) {
+			if closed {
+				return 0, net.ErrClosed
+			}
+			return wire.Write(p)
+		},
+		closeWrite: func() error { closed = true; return nil },
+	}, addr: "example.org:443"}
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			n, err := conn.Write([]byte("payload"))
+			if err == nil && n != 7 || err != nil && (!errors.Is(err, net.ErrClosed) || n != 0) {
+				t.Errorf("Write = %d, %v", n, err)
+			}
+		})
+	}
+	wg.Go(func() {
+		if err := conn.CloseWrite(); err != nil {
+			t.Error(err)
+		}
+	})
+	wg.Wait()
+	var request bytes.Buffer
+	if err := WriteStreamRequest(&request, &StreamRequest{Destination: conn.addr}); err != nil {
+		t.Fatal(err)
+	}
+	if !closed || !bytes.Equal(wire.Next(request.Len()), request.Bytes()) {
+		t.Fatal("CloseWrite did not send one complete request")
+	}
+	if !bytes.Equal(wire.Bytes(), bytes.Repeat([]byte("payload"), wire.Len()/7)) {
+		t.Fatalf("invalid payload after CloseWrite: %q", wire.Bytes())
 	}
 }
 

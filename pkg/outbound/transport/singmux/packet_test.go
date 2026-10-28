@@ -20,6 +20,32 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux/smuxtest"
 )
 
+func TestUDPWriteReportsPartialFrames(t *testing.T) {
+	for _, established := range []bool{false, true} {
+		for _, missing := range []int{0, 1, 8} {
+			calls := 0
+			conn := &UDPConn{Conn: Conn{Conn: streamWriteFunc{write: func(p []byte) (int, error) {
+				calls++
+				return len(p) - missing, nil
+			}}, addr: "example.org:53", udp: true, packetAddr: true, onceWrite: established}}
+			payload := []byte("payload")
+			addr := netproxy.NewAddr("udp", "127.0.0.1:53")
+			var wantErr error
+			if missing > 0 {
+				wantErr = io.ErrShortWrite
+			}
+			if n, err := conn.WriteTo(payload, addr); n != max(0, len(payload)-missing) || !errors.Is(err, wantErr) {
+				t.Fatalf("established=%v missing=%d: WriteTo = %d, %v", established, missing, n, err)
+			}
+			if missing > 0 {
+				if n, err := conn.WriteTo(payload, addr); n != 0 || !errors.Is(err, io.ErrShortWrite) || calls != 1 {
+					t.Fatalf("write after incomplete datagram = %d, %v; carrier writes %d", n, err, calls)
+				}
+			}
+		}
+	}
+}
+
 func TestUDPReadPreservesDatagramBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

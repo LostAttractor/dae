@@ -425,6 +425,60 @@ func yamuxFrame(version, kind byte, flags uint16, stream, length uint32) []byte 
 	return binary.BigEndian.AppendUint32(header, length)
 }
 
+func TestYamuxSessionCloseClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		frame    []byte
+		abort    bool
+		remote   bool
+		code     uint32
+		protocol bool
+	}{
+		{name: "local close"},
+		{name: "local abort", abort: true},
+		{name: "remote close", frame: yamuxFrame(0, 3, 0, 0, 0), remote: true},
+		{name: "remote protocol error", frame: yamuxFrame(0, 3, 0, 0, 1), remote: true, code: 1},
+		{name: "invalid version", frame: yamuxFrame(9, 0, 0, 0, 0), protocol: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client, peer := net.Pipe()
+				defer peer.Close()
+				go func() { _, _ = io.Copy(io.Discard, peer) }()
+				s, err := newSession(ProtocolYAMux, &monitoredConn{Conn: client})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.abort()
+				if tc.frame != nil {
+					if _, err := peer.Write(tc.frame); err != nil {
+						t.Fatal(err)
+					}
+					<-s.CloseChan()
+				} else if tc.abort {
+					_ = s.abort()
+				} else {
+					_ = s.Close()
+				}
+				synctest.Wait()
+				// Cleanup must not replace a remote or protocol failure.
+				_ = s.abort()
+				err = s.closeErr()
+				if failure := netproxy.ClassifyFailure(err); (failure.Reason == netproxy.ReasonProtocol) != tc.protocol {
+					t.Fatalf("close error = %v (%+v)", err, failure)
+				}
+				if tc.protocol {
+					if !errors.Is(err, yamux.ErrInvalidVersion) {
+						t.Fatalf("lost protocol error: %v", err)
+					}
+				} else if goAway, ok := errors.AsType[*yamux.GoAwayError](err); !ok || goAway.Remote != tc.remote || goAway.ErrorCode != tc.code {
+					t.Fatalf("close error = %v, want remote=%v code=%d", err, tc.remote, tc.code)
+				}
+			})
+		})
+	}
+}
+
 func TestYamuxProtocolViolationClosesSession(t *testing.T) {
 	const data, windowUpdate, flagSYN = 0, 1, 1
 	for _, tc := range []struct {

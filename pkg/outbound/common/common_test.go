@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestStringToUUID5(t *testing.T) {
+	for _, test := range []struct {
+		name, input, want string
+	}{
+		{"empty", "", "e129f27c-5103-5c5c-844b-cdf0a15e160d"},
+		{"ASCII", "example", "feb54431-301b-52bb-a6dd-e1e93e81bb9e"},
+		{"Unicode", "你好，世界", "1c7fb245-3284-57ed-9627-4559294b0dc8"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := StringToUUID5(test.input); got != test.want {
+				t.Fatalf("StringToUUID5(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
 func TestBytesAddBigEndian(t *testing.T) {
 	tt := [][2][]byte{
 		{{0, 0, 0}, {0, 0, 1}},

@@ -25,34 +25,14 @@ func init() {
 	dialer.FromLinkRegister("wss", NewWs)
 }
 
-func parseRange(str string) (min, max int64, err error) {
-	stringArr := strings.Split(str, "-")
-	if len(stringArr) != 2 {
-		return 0, 0, fmt.Errorf("invalid range: %s", str)
-	}
-	min, err = strconv.ParseInt(stringArr[0], 10, 64)
-	if err != nil {
-		return 0, 0, err
-	}
-	max, err = strconv.ParseInt(stringArr[1], 10, 64)
-	if err != nil {
-		return 0, 0, err
-	}
-	return min, max, nil
-}
-
 // Ws is a base Ws struct
 type Ws struct {
-	ParentDialer        netproxy.Dialer
-	wsAddr              string
-	host                string
-	tlsClientConfig     *tls.Config
-	passthroughUdp      bool
-	tlsFragmentation    bool
-	fragmentMinLength   int64
-	fragmentMaxLength   int64
-	fragmentMinInterval int64
-	fragmentMaxInterval int64
+	ParentDialer    netproxy.Dialer
+	wsAddr          string
+	host            string
+	tlsClientConfig *tls.Config
+	passthroughUdp  bool
+	fragment        *transportTls.FragmentConfig
 }
 
 type WsConfig struct {
@@ -137,19 +117,11 @@ func (s *WsConfig) Build(option *dialer.ExtraOption, upstream dialer.Upstream) (
 		ws.tlsClientConfig.NextProtos = strings.Split(s.Alpn, ",")
 	}
 	if option.TlsFragment {
-		ws.tlsFragmentation = true
-		minLen, maxLen, err := parseRange(option.TlsFragmentLength)
+		var err error
+		ws.fragment, err = transportTls.ParseFragmentConfig(option.TlsFragmentLength, option.TlsFragmentInterval)
 		if err != nil {
 			return netproxy.Layer{}, err
 		}
-		ws.fragmentMinLength = minLen
-		ws.fragmentMaxLength = maxLen
-		minInterval, maxInterval, err := parseRange(option.TlsFragmentInterval)
-		if err != nil {
-			return netproxy.Layer{}, err
-		}
-		ws.fragmentMinInterval = minInterval
-		ws.fragmentMaxInterval = maxInterval
 	}
 	return netproxy.Layer{Data: ws}, nil
 }
@@ -176,8 +148,8 @@ func (s *Ws) DialContext(ctx context.Context, network, addr string) (c net.Conn,
 		netproxy.CaptureDependency(ctx, raw)
 		dependency := netproxy.DependencyOf(raw)
 		if endpoint.Scheme == "wss" {
-			if s.tlsFragmentation {
-				raw = transportTls.NewFragmentConn(raw, s.fragmentMinLength, s.fragmentMaxLength, s.fragmentMinInterval, s.fragmentMaxInterval)
+			if s.fragment != nil {
+				raw = s.fragment.Wrap(raw)
 			}
 			config := s.tlsClientConfig.Clone()
 			if config.ServerName == "" {

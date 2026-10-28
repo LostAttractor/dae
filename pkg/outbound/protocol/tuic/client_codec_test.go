@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	quicgo "github.com/daeuniverse/quic-go"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -159,6 +161,39 @@ func TestReassemblyTableDropIsCounted(t *testing.T) {
 	}
 	if n := netproxy.DropReceiveFull.Load() - dropped; n != 1 {
 		t.Fatalf("counted %d drops, want 1", n)
+	}
+}
+
+func TestUDPReadReportsTruncation(t *testing.T) {
+	for _, fragments := range []int{1, 2} {
+		for _, size := range []int{0, 1, 4, 8} {
+			t.Run(fmt.Sprintf("fragments=%d/buffer=%d", fragments, size), func(t *testing.T) {
+				q := &quicStreamPacketConn{lease: netproxy.NewLease(netproxy.NewResourceRef()), incomingPackets: newPacketQueue(), readDeadline: protocol.MakeDeadline()}
+				defer q.incomingPackets.Close()
+				m, _ := protocol.ParseMetadata("127.0.0.1:53")
+				payload := []byte("data")
+				for i := fragments - 1; i >= 0; i-- {
+					q.incomingPackets.PushBack(&packetFrame{PKT_ID: 1, FRAG_TOTAL: uint8(fragments), FRAG_ID: uint8(i), ADDR: addressFromMetadata(&m), DATA: payload[i*len(payload)/fragments : (i+1)*len(payload)/fragments]})
+				}
+				q.incomingPackets.PushBack(&packetFrame{FRAG_TOTAL: 1, ADDR: addressFromMetadata(&m), DATA: []byte("next")})
+				buf := make([]byte, size)
+				n, addr, err := q.ReadFrom(buf)
+				var wantErr error
+				if size < len(payload) {
+					wantErr = io.ErrShortBuffer
+				}
+				if n != min(size, len(payload)) || !bytes.Equal(buf[:n], payload[:n]) || addr == nil || addr.String() != "127.0.0.1:53" || !errors.Is(err, wantErr) {
+					t.Fatalf("ReadFrom = %q, %v, %v", buf[:n], addr, err)
+				}
+				if !q.lease.Valid() || len(q.fragments) != 0 {
+					t.Fatal("truncation invalidated the association or retained fragments")
+				}
+				buf = make([]byte, 8)
+				if n, _, err := q.ReadFrom(buf); err != nil || string(buf[:n]) != "next" {
+					t.Fatalf("next datagram = %q, %v", buf[:n], err)
+				}
+			})
+		}
 	}
 }
 

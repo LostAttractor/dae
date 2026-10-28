@@ -2,6 +2,7 @@ package mux
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -101,9 +102,60 @@ func TestWriteReturnsPayloadCountAndDetectsShortFrames(t *testing.T) {
 			if n != 5 || err != nil {
 				t.Fatalf("Write = %d, %v", n, err)
 			}
-		} else if n != 0 || !errors.Is(err, io.ErrShortWrite) {
-			t.Fatalf("short frame %d: Write = %d, %v", shortAt, n, err)
+		} else {
+			want := 0
+			if shortAt == 2 {
+				want = 4
+			}
+			if n != want || !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("short frame %d: Write = %d, %v; want %d, ErrShortWrite", shortAt, n, err, want)
+			}
+			if n, err := conn.Write([]byte("retry")); n != 0 || !errors.Is(err, io.ErrShortWrite) || carrier.calls != shortAt {
+				t.Fatalf("write after incomplete frame = %d, %v; carrier writes %d", n, err, carrier.calls)
+			}
 		}
+	}
+}
+
+func TestConcurrentWritesPreserveFrames(t *testing.T) {
+	const writers, size = 32, 128
+	incoming := bytes.Repeat([]byte{0, 4, 9, 9, SessionStatusKeep, OptionData, 0, 1, 'r'}, writers)
+	carrier := &frameConn{reader: bytes.NewReader(incoming)}
+	conn := NewConn(carrier, MuxOption{ID: [2]byte{1, 2}, Host: "127.0.0.1"})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range writers {
+			if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	for i := range writers {
+		wg.Go(func() {
+			if n, err := conn.Write(bytes.Repeat([]byte{byte(i)}, size)); n != size || err != nil {
+				t.Errorf("Write = %d, %v", n, err)
+			}
+		})
+	}
+	wg.Wait()
+	wire := carrier.writes.Bytes()
+	metadataLen := int(binary.BigEndian.Uint16(wire[:2]))
+	wire = wire[2+metadataLen:]
+	seen := make(map[byte]bool)
+	for len(wire) > 0 {
+		if len(wire) < 8+size || !bytes.Equal(wire[:8], []byte{0, 4, 1, 2, SessionStatusKeep, OptionData, 0, size}) {
+			t.Fatalf("invalid frame: %x", wire)
+		}
+		payload := wire[8 : 8+size]
+		if !bytes.Equal(payload, bytes.Repeat(payload[:1], size)) || seen[payload[0]] {
+			t.Fatalf("interleaved or duplicate payload: %x", payload)
+		}
+		seen[payload[0]] = true
+		wire = wire[8+size:]
+	}
+	if len(seen) != writers {
+		t.Fatalf("received %d frames, want %d", len(seen), writers)
 	}
 }
 

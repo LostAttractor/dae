@@ -14,16 +14,12 @@ import (
 
 // Tls is a base Tls struct
 type Tls struct {
-	ParentDialer        netproxy.Dialer
-	addr                string
-	tlsImplentation     string
-	utlsImitate         string
-	passthroughUdp      bool
-	fragmentation       bool
-	fragmentMinLength   int64
-	fragmentMaxLength   int64
-	fragmentMinInterval int64
-	fragmentMaxInterval int64
+	ParentDialer    netproxy.Dialer
+	addr            string
+	tlsImplentation string
+	utlsImitate     string
+	passthroughUdp  bool
+	fragment        *FragmentConfig
 
 	tlsConfig  *tls.Config
 	utlsConfig *utls.Config
@@ -68,19 +64,11 @@ func (s *TLSConfig) Build(option *dialer.ExtraOption, upstream dialer.Upstream) 
 	}
 
 	if option.TlsFragment {
-		t.fragmentation = true
-		minLen, maxLen, err := parseRange(option.TlsFragmentLength)
+		var err error
+		t.fragment, err = ParseFragmentConfig(option.TlsFragmentLength, option.TlsFragmentInterval)
 		if err != nil {
 			return netproxy.Layer{}, err
 		}
-		t.fragmentMinLength = minLen
-		t.fragmentMaxLength = maxLen
-		minInterval, maxInterval, err := parseRange(option.TlsFragmentInterval)
-		if err != nil {
-			return netproxy.Layer{}, err
-		}
-		t.fragmentMinInterval = minInterval
-		t.fragmentMaxInterval = maxInterval
 	}
 
 	return netproxy.Layer{Data: t}, nil
@@ -101,8 +89,8 @@ func (s *Tls) DialContext(ctx context.Context, network, addr string) (c net.Conn
 			}
 		}()
 
-		if s.fragmentation {
-			rc = NewFragmentConn(rc, s.fragmentMinLength, s.fragmentMaxLength, s.fragmentMinInterval, s.fragmentMaxInterval)
+		if s.fragment != nil {
+			rc = s.fragment.Wrap(rc)
 		}
 
 		var tlsConn interface {

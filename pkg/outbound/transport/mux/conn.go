@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net"
+	"sync"
 )
 
 type SessionStatus = byte
@@ -42,6 +44,9 @@ type Conn struct {
 	otb     []byte
 	remain  int
 	readErr error
+
+	writeMu  sync.Mutex
+	writeErr error // A partially written frame cannot be retried.
 }
 
 func (m *Conn) Read(b []byte) (int, error) {
@@ -58,7 +63,8 @@ func (m *Conn) Read(b []byte) (int, error) {
 			return 0, errors.New("invalid metalen")
 		}
 
-		_, err = io.ReadFull(m.Conn, m.id[:])
+		var id [2]byte
+		_, err = io.ReadFull(m.Conn, id[:])
 		if err != nil {
 			return 0, err
 		}
@@ -106,33 +112,51 @@ func (m *Conn) Read(b []byte) (int, error) {
 }
 
 func (m *Conn) Write(b []byte) (int, error) {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	if m.writeErr != nil {
+		return 0, m.writeErr
+	}
 	if m.otb != nil {
 		// create a sub connection
 		n, err := m.Conn.Write(m.otb)
 		if err == nil && n != len(m.otb) {
 			err = io.ErrShortWrite
 		}
+		if n == len(m.otb) {
+			m.otb = nil
+		} else if n > 0 {
+			m.writeErr = err
+		}
 		if err != nil {
 			return 0, err
 		}
-		m.otb = nil
 	}
-	m.buf.Reset()
-	binary.Write(&m.buf, binary.BigEndian, uint16(4))
-	m.buf.Write(m.id[:])
-	m.buf.WriteByte(SessionStatusKeep)
-	m.buf.WriteByte(OptionData)
-	binary.Write(&m.buf, binary.BigEndian, uint16(len(b)))
-	m.buf.Write(b)
+	written := 0
+	for {
+		size := min(len(b)-written, math.MaxUint16)
+		m.buf.Reset()
+		binary.Write(&m.buf, binary.BigEndian, uint16(4))
+		m.buf.Write(m.id[:])
+		m.buf.WriteByte(SessionStatusKeep)
+		m.buf.WriteByte(OptionData)
+		binary.Write(&m.buf, binary.BigEndian, uint16(size))
+		m.buf.Write(b[written : written+size])
 
-	n, err := m.Conn.Write(m.buf.Bytes())
-	if n != m.buf.Len() {
-		if err == nil {
-			err = io.ErrShortWrite
+		n, err := m.Conn.Write(m.buf.Bytes())
+		if n != m.buf.Len() {
+			if err == nil {
+				err = io.ErrShortWrite
+			}
+			if n > 0 {
+				m.writeErr = err
+			}
 		}
-		return 0, err
+		written += max(0, n-8)
+		if err != nil || written == len(b) {
+			return written, err
+		}
 	}
-	return len(b), err
 }
 
 func (m *Conn) Close() error {
