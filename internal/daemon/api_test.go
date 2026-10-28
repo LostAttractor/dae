@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,18 +11,41 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
-func TestAPIServerReloadAndPortChanges(t *testing.T) {
-	port := freeLocalPort(t)
-	server, err := prepareAPIServer(nil, port)
-	if err != nil {
-		t.Fatal(err)
+func prepareAPIOnUnusedPort(t *testing.T, current *apiserver.Server) *apiserver.Server {
+	t.Helper()
+	for range 10 {
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := uint16(listener.Addr().(*net.TCPAddr).Port)
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		server, err := prepareAPIServer(current, port)
+		// Only another binder winning the release/rebind window is retryable.
+		if errors.Is(err, syscall.EADDRINUSE) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return server
 	}
+	t.Fatal("API port was taken during all 10 bind attempts")
+	return nil
+}
+
+func TestAPIServerReloadAndPortChanges(t *testing.T) {
+	server := prepareAPIOnUnusedPort(t, nil)
+	port := uint16(server.Addr().(*net.TCPAddr).Port)
 	t.Cleanup(server.Close)
 	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
 	t.Cleanup(client.CloseIdleConnections)
@@ -65,11 +89,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	}
 	check(server, http.StatusOK, "new CA and settings")
 
-	port = freeLocalPort(t)
-	next, err := prepareAPIServer(server, port)
-	if err != nil {
-		t.Fatal(err)
-	}
+	next := prepareAPIOnUnusedPort(t, server)
 	t.Cleanup(next.Close)
 	check(next, http.StatusServiceUnavailable, "")
 	check(server, http.StatusOK, "new CA and settings")
@@ -109,10 +129,7 @@ func TestAPIPortServesWebAndReservesAPIRoutes(t *testing.T) {
 				}
 			}
 			t.Setenv("DAE_WEB_ROOT", directory)
-			server, err := prepareAPIServer(nil, freeLocalPort(t))
-			if err != nil {
-				t.Fatal(err)
-			}
+			server := prepareAPIOnUnusedPort(t, nil)
 			defer server.Close()
 			server.SetHandler(daemonAPIHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")

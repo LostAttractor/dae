@@ -4,7 +4,6 @@ package mitm
 
 import (
 	"context"
-	"net"
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/component/plugin"
@@ -15,6 +14,16 @@ var dnsSerial atomic.Uint64
 // HandleDNS shares the plugin lifecycle with HTTP. The terminal is the core's
 // transparent relay; protocol-aware upstream querying belongs to plugins.
 func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, terminal plugin.DNSHandler, finalize func(*plugin.DNSResponse) error) (*plugin.DNSResponse, error) {
+	admission, err := h.Admit()
+	if err != nil {
+		return nil, err
+	}
+	defer admission.Release()
+	return admission.HandleDNS(ctx, request, terminal, finalize)
+}
+
+func (a *Admission) HandleDNS(ctx context.Context, request *plugin.DNSExchange, terminal plugin.DNSHandler, finalize func(*plugin.DNSResponse) error) (*plugin.DNSResponse, error) {
+	h := a.host
 	if h == nil {
 		response, err := terminal(ctx, request)
 		if err == nil && response != nil {
@@ -22,14 +31,6 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 		}
 		return response, err
 	}
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return nil, net.ErrClosed
-	}
-	h.requests.Add(1)
-	h.mu.Unlock()
-	defer h.requests.Done()
 	// An unchanged plugin instance can be shared with a new DNS chain. Results
 	// derived by plugins, including in observers invoked by the finalizer, stay
 	// separate per chain; raw upstream answers do not depend on it.
@@ -111,17 +112,19 @@ func (h *Host) ObserveDNS(ctx context.Context, request *plugin.DNSExchange, resp
 // UseDNSAddress reports whether a proxied flow to host dials its DNS address
 // instead of sending the sniffed name.
 func (h *Host) UseDNSAddress(host string) bool {
+	admission, err := h.Admit()
+	if err != nil {
+		return false
+	}
+	defer admission.Release()
+	return admission.UseDNSAddress(host)
+}
+
+func (a *Admission) UseDNSAddress(host string) bool {
+	h := a.host
 	if h == nil {
 		return false
 	}
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return false
-	}
-	h.requests.Add(1)
-	h.mu.Unlock()
-	defer h.requests.Done()
 	for _, instance := range h.instances {
 		if policy, ok := instance.Plugin.(plugin.DNSAddressPolicy); ok {
 			if use, applicable := policy.UseDNSAddress(host); applicable {

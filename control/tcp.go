@@ -60,9 +60,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		} else if !stopClose() {
 			_ = sniffer.Close()
 			closeInBackground(relay.rConn)
-			if relay.mitmRelease != nil {
-				relay.mitmRelease()
-			}
+			relay.mitm.Release()
 			relay = nil
 			err = setupCtx.Err()
 		}
@@ -91,10 +89,8 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
-	dialOption, mitmPlanner, release, err := c.prepareHTTPRoute(setupCtx, host, &RouteParam{
-		routingResult: routingResult, networkType: networkType,
-		Domain: domain, Src: src, Dest: dst,
-	})
+	param := &RouteParam{routingResult: routingResult, networkType: networkType, Domain: domain, Src: src, Dest: dst}
+	dialOption, intercepted, err := c.prepareHTTPRoute(setupCtx, host, param)
 	// Activity renews the destination's DNS evidence; failed attempts count.
 	c.domainActivity().observe(dst.Addr(), domain, observedAt)
 	if blocked, ok := errors.AsType[*routeBlocked](err); ok {
@@ -104,7 +100,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 	if err != nil {
 		return nil, err
 	}
-	if mitmPlanner != nil {
+	if intercepted != nil {
 		var policyLease *netproxy.Lease
 		if dialOption != nil {
 			policyLease = dialOption.PolicyLease
@@ -112,10 +108,8 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		return &tcpRelay{
 			lConn: sniffer, dst: dst, domain: host,
 			activity:    observe,
-			mitmHost:    c.MITMHost(),
+			mitm:        intercepted,
 			deviceMAC:   routingResult.Mac,
-			mitmPlanner: mitmPlanner,
-			mitmRelease: release,
 			routeLease:  routeLease,
 			policyLease: policyLease,
 		}, nil

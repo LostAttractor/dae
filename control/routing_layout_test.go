@@ -24,6 +24,9 @@ func TestRoutingMapLayouts(t *testing.T) {
 	if spec.Maps["routing_map"].ValueSize != 24 {
 		t.Fatal("routing_map does not use the compact match_set ABI")
 	}
+	if spec.Maps["routing_map"].MaxEntries != consts.MaxMatchSetLen {
+		t.Fatal("kernel routing capacity differs from the generated Go limit")
+	}
 	profile := spec.Maps["routing_profile_map"]
 	if spec.Maps["routing_interface_map"].MaxEntries != maxRoutingInterfaces {
 		t.Fatal("kernel interface capacity differs from the Go compiler limit")

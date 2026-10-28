@@ -545,7 +545,7 @@ func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRe
 	if outbound, exists := s.networks[networkIndex][uint8(evaluation.outbound)]; exists {
 		result.Outbounds = append(result.Outbounds, outbound)
 	}
-	name := c.dialsName(plan.override, evaluation.outbound, input.l4proto, hostname, rewritten)
+	name := c.dialsName(plan.override, evaluation.outbound, input.l4proto, hostname, rewritten, nil)
 	if selected := servingOutbound(evaluation.outbound, *networkIndex.NetworkType(), name, c.noConnectivityOutbound, s.matcher.outboundUsable); selected != evaluation.outbound {
 		decision.OriginalOutbound, decision.Outbound = decision.Outbound, s.names[uint8(selected)]
 		result.Notes = append(result.Notes, "No usable node in the sampled state; automatic recovery can change the next connection's choice.")

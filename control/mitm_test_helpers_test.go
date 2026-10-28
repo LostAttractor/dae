@@ -61,6 +61,16 @@ func rewriteTestPlugin(t *testing.T, targets map[string]string) *controlTestPlug
 	return p
 }
 
+func testMITMAdmission(t *testing.T, host *mitm.Host) *mitm.Admission {
+	t.Helper()
+	admission, err := host.Admit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(admission.Release)
+	return admission
+}
+
 func controlTestHost(t *testing.T, extension plugin.Plugin, authority *localca.Authority) *mitm.Host {
 	t.Helper()
 	if authority == nil && len(extension.Plan().Scopes) > 0 {

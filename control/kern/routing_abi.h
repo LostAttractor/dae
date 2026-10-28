@@ -2,10 +2,14 @@
 #ifndef DAE_ROUTING_ABI_H
 #define DAE_ROUTING_ABI_H
 
-/* Numeric routing ABI. This header has no dependencies on map layouts or
- * translation-unit macros. Go constants are generated from these enums.
- */
+/* Numeric routing ABI. Go constants use the same build-time capacities as BPF. */
+#if !defined(MAX_MATCH_SET_LEN) || MAX_MATCH_SET_LEN < 32 || \
+	MAX_MATCH_SET_LEN > 65536 || MAX_MATCH_SET_LEN % 32
+#error "MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]"
+#endif
+
 enum routing_limits {
+	ROUTING_MAX_MATCH_SET_LEN = MAX_MATCH_SET_LEN,
 	MAX_INTERFACE_NUM = 256,
 	/* 4096 selectors plus 4096 dynamic device overrides. */
 	MAX_HTTP_CLIENT_ENTRIES = 8192,

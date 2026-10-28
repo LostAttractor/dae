@@ -26,16 +26,24 @@ if name in ('clang', 'llvm-strip', 'node'):
     print((root / 'tool-version').read_text())
 elif name == 'go':
     if args[0] == 'env':
-        print({'GOARCH': 'amd64', 'GOVERSION': 'go1.27.3'}[args[1]])
+        print({'GOARCH': 'amd64', 'GOOS': 'linux', 'GOVERSION': 'go1.27.3'}[args[1]])
     elif args[0] == 'generate':
         record()
         if os.environ.get('FAIL_GENERATE'):
             sys.exit(1)
-        prefixes = ['control/bpf_bpfel', 'control/bpf_bpfeb'] if 'control/' in args[1] else ['trace/bpf_x86_bpfel']
+        if 'control/kern/tests/' in args[1]:
+            prefixes = ['control/kern/tests/bpftest_bpfel']
+        elif 'control/' in args[1]:
+            prefixes = ['control/bpf_bpfel', 'control/bpf_bpfeb']
+            write(root / 'internal/routingabi/abi_generated.go', os.environ['BPF_CFLAGS'])
+        else:
+            prefixes = ['trace/bpf_x86_bpfel']
         for prefix in prefixes:
             for suffix in ('.go', '.o', '.o.gz'):
                 write(root / (prefix + suffix), os.environ['BPF_CFLAGS'])
-        write(root / 'internal/routingabi/abi_generated.go', 'fixture')
+    elif args[:2] == ['test', '-c']:
+        record()
+        write(root / args[args.index('-o') + 1], 'fixture')
     else:
         raise RuntimeError(args)
 elif name == 'pnpm':
@@ -87,6 +95,7 @@ class IncrementalBuildTest(unittest.TestCase):
         result = subprocess.run(['make', '-j4', '--no-print-directory', *targets], cwd=self.root,
                                 env=dict(self.environment, **environment), text=True, capture_output=True)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+        return result
 
     def calls(self, tool):
         return [c for line in (self.root / 'calls.jsonl').read_text().splitlines()
@@ -116,6 +125,24 @@ class IncrementalBuildTest(unittest.TestCase):
         self.make('ebpf', success=False, FAIL_GENERATE='1')
         self.make('ebpf')
         self.assertEqual((self.root / '.build_tags').read_text(), 'trace\n')
+
+    def test_capacity_flags_and_kernel_test_generation(self):
+        for capacity in (32, 2048, 65536, 1024):
+            with self.subTest(capacity=capacity):
+                option = f'MAX_MATCH_SET_LEN={capacity}'
+                flags = self.make('print-bpf-capacity-flags', option).stdout.strip()
+                self.assertEqual(len(flags.split()), 5)
+                self.assertIn(f'-DMAX_MATCH_SET_LEN={capacity}', flags.split())
+                self.make('ebpf-test-build', option)
+                for name in ('internal/routingabi/abi_generated.go', 'control/bpf_bpfel.o',
+                             'control/kern/tests/bpftest_bpfel.o'):
+                    self.assertIn(f'-DMAX_MATCH_SET_LEN={capacity}', (self.root / name).read_text())
+                command = self.calls('go')[-1]
+                self.assertEqual(command[1:3], ['test', '-c'])
+                self.assertNotIn('-ldflags', command)
+        for capacity in ('0', '31', '33', '65568', '032', 'abc'):
+            with self.subTest(invalid_capacity=capacity):
+                self.make('print-bpf-capacity-flags', f'MAX_MATCH_SET_LEN={capacity}', success=False)
 
     def test_web_sources_destination_outputs_copy_and_retry(self):
         self.make('web-assets')

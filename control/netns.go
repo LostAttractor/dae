@@ -40,6 +40,7 @@ type DaeNetns struct {
 
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
+	id             int32
 }
 
 func InitDaeNetns() {
@@ -59,6 +60,9 @@ func (ns *DaeNetns) Dae0() netlink.Link {
 func (ns *DaeNetns) Dae0Peer() netlink.Link {
 	return ns.dae0peer
 }
+
+// ID is relative to the host namespace where ingress classifiers run.
+func (ns *DaeNetns) ID() int32 { return ns.id }
 
 func (ns *DaeNetns) Setup() (err error) {
 	if ns.setupDone.Load() {
@@ -155,6 +159,7 @@ func (ns *DaeNetns) setup() (err error) {
 	for _, setup := range []func() error{
 		ns.setupLinkPair,
 		ns.setupNetns,
+		ns.setupNetnsID,
 		ns.setupSysctl,
 		ns.setupIPv4Datapath,
 		ns.setupIPv6Datapath,
@@ -349,6 +354,27 @@ func (ns *DaeNetns) setupNetns() (err error) {
 		return fmt.Errorf("failed to set link lo up: %v", err)
 	}
 	return
+}
+
+func (ns *DaeNetns) setupNetnsID() error {
+	id, err := netlink.GetNetNsIdByFd(int(ns.daeNs))
+	if err != nil {
+		return fmt.Errorf("get dae netns ID: %w", err)
+	}
+	if id < 0 {
+		if err := netlink.SetNetNsIdByFd(int(ns.daeNs), -1); err != nil && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("assign dae netns ID: %w", err)
+		}
+		id, err = netlink.GetNetNsIdByFd(int(ns.daeNs))
+		if err != nil {
+			return fmt.Errorf("get assigned dae netns ID: %w", err)
+		}
+	}
+	if id < 0 {
+		return errors.New("dae netns ID was not assigned")
+	}
+	ns.id = int32(id)
+	return nil
 }
 
 func (ns *DaeNetns) setupSysctl() (err error) {

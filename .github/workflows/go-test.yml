@@ -27,6 +27,9 @@ on:
       - "scripts/update-http2.py"
       - "scripts/generate-config-parser.py"
       - "scripts/tests/test_incremental_build.py"
+      - "scripts/ablation.py"
+      - "scripts/runtime-ablation.py"
+      - "scripts/tests/test_runtime_ablation.py"
       - "scripts/http2/**"
       - "internal/http2/**"
   push:
@@ -57,6 +60,9 @@ on:
       - "scripts/update-http2.py"
       - "scripts/generate-config-parser.py"
       - "scripts/tests/test_incremental_build.py"
+      - "scripts/ablation.py"
+      - "scripts/runtime-ablation.py"
+      - "scripts/tests/test_runtime_ablation.py"
       - "scripts/http2/**"
       - "internal/http2/**"
 
@@ -159,9 +165,11 @@ jobs:
       - name: Build standalone Web assets
         run: make web
 
-      - name: Test incremental build invalidation
+      - name: Test build invalidation and ablation contracts
         if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'
-        run: python3 -B -m unittest discover -s scripts/tests -p test_incremental_build.py
+        run: |
+          python3 -B scripts/tests/test_incremental_build.py
+          python3 -B scripts/tests/test_runtime_ablation.py
 
       - name: Set up Go
         uses: actions/setup-go@v6

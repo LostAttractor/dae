@@ -128,7 +128,10 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	param := &RouteParam{Src: source, Dest: destination, Domain: "video.example", routingResult: &routingResult{}}
-	bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, source, destination, *param.routingResult, option), release, nil)
+	bridge, err := plane.newMITMQUIC(t.Context(), nil, param, &mitmRoute{admission: testMITMAdmission(t, host), planner: plane.mitmUpstreamPlanner("udp", param.Domain, source, destination, *param.routingResult, option), releaseDialer: release}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer bridge.Close()
 	clientQUIC := &quic.Transport{Conn: bridge}
 	defer clientQUIC.Close()
@@ -180,7 +183,10 @@ func TestMITMQUICAbortEndsSourceLifetime(t *testing.T) {
 			plane := &ControlPlane{mitmHost: host, udpEndpoints: &endpoints}
 			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &routingResult{}}
 			planner := plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option)
-			bridge := plane.newMITMQUIC(param, planner, nil, route)
+			bridge, err := plane.newMITMQUIC(t.Context(), nil, param, &mitmRoute{admission: testMITMAdmission(t, host), planner: planner}, route)
+			if err != nil {
+				t.Fatal(err)
+			}
 			lease := netproxy.DependencyOf(bridge)
 			endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute})
 			endpoint.mitm, endpoint.firstDst = true, dst

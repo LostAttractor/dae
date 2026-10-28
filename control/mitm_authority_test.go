@@ -84,11 +84,11 @@ func TestHTTP2CoalescedAuthorityRoutes(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
 		})
 	}
-	retained, _, release, err := plane.prepareHTTPRoute(t.Context(), param.Domain, param)
-	if err != nil || retained == nil || release == nil {
+	retained, intercepted, err := plane.prepareHTTPRoute(t.Context(), param.Domain, param)
+	if err != nil || retained == nil || intercepted == nil {
 		t.Fatalf("inspection route: %+v, %v", retained, err)
 	}
-	defer release()
+	defer intercepted.Release()
 	// Observe the same target selection used by the production planner, before
 	// it turns options into a pool key and dial callback.
 	planner := &httpRoutePlanner{plane: plane, network: "tcp", original: httpTarget{host: param.Domain, port: 443},

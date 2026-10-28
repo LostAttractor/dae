@@ -90,26 +90,10 @@ func (i OutboundIndex) IsReserved() bool {
 	return !strings.HasPrefix(i.String(), "<index: ")
 }
 
-var (
-	MaxMatchSetLen_ = ""
-	MaxMatchSetLen  = 32 * 32
-)
+const MaxMatchSetLen = routingabi.ROUTING_MAX_MATCH_SET_LEN
 
 // A policy assumption, independent of response caching and DNSSEC validity.
 const DefaultDNSRetentionWindow = 7 * 24 * time.Hour
-
-func init() {
-	if MaxMatchSetLen_ != "" {
-		i, err := strconv.Atoi(MaxMatchSetLen_)
-		if err != nil {
-			panic(err)
-		}
-		MaxMatchSetLen = i
-	}
-	if MaxMatchSetLen < 32 || MaxMatchSetLen > 65536 || MaxMatchSetLen%32 != 0 {
-		panic("MaxMatchSetLen must be a multiple of 32 in [32, 65536]: " + strconv.Itoa(MaxMatchSetLen))
-	}
-}
 
 type L4ProtoType uint8
 

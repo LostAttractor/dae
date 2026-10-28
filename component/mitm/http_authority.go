@@ -3,6 +3,7 @@
 package mitm
 
 import (
+	"container/list"
 	"net"
 	"net/http"
 	"net/netip"
@@ -98,22 +99,39 @@ func requestScheme(r *http.Request, connectionScheme string) string {
 }
 
 // Middleware belongs to each incoming authority, before any plugin rewrite.
-// Keep the original chain and a bounded cache of coalesced chains. Wildcard
-// scopes can admit more names; uncached chains are rebuilt rather than retained.
+// Retain the original chain and the 32 most recently used coalesced chains.
 func (h *Host) chainsForFlow(original plugin.Flow, terminal func(plugin.Flow) plugin.Handler) func(plugin.Flow) plugin.Handler {
-	const maxChains = 33 // Original authority plus 32 coalesced authorities.
-	chains := map[string]plugin.Handler{original.Host: h.chain(original, terminal(original))}
+	originalChain := h.chain(original, terminal(original))
+	type cachedChain struct {
+		host string
+		get  func() plugin.Handler
+	}
+	chains := make(map[string]*list.Element)
+	var recent list.List
 	var mu sync.Mutex
 	return func(flow plugin.Flow) plugin.Handler {
+		if flow.Host == original.Host {
+			return originalChain
+		}
 		mu.Lock()
-		defer mu.Unlock()
-		if chain := chains[flow.Host]; chain != nil {
-			return chain
+		element := chains[flow.Host]
+		if element == nil {
+			chain := cachedChain{host: flow.Host, get: sync.OnceValue(func() plugin.Handler {
+				return h.chain(flow, terminal(flow))
+			})}
+			element = recent.PushFront(chain)
+			chains[flow.Host] = element
+			if recent.Len() > 32 {
+				oldest := recent.Back()
+				delete(chains, oldest.Value.(cachedChain).host)
+				recent.Remove(oldest)
+			}
+		} else {
+			recent.MoveToFront(element)
 		}
-		chain := h.chain(flow, terminal(flow))
-		if len(chains) < maxChains {
-			chains[flow.Host] = chain
-		}
-		return chain
+		get := element.Value.(cachedChain).get
+		mu.Unlock()
+		// Chain construction for one authority must not block unrelated streams.
+		return get()
 	}
 }

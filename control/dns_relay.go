@@ -146,7 +146,7 @@ func (c *ControlPlane) dnsUpstreamOption(ctx context.Context, network, address, 
 	if err != nil {
 		return nil, err
 	}
-	return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false)
+	return c.selectDialOption(ctx, param, decision.outbound, decision.mark, false, nil)
 }
 
 // dnsDialers dial the node selected for each dial. Unbound exchanges select
@@ -233,7 +233,12 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 		}
 		return nil
 	}
-	host := c.MITMHost()
+	admission, err := c.admitMITM(ctx)
+	if err != nil {
+		return err
+	}
+	defer admission.Release()
+	host := admission.Host()
 	if host != nil {
 		// Auxiliary HTTP always selects its own target using the original DNS
 		// client's identity, before looking up a policy-keyed connection pool.
@@ -243,7 +248,7 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 		request.Client = client
 		defer closeClient()
 	}
-	_, err := host.HandleDNS(ctx, request, terminal, func(response *plugin.DNSResponse) error {
+	_, err = admission.HandleDNS(ctx, request, terminal, func(response *plugin.DNSResponse) error {
 		query := request.MessageCopy()
 		var wire []byte
 		var err error
@@ -254,14 +259,18 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 			if message == nil {
 				return errors.New("empty DNS response")
 			}
-			if request.Network == "udp" {
-				limit := dns.MinMsgSize
-				if query != nil {
-					if opt := query.IsEdns0(); opt != nil {
-						limit = max(limit, int(opt.UDPSize()))
+			// Transaction signatures cover wire bytes; even Truncate can change compression.
+			if !response.HasAdditional(dns.TypeTSIG, dns.TypeSIG) {
+				if request.Network == "udp" {
+					limit := dns.MinMsgSize
+					if query != nil {
+						if opt := query.IsEdns0(); opt != nil {
+							limit = max(limit, int(opt.UDPSize()))
+						}
 					}
+					message.Truncate(limit)
 				}
-				message.Truncate(limit)
+				message.Compress = true
 			}
 			wire, err = message.Pack()
 		}

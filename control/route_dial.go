@@ -58,7 +58,7 @@ func (c *ControlPlane) selectAddress(ctx context.Context, network string, source
 	if err != nil {
 		return nil, err
 	}
-	return c.routeDestination(ctx, param, domain)
+	return c.routeDestination(ctx, param, domain, nil)
 }
 
 func (o *DialOption) dialerForConnection() netproxy.Dialer {
@@ -103,15 +103,21 @@ func servingOutbound(outbound consts.OutboundIndex, network common.NetworkType, 
 // client selects its address family and every address it tries is routed. UDP
 // relays keep IPs: sniffed QUIC hostnames break full-cone reply addressing. An
 // explicit destination always applies.
-func (c *ControlPlane) dialsName(override bool, outbound consts.OutboundIndex, l4proto consts.L4ProtoType, name string, explicit bool) bool {
-	return override && !explicit && outbound != consts.OutboundDirect && l4proto != consts.L4ProtoType_UDP && !c.useDNSAddress(name)
+func (c *ControlPlane) dialsName(override bool, outbound consts.OutboundIndex, l4proto consts.L4ProtoType, name string, explicit bool, useDNSAddress func(string) bool) bool {
+	if !override || explicit || outbound == consts.OutboundDirect || l4proto == consts.L4ProtoType_UDP {
+		return false
+	}
+	if useDNSAddress == nil {
+		useDNSAddress = c.useDNSAddress
+	}
+	return !useDNSAddress(name)
 }
 
 // selectDialOption selects a node of the routed group for the dial target's
 // family, waiting within ctx while the group elects one. A group with no
 // usable node degrades by no_connectivity_behavior; an explicit HTTP policy
 // never degrades. A request whose context ended fails instead.
-func (c *ControlPlane) selectDialOption(ctx context.Context, p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
+func (c *ControlPlane) selectDialOption(ctx context.Context, p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool, useDNSAddress func(string) bool) (*DialOption, error) {
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
 			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
@@ -121,7 +127,7 @@ func (c *ControlPlane) selectDialOption(ctx context.Context, p *RouteParam, outb
 	if outboundIndex == consts.OutboundBlock {
 		return nil, &routeBlocked{}
 	}
-	override = c.dialsName(override, outboundIndex, p.networkType.L4Proto.ToL4ProtoType(), p.Domain, p.destination.IsValid())
+	override = c.dialsName(override, outboundIndex, p.networkType.L4Proto.ToL4ProtoType(), p.Domain, p.destination.IsValid(), useDNSAddress)
 	target := func(override bool) (string, common.NetworkType, bool) {
 		dialTarget := p.dialTarget(override)
 		networkType := p.networkType

@@ -19,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
@@ -378,13 +377,12 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 		Domain: domain, Src: src, Dest: ue.firstDst,
 	}
 	var option *DialOption
-	var planner mitm.UpstreamPlanner
-	var release func()
+	var intercepted *mitmRoute
 	if pending.sniffer.IsHTTP3() {
 		if param.Domain == "" {
 			param.Domain = ue.firstDst.Addr().String()
 		}
-		option, planner, release, err = c.prepareHTTPRoute(ctx, param.Domain, param)
+		option, intercepted, err = c.prepareHTTPRoute(ctx, param.Domain, param)
 	} else {
 		option, err = c.RouteDialOption(ctx, param)
 	}
@@ -420,7 +418,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 		return err
 	}
 	var conn net.PacketConn
-	ue.mitm = planner != nil
+	ue.mitm = intercepted != nil
 	if ue.mitm {
 		if option != nil {
 			ue.dialer = option.Dialer
@@ -430,13 +428,8 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 				ue.origin = netproxy.OriginTarget
 			}
 		}
-		conn, err = p.packetBudget().Open(ctx, "", func(context.Context, string) (net.PacketConn, error) {
-			return c.newMITMQUIC(param, planner, release, ue.routeLease), nil
-		})
+		conn, err = c.newMITMQUIC(ctx, p.packetBudget(), param, intercepted, ue.routeLease)
 		if err != nil {
-			if release != nil {
-				release()
-			}
 			p.removeInBackgroundLocked(src, ue)
 			if errors.Is(err, netproxy.ErrPacketCapacity) {
 				discard(dropResourceLimit)

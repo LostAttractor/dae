@@ -61,8 +61,7 @@ func (c *planeHTTP) MITMStatus() api.PluginStatus {
 
 // Pure inspection can use an existing route. Request transformations are
 // admitted separately, before any terminal route for the old target.
-func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *routingResult) mitm.HTTPMode {
-	host := c.MITMHost()
+func (c *ControlPlane) mitmMode(host *mitm.Host, domain string, src, dst netip.AddrPort, result *routingResult) mitm.HTTPMode {
 	if host == nil {
 		return mitm.HTTPBypass
 	}
@@ -112,30 +111,76 @@ func (c *ControlPlane) mitmState(ip netip.Addr, mac [6]byte) (enabled bool, over
 	return enabled, override, c.httpClients.policy.Default(ip, mac)
 }
 
+// mitmRoute owns admission and any retained dialer until setup fails or the
+// protocol connection ends. TCP and QUIC transfer this owner as a unit.
+type mitmRoute struct {
+	admission     *mitm.Admission
+	planner       mitm.UpstreamPlanner
+	releaseDialer func()
+}
+
+func (r *mitmRoute) Release() {
+	if r == nil {
+		return
+	}
+	if r.releaseDialer != nil {
+		r.releaseDialer()
+	}
+	r.admission.Release()
+}
+
 // Request-transforming scopes are admitted before choosing any upstream route
 // or dialer. A candidate miss/client exclusion follows ordinary connection
 // routing, including destination rules; pure inspection retains its route.
+// A non-nil intercepted result transfers all MITM ownership to the caller.
 // host is the HTTP authority candidate. It may be the destination IP for TLS
 // without SNI; p.Domain keeps the original sniffed name for ordinary routing.
-func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, host string, p *RouteParam) (*DialOption, mitm.UpstreamPlanner, func(), error) {
+func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, host string, p *RouteParam) (option *DialOption, intercepted *mitmRoute, err error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	mode := c.mitmMode(host, p.Src, p.Dest, p.routingResult)
-	if mode == mitm.HTTPRequest {
-		return nil, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, nil), nil, nil
+	c.mitmMu.RLock()
+	bypass := c.mitmHost == nil && c.mitmHandoff == nil
+	c.mitmMu.RUnlock()
+	if bypass {
+		option, err := c.routeDialOption(ctx, p, func(string) bool { return false })
+		return option, nil, err
 	}
-	option, err := c.RouteDialOption(ctx, p)
+	admission, err := c.admitMITM(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
+	}
+	defer func() {
+		if intercepted == nil {
+			admission.Release()
+		}
+	}()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(admission.Context(), cancel)
+	defer stop()
+	mode := c.mitmMode(admission.Host(), host, p.Src, p.Dest, p.routingResult)
+	if mode == mitm.HTTPRequest {
+		return nil, &mitmRoute{
+			admission: admission,
+			planner:   c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, nil),
+		}, nil
+	}
+	option, err = c.routeDialOption(ctx, p, admission.UseDNSAddress)
+	if err != nil {
+		return nil, nil, err
 	}
 	if mode != mitm.HTTPInspect {
-		return option, nil, nil, nil
+		return option, nil, nil
 	}
 	release, err := option.Dialer.Retain()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	c.logDial(p.Src, p.Dest, p.Domain, option, option.NetworkType.String(), p.routingResult)
-	return option, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, option), release, nil
+	return option, &mitmRoute{
+		admission:     admission,
+		planner:       c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, option),
+		releaseDialer: release,
+	}, nil
 }

@@ -108,6 +108,7 @@ func fullLoadBpfObjects(
 		return err
 	}
 	constants := map[string]any{
+		"proxy_netns_id": GetDaeNetns().ID(),
 		"PARAM": bpfDaeParam{
 			ControlPlanePid:      uint32(os.Getpid()),
 			Dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),

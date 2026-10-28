@@ -172,7 +172,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		load = takePrepared
 	}
 	defer func() {
-		if paused {
+		if _, fatal := errors.AsType[*activationError](err); paused && !fatal {
 			a.publishAPI()
 		}
 	}()
@@ -215,9 +215,6 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	a.report("Publishing replacement routing...")
 	pauseAPI()
 	if err := a.publishPlane(candidate, abort); err != nil {
-		if _, fatal := errors.AsType[*activationError](err); fatal {
-			paused = false // Partially replaced attachments require terminal shutdown.
-		}
 		return "", err
 	}
 	a.setCertificates(certificates)
@@ -244,7 +241,10 @@ func (a *application) replaceServices(next *config.Config, inputs *controlInputs
 	}
 	if !unchanged {
 		if err := a.plane.ReplaceMITM(*prepared, next.Plugins); err != nil {
-			return "", err
+			if errors.Is(err, control.ErrPublicationRejected) {
+				return "", err
+			}
+			return "", &activationError{err}
 		}
 		*prepared = control.PreparedMITM{} // The plane now owns this host.
 	}

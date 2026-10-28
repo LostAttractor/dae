@@ -30,17 +30,36 @@ func observabilityState() (pprof *http.Server, pprofListenPort uint16, metrics *
 	return pprofService.server, pprofService.port, metricsService.server, metricsService.port
 }
 
+// Keep the port bound until preparation takes ownership of its real listener.
 func freeLocalPort(t *testing.T) uint16 {
 	t.Helper()
-	listener, err := net.Listen("tcp", "localhost:0")
+	port, _ := reserveObservabilityPort(t)
+	return port
+}
+
+func reserveObservabilityPort(t *testing.T) (uint16, net.Listener) {
+	t.Helper()
+	listen := listenObservability
+	listener, err := listen("localhost:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	port := uint16(listener.Addr().(*net.TCPAddr).Port)
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	reserved := true
+	listenObservability = func(address string) (net.Listener, error) {
+		if reserved && address == fmt.Sprintf("localhost:%d", port) {
+			reserved = false
+			return listener, nil
+		}
+		return listen(address)
 	}
-	return port
+	t.Cleanup(func() {
+		listenObservability = listen
+		if reserved {
+			_ = listener.Close()
+		}
+	})
+	return port, listener
 }
 
 func closedLocalListener(t *testing.T) net.Listener {
@@ -53,6 +72,25 @@ func closedLocalListener(t *testing.T) net.Listener {
 		t.Fatal(err)
 	}
 	return listener
+}
+
+func TestObservabilityPreparationTakesHeldListener(t *testing.T) {
+	port, listener := reserveObservabilityPort(t)
+	unexpected, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	if unexpected != nil {
+		_ = unexpected.Close()
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("reserved port was not held: %v", err)
+	}
+	update, err := prepareObservabilityServers(port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Close()
+	if update.targets[0].listener != listener {
+		t.Fatal("preparation did not take the reserved listener")
+	}
 }
 
 func TestObservabilityListenersDeclareTCP(t *testing.T) {
@@ -266,9 +304,6 @@ func TestObservabilityServersCanSwapPorts(t *testing.T) {
 	})
 	pprofInitial := freeLocalPort(t)
 	metricsInitial := freeLocalPort(t)
-	for metricsInitial == pprofInitial {
-		metricsInitial = freeLocalPort(t)
-	}
 	startPprofServer(pprofInitial)
 	startMetricsServer(metricsInitial)
 
@@ -359,7 +394,7 @@ func TestObservabilityPreparationRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	pprofTarget := freeLocalPort(t)
+	pprofTarget, reservedPprof := reserveObservabilityPort(t)
 	metricsTarget := uint16(occupied.Addr().(*net.TCPAddr).Port)
 	app := &application{conf: mitmConfigForTest(t, ""), datapath: control.NewRuntime()}
 	defer app.datapath.Close()
@@ -373,11 +408,9 @@ func TestObservabilityPreparationRollback(t *testing.T) {
 	if app.conf.Global.MetricsPort != oldPort || pprof != nil || current != oldServer || currentPort != oldPort {
 		t.Fatal("rejected reload changed configuration or live listeners")
 	}
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", pprofTarget))
-	if err != nil {
-		t.Fatalf("rejected preparation leaked reserved pprof port: %v", err)
+	if err := reservedPprof.(*net.TCPListener).SetDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("rejected preparation leaked reserved pprof listener: %v", err)
 	}
-	listener.Close()
 	update, err := prepareObservabilityServers(oldPort, 0)
 	if err != nil {
 		t.Fatal(err)

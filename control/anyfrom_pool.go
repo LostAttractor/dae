@@ -39,6 +39,7 @@ type Anyfrom struct {
 	socketOnce     sync.Once
 	socket         *netproxy.UDPSocket
 	closed         atomic.Bool
+	closeMu        sync.Mutex
 }
 
 // Activity advances the deadline; the eviction callback rearms itself if early.
@@ -54,17 +55,26 @@ func (a *Anyfrom) refreshIdleDeadline() bool {
 
 // Close can interrupt an in-flight write without waiting for its deadline.
 func (a *Anyfrom) Close() error {
+	a.closeMu.Lock()
+	defer a.closeMu.Unlock()
+	err := a.conn.Close()
+	// A replacement must not reuse this slot until the descriptor is closed.
 	a.closed.Store(true)
-	return a.conn.Close()
+	return err
 }
 
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
-	pool map[netip.AddrPort]*Anyfrom
-	mu   sync.RWMutex
+	pool     map[netip.AddrPort]*Anyfrom
+	creating map[netip.AddrPort]chan struct{}
+	mu       sync.RWMutex
+	limit    int
+	listen   func(netip.AddrPort) (*net.UDPConn, error)
 }
 
 var DefaultAnyfromPool = NewAnyfromPool()
+
+var dropReplySocketLimit = netproxy.NewDrop(netproxy.DropDownload, "reply_socket_limit")
 
 var anyfromSoMark atomic.Uint32
 
@@ -74,7 +84,11 @@ func SetAnyfromSoMark(mark uint32) {
 
 func NewAnyfromPool() *AnyfromPool {
 	return &AnyfromPool{
-		pool: make(map[netip.AddrPort]*Anyfrom, 64),
+		pool:     make(map[netip.AddrPort]*Anyfrom, 64),
+		creating: make(map[netip.AddrPort]chan struct{}),
+		// Each reply address costs one descriptor, including in-flight creation.
+		limit:  maxUDPSources,
+		listen: listenAnyfrom,
 	}
 }
 
@@ -95,21 +109,55 @@ func (p *AnyfromPool) TryGet(lAddr netip.AddrPort) *Anyfrom {
 // if ttl <= 0, DefaultAnyfromCacheTTL is used so entries are always pooled and closed on idle.
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
 	p.mu.Lock()
+	for {
+		if af := p.pool[lAddr]; af != nil {
+			if af.refreshIdleDeadline() {
+				p.mu.Unlock()
+				return af, false, nil
+			}
+			delete(p.pool, lAddr)
+			if af.idleEvictTimer != nil {
+				af.idleEvictTimer.Stop()
+			}
+		}
+		if ready := p.creating[lAddr]; ready != nil {
+			p.mu.Unlock()
+			<-ready
+			p.mu.Lock()
+			continue
+		}
+		break
+	}
+	if len(p.pool)+len(p.creating) >= p.limit {
+		p.mu.Unlock()
+		dropReplySocketLimit.Add(1)
+		return nil, true, netproxy.ErrPacketDropped
+	}
+	ready := make(chan struct{})
+	p.creating[lAddr] = ready
+	p.mu.Unlock()
+
+	uConn, err := p.listen(lAddr)
+	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	ttl = normalizeAnyfromPoolTTL(ttl)
-
-	af, ok := p.pool[lAddr]
-	if ok {
-		if af.refreshIdleDeadline() {
-			return af, false, nil
-		}
-		delete(p.pool, lAddr)
-		if af.idleEvictTimer != nil {
-			af.idleEvictTimer.Stop()
-		}
+	delete(p.creating, lAddr)
+	defer close(ready)
+	if err != nil {
+		return nil, true, err
 	}
 
+	ttl = normalizeAnyfromPoolTTL(ttl)
+	af := &Anyfrom{
+		conn:         uConn,
+		idleTTL:      ttl,
+		idleDeadline: time.Now().Add(ttl),
+	}
+	af.idleEvictTimer = time.AfterFunc(ttl, func() { p.expire(lAddr, af) })
+	p.pool[lAddr] = af
+	return af, true, nil
+}
+
+func listenAnyfrom(lAddr netip.AddrPort) (*net.UDPConn, error) {
 	lc := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
 			if err := transparentControl(c); err != nil {
@@ -127,19 +175,9 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 		return lc.ListenPacket(context.Background(), "udp", lAddr.String())
 	})
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
-
-	uConn := pc.(*net.UDPConn)
-	af = &Anyfrom{
-		conn:         uConn,
-		idleTTL:      ttl,
-		idleDeadline: time.Now().Add(ttl),
-	}
-	af.idleEvictTimer = time.AfterFunc(ttl, func() { p.expire(lAddr, af) })
-	p.pool[lAddr] = af
-
-	return af, true, nil
+	return pc.(*net.UDPConn), nil
 }
 
 func (p *AnyfromPool) expire(addr netip.AddrPort, conn *Anyfrom) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build isolated physinif mutations and measure the real bridge classifier.
 
-Run after `make ebpf` and generation of control/kern/tests/bpf_test.go.
+Generates production and kernel-test BPF using Make's capacity settings.
 Requires root or passwordless sudo, br_netfilter, clang, Go and taskset.
 All source mutations and network/sysctl changes are confined to temporary
 copies and test namespaces. No experimental flags enter production code.
@@ -31,6 +31,8 @@ def main():
     print(f"Results: {output}", flush=True)
 
     run = make_runner(root, output)
+    run(["make", "ebpf-test-build"], "prepare.log")
+    capacity_flags = run(["make", "-s", "--no-print-directory", "print-bpf-capacity-flags"], "capacities.log").split()
 
     # Each mutation removes one link in the provenance chain. Require a specific
     # assertion failure, so a verifier/build/privilege error cannot count as success.
@@ -74,7 +76,7 @@ def main():
     for name, directory in directories.items():
         obj = directory / "ablation.o"
         run([os.environ.get("CLANG", "clang"), "-O2", "-g", "-target", "bpfel", "-mcpu=v1",
-             "-Wall", "-Werror", "-I", str(root / "kern"),
+             "-Wall", "-Werror", *capacity_flags, "-I", str(root / "kern"),
              "-c", str(directory / "tests/bpf_test.c"), "-o", str(obj)], f"{name}-compile.log")
         objects[name] = obj
 

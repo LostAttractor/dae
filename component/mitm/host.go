@@ -139,7 +139,6 @@ type Host struct {
 	closed           bool
 	workersStopped   bool
 	requests         sync.WaitGroup
-	serving          sync.WaitGroup
 	connections      map[io.Closer]func(context.Context) error
 	forceContext     context.Context
 	forceCancel      context.CancelFunc

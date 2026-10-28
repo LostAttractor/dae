@@ -32,6 +32,21 @@ type DialPacketContext func(context.Context, string) (net.PacketConn, net.Addr, 
 // associations by closing conn. Intercepted requests use HTTP/3 upstream;
 // auxiliary plugin HTTP requests use their TCP planner, with no implicit UDP-to-TCP fallback.
 func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan UpstreamPlanner, packetPlan UpstreamPlanner) error {
+	admission, err := h.Admit()
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	defer admission.Release()
+	return admission.ServePacketConn(conn, flow, plan, packetPlan)
+}
+
+func (a *Admission) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan UpstreamPlanner, packetPlan UpstreamPlanner) error {
+	h := a.host
+	if h == nil {
+		_ = conn.Close()
+		return net.ErrClosed
+	}
 	if err := h.track(conn); err != nil {
 		_ = conn.Close()
 		return err

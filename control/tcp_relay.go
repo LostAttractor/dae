@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -33,16 +32,12 @@ type tcpRelay struct {
 	activity       func()
 
 	// DNS and MITM take over the accepted connection instead of copying bytes.
-	custom      func() error
-	mitmHost    *mitm.Host
-	mitmPlanner mitm.UpstreamPlanner
-	mitmRelease func()
+	custom func() error
+	mitm   *mitmRoute
 }
 
 func (r *tcpRelay) run() (err error) {
-	if r.mitmRelease != nil {
-		defer r.mitmRelease()
-	}
+	defer r.mitm.Release()
 	if r.rConn != nil {
 		defer r.rConn.Close()
 	}
@@ -50,7 +45,7 @@ func (r *tcpRelay) run() (err error) {
 	if r.custom != nil {
 		return r.custom()
 	}
-	if r.mitmHost != nil {
+	if r.mitm != nil {
 		return r.runMITM()
 	}
 	traffic := stats.DefaultStore.OpenDeviceConnection(r.statsPath, r.fallback, r.deviceMAC)
@@ -78,7 +73,7 @@ func (r *tcpRelay) runMITM() error {
 		_ = r.lConn.Close()
 	})
 	defer stop()
-	return r.mitmHost.ServeConn(r.lConn, plugin.Flow{Host: r.domain, Port: r.dst.Port(), SourceMAC: r.deviceMAC}, mitmPlannerWithLease(r.mitmPlanner, lease))
+	return r.mitm.admission.ServeConn(r.lConn, plugin.Flow{Host: r.domain, Port: r.dst.Port(), SourceMAC: r.deviceMAC}, mitmPlannerWithLease(r.mitm.planner, lease))
 }
 
 // copyTCP coordinates the two copy workers independently of their copy method.

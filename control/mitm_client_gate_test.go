@@ -111,7 +111,7 @@ func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
 			destination := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), test.port)
-			if got := plane.mitmMode(test.host, source, destination, result) != mitm.HTTPBypass; got != test.want {
+			if got := plane.mitmMode(plane.MITMHost(), test.host, source, destination, result) != mitm.HTTPBypass; got != test.want {
 				t.Fatalf("client gate = %v, want %v", got, test.want)
 			}
 			if *result != beforeResult {
@@ -280,22 +280,20 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 					src := netip.MustParseAddrPort(test.source)
 					dst := netip.MustParseAddrPort("198.51.100.1:443")
 					result := &routingResult{Outbound: uint8(test.outbound), Mark: 37, Mac: test.mac}
-					option, planner, release, err := plane.prepareHTTPRoute(context.Background(), domain, &RouteParam{
-						routingResult: result, Domain: domain, Src: src, Dest: dst,
-						networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
-					})
+					param := &RouteParam{routingResult: result, Domain: domain, Src: src, Dest: dst,
+						networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}}
+					option, intercepted, err := plane.prepareHTTPRoute(context.Background(), domain, param)
 					if err != nil {
 						return err
 					}
-					selected := planner != nil
+					selected := intercepted != nil
 					if selected != test.selected || result.Mark != 37 || option.Outbound != plane.outbounds[test.outbound] || option.DialTarget != dst.String() {
 						return fmt.Errorf("gate changed route: selected=%v option=%+v mark=%d", selected, option, result.Mark)
 					}
 					path, fallback := option.trafficAttribution()
 					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, dst: dst, domain: domain}
 					if selected {
-						relay.mitmRelease = release
-						relay.mitmHost, relay.mitmPlanner = host, planner
+						relay.mitm = intercepted
 					} else {
 						relay.rConn, err = option.dialerForConnection().DialContext(context.Background(), "tcp", option.DialTarget)
 						if err != nil {

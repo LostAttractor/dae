@@ -67,11 +67,12 @@ func TestHTTPRequestRewritePoolUsesCurrentRouteAndMark(t *testing.T) {
 			dials.Add(1)
 			return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
 		})
-	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
-	if err != nil || option != nil || planner == nil || release != nil {
+	option, intercepted, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+	if err != nil || option != nil || intercepted == nil {
 		t.Fatalf("premature selection: %+v, %v", option, err)
 	}
-	handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, planner)
+	defer intercepted.Release()
+	handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, intercepted.planner)
 	defer closePools()
 	request := func(want int) {
 		t.Helper()
@@ -194,9 +195,9 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+			option, intercepted, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 			if test.denied {
-				if _, blocked := errors.AsType[*routeBlocked](err); !blocked || planner != nil {
+				if _, blocked := errors.AsType[*routeBlocked](err); !blocked || intercepted != nil {
 					t.Fatal("client exclusion bypassed original routing")
 				}
 				return
@@ -204,13 +205,11 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if release != nil {
-				defer release()
-			}
-			if option != nil || planner == nil {
+			defer intercepted.Release()
+			if option != nil || intercepted == nil {
 				t.Fatal("local response was stopped by original target block")
 			}
-			handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, planner)
+			handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, intercepted.planner)
 			defer closePools()
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, httptest.NewRequest("GET", "http://original.example/old", nil))
@@ -234,8 +233,8 @@ func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 			if ambiguous {
 				registry.Upsert("outside.example.", param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("outside.example"), 3600, time.Now())
 			}
-			option, planner, _, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
-			if planner != nil {
+			option, intercepted, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+			if intercepted != nil {
 				t.Fatal("hostname-less candidate entered MITM")
 			}
 			if ambiguous {
@@ -279,11 +278,12 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
 		})
 	}
-	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
-	if err != nil || option != nil || planner == nil || release != nil {
+	option, intercepted, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+	if err != nil || option != nil || intercepted == nil {
 		t.Fatalf("request setup: %+v, %v", option, err)
 	}
-	handler, closePools := plane.mitmHost.Handler("https", "original.example", 443, planner)
+	defer intercepted.Release()
+	handler, closePools := plane.mitmHost.Handler("https", "original.example", 443, intercepted.planner)
 	defer closePools()
 	frontend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor != 2 {

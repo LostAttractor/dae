@@ -96,11 +96,13 @@ domain(full: original.example) -> block`)
 				pending.Outbound = uint8(consts.OutboundControlPlaneRouting)
 				param := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort(option.DialTarget), Domain: "original.example", routingResult: &pending, networkType: *common.NetworkTCP4.NetworkType()}
 				var selected *DialOption
-				var release func()
-				selected, planner, release, err = plane.prepareHTTPRoute(context.Background(), param.Domain, param)
-				if err != nil || selected != nil || planner == nil || release != nil {
-					t.Fatalf("request capture committed old target routing: option=%+v planner=%v release=%v err=%v", selected, planner != nil, release != nil, err)
+				var intercepted *mitmRoute
+				selected, intercepted, err = plane.prepareHTTPRoute(context.Background(), param.Domain, param)
+				if err != nil || selected != nil || intercepted == nil {
+					t.Fatalf("request capture committed old target routing: option=%+v intercepted=%v err=%v", selected, intercepted != nil, err)
 				}
+				defer intercepted.Release()
+				planner = intercepted.planner
 			}
 			handler, closeTransport := host.Handler("http", "original.example", 80, planner)
 			defer closeTransport()

@@ -49,7 +49,7 @@ func TestDialTargetOverrideAppliesOnlyToProxies(t *testing.T) {
 		{3, common.NetworkTCP4.NetworkType(), destination.String()},
 	} {
 		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: destination, Domain: "example.com", networkType: *test.network, routingResult: &routingResult{}}
-		option, err := plane.selectDialOption(t.Context(), p, test.outbound, 0, true)
+		option, err := plane.selectDialOption(t.Context(), p, test.outbound, 0, true, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,12 +182,12 @@ func TestFailedElectionDegradesWithoutQueueing(t *testing.T) {
 		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"),
 			networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{}}
 		began := time.Now()
-		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false)
+		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false, nil)
 		if err != nil || option.OriginalOutbound != group || !option.Direct || time.Since(began) == 0 || time.Since(began) >= time.Second {
 			t.Fatalf("startup election did not degrade after its result: %+v, %v after %v", option, err, time.Since(began))
 		}
 		began = time.Now()
-		option, err = plane.selectDialOption(t.Context(), p, 2, 0, false)
+		option, err = plane.selectDialOption(t.Context(), p, 2, 0, false, nil)
 		if err != nil || option.OriginalOutbound != group || time.Since(began) != 0 {
 			t.Fatalf("election backoff queued a request: %v after %v", err, time.Since(began))
 		}
@@ -204,7 +204,7 @@ func TestRewrittenDestinationSelectsByItsFamily(t *testing.T) {
 		}
 		p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"),
 			destination: netip.MustParseAddrPort("[2001:db8::2]:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{}}
-		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false)
+		option, err := plane.selectDialOption(t.Context(), p, 2, 0, false, nil)
 		if err != nil || option.OriginalOutbound != nil || option.Outbound != group || option.NetworkType.IpVersion != consts.IpVersionStr_6 {
 			t.Fatalf("IPv4 ingress rewritten to IPv6 degraded: %+v, %v", option, err)
 		}
@@ -219,7 +219,7 @@ func TestEndedRequestDoesNotDegrade(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 		defer cancel()
 		began := time.Now()
-		if _, err := plane.selectDialOption(ctx, p, 2, 0, false); !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 10*time.Millisecond {
+		if _, err := plane.selectDialOption(ctx, p, 2, 0, false, nil); !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 10*time.Millisecond {
 			t.Fatalf("ended request: %v after %v", err, time.Since(began))
 		}
 	})

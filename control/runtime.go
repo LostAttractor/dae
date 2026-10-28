@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -71,7 +72,6 @@ type Runtime struct {
 
 	kernelLinks       kernelLinks
 	tcpConnections    tcpConnectionSet
-	tcpFlows          tcpFlows
 	udpEndpoints      *UdpEndpointPool
 	deviceRoutes      *deviceRoutes
 	fallbacks         *fallbackTokens
@@ -157,7 +157,6 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		r.shared[name] = owned
 	}
 	r.deviceRoutes = &deviceRoutes{outer: r.shared["device_routes_map"]}
-	r.tcpFlows.flows, r.tcpFlows.handoffs, r.tcpFlows.grace = r.shared["tcp_flow_map"], r.shared["routing_tuples_map"], tcpFlowCloseGrace
 	r.fallbacks = newFallbackTokens(r.shared["fallback_lease_map"])
 	return nil
 }
@@ -202,6 +201,25 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 		}
 		c.InheritConnections(old)
 	}
+	var previous *mitm.Host
+	var handoff *mitmHandoff
+	if old != nil {
+		previous = old.MITMHost()
+		if !previous.SameInstances(c.mitmHost) {
+			if abort {
+				// Wake retired hosts without canceling workers retained by the current host.
+				old.interruptSetups()
+			}
+			old.retiredHosts.Wait()
+			handoff = old.pauseMITM(&c.planeHTTP)
+			defer func() { handoff.complete(err) }()
+		}
+	}
+	releaseWorkers, err := previous.DrainFor(c.mitmHost, abort)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkers()
 	if old != nil {
 		if err := r.kernelLinks.updatePrograms(old.core.bpf.bpfObjects, c.core.bpf.bpfObjects); err != nil {
 			return err
@@ -224,6 +242,8 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 		}
 	}
 	if old != nil {
+		// Rebuilt instances belong only to the new routing generation. The
+		// closed predecessor rejects late setups instead of mixing their policies.
 		old.MITMHost().StopWorkers()
 		if abort {
 			old.StopAndAbortConnections()
@@ -325,7 +345,6 @@ func (r *Runtime) Close() error {
 		}
 		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close())
 		r.tcpMonitor.close()
-		r.tcpFlows.close()
 		for _, m := range r.shared {
 			r.closeErr = errors.Join(r.closeErr, m.Close())
 		}

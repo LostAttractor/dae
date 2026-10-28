@@ -27,6 +27,12 @@ type RouteParam struct {
 }
 
 func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*DialOption, error) {
+	return c.routeDialOption(ctx, p, nil)
+}
+
+// useDNSAddress is borrowed for this selection, never retained in the option.
+// Nil selects the currently published host's policy.
+func (c *ControlPlane) routeDialOption(ctx context.Context, p *RouteParam, useDNSAddress func(string) bool) (*DialOption, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -45,7 +51,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	}
 	if planRoute(facts).preserve {
 		decision.apply(p.routingResult)
-		return c.selectDialOption(ctx, p, decision.outbound, decision.mark, false)
+		return c.selectDialOption(ctx, p, decision.outbound, decision.mark, false, useDNSAddress)
 	}
 	verified, err := c.verifySniff(ctx, p.Dest, p.Domain)
 	if err != nil {
@@ -59,7 +65,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	plan := planRoute(facts)
 	switch plan.action {
 	case routeTarget:
-		return c.routeDestination(ctx, p, domain)
+		return c.routeDestination(ctx, p, domain, useDNSAddress)
 	case routeMatch:
 		// Without a trusted hostname this resolves a kernel handoff with the
 		// kernel's own DNS evidence. Ambiguity it could not resolve remains.
@@ -77,12 +83,12 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	}
 
 	decision.apply(p.routingResult)
-	return c.selectDialOption(ctx, p, decision.outbound, decision.mark, plan.override)
+	return c.selectDialOption(ctx, p, decision.outbound, decision.mark, plan.override, useDNSAddress)
 }
 
 // Route the selected target once, retaining immutable ingress identity.
 // Outbound selection does not change the destination decision.
-func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, domain string) (*DialOption, error) {
+func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, domain string, useDNSAddress func(string) bool) (*DialOption, error) {
 	input := p.routingInput(domain, p.effectiveDestination())
 	// A captured connection with no trusted hostname keeps its DNS-IP evidence.
 	// Explicit IP URLs have a known logical target and do not borrow that identity.
@@ -102,7 +108,7 @@ func (c *ControlPlane) routeDestination(ctx context.Context, p *RouteParam, doma
 		outbound = *p.outboundOverride
 	}
 	routeDecision{outbound: outbound, mark: mark, must: must}.apply(p.routingResult)
-	return c.selectDialOption(ctx, p, outbound, mark, c.dialTargetOverride && domain != "")
+	return c.selectDialOption(ctx, p, outbound, mark, c.dialTargetOverride && domain != "", useDNSAddress)
 }
 
 // kernelDomainEvidence returns the domain bitmaps the kernel routes the address

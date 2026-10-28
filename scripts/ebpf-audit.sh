@@ -14,8 +14,6 @@ CLANG_BIN="${CLANG:-clang}"
 OBJDUMP_BIN="${LLVM_OBJDUMP:-llvm-objdump}"
 BPFTOOL_BIN="${BPFTOOL_BIN:-bpftool}"
 BPF_ENDIAN_TARGET="${BPF_ENDIAN_TARGET:-bpfel}"
-MAX_MATCH_SET_LEN="${MAX_MATCH_SET_LEN:-1024}"
-read -r -a capacity_flags <<< "${BPF_CAPACITY_FLAGS:--DMAX_MATCH_SET_LEN=${MAX_MATCH_SET_LEN}}"
 
 for command_name in findmnt git realpath; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -69,6 +67,8 @@ else
 fi
 
 if [[ "${AUDIT_PHASE}" != run ]]; then
+  capacity_flags_text="${BPF_CAPACITY_FLAGS:-$(make -s --no-print-directory -C "${REPO_ROOT}" print-bpf-capacity-flags)}"
+  read -r -a capacity_flags <<< "${capacity_flags_text}"
   for command_name in "${CLANG_BIN}" "${OBJDUMP_BIN}" go; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
       echo "required command is unavailable: ${command_name}" >&2

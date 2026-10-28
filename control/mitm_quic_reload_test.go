@@ -137,7 +137,10 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			}
 			option := &DialOption{Dialer: d, DialTarget: upstreamPackets.LocalAddr().String(), Outbound: &outbound.DialerGroup{Name: "direct"}, NetworkType: *common.NetworkUDP4.NetworkType()}
 			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &routingResult{}}
-			bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option), retained, nil)
+			bridge, err := plane.newMITMQUIC(t.Context(), nil, param, &mitmRoute{admission: testMITMAdmission(t, host), planner: plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option), releaseDialer: retained}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			key := src
 			endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute, Handler: func(data []byte, _ netip.AddrPort) error {
 				_, err := packets.WriteTo(data, clientPackets.LocalAddr())

@@ -70,6 +70,7 @@ const (
 	ROUTE_RESULT_MUST_SHIFT                 = 40
 	ROUTE_RESULT_SKIPPED_NOALIVE            = 2199023255552
 	ROUTE_RESULT_CAPTURE_SHIFT              = 42
+	ROUTING_MAX_MATCH_SET_LEN               = 1024
 	MAX_INTERFACE_NUM                       = 256
 	MAX_HTTP_CLIENT_ENTRIES                 = 8192
 )

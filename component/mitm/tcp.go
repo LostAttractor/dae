@@ -24,7 +24,22 @@ import (
 	logrus "github.com/sirupsen/logrus"
 )
 
-func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) (err error) {
+func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) error {
+	admission, err := h.Admit()
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	defer admission.Release()
+	return admission.ServeConn(conn, flow, plan)
+}
+
+func (a *Admission) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) (err error) {
+	h := a.host
+	if h == nil {
+		_ = conn.Close()
+		return net.ErrClosed
+	}
 	host, port := flow.Host, flow.Port
 	original := conn
 	if err := h.track(original); err != nil {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Ablate reload ownership and handoff mechanisms in isolated copies.
 
-Run after generating production and kernel-test BPF objects. Requires Go,
-clang and passwordless sudo. --baseline is a source snapshot containing control/
+Generates production and kernel-test BPF using Make's capacity settings.
+Requires Go, clang and passwordless sudo. --baseline is a source snapshot containing control/
 from before simplification. Results and generated mutations stay in a temporary directory;
 no experiment switches enter production code.
 """
@@ -29,6 +29,8 @@ def main():
     print(f"Results: {output}", flush=True)
 
     run = make_runner(root, output, suffix=".log")
+    run(["make", "ebpf-test-build"], "prepare")
+    capacity_flags = run(["make", "-s", "--no-print-directory", "print-bpf-capacity-flags"], "capacities").split()
 
     def build(name, sources, package="./control", tags="trace"):
         directory = output / name
@@ -107,7 +109,7 @@ def main():
         "kernel-full": (None, None, "TestReload(PendingSYNAndConsumedHandoff|InvalidatesUnboundUDPCache)$", None),
         "no-syn-handoff": ("if (pending && pending->syn_seq", "if (false && pending && pending->syn_seq", "TestReloadPendingSYNAndConsumedHandoff$", "TCP verdict=2"),
         "no-flow-state": ("return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);", "return 0;", "TestReloadPendingSYNAndConsumedHandoff$", "TCP verdict=4294967295"),
-        "no-udp-generation": ("(check_generation && value->result.generation != routing_generation)", "false", "TestReloadInvalidatesUnboundUDPCache$", "UDP verdict=4294967295"),
+        "no-udp-generation": ("value->result.generation != routing_generation", "false", "TestReloadInvalidatesUnboundUDPCache$", "UDP verdict=4294967295"),
     }
     for name, (old, new, test, failure) in kernel_variants.items():
         directory = output / name
@@ -115,7 +117,7 @@ def main():
         if old is not None:
             (directory / "tproxy.c").write_text(replace((directory / "tproxy.c").read_text(), old, new))
         obj = directory / "variant.o"
-        run(["clang", "-O2", "-g", "-target", "bpfel", "-mcpu=v1", "-Wall", "-Werror", "-c", str(directory / "tests/bpf_test.c"), "-o", str(obj)], name + "-compile")
+        run([os.environ.get("CLANG", "clang"), "-O2", "-g", "-target", "bpfel", "-mcpu=v1", "-Wall", "-Werror", *capacity_flags, "-I", str(root / "kern"), "-c", str(directory / "tests/bpf_test.c"), "-o", str(obj)], name + "-compile")
         run(prefix + [f"DAE_BPF_TEST_OBJECT={obj}", str(kernel_binary), "-test.run=^" + test, "-test.timeout=60s"], name + "-functional", failure)
         print(f"{name}: {'required (mutation detected)' if failure else 'PASS'}", flush=True)
 

@@ -218,7 +218,8 @@ static __always_inline bool route_outbound_alive(const struct route_params *para
 /* Capture flags and connectivity evidence are appended when route() finishes. */
 static __always_inline __s64 route_result_encode(__u8 outbound, __u32 mark, bool must)
 {
-	return (__s64)outbound | ((__s64)mark << ROUTE_RESULT_MARK_SHIFT) | ((__s64)must << ROUTE_RESULT_MUST_SHIFT);
+	return (__s64)outbound | ((__s64)mark << ROUTE_RESULT_MARK_SHIFT) |
+	       ((__s64)must << ROUTE_RESULT_MUST_SHIFT);
 }
 
 /* Apply a matched terminal. Keep this global so actions are verified once,

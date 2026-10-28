@@ -1137,10 +1137,14 @@ set_domain_routing_word(__u32 daddr, __u32 word, __u32 bump_bits,
 	key[2] = bpf_htonl(0x0000ffff);
 	key[3] = bpf_htonl(daddr);
 
-	struct domain_routing value = {};
-	value.bump[word] = bump_bits;
-	value.routing[word] = routing_bits;
-	bpf_map_update_elem(&domain_routing_map, &key, &value, BPF_ANY);
+	/* Capacity-sized fixtures must not live on the 512-byte BPF stack. */
+	static const struct domain_routing empty = {};
+	bpf_map_update_elem(&domain_routing_map, &key, &empty, BPF_ANY);
+	struct domain_routing *value = bpf_map_lookup_elem(&domain_routing_map, &key);
+	if (value) {
+		value->bump[word] = bump_bits;
+		value->routing[word] = routing_bits;
+	}
 }
 
 static __always_inline void

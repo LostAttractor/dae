@@ -26,12 +26,23 @@ import (
 type reloadWorker struct {
 	starts atomic.Int32
 	plan   plugin.Plan
+	store  *atomic.Int32
+	state  atomic.Int32
+	ready  chan struct{}
 }
 
 func (p *reloadWorker) Plan() plugin.Plan { return p.plan }
 func (p *reloadWorker) Run(ctx context.Context, _ *http.Client) error {
+	p.state.Store(p.store.Load())
 	p.starts.Add(1)
+	close(p.ready)
 	<-ctx.Done()
+	return nil
+}
+func (p *reloadWorker) Close() error {
+	if p.starts.Load() != 0 {
+		p.store.Store(p.state.Load())
+	}
 	return nil
 }
 
@@ -91,11 +102,12 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if err := os.WriteFile(resourcePath, []byte("first"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	var built atomic.Int32
+	var built, persisted atomic.Int32
+	persisted.Store(1)
 	definitions := map[string]plugin.Definition{"fixture": {Configure: func(plugin.Spec) (plugin.Factory, error) {
 		return func(context.Context, plugin.Services) (plugin.Plugin, error) {
 			built.Add(1)
-			return &reloadWorker{plan: plan}, nil
+			return &reloadWorker{plan: plan, store: &persisted, ready: make(chan struct{})}, nil
 		}, nil
 	}, Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
 		content, err := os.ReadFile(resourcePath)
@@ -135,6 +147,9 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if !reflect.DeepEqual(initialStatus.CompiledPlugins, []string{"fixture"}) || len(initialStatus.Plugins) != 1 || !initialStatus.Plugins[0].Enabled {
 		t.Fatalf("initial assembly omitted plugin configuration: %+v", initialStatus)
 	}
+	worker := host.Instances()[0].Plugin.(*reloadWorker)
+	<-worker.ready
+	worker.state.Store(2)
 	if result, err := app.reload(t.Context(), false, false); err != nil || result != "No changes" {
 		t.Fatalf("unchanged reload: %s, %v", result, err)
 	}
@@ -183,6 +198,12 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if app.plane != original || app.plane.MITMHost().SameInstances(host) || built.Load() != 2 {
 		t.Fatal("resource change did not replace only the plugin")
 	}
+	worker = app.plane.MITMHost().Instances()[0].Plugin.(*reloadWorker)
+	<-worker.ready
+	if worker.state.Load() != 2 {
+		t.Fatal("in-place replacement did not restore the final old-instance state")
+	}
+	worker.state.Store(3)
 	host = app.plane.MITMHost()
 	if err := os.Remove(resourcePath); err != nil {
 		t.Fatal(err)
@@ -263,5 +284,34 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	}
 	if built.Load() != 2 || !app.plane.MITMHost().SameInstances(host) {
 		t.Fatal("suspend reconstructed accepted plugin state")
+	}
+	writeGeodata("203.0.113.0/24", "new.example", "unused.example")
+	if err := os.WriteFile(resourcePath, []byte("third"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	write(text)
+	if _, err := app.reload(t.Context(), false, true); err != nil {
+		t.Fatalf("replace routing and plugin instances: %v", err)
+	}
+	worker = app.plane.MITMHost().Instances()[0].Plugin.(*reloadWorker)
+	<-worker.ready
+	if built.Load() != 3 || worker.state.Load() != 3 {
+		t.Fatalf("full replacement did not restore final state: built=%d state=%d", built.Load(), worker.state.Load())
+	}
+	worker.state.Store(4)
+	write("global { disable_waiting_network:true }\nplugins { fixture {} }\nrouting { domain(suffix:handoff.test) -> direct\nfallback:direct }")
+	if _, err := app.reload(t.Context(), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resourcePath, []byte("fourth"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.reload(t.Context(), false, false); err != nil {
+		t.Fatal(err)
+	}
+	worker = app.plane.MITMHost().Instances()[0].Plugin.(*reloadWorker)
+	<-worker.ready
+	if built.Load() != 4 || worker.state.Load() != 4 {
+		t.Fatalf("service replacement after routing replacement lost state: built=%d state=%d", built.Load(), worker.state.Load())
 	}
 }

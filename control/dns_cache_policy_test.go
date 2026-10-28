@@ -3,14 +3,20 @@
 package control
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -157,6 +163,156 @@ func TestDNSRawCacheSurvivesFailedClientDelivery(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("valid upstream answer lost after delivery failure: %d", calls)
+	}
+}
+
+func TestDNSTCPCompressesCachedAndLocalResponses(t *testing.T) {
+	name := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61) + "."
+	for _, local := range []bool{false, true} {
+		t.Run(map[bool]string{false: "wire", true: "local"}[local], func(t *testing.T) {
+			host := integrationDNSHost(t, integrationDNSPlugin(t, cache.Plugin, ""))
+			plane := &ControlPlane{mitmHost: host, outbounds: dnsTestOutbounds(t)}
+			var upstreamWire []byte
+			calls := 0
+			terminal := func(_ context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				calls++
+				message := new(dns.Msg).SetReply(request.MessageCopy())
+				for range 256 {
+					message.Answer = append(message.Answer, testARecord(name, "198.51.100.1"))
+				}
+				message.Compress = true
+				upstreamWire = dnsTestWire(t, plugin.DNSMessage(message))
+				packet := plugin.DNSWire(upstreamWire)
+				if local {
+					packet = plugin.DNSMessage(packet.MessageCopy())
+				}
+				return &plugin.DNSResponse{DNSPacket: packet}, nil
+			}
+			var frames bytes.Buffer
+			for i := range 3 {
+				query := new(dns.Msg).SetQuestion(name, dns.TypeA)
+				query.Id = uint16(i)
+				request, _, err := plane.dnsRequest(dnsTestWire(t, plugin.DNSMessage(query)), "tcp", netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := plane.processDNS(t.Context(), request, routingResult{}, false, terminal, func(wire []byte) error {
+					if !local && i == 0 && !bytes.Equal(wire, upstreamWire) {
+						t.Fatal("transparent response was re-encoded")
+					}
+					return netutils.WriteDNSFrame(&frames, wire)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("cache miss: upstream calls=%d", calls)
+			}
+			for i := range 3 {
+				wire, err := netutils.ReadDNSFrame(&frames)
+				if err != nil {
+					t.Fatal(err)
+				}
+				message := new(dns.Msg)
+				if err := message.Unpack(wire); err != nil || message.Id != uint16(i) || len(message.Answer) != 256 || message.Truncated {
+					t.Fatalf("incomplete response: id=%d answers=%d truncated=%t err=%v", message.Id, len(message.Answer), message.Truncated, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDNSPreservesLocalTSIG(t *testing.T) {
+	secret := base64.StdEncoding.EncodeToString([]byte("local test key"))
+	query := new(dns.Msg).SetQuestion("signed.example.", dns.TypeA)
+	query.SetTsig("key.example.", dns.HmacSHA256, 300, time.Now().Unix())
+	queryWire, requestMAC, err := dns.TsigGenerate(query, secret, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := plugin.DNSWire(queryWire)
+	for _, compressed := range []bool{false, true} {
+		message := new(dns.Msg).SetReply(packet.MessageCopy())
+		message.Answer = []dns.RR{testARecord("signed.example.", "198.51.100.1")}
+		message.Compress = compressed
+		message.SetTsig("key.example.", dns.HmacSHA256, 300, time.Now().Unix())
+		wire, _, err := dns.TsigGenerate(message, secret, requestMAC, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		message = plugin.DNSWire(wire).MessageCopy()
+		message.Compress = compressed
+		for _, network := range []string{"tcp", "udp"} {
+			for _, local := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/compressed=%t/local=%t", network, compressed, local), func(t *testing.T) {
+					response := plugin.DNSWire(wire)
+					if local {
+						response = plugin.DNSMessage(message)
+					}
+					terminal := func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+						return &plugin.DNSResponse{DNSPacket: response}, nil
+					}
+					plane := new(ControlPlane)
+					request := &plugin.DNSExchange{DNSPacket: packet, Network: network}
+					if err := plane.processDNS(t.Context(), request, routingResult{}, false, terminal, func(got []byte) error {
+						if !local && !bytes.Equal(got, wire) {
+							t.Error("transparent TSIG response wire bytes changed")
+						}
+						// TsigVerify modifies the packet header while removing its signature.
+						return dns.TsigVerify(bytes.Clone(got), secret, requestMAC, false)
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDNSPreservesLocalSIG0(t *testing.T) {
+	key := &dns.KEY{Hdr: dns.RR_Header{Name: "key.example.", Rrtype: dns.TypeKEY, Class: dns.ClassINET}, Flags: 256, Protocol: 3, Algorithm: dns.ED25519}
+	private, err := key.Generate(256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := new(dns.Msg).SetQuestion("signed.example.", dns.TypeA)
+	for _, compressed := range []bool{false, true} {
+		message := new(dns.Msg).SetReply(query)
+		message.Answer = []dns.RR{testARecord("signed.example.", "198.51.100.1")}
+		message.Compress = compressed
+		signature := &dns.SIG{SignerName: key.Hdr.Name, KeyTag: key.KeyTag(), Algorithm: key.Algorithm,
+			Inception: uint32(time.Now().Add(-time.Minute).Unix()), Expiration: uint32(time.Now().Add(time.Hour).Unix())}
+		wire, err := signature.Sign(private.(crypto.Signer), message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := signature.Verify(key, wire); err != nil {
+			t.Fatal(err)
+		}
+		message = plugin.DNSWire(wire).MessageCopy()
+		message.Compress = compressed
+		for _, network := range []string{"tcp", "udp"} {
+			for _, local := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/compressed=%t/local=%t", network, compressed, local), func(t *testing.T) {
+					response := plugin.DNSWire(wire)
+					if local {
+						response = plugin.DNSMessage(message)
+					}
+					terminal := func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+						return &plugin.DNSResponse{DNSPacket: response}, nil
+					}
+					request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(query), Network: network}
+					if err := new(ControlPlane).processDNS(t.Context(), request, routingResult{}, false, terminal, func(got []byte) error {
+						if !local && !bytes.Equal(got, wire) {
+							t.Error("transparent SIG(0) response wire bytes changed")
+						}
+						return signature.Verify(key, got)
+					}); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		}
 	}
 }
 

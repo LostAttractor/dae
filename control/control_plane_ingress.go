@@ -173,17 +173,11 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 				reportIngressError(fmt.Errorf("accept TCP connection: %w", err))
 				return
 			}
-			flow := acceptedTuple(lconn)
-			r.tcpFlows.accept(flow)
 			c, result := r.admitTCP(lconn)
 			if c == nil {
-				r.tcpFlows.release(flow)
 				continue
 			}
-			go func() {
-				serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections, result)
-				r.tcpFlows.release(flow)
-			}()
+			go serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections, result)
 		}
 	}()
 	go func() {
@@ -265,7 +259,6 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 // bpf_sk_assign accept only IPPROTO_TCP sockets. An accepted TCP socket
 // that dae closes before the client has closed its side resets the client
 // once dae's FIN is acknowledged (TCP_LINGER2 < 0), instead of leaving it open.
-// Its later segments would find the flow state gone and go to the origin.
 // The UDP socket reports its receive queue's drops with each datagram.
 func tproxyListenConfig() net.ListenConfig {
 	config := net.ListenConfig{Control: func(network, _ string, c syscall.RawConn) error {

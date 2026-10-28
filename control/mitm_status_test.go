@@ -53,7 +53,7 @@ func TestPluginConfigurationStatusWithoutHost(t *testing.T) {
 }
 
 func TestReplaceMITMPublishesConfigurationOnlyAfterActivation(t *testing.T) {
-	plane := &ControlPlane{core: &controlPlaneCore{}, ctx: t.Context()}
+	plane := &ControlPlane{core: &controlPlaneCore{bpf: &BPFState{}}, ctx: t.Context()}
 	plane.SetPluginConfiguration(config.Plugins{{Name: "old", Type: "uncompiled"}}, []string{"test"})
 	before := plane.MITMStatus()
 	rejected := controlTestHost(t, &controlTestPlugin{}, nil)

@@ -31,6 +31,20 @@ func loadBpf() {}`))
 	}
 }
 
+func TestExtractBuildCapacity(t *testing.T) {
+	for _, capacity := range []string{"32", "1024", "2048", "65536"} {
+		t.Run(capacity, func(t *testing.T) {
+			generated, err := extract([]byte("package control; type bpfRoutingLimits uint32; const bpfRoutingLimitsROUTING_MAX_MATCH_SET_LEN bpfRoutingLimits = " + capacity))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(generated), "ROUTING_MAX_MATCH_SET_LEN = "+capacity) {
+				t.Fatalf("capacity missing from generated ABI: %s", generated)
+			}
+		})
+	}
+}
+
 func TestExtractRejectsMissingOrChangedEnumFormat(t *testing.T) {
 	for _, source := range []string{
 		"package control; type bpfMap struct{}",

@@ -20,7 +20,6 @@ MAX_UDP_ROUTING_CACHE_NUM ?= 65536
 MAX_DOMAIN_ROUTING_NUM ?= 65536
 BPF_CAPACITIES := MAX_MATCH_SET_LEN MAX_DST_MAPPING_NUM MAX_DST_MAPPING_NUM_UDP MAX_UDP_ROUTING_CACHE_NUM MAX_DOMAIN_ROUTING_NUM
 BPF_CAPACITY_FLAGS := $(foreach name,$(BPF_CAPACITIES),-D$(name)=$($(name)))
-BPF_GO_LDFLAGS := -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)
 DEBUG_FLAGS ?= n
 NOSTRIP ?= n
 STATIC ?= n
@@ -82,9 +81,9 @@ ifeq ($(CGO_ENABLED),1)
 STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'
 endif
 endif
-BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
+BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test ebpf-test-build fmt plugins submodule submodules test
+.PHONY: check-go-arch check-go-version check-bpf-capacities print-bpf-capacity-flags clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test ebpf-test-build fmt plugins submodule submodules test
 
 check-bpf-capacities:
 	@for entry in $(foreach name,$(BPF_CAPACITIES),'$(name)=$($(name))'); do \
@@ -95,6 +94,9 @@ check-bpf-capacities:
 	@if [ "$(MAX_MATCH_SET_LEN)" -lt 32 ] || [ "$(MAX_MATCH_SET_LEN)" -gt 65536 ] || [ $$(( $(MAX_MATCH_SET_LEN) % 32 )) -ne 0 ]; then \
 		echo "ERROR: MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]" >&2; exit 1; \
 	fi
+
+print-bpf-capacity-flags: check-bpf-capacities
+	@printf '%s\n' '$(BPF_CAPACITY_FLAGS)'
 
 check-go-arch:
 	@if [ -n "$(filter $(GOARCH),$(BIG_ENDIAN_GOARCHES))" ]; then \
@@ -230,7 +232,7 @@ $(BUILD_TAGS_FILE): $(BPF_INPUTS) build/ebpf.inputs | check-go-version check-bpf
 	done > build/ebpf.outputs
 
 test: plugins ebpf web-assets
-	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
+	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 	$(MAKE) check-boundaries
 
 .PHONY: config-parser config-parser-check check-boundaries
@@ -257,7 +259,7 @@ ebpf-test-build: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf-test-build: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
 ebpf-test-build: export BPF_TARGET := $(TARGET)
 ebpf-test-build: export BPF_TRACE_TARGET = $(GOARCH)
-ebpf-test-build: check-go-version check-bpf-capacities submodule clean-ebpf-test
+ebpf-test-build: ebpf check-go-version check-bpf-capacities submodule clean-ebpf-test
 	@goos=$$(go env GOOS); \
 	if [ "$$goos" != "linux" ]; then \
 		echo "ERROR: eBPF tests require Linux (found $$goos)." >&2; \
@@ -269,13 +271,13 @@ ebpf-test-build: check-go-version check-bpf-capacities submodule clean-ebpf-test
     echo $(STRIP_FLAG) && \
     GOWORK=off go generate ./control/kern/tests/bpf_test.go && \
     mkdir -p build/ebpf-test && \
-    CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) -c -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests -o build/ebpf-test/kernel.test ./control/kern/tests
+    CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) -c -tags dae_bpf_tests -o build/ebpf-test/kernel.test ./control/kern/tests
 
 ebpf-test: ebpf-test-build
 	./build/ebpf-test/kernel.test -test.v -test.timeout=10m
 
 ebpf-audit: check-go-version check-bpf-capacities
-	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" BPF_CAPACITY_FLAGS="$(BPF_CAPACITY_FLAGS)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
+	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" BPF_CAPACITY_FLAGS="$(BPF_CAPACITY_FLAGS)" ./scripts/ebpf-audit.sh
 
 ## End Ebpf
 

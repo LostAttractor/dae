@@ -73,13 +73,13 @@ func TestMITMResourceReadFailureResetsClient(t *testing.T) {
 	accepted, client := relayTestTCPPair(t)
 	defer client.Close()
 	sniffer := sniffing.NewConnSniffer(accepted, time.Second)
-	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitmHost: host,
-		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
+	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitm: &mitmRoute{admission: testMITMAdmission(t, host),
+		planner: func(*http.Request) (mitm.UpstreamPlan, error) {
 			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return dialHTTPUpstream(ctx, option)
 			}}, nil
 		},
-	}
+	}}
 	done := make(chan error, 1)
 	go func() {
 		_, _ = sniffer.SniffTcp()
@@ -117,11 +117,11 @@ func TestMITMHTTPPolicyResetsClientAfterResourceRetires(t *testing.T) {
 	}
 	defer host.Close()
 	sniffer := sniffing.NewConnSniffer(accepted, time.Second)
-	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort("192.0.2.1:80"), mitmHost: host,
-		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
+	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort("192.0.2.1:80"), mitm: &mitmRoute{admission: testMITMAdmission(t, host),
+		planner: func(*http.Request) (mitm.UpstreamPlan, error) {
 			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) { return dialHTTPUpstream(ctx, option) }}, nil
 		},
-	}
+	}}
 	done := make(chan error, 1)
 	go func() {
 		if _, err := sniffer.SniffTcp(); err != nil {
@@ -188,12 +188,12 @@ func TestMITMHTTPFailedDialPlanRevocationResetsClient(t *testing.T) {
 	}
 	defer host.Close()
 	sniffer := sniffing.NewConnSniffer(accepted, time.Second)
-	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitmHost: host,
-		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
+	relay := &tcpRelay{lConn: sniffer, domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitm: &mitmRoute{admission: testMITMAdmission(t, host),
+		planner: func(*http.Request) (mitm.UpstreamPlan, error) {
 			plans.Add(1)
 			return planner.upstreamPlan("http", planner.original, option)
 		},
-	}
+	}}
 	done := make(chan error, 1)
 	go func() {
 		if _, err := sniffer.SniffTcp(); err != nil {

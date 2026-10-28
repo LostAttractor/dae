@@ -111,6 +111,13 @@ type observabilityUpdate struct {
 	opened  []net.Listener
 }
 
+var listenObservability = func(address string) (net.Listener, error) {
+	// Declare TCP; Go listeners otherwise default to MPTCP.
+	var config net.ListenConfig
+	config.SetMultipathTCP(false)
+	return config.Listen(context.Background(), "tcp", address)
+}
+
 func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabilityUpdate, error) {
 	if pprofTarget != 0 && pprofTarget == metricsTarget {
 		return nil, fmt.Errorf("pprof and metrics cannot share port %d", pprofTarget)
@@ -133,10 +140,7 @@ func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabil
 			continue
 		}
 		address := fmt.Sprintf("localhost:%d", port)
-		// Declare TCP; Go listeners otherwise default to MPTCP.
-		var config net.ListenConfig
-		config.SetMultipathTCP(false)
-		listener, err := config.Listen(context.Background(), "tcp", address)
+		listener, err := listenObservability(address)
 		if err != nil {
 			update.Close()
 			return nil, fmt.Errorf("listen for %s: %w", current[i].name, err)

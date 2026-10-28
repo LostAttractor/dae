@@ -3,7 +3,8 @@
 package control
 
 import (
-	"errors"
+	"context"
+	"fmt"
 	"net"
 	"reflect"
 	"time"
@@ -34,29 +35,50 @@ func (c *planeHTTP) CanReplaceMITM(prepared PreparedMITM) bool {
 
 // ReplaceMITM publishes a prepared host whose routing contribution is unchanged.
 // Existing protocol work drains under the old host's existing lifecycle rules.
-func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM, plugins config.Plugins) error {
+func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM, plugins config.Plugins) (err error) {
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
 	if c.closedDone.Load() {
-		return net.ErrClosed
+		return fmt.Errorf("%w: %w", ErrPublicationRejected, net.ErrClosed)
 	}
 	if !c.CanReplaceMITM(prepared) {
-		return errors.New("plugin routing declarations require a routing replacement")
+		return fmt.Errorf("%w: plugin routing declarations require a routing replacement", ErrPublicationRejected)
 	}
 	host := prepared.Host
+	old := c.MITMHost()
+	if !old.SameInstances(host) {
+		if runtime := c.core.bpf.Runtime; runtime != nil {
+			if err := runtime.waitForRetirement(c.ctx); err != nil {
+				return fmt.Errorf("%w: %w", ErrPublicationRejected, err)
+			}
+		}
+		c.retiredHosts.Wait()
+		handoff := c.pauseMITM(&c.planeHTTP)
+		defer func() { handoff.complete(err) }()
+	}
+	releaseWorkers, err := old.DrainFor(host, false)
+	if err != nil {
+		return err
+	}
+	defer releaseWorkers()
 	if host != nil {
 		if err := host.Start(c.ctx); err != nil {
 			return err
 		}
 	}
 	c.mitmMu.Lock()
-	old := c.mitmHost
 	c.mitmHost = host
 	c.pluginStatus.Plugins = pluginConfigurationStatus(plugins)
 	c.mitmMu.Unlock()
-	if old != nil {
+	if old != nil && old.SameInstances(host) {
 		old.StopWorkers()
 		c.retiredHosts.Go(func() {
+			stopAbort := context.AfterFunc(c.tcpSetupCtx, func() {
+				if c.abortConnections.Load() {
+					old.Abort()
+				}
+			})
+			defer stopAbort()
 			// Admitted setups can still be between scope selection and protocol
 			// admission. Use the same bounded handoff as routing replacement.
 			timer := time.NewTimer(handoffLifetime)

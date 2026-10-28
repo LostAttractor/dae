@@ -8,18 +8,19 @@ import (
 	"io"
 	"net"
 	"sync"
+
+	"github.com/daeuniverse/dae/component/pluginhost"
 )
 
-// Track the underlying TCP connection or UDP association before any handshake.
+// Track an admitted TCP connection or UDP association before any handshake.
 // Until its HTTP server is attached, draining closes the raw connection.
 func (h *Host) track(conn io.Closer) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed {
+	if h.forceContext.Err() != nil {
 		return net.ErrClosed
 	}
 	h.connections[conn] = func(context.Context) error { return conn.Close() }
-	h.serving.Add(1)
 	return nil
 }
 
@@ -38,7 +39,6 @@ func (h *Host) untrack(conn io.Closer) {
 	h.mu.Lock()
 	delete(h.connections, conn)
 	h.mu.Unlock()
-	h.serving.Done()
 }
 
 // Abort interrupts requests and workers immediately. Close then joins their
@@ -48,6 +48,42 @@ func (h *Host) Abort() {
 	h.mu.Lock()
 	h.stopWorkersLocked()
 	h.mu.Unlock()
+}
+
+// DrainFor flushes replaced instances while keeping reused workers active.
+// abort skips the drain grace period but still waits for final cleanup.
+// Callers must first retire earlier hosts, then release after starting or abandoning next.
+func (h *Host) DrainFor(next *Host, abort bool) (func(), error) {
+	if h == nil || h.SameInstances(next) {
+		return func() {}, nil
+	}
+	var retained []*pluginhost.Instance
+	release := func() {
+		for _, instance := range retained {
+			instance.Deactivate()
+		}
+	}
+	for _, instance := range next.Instances() {
+		for _, previous := range h.instances {
+			if instance != previous.owner {
+				continue
+			}
+			if _, err := instance.Activate(next.options.HTTPClient); err != nil {
+				release()
+				return nil, err
+			}
+			retained = append(retained, instance)
+			break
+		}
+	}
+	if abort {
+		h.Abort()
+	}
+	if err := h.Close(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }
 
 // Close drains active work, forcing cancellation when the grace period expires.
@@ -74,7 +110,6 @@ func (h *Host) Close() error {
 	finished := make(chan struct{})
 	go func() {
 		shutdowns.Wait()
-		h.serving.Wait()
 		h.requests.Wait()
 		close(finished)
 	}()

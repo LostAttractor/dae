@@ -106,11 +106,14 @@ dip(192.0.2.20) -> block`, port, port))
 	first, second := new(mitmQUICDialer), new(mitmQUICDialer)
 	plane.markedDirectDialers.Store(uint32(91), first)
 	plane.markedDirectDialers.Store(uint32(92), second)
-	option, planner, release, err := plane.prepareHTTPRoute(t.Context(), param.Domain, param)
-	if err != nil || option != nil || planner == nil || release != nil {
+	option, intercepted, err := plane.prepareHTTPRoute(t.Context(), param.Domain, param)
+	if err != nil || option != nil || intercepted == nil {
 		t.Fatalf("old route ran before HTTP: %+v, %v", option, err)
 	}
-	bridge := plane.newMITMQUIC(param, planner, release, nil)
+	bridge, err := plane.newMITMQUIC(t.Context(), nil, param, intercepted, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer bridge.Close()
 	wire := &quic.Transport{Conn: bridge}
 	defer wire.Close()

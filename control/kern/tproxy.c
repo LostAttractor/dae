@@ -56,28 +56,9 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 #define MAX_LPM_SIZE 2048000
 #define MAX_API_CLIENT_NUM 1024
 
-#ifndef MAX_MATCH_SET_LEN
-#define MAX_MATCH_SET_LEN \
-	(32 * 32) // Should be sync with common/consts/ebpf.go.
-#endif
-#if MAX_MATCH_SET_LEN < 32 || MAX_MATCH_SET_LEN > 65536 || MAX_MATCH_SET_LEN % 32
-#error "MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]"
-#endif
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 
-/* Public build-time capacity knobs for traffic-dependent state. */
-#ifndef MAX_DST_MAPPING_NUM
-#define MAX_DST_MAPPING_NUM (65536 * 4)
-#endif
-#ifndef MAX_DST_MAPPING_NUM_UDP
-#define MAX_DST_MAPPING_NUM_UDP (65536 * 2)
-#endif
-#ifndef MAX_UDP_ROUTING_CACHE_NUM
-#define MAX_UDP_ROUTING_CACHE_NUM 65536
-#endif
-#ifndef MAX_DOMAIN_ROUTING_NUM
-#define MAX_DOMAIN_ROUTING_NUM 65536
-#endif
+/* Build-time capacities and their defaults are supplied by Make. */
 #if MAX_DST_MAPPING_NUM < 1 || MAX_DST_MAPPING_NUM_UDP < 1 || \
     MAX_UDP_ROUTING_CACHE_NUM < 1 || MAX_DOMAIN_ROUTING_NUM < 1
 #error "BPF map capacities must be positive"
@@ -347,6 +328,7 @@ struct dae_param {
 };
 
 volatile const struct dae_param PARAM = {};
+volatile const __s32 proxy_netns_id = BPF_F_CURRENT_NETNS;
 
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
@@ -988,7 +970,7 @@ static __always_inline int degrade_unavailable(struct routing_result *result,
 
 /* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
 static __noinline int read_udp_route(struct udp_routing_cache_key *key,
-				     struct routing_result *result, bool check_generation)
+				     struct routing_result *result)
 {
 	struct udp_routing_cache_value *value =
 		bpf_map_lookup_elem(&udp_routing_cache_map, key);
@@ -1008,7 +990,7 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 	if (fallback == UDP_ROUTE_CLOSING)
 		return -1;
 	bool stale = (device && device->epoch != value->result.route_epoch) ||
-		(check_generation && value->result.generation != routing_generation) ||
+		value->result.generation != routing_generation ||
 		!fallback_live(fallback);
 
 	bpf_spin_lock(&value->lock);
@@ -1061,7 +1043,7 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 		}
 	}
 	/* Concurrent first packets must all adopt the winning decision. */
-	return read_udp_route(key, result, true) == 1 ? 0 : -1;
+	return read_udp_route(key, result) == 1 ? 0 : -1;
 }
 
 static __always_inline bool redirect_entry_changed(const struct redirect_entry *stored,
@@ -1223,6 +1205,23 @@ track_udp_conn_state(struct tuples_key *key, bool is_wan_ingress_direction)
 	return state ? state : new_udp_conn_state(key, is_wan_ingress_direction);
 }
 
+static __always_inline __u32 fill_socket_tuple(struct bpf_sock_tuple *tuple,
+					       const struct tuples_key *five, __be16 protocol)
+{
+	if (protocol == bpf_htons(ETH_P_IP)) {
+		tuple->ipv4.saddr = five->sip.u6_addr32[3];
+		tuple->ipv4.daddr = five->dip.u6_addr32[3];
+		tuple->ipv4.sport = five->sport;
+		tuple->ipv4.dport = five->dport;
+		return sizeof(tuple->ipv4);
+	}
+	__builtin_memcpy(tuple->ipv6.saddr, &five->sip, IPV6_BYTE_LENGTH);
+	__builtin_memcpy(tuple->ipv6.daddr, &five->dip, IPV6_BYTE_LENGTH);
+	tuple->ipv6.sport = five->sport;
+	tuple->ipv6.dport = five->dport;
+	return sizeof(tuple->ipv6);
+}
+
 /* Whether an inbound packet reaches a local socket other than dae's. dae's
  * own flows never consult their state, since WAN egress passes dae's packets
  * first. */
@@ -1230,23 +1229,11 @@ static __always_inline bool udp_to_local_socket(struct __sk_buff *skb,
 						const struct tuples_key *five)
 {
 	struct bpf_sock_tuple tuple = {};
-	__u32 size = sizeof(tuple.ipv6);
+	__u32 size = fill_socket_tuple(&tuple, five, skb->protocol);
 	struct pid_pname *owner;
 	struct bpf_sock *sk;
 	bool local;
 
-	if (skb->protocol == bpf_htons(ETH_P_IP)) {
-		tuple.ipv4.saddr = five->sip.u6_addr32[3];
-		tuple.ipv4.daddr = five->dip.u6_addr32[3];
-		tuple.ipv4.sport = five->sport;
-		tuple.ipv4.dport = five->dport;
-		size = sizeof(tuple.ipv4);
-	} else {
-		__builtin_memcpy(tuple.ipv6.saddr, &five->sip, IPV6_BYTE_LENGTH);
-		__builtin_memcpy(tuple.ipv6.daddr, &five->dip, IPV6_BYTE_LENGTH);
-		tuple.ipv6.sport = five->sport;
-		tuple.ipv6.dport = five->dport;
-	}
 	sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
 	if (!sk)
 		return false;
@@ -1349,6 +1336,48 @@ static __always_inline int save_tcp_flow(struct tuples_key *key,
 	return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);
 }
 
+/* The accepted socket, not the consumed handoff, owns the active proxy lifetime. */
+static __always_inline bool tcp_proxy_socket_live(struct __sk_buff *skb,
+						  const struct tuples_key *key)
+{
+	struct bpf_sock_tuple tuple = {};
+	__u32 size = fill_socket_tuple(&tuple, key, skb->protocol);
+	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, &tuple, size, proxy_netns_id, 0);
+
+	if (!sk)
+		return false;
+	bool live = sk->state != BPF_TCP_LISTEN && sk->state != BPF_TCP_TIME_WAIT &&
+		sk->state != BPF_TCP_CLOSE;
+
+	bpf_sk_release(sk);
+	return live;
+}
+
+static __always_inline int replace_tcp_proxy_reply(struct __sk_buff *skb,
+						   struct tuples_key *key,
+						   __u64 route_epoch, __u32 mark)
+{
+	struct tcp_flow_state *flow = bpf_map_lookup_elem(&tcp_flow_map, key);
+
+	if (!flow || flow->owner != TCP_FLOW_PROXY)
+		return 0;
+	struct routing_handoff *pending = bpf_map_lookup_elem(&routing_tuples_map, key);
+	__u32 now = bpf_ktime_get_ns() / 1000000000ULL;
+
+	if ((pending && (__s32)(pending->expires - now) > 0) || tcp_proxy_socket_live(skb, key))
+		return 0;
+	struct routing_result direct = {
+		.outbound = OUTBOUND_DIRECT,
+		.route_epoch = route_epoch,
+		.mark = mark,
+	};
+
+	if (save_tcp_flow(key, &direct, 0))
+		return -1;
+	bpf_map_delete_elem(&routing_tuples_map, key);
+	return 1;
+}
+
 static __always_inline int publish_handoff(struct tuples_key *key,
 					   const struct routing_result *result,
 					   const struct pid_pname *pid_pname, __be32 syn_seq)
@@ -1393,7 +1422,7 @@ static __always_inline void fill_route_params(
 
 /* Decode policy only; packet metadata and lifetime ownership stay with callers. */
 static __always_inline void decode_route_result(struct routing_result *result,
-						 __s64 encoded)
+						__s64 encoded)
 {
 	result->outbound = encoded;
 	result->mark = encoded >> ROUTE_RESULT_MARK_SHIFT;
@@ -1402,7 +1431,8 @@ static __always_inline void decode_route_result(struct routing_result *result,
 }
 
 static __always_inline void fill_route_metadata(struct routing_result *result,
-	const struct route_params *params, __u32 generation, __u64 route_epoch)
+						const struct route_params *params,
+						__u32 generation, __u64 route_epoch)
 {
 	result->generation = generation;
 	result->route_epoch = route_epoch;
@@ -1454,13 +1484,24 @@ static __always_inline int do_tproxy_first_fragment(
 		}
 	}
 
+	if (l4proto == IPPROTO_TCP && l4h->tcph.syn && l4h->tcph.ack && !skb->mark) {
+		int reply = replace_tcp_proxy_reply(skb, &tuples->five, route_epoch, 0);
+
+		if (reply < 0)
+			return TCX_DROP;
+		if (reply)
+			goto direct;
+	}
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		struct tcp_flow_state *saved = bpf_map_lookup_elem(&tcp_flow_map, &tuples->five);
 
 		/* An invalid first fragment must not complete the old TCP segment. */
 		if (route_epoch && (!saved || saved->route_epoch != route_epoch))
 			return TCX_DROP;
-		if (saved && (saved->owner == TCP_FLOW_PROXY || saved->mark || !fallback_live(saved->owner)))
+		if (saved && (saved->owner == TCP_FLOW_PROXY || saved->mark ||
+			      !fallback_live(saved->owner)))
+			return TCX_DROP;
+		if (!saved && tcp_proxy_socket_live(skb, &tuples->five))
 			return TCX_DROP;
 		goto direct;
 	}
@@ -1472,7 +1513,7 @@ static __always_inline int do_tproxy_first_fragment(
 		fill_udp_routing_cache_key(&udp_key, tuples);
 		if (bpf_map_lookup_elem(&udp_bindings_map, &udp_key))
 			return TCX_DROP;
-		int hit = read_udp_route(&udp_key, saved, true);
+		int hit = read_udp_route(&udp_key, saved);
 
 		if (hit < 0 ||
 		    (hit && (saved->outbound != OUTBOUND_DIRECT ||
@@ -1508,7 +1549,8 @@ static __always_inline int do_tproxy_first_fragment(
 		result->outbound = OUTBOUND_DIRECT;
 		fill_route_metadata(result, params, generation, route_epoch);
 		if (l4proto == IPPROTO_UDP) {
-			if (save_udp_route(&udp_key, result, fallback) || result->outbound != OUTBOUND_DIRECT)
+			if (save_udp_route(&udp_key, result, fallback) ||
+			    result->outbound != OUTBOUND_DIRECT)
 				return TCX_DROP;
 		} else if (save_tcp_flow(&tuples->five, result, fallback)) {
 			return TCX_DROP;
@@ -1568,8 +1610,7 @@ static __always_inline int do_tproxy_unfragmented(
 
 	get_tuples(skb, tuples, l3h, l4h, l4proto);
 
-	// Backup for feature use.
-	// Helper calls receive skb; if the verifier cannot prove skb is unchanged, later access may fail.
+	// Preserve these scalars before helpers can invalidate the verifier's skb knowledge.
 	u16 protocol = skb->protocol;
 	u32 ifindex = skb->ifindex;
 
@@ -1601,6 +1642,13 @@ static __always_inline int do_tproxy_unfragmented(
 
 	struct tuples_key routing_tuples_key = tuples->five;
 
+	if (l4proto == IPPROTO_TCP && l4h->tcph.syn && l4h->tcph.ack) {
+		int reply = replace_tcp_proxy_reply(skb, &routing_tuples_key,
+						    route_epoch, skb->mark);
+
+		if (reply)
+			return reply < 0 ? TCX_DROP : TCX_NEXT;
+	}
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		// Established TCP Connection.
 		struct tcp_flow_state *saved =
@@ -1611,7 +1659,7 @@ static __always_inline int do_tproxy_unfragmented(
 			flow = *saved;
 			/* The sender's RST ends a kernel-forwarded connection, so the
 			 * tuple's later packets start a new one. Forward this RST by the
-			 * copied state. A relayed flow keeps its state until the relay
+			 * copied state. A relayed flow keeps its state after the relay
 			 * ends: the sender answers the relay's segments in flight with
 			 * more RSTs, which must not reach the origin. */
 			if (l4h->tcph.rst && flow.owner != TCP_FLOW_PROXY)
@@ -1638,7 +1686,9 @@ static __always_inline int do_tproxy_unfragmented(
 			goto control_plane;
 		}
 
-		// Non-proxy connections or previous connections.
+		/* LRU eviction does not end the accepted socket's proxy lifetime. */
+		if (tcp_proxy_socket_live(skb, &routing_tuples_key))
+			goto control_plane;
 		return TCX_NEXT;
 	}
 	if (l4proto == IPPROTO_TCP) {
@@ -1692,7 +1742,7 @@ static __always_inline int do_tproxy_unfragmented(
 				return TCX_DROP;
 			goto control_plane;
 		}
-		int hit = read_udp_route(&udp_key, routing_result, true);
+		int hit = read_udp_route(&udp_key, routing_result);
 
 		if (hit < 0)
 			return TCX_DROP;
@@ -1735,7 +1785,8 @@ selected:
 	if (device && (device->updating || device->epoch != route_epoch) && !exempt)
 		return TCX_DROP;
 	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags) {
-		if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result, fallback))
+		if (l4proto == IPPROTO_TCP &&
+		    save_tcp_flow(&routing_tuples_key, routing_result, fallback))
 			return TCX_DROP;
 		if (l4proto == IPPROTO_TCP)
 			bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
@@ -1840,8 +1891,8 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		};
 		struct routing_result ignored;
 
-		/* Replies also keep a kernel-direct source lifetime alive. */
-		read_udp_route(&source, &ignored, false);
+		/* Replies renew only current-generation caches, releasing retired timer programs. */
+		read_udp_route(&source, &ignored);
 
 		/* A packet without state may start an inbound flow, whose replies
 		 * leave directly; its state waits for the answer. On WAN ingress,

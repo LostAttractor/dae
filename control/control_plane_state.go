@@ -44,6 +44,7 @@ type planeHTTP struct {
 	pluginStatus     api.PluginStatus
 	mitmPlan         plugin.Plan // Accepted, expanded routing inputs; immutable.
 	mitmMu           sync.RWMutex
+	mitmHandoff      *mitmHandoff
 	retiredHosts     sync.WaitGroup
 	workerRoundTrips sync.WaitGroup
 	mitmClients      clientmatch.Matcher
