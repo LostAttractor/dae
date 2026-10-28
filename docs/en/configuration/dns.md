@@ -334,11 +334,12 @@ deadline forward to renewal time plus the window, and pairs are deleted only by
 expiry.
 
 - **New pairs**: the change that creates pairs, for example registering one DNS
-  response, appends one frame with their domains, IPs and exact deadlines
-  before it returns, without fdatasync. Pairs created while a compaction is
-  being written wait for it and are appended right after, so only a dae crash
-  during a compaction loses them. After a power loss new pairs are durable from
-  the next sync on.
+  response, tries to append a frame with their domains, IPs and exact deadlines,
+  without per-record fdatasync. If another writer or compaction holds the write
+  lock, the pairs are queued for that writer or the background worker; the
+  creator does not wait for disk I/O. A process crash can lose queued pairs not
+  yet written, and a power loss can also lose unsynced writes. The next renewal
+  window's sync makes the preceding new-pair frames durable.
 - **Renewals**: are batched in a 10-minute window. A window ends 10 minutes after
   it opened, also across reloads. Its frame lists each pair renewed during it
   once and is followed by fdatasync, which also makes earlier new-pair frames
@@ -366,6 +367,20 @@ the new baseline with an ignored old journal, or the new pair. If the published
 baseline is unreadable but a complete temporary baseline exists, startup adopts
 the temporary one.
 
+Renewal frames are written at the valid journal tail, not back into baseline
+records selected by ordinal. Ordinals are replay-time memory indexes, not disk
+offsets; each batch sorts and delta-encodes them. New pairs take ordinals in
+creation order. Compaction renumbers whole domain groups, putting those with
+renewals marked in the current or just-closed window first; renewed pairs also
+lead within each group. This linear partition reuses the renewal marks and
+snapshot buffer, with no frequency counter or additional compaction. Ordering
+within each class is unspecified, and cold restore starts without renewal marks.
+Clustering shortens ordinal deltas without moving records on each renewal.
+Reordering can also change adjacent deadline deltas in the baseline, but does
+not eliminate random in-place writes: this path already appends sequentially.
+The 64 KiB chunk is a growth unit, not a fixed write size for each renewal. Encoding-layout measurements are described in the
+[testing guide](../../zh/development/testing-and-performance.md).
+
 Restore validates the whole baseline, then replays journal frames of its epoch in
 order up to the first invalid frame; later writes start at that position. There
 is no baseline entry or size cap; format, address/name, duplicate, trailing-data
@@ -379,6 +394,37 @@ configuration takes over the in-memory evidence and both files.
 Write failures are logged and switch to rewriting the baseline, retried when
 each renewal window ends and on clean close. They do not prevent safe retirement or in-memory registry adoption
 during reload.
+
+### Inspect persisted records
+
+`dae registry dump [directory]` exports the published baseline and its valid
+journal prefix without writing. The directory defaults to `$DAE_LOCATION_CACHE`
+or `/var/lib/dae`. It needs read access to the files, but no running daemon, API
+socket or configuration file. Output is indented JSON sorted by domain and IP:
+
+```sh
+dae registry dump
+dae registry dump /path/to/registry | jq '.records[] | select(.domain == "example.org.")'
+dae registry dump | jq -r '.records[] | [.domain, .ip, .retain_until] | @tsv'
+```
+
+Each `records` entry is a domain-IP pair. `retain_until` is its replayed UTC
+retention deadline, not a DNS RR TTL or live kernel routing state. Inspection
+includes expired records and cannot see in-memory renewals not yet journaled.
+`epoch` is a hexadecimal string to avoid JSON number precision loss.
+`baseline_bytes` and `journal_bytes` count the bytes read, including the journal's
+reserved zero tail; `journal_valid_bytes` counts the replayed prefix including
+its header. Valid checksums do not prove fdatasync completed: reads can see
+unsynced page-cache data.
+
+Missing journals, mismatched headers or epochs, and truncated or corrupt tails
+are reported in `warnings`. Normal zero padding is not an error. An unreadable
+journal or a missing or invalid baseline fails the command. Inspection never
+truncates journals, adopts `.tmp` baselines, deletes old files, renews evidence
+or triggers compaction. A detected baseline replacement during the read asks
+the caller to retry.
+
+### Runtime statistics
 
 `dae status` / `/api/status` reports:
 

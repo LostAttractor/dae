@@ -84,6 +84,17 @@ go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistry(Compaction|Renewals)$' -benchmem -count=3
 ```
 
+`BenchmarkDomainRegistryRenewalLayout` 固定每窗口 1,446 个续期 pair，用自编写的确定性序号比较分散、热记录在前和热记录在后三种理想布局。`frame-bytes` 包含日志帧头和 CRC，不包含文件系统页粒度、元数据或闪存写放大，也没有计算为保持同域名分组而受到的重排限制。这个基准用于比较编码长度，不证明真实 I/O 或 CPU 收益：
+
+```sh
+go test -tags=netgo,osusergo,trace ./control \
+  -run '^$' -bench '^BenchmarkDomainRegistryRenewalLayout$' -benchtime=1x
+```
+
+`TestInspectDomainRegistry` 与 `TestRegistryDump` 前缀的用例检查只读导出、基线和日志合成、损坏尾部、过期记录、稳定排序及 CLI 输出错误；夹具只包含保留的示例域名和地址，不读取真实 registry。
+
+`TestDomainRegistryHotCompaction` 检查当前及前一窗口的热点分组、同域名内的热点前置，以及重编号后新增和续期日志的正确重放。`TestDomainRegistryHotCompactionSparsePairs` 生成 50,000 个 pair，其中 100 个近期续期、20,000 个从未续期；它验证所有记录和序号的完整恢复，并比较真实压实前后的续期帧长度，而不假定热点 pair 能跨域名组任意排列。
+
 `BenchmarkDomainRegistryActivity` 使用包含共享 IP 和全零 bitmap 的 28,042 个 pair，分别测量同步入口的未知目标、期限未变、有效续期和到期前检查。`BenchmarkDomainRegistryContention` 的混合负载中四分之一同步观察延长期限，其余为期限未变或未知目标；用 `-cpu` 改变并发度，`p95-ns` 和 `p99-ns` 包含等待队列锁与 Registry 锁的时间。并发基准的分配量包含延迟采样开销，单次观察的分配量使用 Activity 基准：
 
 ```sh
