@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	transporttls "github.com/daeuniverse/dae/pkg/outbound/transport/tls"
@@ -57,6 +61,137 @@ type fragmentSink struct {
 
 func (c *fragmentSink) Write(b []byte) (int, error) { return c.wire.Write(b) }
 
+type fragmentWriteLimitConn struct {
+	fragmentSink
+	limit, calls int
+	err          error
+}
+
+func (c *fragmentWriteLimitConn) Write(b []byte) (int, error) {
+	c.calls++
+	n, _ := c.wire.Write(b[:min(len(b), c.limit-c.wire.Len())])
+	if c.wire.Len() == c.limit {
+		return n, c.err
+	}
+	return n, nil
+}
+
+func TestFragmentWriteProgress(t *testing.T) {
+	input := []byte{22, 3, 3, 0, 5, 1, 2, 3, 4, 5}
+	wire := []byte{22, 3, 3, 0, 2, 1, 2, 22, 3, 3, 0, 2, 3, 4, 22, 3, 3, 0, 1, 5}
+	consumed := []int{0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 8, 9, 9, 9, 9, 9, 9, 10}
+	trailing := []byte{23, 3, 3, 0, 2, 6, 7}
+	input = append(input, trailing...)
+	wire = append(wire, trailing...)
+	for i := range len(trailing) {
+		consumed = append(consumed, 11+i)
+	}
+	for _, interval := range []string{"0-0", "1-1"} {
+		for _, underlyingErr := range []error{os.ErrDeadlineExceeded, nil} {
+			for limit, wantN := range consumed {
+				if underlyingErr == nil && limit == len(wire) {
+					continue
+				}
+				t.Run(fmt.Sprintf("interval=%s/error=%v/limit=%d", interval, underlyingErr, limit), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						config, err := transporttls.ParseFragmentConfig("2-2", interval)
+						if err != nil {
+							t.Fatal(err)
+						}
+						sink := &fragmentWriteLimitConn{limit: limit, err: underlyingErr}
+						conn := config.Wrap(sink)
+						wantErr := underlyingErr
+						if wantErr == nil {
+							wantErr = io.ErrShortWrite
+						}
+						if n, err := conn.Write(input); n != wantN || !errors.Is(err, wantErr) {
+							t.Fatalf("Write() = %d, %v; want %d, %v", n, err, wantN, wantErr)
+						}
+						if !bytes.Equal(sink.wire.Bytes(), wire[:limit]) {
+							t.Fatalf("wire = %x; want %x", sink.wire.Bytes(), wire[:limit])
+						}
+						calls := sink.calls
+						for _, retry := range [][]byte{input, input[wantN:], []byte("passthrough"), nil} {
+							if n, err := conn.Write(retry); n != 0 || !errors.Is(err, wantErr) || sink.calls != calls {
+								t.Fatalf("retry = %d, %v, %d writes; want 0, %v, %d writes", n, err, sink.calls, wantErr, calls)
+							}
+						}
+					})
+				})
+			}
+		}
+	}
+}
+
+func TestFragmentPassthroughWriteProgress(t *testing.T) {
+	for _, input := range [][]byte{[]byte("passthrough"), {22, 3, 3, 0, 3}, {22, 3, 3, 0, 3, 1}} {
+		for _, underlyingErr := range []error{os.ErrDeadlineExceeded, nil} {
+			t.Run(fmt.Sprintf("input=%x/error=%v", input, underlyingErr), func(t *testing.T) {
+				config, err := transporttls.ParseFragmentConfig("2-2", "0-0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				sink := &fragmentWriteLimitConn{limit: 3, err: underlyingErr}
+				conn := config.Wrap(sink)
+				wantErr := underlyingErr
+				if wantErr == nil {
+					wantErr = io.ErrShortWrite
+				}
+				if n, err := conn.Write(input); n != 3 || !errors.Is(err, wantErr) {
+					t.Fatalf("Write() = %d, %v; want 3, %v", n, err, wantErr)
+				}
+				if n, err := conn.Write(input); n != 0 || !errors.Is(err, wantErr) || sink.calls != 1 {
+					t.Fatalf("retry = %d, %v, %d writes; want 0, %v, 1 write", n, err, sink.calls, wantErr)
+				}
+			})
+		}
+	}
+}
+
+func TestFragmentConcurrentWrites(t *testing.T) {
+	config, err := transporttls.ParseFragmentConfig("1-1", "1-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, peer := net.Pipe()
+	defer peer.Close()
+	conn := config.Wrap(local)
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	if err := conn.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 2)
+	write := func(input []byte) {
+		n, err := conn.Write(input)
+		if err == nil && n != len(input) {
+			err = fmt.Errorf("Write() = %d; want %d", n, len(input))
+		}
+		done <- err
+	}
+	go write([]byte{22, 3, 3, 0, 2, 1, 2})
+	var wire [24]byte
+	if _, err := io.ReadFull(peer, wire[:6]); err != nil {
+		t.Fatal(err)
+	}
+	go write([]byte{22, 3, 3, 0, 2, 3, 4})
+	if _, err := io.ReadFull(peer, wire[6:]); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []byte{22, 3, 3, 0, 1, 1, 22, 3, 3, 0, 1, 2, 22, 3, 3, 0, 1, 3, 22, 3, 3, 0, 1, 4}
+	if !bytes.Equal(wire[:], want) {
+		t.Fatalf("wire = %x; want %x", wire, want)
+	}
+}
+
 func TestFragmentPreservesRecords(t *testing.T) {
 	for _, test := range []struct{ length, interval string }{
 		{"50-100", "0-0"},
@@ -103,21 +238,23 @@ func TestFragmentPreservesRecords(t *testing.T) {
 func TestFragmentClientHello(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
-	for _, length := range []string{"50-100", "1024-2048"} {
-		t.Run(fmt.Sprintf("length=%s", length), func(t *testing.T) {
-			config, err := transporttls.ParseFragmentConfig(length, "0-0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", server.Listener.Addr().String())
-			if err != nil {
-				t.Fatal(err)
-			}
-			client := tls.Client(config.Wrap(conn), &tls.Config{InsecureSkipVerify: true})
-			defer client.Close()
-			if err := client.HandshakeContext(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		})
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		for _, length := range []string{"1-1", "50-100", "1024-2048"} {
+			t.Run(fmt.Sprintf("version=%x/length=%s", version, length), func(t *testing.T) {
+				config, err := transporttls.ParseFragmentConfig(length, "0-0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", server.Listener.Addr().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				client := tls.Client(config.Wrap(conn), &tls.Config{InsecureSkipVerify: true, MinVersion: version, MaxVersion: version})
+				defer client.Close()
+				if err := client.HandshakeContext(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }

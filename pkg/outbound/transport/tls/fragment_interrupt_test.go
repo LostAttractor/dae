@@ -16,6 +16,11 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/transport/ws"
 )
 
+type fragmentWriteResult struct {
+	n   int
+	err error
+}
+
 func TestFragmentWaitInterrupted(t *testing.T) {
 	for _, action := range []string{"close", "write deadline", "deadline"} {
 		t.Run(action, func(t *testing.T) {
@@ -28,10 +33,11 @@ func TestFragmentWaitInterrupted(t *testing.T) {
 				defer peer.Close()
 				conn := config.Wrap(local)
 				defer conn.Close()
-				done := make(chan error, 1)
+				done := make(chan fragmentWriteResult, 1)
+				input := []byte{22, 3, 3, 0, 3, 1, 2, 3}
 				go func() {
-					_, err := conn.Write([]byte{22, 3, 3, 0, 3, 1, 2, 3})
-					done <- err
+					n, err := conn.Write(input)
+					done <- fragmentWriteResult{n, err}
 				}()
 				var first [6]byte
 				if _, err := io.ReadFull(peer, first[:]); err != nil {
@@ -50,7 +56,11 @@ func TestFragmentWaitInterrupted(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				err = <-done
+				result := <-done
+				if result.n != len(first) {
+					t.Fatalf("interrupted Write() = %d; want %d consumed input bytes", result.n, len(first))
+				}
+				err = result.err
 				if action == "close" {
 					if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
 						t.Fatalf("close did not interrupt write: %v", err)
@@ -60,6 +70,14 @@ func TestFragmentWaitInterrupted(t *testing.T) {
 				}
 				if elapsed := time.Since(start); elapsed > time.Second {
 					t.Fatalf("interruption waited for the fragment interval: %v", elapsed)
+				}
+				if action != "close" {
+					if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if n, err := conn.Write(input); n != 0 || !errors.Is(err, result.err) {
+					t.Fatalf("retry after interruption = %d, %v; want 0, %v", n, err, result.err)
 				}
 			})
 		})

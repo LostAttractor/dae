@@ -2,6 +2,7 @@ package tls
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
@@ -59,6 +60,8 @@ type FragmentConn struct {
 	closed        chan struct{}
 	closeOnce     sync.Once
 	writeDeadline protocol.Deadline
+	writeMu       sync.Mutex
+	writeErr      error
 }
 
 func (f *FragmentConn) Close() error {
@@ -84,15 +87,36 @@ func (f *FragmentConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (f *FragmentConn) Write(b []byte) (n int, err error) {
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	// Write errors are terminal: fragmentation may have changed the caller's record boundaries.
+	defer func() { f.writeErr = err }()
 	if len(b) <= 5 || b[0] != 22 {
-		return f.Conn.Write(b)
+		return f.write(b)
 	}
 	recordLen := 5 + ((int(b[3]) << 8) | int(b[4]))
 	if len(b) < recordLen {
-		return f.Conn.Write(b)
+		return f.write(b)
 	}
 	data := b[5:recordLen]
 	buf := make([]byte, 5+int(min(int64(len(data)), f.config.maxLength)))
+	writeFragments := func(records []byte) error {
+		written, err := f.write(records)
+		// Only the first record header belongs to the input; later headers are synthetic.
+		if n == 0 {
+			n = min(written, 5)
+		}
+		for written > 5 {
+			size := 5 + ((int(records[3]) << 8) | int(records[4]))
+			n += min(written, size) - 5
+			written -= size
+			records = records[size:]
+		}
+		return err
+	}
 	var hello []byte
 	for from := 0; ; {
 		length := min(int64(len(data)-from), randBetween(f.config.minLength, f.config.maxLength))
@@ -106,8 +130,8 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 		if f.config.maxInterval == 0 {
 			hello = append(hello, buf[:5+l]...)
 		} else {
-			if _, err := f.Conn.Write(buf[:5+l]); err != nil {
-				return 0, err
+			if err := writeFragments(buf[:5+l]); err != nil {
+				return n, err
 			}
 			if from < len(data) {
 				timer := time.NewTimer(time.Duration(randBetween(f.config.minInterval, f.config.maxInterval)) * time.Millisecond)
@@ -120,7 +144,7 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 				}
 				timer.Stop()
 				if err != nil {
-					return 0, err
+					return n, err
 				}
 			}
 		}
@@ -129,14 +153,24 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 		}
 	}
 	if len(hello) > 0 {
-		if _, err := f.Conn.Write(hello); err != nil {
-			return 0, err
+		if err := writeFragments(hello); err != nil {
+			return n, err
 		}
 	}
 	if len(b) > recordLen {
-		if _, err := f.Conn.Write(b[recordLen:]); err != nil {
-			return 0, err
+		written, err := f.write(b[recordLen:])
+		n += written
+		if err != nil {
+			return n, err
 		}
 	}
-	return len(b), nil
+	return n, nil
+}
+
+func (f *FragmentConn) write(b []byte) (int, error) {
+	n, err := f.Conn.Write(b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
+	return n, err
 }
