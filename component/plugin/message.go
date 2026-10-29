@@ -107,7 +107,7 @@ func (r *Response) TakeHTTP() (*http.Response, Delivery, error) {
 		return wire, r.delivery, nil
 	}
 	head := wire.Request != nil && wire.Request.Method == http.MethodHead
-	if head || wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent || wire.StatusCode == http.StatusNotModified {
+	if head || wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent || wire.StatusCode == http.StatusResetContent || wire.StatusCode == http.StatusNotModified {
 		_ = wire.Body.Close()
 		r.body.reader, wire.Body = http.NoBody, http.NoBody
 		wire.TransferEncoding, wire.Trailer = nil, nil
@@ -116,7 +116,10 @@ func (r *Response) TakeHTTP() (*http.Response, Delivery, error) {
 		maps.DeleteFunc(wire.Header, func(name string, _ []string) bool {
 			return strings.HasPrefix(name, http.TrailerPrefix)
 		})
-		if wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent {
+		if wire.StatusCode == http.StatusResetContent {
+			wire.ContentLength = 0
+			wire.Header.Set("Content-Length", "0")
+		} else if wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent {
 			wire.ContentLength = 0
 			wire.Header.Del("Content-Length")
 		} else if wire.ContentLength < 0 {

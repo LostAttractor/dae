@@ -31,8 +31,10 @@ func TestSyntheticResponseDiscardsForbiddenBody(t *testing.T) {
 	}{
 		{http.MethodHead, http.StatusOK},
 		{http.MethodHead, http.StatusNoContent},
+		{http.MethodHead, http.StatusResetContent},
 		{http.MethodHead, http.StatusNotModified},
 		{http.MethodGet, http.StatusNoContent},
+		{http.MethodGet, http.StatusResetContent},
 		{http.MethodGet, http.StatusNotModified},
 	} {
 		t.Run(fmt.Sprintf("%s/%d", test.method, test.status), func(t *testing.T) {
@@ -55,6 +57,10 @@ func TestSyntheticResponseDiscardsForbiddenBody(t *testing.T) {
 			if test.status == http.StatusNoContent {
 				if response.ContentLength != 0 || response.Header.Get("Content-Length") != "" {
 					t.Fatalf("204 retained a content length: %+v", response)
+				}
+			} else if test.status == http.StatusResetContent {
+				if response.ContentLength != 0 || response.Header.Get("Content-Length") != "0" {
+					t.Fatalf("205 is not framed as zero content: %+v", response)
 				}
 			} else if response.ContentLength != 1 || test.method == http.MethodHead && test.status != http.StatusNotModified && response.Header.Get("Content-Length") != "1" {
 				t.Fatalf("representation length was lost: %+v", response)

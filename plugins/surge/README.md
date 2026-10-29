@@ -120,8 +120,9 @@ identity; this compatibility policy is not part of the shared codec. Originally
 bodyless HEAD/304 responses update only the required metadata, without using body
 replacement that would incorrectly remove their validators. Shared
 `Response.TakeHTTP()` discards forbidden bodies and trailers after all plugin edits,
-including synthetic responses and script status changes to 204/304. It releases
-the original body and its budget without changing the delivery policy. Omitting
+including synthetic responses and script status changes to 204/205/304. 205 is
+framed with Content-Length: 0. It releases the original body and its budget without
+changing the delivery policy. Omitting
 the transmitted body is not the same as replacing the selected representation, so ETag,
 Last-Modified, Content-Encoding and Repr-Digest remain if still valid, but digests
 of the original message content do not. Fields already cleared by an actual body

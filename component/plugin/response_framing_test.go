@@ -26,12 +26,18 @@ func TestResponseTakeHTTPDiscardsForbiddenBody(t *testing.T) {
 		{"head-unknown", http.MethodHead, http.StatusOK, -1, -1},
 		{"head-empty", http.MethodHead, http.StatusOK, 0, 0},
 		{"head-no-content", http.MethodHead, http.StatusNoContent, 7, 0},
+		{"head-reset-content", http.MethodHead, http.StatusResetContent, 7, 0},
+		{"head-reset-content-unknown", http.MethodHead, http.StatusResetContent, -1, 0},
 		{"head-not-modified", http.MethodHead, http.StatusNotModified, 7, 7},
 		{"no-content", http.MethodGet, http.StatusNoContent, 7, 0},
+		{"reset-content", http.MethodGet, http.StatusResetContent, 7, 0},
+		{"reset-content-unknown", http.MethodGet, http.StatusResetContent, -1, 0},
+		{"reset-content-empty", http.MethodGet, http.StatusResetContent, 0, 0},
 		{"not-modified", http.MethodGet, http.StatusNotModified, 7, 7},
 		{"not-modified-unknown", http.MethodGet, http.StatusNotModified, -1, -1},
 		{"informational", http.MethodGet, http.StatusEarlyHints, 7, 0},
 		{"no-request", "", http.StatusNoContent, 7, 0},
+		{"reset-content-no-request", "", http.StatusResetContent, 7, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := &countedBody{Reader: strings.NewReader("payload")}
@@ -101,27 +107,31 @@ func TestResponseTakeHTTPDoesNotSynthesize304Length(t *testing.T) {
 }
 
 func TestResponseTakeHTTPReleasesForbiddenBodyBudget(t *testing.T) {
-	budget := membuffer.NewBudget(4096)
-	exchange := &Exchange{Request: NewRequest(httptest.NewRequest(http.MethodGet, "https://example.com/", nil), budget)}
-	response := exchange.NewResponse(&http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("payload")), ContentLength: 7})
-	defer response.Close()
-	view, err := response.Body().Snapshot(64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	view.Close()
-	if budget.Status().Used == 0 {
-		t.Fatal("snapshot did not reserve memory")
-	}
-	// Normalize the final status, not just the one supplied to NewResponse.
-	response.Head.StatusCode = http.StatusNoContent
-	wire, _, err := response.TakeHTTP()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wire.Body.Close()
-	if wire.Body != http.NoBody || budget.Status().Used != 0 {
-		t.Fatal("discarded body retained its budget", budget.Status())
+	for _, status := range []int{http.StatusNoContent, http.StatusResetContent} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			budget := membuffer.NewBudget(4096)
+			exchange := &Exchange{Request: NewRequest(httptest.NewRequest(http.MethodGet, "https://example.com/", nil), budget)}
+			response := exchange.NewResponse(&http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("payload")), ContentLength: 7})
+			defer response.Close()
+			view, err := response.Body().Snapshot(64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			view.Close()
+			if budget.Status().Used == 0 {
+				t.Fatal("snapshot did not reserve memory")
+			}
+			// Normalize the final status, not just the one supplied to NewResponse.
+			response.Head.StatusCode = status
+			wire, _, err := response.TakeHTTP()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer wire.Body.Close()
+			if wire.Body != http.NoBody || budget.Status().Used != 0 {
+				t.Fatal("discarded body retained its budget", budget.Status())
+			}
+		})
 	}
 }
 
@@ -157,7 +167,7 @@ func TestResponseTakeHTTPBodylessReverseProxy(t *testing.T) {
 			client := server.Client()
 			requests := 0
 			for _, method := range []string{http.MethodGet, http.MethodHead} {
-				for _, status := range []int{http.StatusNoContent, http.StatusNotModified} {
+				for _, status := range []int{http.StatusNoContent, http.StatusResetContent, http.StatusNotModified} {
 					request, err := http.NewRequestWithContext(t.Context(), method, server.URL+"/"+strconv.Itoa(status), nil)
 					if err != nil {
 						t.Fatal(err)
@@ -172,6 +182,9 @@ func TestResponseTakeHTTPBodylessReverseProxy(t *testing.T) {
 					_ = response.Body.Close()
 					if err != nil || len(data) != 0 || response.StatusCode != status || len(response.Trailer) != 0 || len(response.TransferEncoding) != 0 {
 						t.Fatalf("%s %d: body=%q response=%+v err=%v", method, status, data, response, err)
+					}
+					if status == http.StatusResetContent && (response.ContentLength != 0 || response.Header.Get("Content-Length") != "0") {
+						t.Fatalf("205 is not framed as zero content: %+v", response)
 					}
 					if (response.ProtoMajor == 2) != http2 || requests > 0 && !reused {
 						t.Fatalf("protocol=%s reused=%t after %d requests", response.Proto, reused, requests)

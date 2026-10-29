@@ -294,7 +294,7 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 }
 
 func responseHasBody(method string, status int) bool {
-	return method != http.MethodHead && status >= 200 && status != http.StatusNoContent && status != http.StatusNotModified
+	return method != http.MethodHead && status >= 200 && status != http.StatusNoContent && status != http.StatusResetContent && status != http.StatusNotModified
 }
 
 // URL rewrites stop at the first match, including an in-place URL change.

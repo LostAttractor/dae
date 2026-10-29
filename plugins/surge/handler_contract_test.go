@@ -126,7 +126,7 @@ func (s *bodylessStatusSource) Read(p []byte) (int, error) {
 func (s *bodylessStatusSource) Close() error { s.closes++; return nil }
 
 func TestHTTPStatusOmitsBodyPreservesRepresentation(t *testing.T) {
-	for _, status := range []int{http.StatusNotModified, http.StatusNoContent} {
+	for _, status := range []int{http.StatusNotModified, http.StatusNoContent, http.StatusResetContent} {
 		for _, replace := range []bool{false, true} {
 			t.Run(fmt.Sprintf("status=%d/replace=%t", status, replace), func(t *testing.T) {
 				module := "[Script]\nrewrite=type=http-response,pattern=.,script-path=a.js"
@@ -188,6 +188,9 @@ func TestHTTPStatusOmitsBodyPreservesRepresentation(t *testing.T) {
 				}
 				if status == http.StatusNoContent && (wire.ContentLength != 0 || wire.Header.Get("Content-Length") != "") || status == http.StatusNotModified && !replace && wire.ContentLength != int64(len(encoded)) {
 					t.Fatal("incorrect content length for a bodyless status", wire)
+				}
+				if status == http.StatusResetContent && (wire.ContentLength != 0 || wire.Header.Get("Content-Length") != "0") {
+					t.Fatal("205 is not framed as zero content", wire)
 				}
 				data, err := io.ReadAll(wire.Body)
 				_ = wire.Body.Close()

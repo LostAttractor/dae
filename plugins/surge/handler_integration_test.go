@@ -421,6 +421,11 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}
+				if r.URL.Path == "/205" {
+					w.Header().Set("Content-Length", "0")
+					w.WriteHeader(http.StatusResetContent)
+					return
+				}
 				if r.URL.Path == "/304" {
 					w.WriteHeader(http.StatusNotModified)
 					return
@@ -438,17 +443,19 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
                   } else if($request.url.endsWith("/syntheticheadempty")) {
                     $done({response:{status:200,headers:{"X-Script":"ran","Content-Length":"1234"},body:""}});
                   } else if($request.url.includes("/synthetic")) {
-                    const status = $request.url.endsWith("204") ? 204 : $request.url.endsWith("304") ? 304 : 200;
+                    const status = $request.url.endsWith("204") ? 204 : $request.url.endsWith("205") ? 205 : $request.url.endsWith("304") ? 304 : 200;
                     $done({response:{status,headers:{"X-Script":"ran"},body:"x"}});
                   } else $done({});`,
 				"http-response": `
                   const headers = {...$response.headers,"X-Script":"ran"};
                   if($request.url.endsWith("/to204")) $done({status:204,headers});
+                  else if($request.url.endsWith("/to205")) $done({status:205,headers});
                   else if($request.url.endsWith("/to304")) $done({status:304,headers});
                   else $done({headers});`,
 			}, trust)
 			local, err := Parse(`[Map Local]
 ^https://example.com/map204 data-type=text data="x" status-code=204 header="x-script: ran"
+^https://example.com/map205 data-type=text data="x" status-code=205 header="x-script: ran"
 ^https://example.com/map304 data-type=text data="x" status-code=304 header="x-script: ran"
 ^https://example.com/maphead data-type=text data="x" header="x-script: ran"
 `, nil)
@@ -465,13 +472,19 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
 			}{
 				{http.MethodHead, "/head", http.StatusOK, nil},
 				{http.MethodGet, "/204", http.StatusNoContent, nil},
+				{http.MethodGet, "/205", http.StatusResetContent, new(int64(0))},
 				{http.MethodGet, "/304", http.StatusNotModified, nil},
 				{http.MethodGet, "/to204", http.StatusNoContent, nil},
+				{http.MethodGet, "/to205", http.StatusResetContent, new(int64(0))},
 				{http.MethodGet, "/to304", http.StatusNotModified, nil},
 				{http.MethodGet, "/synthetic204", http.StatusNoContent, nil},
+				{http.MethodGet, "/synthetic205", http.StatusResetContent, new(int64(0))},
+				{http.MethodHead, "/synthetic205", http.StatusResetContent, new(int64(0))},
 				{http.MethodGet, "/synthetic304", http.StatusNotModified, nil},
 				{http.MethodHead, "/synthetichead", http.StatusOK, new(int64(1))},
 				{http.MethodGet, "/map204", http.StatusNoContent, nil},
+				{http.MethodGet, "/map205", http.StatusResetContent, new(int64(0))},
+				{http.MethodHead, "/map205", http.StatusResetContent, new(int64(0))},
 				{http.MethodGet, "/map304", http.StatusNotModified, nil},
 				{http.MethodHead, "/maphead", http.StatusOK, new(int64(1))},
 				{http.MethodHead, "/syntheticheadlength", http.StatusOK, new(int64(1234))},
@@ -501,11 +514,14 @@ func TestProxyIntegrationBodylessResponses(t *testing.T) {
 				if response.Header.Get("Trailer") != "" || len(response.Trailer) != 0 || len(response.TransferEncoding) != 0 {
 					t.Fatalf("%s %s: bodyless response retained trailers or transfer framing: %+v", test.method, test.path, response)
 				}
+				if test.status == http.StatusResetContent && response.Header.Get("Content-Length") != "0" {
+					t.Fatalf("%s %s: 205 is not framed as zero content: %+v", test.method, test.path, response)
+				}
 				if i != 0 && !reused.Load() {
 					t.Fatalf("%s %s: bodyless response interrupted the client connection", test.method, test.path)
 				}
 				if test.length != nil && response.ContentLength != *test.length {
-					t.Fatalf("%s: HEAD representation length=%d, want %d", test.path, response.ContentLength, *test.length)
+					t.Fatalf("%s: content length=%d, want %d", test.path, response.ContentLength, *test.length)
 				}
 			}
 		})

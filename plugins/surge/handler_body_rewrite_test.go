@@ -273,7 +273,7 @@ func TestProxyBodyRewriteStreamsOversizedOriginal(t *testing.T) {
 }
 
 func TestProxyBodyRewriteSkipsBodylessResponses(t *testing.T) {
-	for _, status := range []int{101, 204, 304, 200} {
+	for _, status := range []int{101, 204, 205, 304, 200} {
 		response := bodyRewriteResponse(nil, "gzip")
 		response.StatusCode = status
 		if status == 200 {
