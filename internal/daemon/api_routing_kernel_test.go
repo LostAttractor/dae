@@ -71,6 +71,7 @@ func TestDaemonReloadRefreshesAPIAddressesKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	serveKernelTestIngress(t, datapath, conf.Global.TproxyPort)
 	if err := app.publishPlane(candidate, false); err != nil {
 		t.Fatal(err)
 	}

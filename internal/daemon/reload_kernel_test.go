@@ -49,6 +49,28 @@ func (p *reloadWorker) Close() error {
 // Run alone in a fresh process and mount/network namespace with writable bpffs:
 // the daemon owns a process-lifetime netns. Exercise the real loader and
 // publication boundary, including the no-op/abort decision.
+// serveKernelTestIngress opens the transparent sockets before publication, in
+// the order Run uses: a generation is never published without its ingress.
+func serveKernelTestIngress(t *testing.T, datapath *control.Runtime, port uint16) {
+	t.Helper()
+	ready := make(chan bool, 1)
+	stopped := make(chan error, 1)
+	go func() {
+		_, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
+			return datapath.ListenAndServe(ready, port)
+		})
+		stopped <- err
+	}()
+	select {
+	case started := <-ready:
+		if !started {
+			t.Fatal(<-stopped)
+		}
+	case err := <-stopped:
+		t.Fatal(err)
+	}
+}
+
 func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if os.Getenv("DAE_TEST_ISOLATED") != "1" {
 		t.Skip("requires isolated network/mount namespaces and BPF privileges")
@@ -139,6 +161,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	serveKernelTestIngress(t, datapath, conf.Global.TproxyPort)
 	if err := app.publishPlane(candidate, false); err != nil {
 		t.Fatal(err)
 	}
