@@ -468,30 +468,40 @@ func TestSupportRetryBackoffAndJitter(t *testing.T) {
 	}
 }
 
-func TestHealthRetryBackoff(t *testing.T) {
+// A failed path waits a quarter of its downtime so far, from 1s up to
+// check_interval_max; success restores the monitoring interval.
+func TestRecoveryRetryFollowsDowntime(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.CheckInterval = 3 * time.Minute
 	d.CheckIntervalMax = time.Hour
 	checker := newConnectivityChecker(d.pathRuntime, nil)
-	t.Cleanup(func() {
-		checker.stopRetries()
-	})
-
-	want := []time.Duration{
-		time.Second,
-		2 * time.Second,
-		4 * time.Second,
-		8 * time.Second,
-	}
-	for i, expected := range want {
+	t.Cleanup(checker.stopRetries)
+	for _, tc := range []struct {
+		downtime time.Duration
+		want     time.Duration
+	}{
+		{-1, time.Second}, // no confirmed failure: the shortest delay
+		{0, time.Second},
+		{time.Minute, 15 * time.Second},
+		{20 * time.Minute, 5 * time.Minute},
+		{10 * time.Hour, time.Hour},
+	} {
+		d.mu.Lock()
+		d.failures.downSince = time.Time{}
+		if tc.downtime >= 0 {
+			d.failures.downSince = time.Now().Add(-tc.downtime)
+		}
+		d.mu.Unlock()
+		before := time.Now()
 		checker.updateHealthSchedule(false)
-		if checker.healthInterval != expected {
-			t.Fatalf("health retry interval %d = %v, want %v", i, checker.healthInterval, expected)
+		low, high := checktime.Bounds(tc.want, d.CheckIntervalMax)
+		if delay := checker.healthAt.Sub(before); delay < low || delay > high+50*time.Millisecond {
+			t.Fatalf("downtime %v: retry in %v, want [%v, %v]", tc.downtime, delay, low, high)
 		}
 	}
 	checker.updateHealthSchedule(true)
-	if checker.healthInterval != d.CheckInterval || checker.backingOff {
-		t.Fatalf("health recovery interval = %v, backingOff=%v", checker.healthInterval, checker.backingOff)
+	if checker.healthInterval != d.CheckInterval {
+		t.Fatalf("health recovery interval = %v", checker.healthInterval)
 	}
 }
 
@@ -967,8 +977,7 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		return nil
 	})
-	checker.backingOff = true
-	checker.healthInterval = time.Minute
+	checker.healthAt = time.Now().Add(time.Hour)
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -989,8 +998,9 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	if got := transport.connects.Load(); got != 1 {
 		t.Fatalf("immediate reconnect attempts = %d, want 1", got)
 	}
-	if checker.healthInterval != time.Second {
-		t.Fatalf("session-triggered retry interval = %v, want 1s", checker.healthInterval)
+	// The outage has just begun, so the retry takes the shortest delay.
+	if delay := time.Until(checker.healthAt); delay < 0 || delay > 1200*time.Millisecond {
+		t.Fatalf("session-triggered retry in %v, want at most 1.2s", delay)
 	}
 	availability := stats.DefaultStore.GetNode(d.StatsKey())
 	if availability.LastCheckAt.IsZero() || availability.ChecksTotal != 1 || availability.ChecksFailed != 1 {
@@ -1119,15 +1129,15 @@ func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
 	})
 	checker.retryInterval = time.Hour
 	checker.supportAt = time.Now().Add(time.Hour)
-	checker.backingOff = true
+	checker.healthAt = time.Now().Add(time.Hour)
 	checker.healthInterval = time.Minute
 
 	checker.resetForRequest(checkRequestDataPlane)
 	if checker.retryInterval != time.Hour || checker.supportAt.IsZero() {
 		t.Fatalf("data-plane request reset support retry: interval=%v scheduled=%v", checker.retryInterval, !checker.supportAt.IsZero())
 	}
-	if checker.backingOff || checker.healthInterval != d.CheckInterval {
-		t.Fatalf("data-plane request did not reset health retry: interval=%v backingOff=%v", checker.healthInterval, checker.backingOff)
+	if !checker.healthAt.IsZero() || checker.healthInterval != d.CheckInterval {
+		t.Fatalf("data-plane request did not reset health retry: interval=%v scheduled=%v", checker.healthInterval, !checker.healthAt.IsZero())
 	}
 }
 

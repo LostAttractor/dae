@@ -97,7 +97,9 @@ func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 	d.checkEnabled = enabled
 	pending := d.checks.pending
 	d.updateCheckDemandLocked()
-	if !immediate && enabled && d.healthyLocked(d.sessionSnapshot()) {
+	// Neither a verified path nor one in recovery needs a probe for monitoring
+	// to start: the latter already retries on its own schedule.
+	if !immediate && enabled && (d.healthyLocked(d.sessionSnapshot()) || d.awaitingRecoveryLocked()) {
 		d.checks.pending = d.checks.pending&^checkRequestEnvironment | pending
 	}
 	d.statusRevision++

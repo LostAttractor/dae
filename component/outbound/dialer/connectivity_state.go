@@ -94,6 +94,12 @@ func (d *pathRuntime) awaitingRecovery() bool {
 	return d.awaitingRecoveryLocked()
 }
 
+// markHealthyLocked ends the outage that confirmFailureLocked started.
+func (d *pathRuntime) markHealthyLocked() {
+	d.health.phase = healthHealthy
+	d.failures.downSince = time.Time{}
+}
+
 func (d *pathRuntime) initialCheckCompleted() bool {
 	d.mu.RLock()
 	done := d.initialCheckCompletedLocked()
@@ -255,7 +261,7 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 		return appliedCheck{}, false
 	}
 	if !d.checksConnectivity {
-		d.health.phase = healthHealthy
+		d.markHealthyLocked()
 		d.health.readiness = observedReadiness
 		d.statusRevision++
 		d.mu.Unlock()
@@ -325,7 +331,7 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 	}
 	if d.health.phase != healthConfirming || result.generation >= d.failures.generation {
 		d.recordRecoverySuccessLocked()
-		d.health.phase = healthHealthy
+		d.markHealthyLocked()
 		d.failures.reportedAt = time.Time{}
 		session := d.sessionSnapshot()
 		if session.Cause == nil && !session.RecoveryRequired {
@@ -523,7 +529,7 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 	if event.Accepting {
 		unchecked := !d.checksConnectivity
 		if unchecked {
-			d.health.phase = healthHealthy
+			d.markHealthyLocked()
 			d.health.readiness = event.ReadinessVersion
 			if event.Cause == nil && !event.RecoveryRequired {
 				d.failures.last = nil

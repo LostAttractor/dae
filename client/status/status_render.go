@@ -218,7 +218,7 @@ func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	if status.ChecksConnectivity {
 		availability := status.Availability
 		cells.state = colorNodeState(nodeHealth(status), "")
-		if status.Dormant {
+		if sleeping(status) {
 			cells.state = "dormant"
 		}
 		cells.upRatio = availabilityCell(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.UpRatio, value) })
@@ -253,8 +253,14 @@ func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[
 	}
 }
 
+// sleeping reports a released transport whose last observation did not fail.
+// A failed path shows its health and retry schedule even while it sleeps.
+func sleeping(status api.NodeStatus) bool {
+	return status.Dormant && status.Health != api.NodeHealthUnhealthy
+}
+
 func nodeLatency(status api.NodeStatus) any {
-	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy && !status.Dormant {
+	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy && !sleeping(status) {
 		return "-"
 	}
 	latency := status.Latency
@@ -262,14 +268,14 @@ func nodeLatency(status api.NodeStatus) any {
 	average := latency.Avg10.Seconds() * 1000
 	moving := latency.MovingAvg.Seconds() * 1000
 	formatted := clitable.Parts(fmt.Sprintf("%.0f", last), "/", fmt.Sprintf("%.0f", average), "/", fmt.Sprintf("%.0f", moving))
-	if status.Dormant && status.Selection != nil {
+	if sleeping(status) && status.Selection != nil {
 		return formatted.Decorate(func(value string) string { return value + " @" + formatAgo(status.Selection.MeasuredAt) })
 	}
 	return formatted.Decorate(func(value string) string { return colorLatency(moving, value) })
 }
 
 func compactNodeState(status api.NodeStatus, now time.Time) string {
-	if status.Dormant {
+	if sleeping(status) {
 		return "dormant"
 	}
 	state := nodeHealth(status)

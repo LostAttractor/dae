@@ -74,6 +74,13 @@ func failoverGroup(t *testing.T, policy dialer.DialerSelectionPolicy, annotation
 	return newFailoverTestGroup(t, policy, annotations, false, transports...)
 }
 
+// awaitRecoveryAttempt lets a failed path reach its own next recovery attempt:
+// groups no longer probe it, whatever their upgrade interval.
+func awaitRecoveryAttempt(d *dialer.Dialer) {
+	time.Sleep(time.Until(d.RuntimeStatus().Recovery.RetryAt) + 200*time.Millisecond)
+	synctest.Wait()
+}
+
 func newFailoverTestGroup(t *testing.T, policy dialer.DialerSelectionPolicy, annotations []*dialer.Annotation, recreate bool, transports ...*failoverTransport) *DialerGroup {
 	t.Helper()
 	option := &dialer.GlobalOption{CheckInterval: time.Second, CheckIntervalMax: time.Hour,
@@ -590,8 +597,7 @@ func TestRecoveryEndpointCheckPromotesWithoutAnotherProbe(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
 		high.offline.Store(false)
-		time.Sleep(200 * time.Millisecond)
-		synctest.Wait()
+		awaitRecoveryAttempt(g.Dialers[0])
 		status := g.Dialers[0].RuntimeStatus()
 		if !status.Degraded || !status.CheckEnabled || !status.Healthy {
 			t.Fatalf("observation did not start: %+v", status)
@@ -683,6 +689,35 @@ func TestElectionDoesNotWaitForDominatedOffset(t *testing.T) {
 	})
 }
 
+// A failed candidate recovers on its path's schedule: every automatic group
+// keeps it monitored, and upgrade checks no longer probe it.
+func TestFailedCandidateRecoversWithoutUpgradeProbes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		high, low := new(failoverTransport), new(failoverTransport)
+		high.offline.Store(true)
+		annotations := emptyAnnotations(2)
+		annotations[0].Priority = 10
+		policy := testFailoverPolicy()
+		policy.UpgradeInterval, policy.UpgradeIntervalMax = 100*time.Millisecond, 100*time.Millisecond
+		g := failoverGroup(t, policy, annotations, high, low)
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		snapshot := g.Dialers[0].SelectionSnapshot(testNetworkType)
+		if !snapshot.Recovering() || !g.Dialers[0].RuntimeStatus().CheckEnabled {
+			t.Fatalf("automatic group left its failed candidate unmonitored: %+v", snapshot)
+		}
+		// About ten attempts of both TCP modes; 100ms upgrade checks made about a hundred.
+		if attempts := high.attempts.Load(); attempts > 30 {
+			t.Fatalf("failed candidate was probed %d times in 10s", attempts)
+		}
+		high.offline.Store(false)
+		awaitRecoveryAttempt(g.Dialers[0])
+		if !g.Dialers[0].RuntimeStatus().Healthy {
+			t.Fatal("failed candidate did not recover by itself")
+		}
+	})
+}
+
 func TestRecoveryFailureRestartsTheWholeWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		high, low := new(failoverTransport), new(failoverTransport)
@@ -695,8 +730,7 @@ func TestRecoveryFailureRestartsTheWholeWindow(t *testing.T) {
 		g := failoverGroup(t, policy, annotations, high, low)
 		time.Sleep(100 * time.Millisecond)
 		high.offline.Store(false)
-		time.Sleep(300 * time.Millisecond)
-		synctest.Wait()
+		awaitRecoveryAttempt(g.Dialers[0])
 		status := g.Dialers[0].RuntimeStatus()
 		deadline := status.MeasuredAt.Add(policy.FailureRecovery - status.RecoveryElapsed)
 		time.Sleep(time.Until(deadline) - 20*time.Millisecond)
@@ -707,8 +741,7 @@ func TestRecoveryFailureRestartsTheWholeWindow(t *testing.T) {
 			t.Fatalf("failed endpoint preserved progress: %+v", status)
 		}
 		high.offline.Store(false)
-		time.Sleep(300 * time.Millisecond)
-		synctest.Wait()
+		awaitRecoveryAttempt(g.Dialers[0])
 		status = g.Dialers[0].RuntimeStatus()
 		if !status.Healthy || !status.Degraded {
 			t.Fatalf("new observation did not start degraded: %+v", status)

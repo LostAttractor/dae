@@ -231,7 +231,9 @@ func (d *pathRuntime) updateTransportDemandLocked() {
 	if d.dormant == nil {
 		return
 	}
-	needed := !d.checks.paused || d.checks.operation != checkIdle || d.checks.pending != 0 || d.retains > 0 || d.checkHolds > 0
+	// Monitoring holds a usable path awake. A failed path sleeps between its
+	// recovery attempts, which wake it as operations.
+	needed := !d.checks.paused && !d.awaitingRecoveryLocked() || d.checks.operation != checkIdle || d.checks.pending != 0 || d.retains > 0 || d.checkHolds > 0
 	for _, flight := range d.checks.selection {
 		needed = needed || flight != nil
 	}

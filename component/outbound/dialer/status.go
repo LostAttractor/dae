@@ -24,7 +24,14 @@ type SelectionSnapshot struct {
 	MeasuredAt      time.Time // Last successful representative check.
 	Degraded        bool
 	Monitoring      bool // Shared worker demand, including other groups.
+	// Failed reports a confirmed failure awaiting recovery. A configuration
+	// block stops retries until a manual check, so it is not failed here.
+	Failed bool
 }
+
+// Recovering reports a failed path whose worker retries on its own schedule
+// and reports recovery to every group, so no group needs to probe it.
+func (s SelectionSnapshot) Recovering() bool { return s.Failed && s.Monitoring }
 
 // ConnectivitySnapshot is the state needed to aggregate a dialer into its
 // group. It deliberately excludes process-lifetime statistics.
@@ -85,6 +92,8 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
 	snapshot.Degraded, _, _ = d.degradationLocked()
 	snapshot.Monitoring = !d.checks.paused
+	snapshot.Failed = !d.closed && d.checksConnectivity && d.awaitingRecoveryLocked() &&
+		d.recovery.Phase != api.RecoveryBlocked && d.recovery.Phase != api.RecoveryStopped
 	d.mu.RUnlock()
 	return snapshot
 }

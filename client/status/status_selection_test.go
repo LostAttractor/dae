@@ -13,35 +13,39 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
-func TestDormantStatusPreservesMeasuredLatency(t *testing.T) {
+func TestDormantStatusShowsOnlyHealthySleep(t *testing.T) {
 	withoutStatusColors(t)
 	now := time.Now()
 	node := testNodeStatus(now)
 	node.Healthy = false
-	node.Health = api.NodeHealthUnhealthy
+	node.Health = api.NodeHealthHealthy
 	node.Dormant = true
 	node.SessionDetail.State = "disconnected"
-	node.Selection = &api.SelectionStatus{Tracking: "standby", Degraded: true,
-		RecoveryElapsed: 5 * time.Second, FailureRecovery: 30 * time.Second,
-		Priority: 7, Score: -time.Hour, MeasuredAt: now.Add(-time.Minute)}
-	row := compactNodeStatusRow(node, 0, api.NetworkValues[string]{}, false, now)
-	rendered := clitable.RenderLog(nil, []table.Row{row})
-	for _, want := range []string{"[degraded]", "p=7*", "dormant", "10/20/30 @"} {
+	node.Selection = &api.SelectionStatus{Tracking: "standby", Priority: 7, Score: -time.Hour, MeasuredAt: now.Add(-time.Minute)}
+	rendered := clitable.RenderLog(nil, []table.Row{compactNodeStatusRow(node, 0, api.NetworkValues[string]{}, false, now)})
+	for _, want := range []string{"p=7*", "dormant", "10/20/30 @"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("missing %q in sleeping path status:\n%s", want, rendered)
 		}
 	}
-	if strings.Contains(rendered, "[sleep]") || strings.Contains(rendered, "[recover") || strings.Count(rendered, "dormant") != 1 {
-		t.Fatalf("physical dormancy was duplicated or displayed as recovery observation:\n%s", rendered)
+	if strings.Contains(rendered, "[sleep]") || strings.Count(rendered, "dormant") != 1 {
+		t.Fatalf("physical dormancy was duplicated:\n%s", rendered)
 	}
-	node.Dormant = false
+	// A failed path shows its health and retry schedule even while it sleeps.
+	node.Health = api.NodeHealthUnhealthy
+	node.Selection.Degraded, node.Selection.RecoveryElapsed, node.Selection.FailureRecovery = true, 5*time.Second, 30*time.Second
 	node.Recovery = api.RecoverySnapshot{Action: "verify", Phase: api.RecoveryBackoff, RetryAt: now.Add(10 * time.Second)}
+	rendered = clitable.RenderLog(nil, []table.Row{compactNodeStatusRow(node, 0, api.NetworkValues[string]{}, false, now)})
+	if !strings.Contains(rendered, "[degraded]") || strings.Contains(rendered, "dormant") || strings.Contains(rendered, "[recover") {
+		t.Fatalf("failed sleeping path hid its failure:\n%s", rendered)
+	}
 	if got := compactNodeState(node, now); got != "unavailable (recheck in 10.0s)" {
-		t.Fatalf("standby hid a shared worker's actual health and retry: %s", got)
+		t.Fatalf("failed path hid its actual health and retry: %s", got)
 	}
 	if got := fmt.Sprint(nodeLatency(node)); got != "-" {
-		t.Fatalf("unhealthy checking path displayed historical latency as current: %s", got)
+		t.Fatalf("unhealthy path displayed historical latency as current: %s", got)
 	}
+	node.Dormant = false
 	// A dormant transport can be unavailable while its latest observation is healthy.
 	node.Healthy = false
 	node.Health = api.NodeHealthHealthy

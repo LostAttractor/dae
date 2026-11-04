@@ -85,6 +85,9 @@ func (d *Dialer) degradationLocked() (bool, time.Duration, time.Duration) {
 
 func (d *pathRuntime) confirmFailureLocked() {
 	d.failures.failedBefore = true
+	if d.failures.downSince.IsZero() {
+		d.failures.downSince = time.Now()
+	}
 	d.resetRecoveryObservationLocked()
 	for member := range d.members {
 		if member.group != nil {

@@ -17,6 +17,7 @@ type pathFailures struct {
 	last               *api.FailureSnapshot
 	resources          map[uint64]resourceFailureProgress
 	failedBefore       bool
+	downSince          time.Time // Confirmation of the unresolved failure; zero while usable.
 	recoverySince      time.Time
 	recoveryVerifiedAt time.Time
 }

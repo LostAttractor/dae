@@ -106,6 +106,42 @@ func TestRediscoveryRunsOnceAfterMonitoringStops(t *testing.T) {
 	})
 }
 
+// A group that starts monitoring a path that failed unmonitored resumes the
+// path's recovery schedule; monitoring itself is no reason to probe at once.
+func TestMonitoringFailedPathResumesRecoverySchedule(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		prepareRecoveryDialer(d)
+		d.SetMonitoring(false)
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+			return context.DeadlineExceeded
+		})
+		defer checker.stopRetries()
+		checker.cancel = func() {}
+		checker.finish(checkResult{kind: checkHealth,
+			probes: []probeResult{{network: common.NetworkTCP4, err: context.DeadlineExceeded}}})
+		checker.dispatch()
+		checker.finish(<-checker.results)
+		checker.dispatch()
+		if !checker.healthAt.IsZero() || !checker.supportAt.IsZero() {
+			t.Fatal("unmonitored failure kept retrying")
+		}
+		time.Sleep(time.Minute)
+		d.SetMonitoring(true)
+		if d.connectivityCheckRequested() {
+			t.Fatal("monitoring a failed path bypassed its recovery schedule")
+		}
+		checker.dispatch()
+		low, high := checktime.Bounds(time.Minute/recoveryRetryDivisor, d.CheckIntervalMax)
+		if delay := time.Until(checker.healthAt); checker.cancel != nil || delay < low || delay > high {
+			t.Fatalf("monitoring resumed recovery in %v, want [%v, %v]", delay, low, high)
+		}
+		if snapshot := d.SelectionSnapshot(common.NetworkTCP4.NetworkType()); !snapshot.Recovering() {
+			t.Fatalf("monitored failed path is not recovering by itself: %+v", snapshot)
+		}
+	})
+}
+
 func TestRetainedRediscoveryPreservesBackoffAndStopsWhenUnsupported(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		transport := newTestSessionTransport(netproxy.SessionConnected)
@@ -128,7 +164,8 @@ func TestRetainedRediscoveryPreservesBackoffAndStopsWhenUnsupported(t *testing.T
 		checker.cancel = func() {}
 		checker.finish(checkResult{kind: checkHealth, readiness: transport.Snapshot().ReadinessVersion,
 			probes: []probeResult{{network: common.NetworkTCP4, err: context.DeadlineExceeded}}})
-		for _, interval := range []time.Duration{time.Second, 4 * time.Second} {
+		// A seconds-old outage retries after the shortest recovery delay.
+		for _, interval := range []time.Duration{time.Second, time.Second} {
 			checker.dispatch()
 			if checker.cancel == nil || checker.runningKind != checkSupport {
 				t.Fatal("retained caller lost capability recovery")
@@ -164,13 +201,20 @@ func TestUnsuccessfulRediscoveryBacksOffWithoutResettingRound(t *testing.T) {
 		checker.cancel = func() {}
 		checker.finish(checkResult{kind: checkHealth,
 			probes: []probeResult{{network: common.NetworkTCP4, err: context.DeadlineExceeded}}})
-		for _, interval := range []time.Duration{time.Second, 4 * time.Second, 16 * time.Second} {
+		// Rediscovering a failed path is its recovery: attempts wait a quarter
+		// of the outage so far and leave the capability round untouched.
+		d.mu.Lock()
+		d.failures.downSince = time.Now().Add(-time.Minute)
+		since := d.failures.downSince
+		d.mu.Unlock()
+		round := checker.retryInterval
+		for range 3 {
 			checker.dispatch()
 			if checker.cancel == nil || checker.runningKind != checkSupport {
 				t.Fatal("rediscovery was not dispatched")
 			}
 			checker.finish(<-checker.results)
-			low, high := checktime.Bounds(interval, d.CheckIntervalMax)
+			low, high := checktime.Bounds(time.Since(since)/recoveryRetryDivisor, d.CheckIntervalMax)
 			if delay := time.Until(checker.supportAt); delay < low || delay > high || !checker.healthAt.IsZero() {
 				t.Fatalf("support delay=%v health=%v want [%v,%v]", delay, checker.healthAt, low, high)
 			}
@@ -179,6 +223,9 @@ func TestUnsuccessfulRediscoveryBacksOffWithoutResettingRound(t *testing.T) {
 				t.Fatal("failed discovery retried without waiting")
 			}
 			time.Sleep(time.Until(checker.supportAt))
+		}
+		if checker.retryInterval != round {
+			t.Fatalf("recovery advanced the capability round: %v -> %v", round, checker.retryInterval)
 		}
 	})
 }

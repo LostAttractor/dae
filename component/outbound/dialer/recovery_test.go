@@ -195,9 +195,8 @@ func TestFatalTimeoutOwnerStateIsNotMaskedOrRetriedByOldRelays(t *testing.T) {
 
 func TestRecoveryDeadlineMatchesTimer(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
+	d.CheckIntervalMax = 10 * time.Millisecond
 	c := testRecoveryChecker(t, d)
-	c.healthInterval = 10 * time.Millisecond
-	c.backingOff = true
 	c.updateHealthSchedule(false)
 	c.dispatch()
 	snapshot := d.RuntimeStatus().Recovery

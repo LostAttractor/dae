@@ -60,7 +60,6 @@ type connectivityChecker struct {
 	timer          *time.Timer
 	healthAt       time.Time
 	healthInterval time.Duration
-	backingOff     bool
 	staggerNext    bool
 
 	supportAt     time.Time

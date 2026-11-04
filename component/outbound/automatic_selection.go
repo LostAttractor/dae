@@ -157,9 +157,10 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 			continue
 		}
 		// A monitored candidate with a confirmed capability needs no test: it
-		// becomes alive by itself.
+		// becomes alive by itself, as does a failed one recovering on its own.
 		snapshot := d.SelectionSnapshot(network.NetworkType())
-		if snapshot.Support == api.NetworkSupportUnsupported || snapshot.Monitoring && snapshot.Support == api.NetworkSupportConfirmed {
+		if snapshot.Support == api.NetworkSupportUnsupported || snapshot.Recovering() ||
+			snapshot.Monitoring && snapshot.Support == api.NetworkSupportConfirmed {
 			continue
 		}
 		upper := s.g.dialerToAnnotation[d].MaxPriority()
@@ -328,9 +329,12 @@ func (s *automaticSelection) scheduleLocked(cause *dialer.Dialer) (changed commi
 	return changed, next
 }
 
+// canDiscover reports a candidate an election could test. Recovering paths
+// take over when they recover, so an election cannot hasten them.
 func (s *automaticSelection) canDiscover(network common.NetworkIndex) bool {
 	for _, d := range s.g.Dialers {
-		if d.CanProbe(network) && d.SelectionSnapshot(network.NetworkType()).Support != api.NetworkSupportUnsupported {
+		snapshot := d.SelectionSnapshot(network.NetworkType())
+		if d.CanProbe(network) && snapshot.Support != api.NetworkSupportUnsupported && !snapshot.Recovering() {
 			return true
 		}
 	}
@@ -443,7 +447,7 @@ func (s *automaticSelection) discoveryCandidates(network common.NetworkIndex, up
 			continue
 		}
 		snapshot := d.SelectionSnapshot(network.NetworkType())
-		if snapshot.Support == api.NetworkSupportUnsupported {
+		if snapshot.Support == api.NetworkSupportUnsupported || snapshot.Recovering() {
 			continue
 		}
 		if upgrade && snapshot.Monitoring && snapshot.Support == api.NetworkSupportConfirmed {
@@ -619,6 +623,13 @@ func (s *automaticSelection) refreshDemandLocked() {
 		enabled := false
 		d.SetSelected(slices.Contains(s.selected[:], d))
 		for network, selected := range current {
+			snapshot := d.SelectionSnapshot(common.NetworkIndex(network).NetworkType())
+			// Any candidate may be needed again. A failed one stays monitored to
+			// recover on its path's schedule, which bounds probes by its downtime.
+			if snapshot.Failed {
+				enabled = true
+				break
+			}
 			candidate, ok := s.g.candidate(d, common.NetworkIndex(network).NetworkType())
 			// A continuous policy may sleep lower tiers only with a usable peer
 			// in the serving tier. An election that already serves finishes its
@@ -626,7 +637,7 @@ func (s *automaticSelection) refreshDemandLocked() {
 			// backups stay monitored meanwhile.
 			job := s.networks[network].job
 			if !s.failover() && usable[network] && !hasPeer[network] && (ok || job == nil || !job.committed && !job.replacing) &&
-				d.CanProbe(common.NetworkIndex(network)) && d.SelectionSnapshot(common.NetworkIndex(network).NetworkType()).Support != api.NetworkSupportUnsupported {
+				d.CanProbe(common.NetworkIndex(network)) && snapshot.Support != api.NetworkSupportUnsupported {
 				enabled = true
 				break
 			}

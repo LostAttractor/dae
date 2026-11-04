@@ -19,7 +19,25 @@ const (
 	supportRetryInitialInterval = time.Second
 	// Unknown capabilities back off faster than retries of a known healthy path.
 	supportRetryMultiplier = 4
+	// A failed path waits a quarter of its downtime so far between attempts.
+	// Recovery is noticed within 25% of the outage, while a dead path needs
+	// only logarithmically many probes to reach check_interval_max.
+	recoveryRetryDivisor = 4
 )
+
+// recoveryRetryDelay spaces the attempts of a path that failed, whatever
+// operation the next attempt is, so every caller shares one cadence.
+func (c *connectivityChecker) recoveryRetryDelay(now time.Time) time.Duration {
+	c.d.mu.RLock()
+	since := c.d.failures.downSince
+	c.d.mu.RUnlock()
+	var downtime time.Duration
+	if !since.IsZero() {
+		downtime = now.Sub(since)
+	}
+	maximum := c.d.CheckIntervalMax
+	return checktime.Jitter(min(max(downtime/recoveryRetryDivisor, checkBackoffInitialInterval), maximum), maximum)
+}
 
 func (c *connectivityChecker) scheduleSupport() {
 	if !c.supportPending() {
@@ -27,8 +45,13 @@ func (c *connectivityChecker) scheduleSupport() {
 		return
 	}
 	if c.supportAt.IsZero() {
-		deadline := time.Now().Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
-		c.supportAt = deadline
+		now := time.Now()
+		if c.d.awaitingRecovery() {
+			// Rediscovering a failed path is how it recovers, not capability discovery.
+			c.supportAt = now.Add(c.recoveryRetryDelay(now))
+			return
+		}
+		c.supportAt = now.Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
 		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
 	}
 }
@@ -58,7 +81,6 @@ func (c *connectivityChecker) resetForRequest(reasons checkRequestReason) {
 
 func (c *connectivityChecker) resetHealthRetry() {
 	c.healthInterval = c.d.CheckInterval
-	c.backingOff = false
 	c.staggerNext = true
 	c.healthAt = time.Time{}
 }
@@ -122,7 +144,6 @@ func (c *connectivityChecker) updateInitialSchedule(success bool) {
 	}
 	delay := c.healthInterval
 	c.healthInterval = c.d.CheckInterval
-	c.backingOff = false
 	if c.staggerNext {
 		delay = checktime.Jitter(c.healthInterval, math.MaxInt64)
 		c.staggerNext = false
@@ -131,24 +152,18 @@ func (c *connectivityChecker) updateInitialSchedule(success bool) {
 }
 
 func (c *connectivityChecker) updateHealthSchedule(success bool) {
-	maximum := c.d.CheckIntervalMax
-	if success {
-		c.healthInterval = c.d.CheckInterval
-		c.backingOff = false
-	} else if c.backingOff {
-		c.healthInterval = min(c.healthInterval*2, maximum)
-	} else {
-		c.healthInterval = checkBackoffInitialInterval
-		c.backingOff = true
-	}
-	delay := c.healthInterval
+	now := time.Now()
 	if !success {
-		delay = checktime.Jitter(delay, maximum)
-	} else if c.staggerNext {
+		c.healthAt = now.Add(c.recoveryRetryDelay(now))
+		return
+	}
+	c.healthInterval = c.d.CheckInterval
+	delay := c.healthInterval
+	if c.staggerNext {
 		delay = checktime.Jitter(delay, math.MaxInt64)
 		c.staggerNext = false
 	}
-	c.healthAt = time.Now().Add(delay)
+	c.healthAt = now.Add(delay)
 }
 
 // dispatch is the only scheduler entry point. Event handlers update facts and
@@ -230,6 +245,10 @@ func (c *connectivityChecker) dispatch() {
 	}
 	if status.CheckEnabled && status.Healthy && c.healthAt.IsZero() {
 		c.healthAt = now.Add(max(c.d.CheckInterval, time.Millisecond))
+	}
+	// Monitoring resumes the schedule of a path that failed while unmonitored.
+	if status.CheckEnabled && c.healthAt.IsZero() && c.supportAt.IsZero() && c.d.awaitingRecovery() {
+		c.healthAt = now.Add(c.recoveryRetryDelay(now))
 	}
 	needsCapacity := status.Session.Accepting && status.Session.RecoveryRequired &&
 		status.Session.RecoveryExecutor != netproxy.RecoveryLibraryManaged

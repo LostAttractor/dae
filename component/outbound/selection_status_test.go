@@ -41,7 +41,9 @@ func TestSelectionStatusDoesNotWakeSleepingPeer(t *testing.T) {
 	})
 }
 
-func TestSharedMonitoringDoesNotMakeStandbyPhysicallyDormant(t *testing.T) {
+// Shared monitoring keeps a usable standby awake. Once the path fails, every
+// automatic group monitors it, and it sleeps between its recovery attempts.
+func TestSharedMonitoringKeepsOnlyUsableStandbyAwake(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		primary, peer := new(failoverTransport), new(failoverTransport)
 		primary.delay.Store(int64(time.Millisecond))
@@ -71,8 +73,8 @@ func TestSharedMonitoringDoesNotMakeStandbyPhysicallyDormant(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		runtime = d.RuntimeStatus()
-		if runtime.Healthy || runtime.Dormant || runtime.Recovery.RetryAt.IsZero() || g.NodeSelectionStatus(d, runtime).Tracking != "standby" {
-			t.Fatalf("failed standby lost shared recovery state: %+v", runtime)
+		if tracking := g.NodeSelectionStatus(d, runtime).Tracking; runtime.Healthy || !runtime.Dormant || runtime.Recovery.RetryAt.IsZero() || tracking != "monitoring" {
+			t.Fatalf("failed standby did not sleep until its recovery attempt (tracking %s): %+v", tracking, runtime)
 		}
 	})
 }
