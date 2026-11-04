@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,9 @@ type Option struct {
 	Mark      int
 	Interface string
 	IPVersion int // 0, 4 or 6; applies to data sockets, not Resolver's DNS transport.
+	// UserTimeout bounds unacknowledged data on TCP data sockets, closing
+	// carriers of a black-holed path. Linux MPTCP sockets cannot set it.
+	UserTimeout time.Duration
 }
 
 type directDialer struct {
@@ -57,7 +61,7 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if option.IPVersion != 0 {
 		d.ipVersion = strconv.Itoa(option.IPVersion)
 	}
-	d.dialer.ControlContext = func(ctx context.Context, _, _ string, c syscall.RawConn) error {
+	d.dialer.ControlContext = func(ctx context.Context, network, _ string, c syscall.RawConn) error {
 		// Go retries any failed MPTCP dial as TCP, even one whose ctx has
 		// ended; never start a connection for a dial that is already over.
 		if err := ctx.Err(); err != nil {
@@ -72,7 +76,12 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 			}
 		}
 		if option.Interface != "" {
-			return netproxy.BindToDeviceControl(c, option.Interface)
+			if err := netproxy.BindToDeviceControl(c, option.Interface); err != nil {
+				return err
+			}
+		}
+		if option.UserTimeout > 0 && strings.HasPrefix(network, "tcp") {
+			return setUserTimeout(c, option.UserTimeout)
 		}
 		return nil
 	}

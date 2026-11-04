@@ -8,12 +8,20 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
+
+// entryUserTimeout closes node carriers whose data stays unacknowledged, so
+// pools replace black-holed connections instead of queueing streams on them.
+// It exceeds a failed health check (two probe timeouts): a carrier never dies
+// before its path would fail anyway. With Go's 15s keepalive it also bounds
+// idle carriers.
+const entryUserTimeout = 30 * time.Second
 
 func (p *PathSpec) effectiveMark(option *dialer.GlobalOption) uint32 {
 	if p.Entry.Mark != nil {
@@ -47,7 +55,7 @@ func (p *PathSpec) entryDialer(option *dialer.GlobalOption, pool *PathPool) (net
 	}
 	entry := direct.Option{
 		Resolver: resolver, Mark: int(p.effectiveMark(option)), Interface: p.Entry.Interface,
-		Mptcp: option.Mptcp, IPVersion: p.IPVersion,
+		Mptcp: option.Mptcp, IPVersion: p.IPVersion, UserTimeout: entryUserTimeout,
 	}
 	if pool != nil {
 		// entryResolver's DNS transport depends on exactly these inputs.
