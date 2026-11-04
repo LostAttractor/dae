@@ -70,6 +70,7 @@ func TestReportDataPlaneErrorConfirmsUpstreamFailures(t *testing.T) {
 		{"unknown", netproxy.Failure{}, errors.New("upstream failed"), true},
 		{"stream", netproxy.Failure{}, &quic.StreamError{Remote: true, ErrorCode: 42}, true},
 		{"io timeout", netproxy.Failure{Layer: netproxy.LayerQUIC}, os.ErrDeadlineExceeded, true},
+		{"unanswered stream", netproxy.Failure{Scope: netproxy.ScopeStream, Phase: netproxy.OpRead, Reason: netproxy.ReasonDeadline, Code: "unanswered"}, errors.New("upstream sent no response"), true},
 		{"fast open timeout", netproxy.Failure{Origin: netproxy.OriginLocalProtocol}, context.DeadlineExceeded, true},
 		{"caller", netproxy.Failure{Origin: netproxy.OriginCaller}, context.DeadlineExceeded, false},
 		{"target", netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginTarget}, errors.New("target refused"), false},

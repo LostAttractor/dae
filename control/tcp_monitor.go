@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 )
 
@@ -70,10 +71,17 @@ type tcpRelayProgress struct {
 	halfClosed   atomic.Bool
 	idle         chan struct{}
 
+	// Proxied relays report a peer that leaves the caller's payload unanswered.
+	// Set before registration; buffered copies only.
+	unanswered  func()
+	firstUpload atomic.Int64 // UnixNano of the first payload sent upstream
+	answered    atomic.Bool
+
 	mu         sync.Mutex
 	directions [2]tcpProgressDirection // native only: upload, download
 	activity   func()                  // native only; buffered copies report through the sniffer
 	stopped    bool
+	reported   bool
 }
 
 func newTCPRelayProgress(traffic *stats.Connection) *tcpRelayProgress {
@@ -86,12 +94,33 @@ func (p *tcpRelayProgress) touch(now time.Time) { p.lastProgress.Store(now.UnixN
 
 // record accounts one buffered write.
 func (p *tcpRelayProgress) record(index int, n uint64) {
+	now := time.Now()
 	if index == 0 {
 		p.traffic.RecordUpload(n)
+		if p.unanswered != nil && p.firstUpload.Load() == 0 {
+			p.firstUpload.CompareAndSwap(0, now.UnixNano())
+		}
 	} else {
 		p.traffic.RecordDownload(n)
+		if p.unanswered != nil && !p.answered.Load() {
+			p.answered.Store(true)
+		}
 	}
-	p.touch(time.Now())
+	p.touch(now)
+}
+
+// unansweredLocked fires once when the peer has returned nothing for as long
+// as a connectivity probe may wait since the caller's first payload. The
+// caller often gives up earlier and half-closes, so relay end is too late.
+func (p *tcpRelayProgress) unansweredLocked(now time.Time) bool {
+	if p.unanswered == nil || p.reported || p.stopped || p.answered.Load() {
+		return false
+	}
+	if sent := p.firstUpload.Load(); sent == 0 || now.UnixNano()-sent < int64(consts.DefaultDialTimeout) {
+		return false
+	}
+	p.reported = true
+	return true
 }
 
 // halfClose starts the half-closed timeout, like a FIN does for conntrack.
@@ -233,9 +262,14 @@ func (m *tcpRelayMonitor) sample() {
 	}
 	m.mu.Unlock()
 	for _, p := range connections {
+		now := time.Now()
 		p.mu.Lock()
-		idle := p.idleLocked(time.Now(), timeouts)
+		idle := p.idleLocked(now, timeouts)
+		unanswered := p.unansweredLocked(now)
 		p.mu.Unlock()
+		if unanswered {
+			p.unanswered()
+		}
 		if idle {
 			select {
 			case p.idle <- struct{}{}:

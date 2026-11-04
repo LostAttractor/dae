@@ -4,11 +4,85 @@ package control
 
 import (
 	"errors"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
+
+func TestTCPMonitorReportsUnansweredPayloadOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		upload, download bool
+		reports          int
+	}{
+		{"unanswered", true, false, 1},
+		{"answered", true, true, 0},
+		{"caller silent", false, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
+			t.Cleanup(func() { _ = traffic.Close() })
+			p := newTCPRelayProgress(traffic)
+			reports := 0
+			p.unanswered = func() { reports++ }
+			m := new(tcpRelayMonitor)
+			if !m.register(p) {
+				t.Fatal("register")
+			}
+			t.Cleanup(func() { m.remove(p); m.close() })
+			if tc.upload {
+				p.record(0, 1)
+			}
+			if tc.download {
+				p.record(1, 1)
+			}
+			m.sample()
+			if reports != 0 {
+				t.Fatal("reported within the probe timeout")
+			}
+			if tc.upload {
+				p.firstUpload.Store(time.Now().Add(-consts.DefaultDialTimeout).UnixNano())
+			}
+			m.sample()
+			m.sample()
+			if reports != tc.reports {
+				t.Fatalf("reports = %d, want %d", reports, tc.reports)
+			}
+		})
+	}
+}
+
+// Only a proxied relay can blame its outbound path for an unanswered payload.
+func TestTCPCopyPairReportsUnansweredOnlyForProxies(t *testing.T) {
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}),
+		&dialer.GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour}, &dialer.Property{Name: t.Name()}, true, "")
+	t.Cleanup(func() { _ = d.Close() })
+	traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
+	t.Cleanup(func() { _ = traffic.Close() })
+	for _, tc := range []struct {
+		name    string
+		relay   tcpRelay
+		reports bool
+	}{
+		{"proxied", tcpRelay{dialer: d}, true},
+		{"direct", tcpRelay{dialer: d, direct: true}, false},
+		{"without dialer", tcpRelay{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left, right := net.Pipe()
+			t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+			tc.relay.lConn, tc.relay.rConn = left, right
+			if got := newTCPCopyPair(&tc.relay, traffic).progress.unanswered != nil; got != tc.reports {
+				t.Fatalf("reports unanswered payload = %v, want %v", got, tc.reports)
+			}
+		})
+	}
+}
 
 func TestTCPIdleTimeoutParsing(t *testing.T) {
 	const fallback = time.Minute

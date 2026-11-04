@@ -19,6 +19,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// errUpstreamUnanswered asks the outbound path to confirm its health. The
+// caller sends first, so a silent proxy cannot stall streams unnoticed; a
+// silent target only costs one coalesced probe.
+var errUpstreamUnanswered = netproxy.WrapFailure(errors.New("upstream sent no response"), netproxy.Failure{
+	Scope: netproxy.ScopeStream, Phase: netproxy.OpRead, Reason: netproxy.ReasonDeadline, Code: "unanswered",
+})
+
 // relayEndpoint records the side on which an operation failed. Protocol and
 // resource identity still come from the outbound adapter that owns the stream.
 type relayEndpoint struct {
