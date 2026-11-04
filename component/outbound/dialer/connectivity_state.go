@@ -82,6 +82,18 @@ func (d *pathRuntime) aliveLocked(network common.NetworkIndex) bool {
 	return d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[network] == networkSupported
 }
 
+// awaitingRecoveryLocked reports a confirmed failure that no check has
+// resolved yet. Its retry schedule, not session churn, decides the next attempt.
+func (d *pathRuntime) awaitingRecoveryLocked() bool {
+	return d.failures.failedBefore && !d.health.phase.usable()
+}
+
+func (d *pathRuntime) awaitingRecovery() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.awaitingRecoveryLocked()
+}
+
 func (d *pathRuntime) initialCheckCompleted() bool {
 	d.mu.RLock()
 	done := d.initialCheckCompletedLocked()

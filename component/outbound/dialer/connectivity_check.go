@@ -115,7 +115,10 @@ func (c *connectivityChecker) start(kind checkKind) {
 
 func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 	c.observedSeq = max(c.observedSeq, event.Seq)
-	advanced := c.d.applySessionState(event)
+	// Losing an unready session again, including through the worker's own
+	// reconnect attempt, is no evidence of recovery and keeps the backoff.
+	recovering := c.d.awaitingRecovery()
+	advanced := c.d.applySessionState(event) && !recovering
 	// Recovery ownership can change while the dependency remains unready.
 	if c.libraryRequested && event.RecoveryExecutor != netproxy.RecoveryLibraryManaged {
 		c.libraryRequested = false
@@ -142,7 +145,8 @@ func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 		}
 	}
 	if c.cancel != nil || c.selecting() {
-		if c.cancel != nil && c.runningKind == checkSupport && (advanced || needsRecovery) {
+		// A running recovery attempt answers its own reconnection.
+		if c.cancel != nil && c.runningKind == checkSupport && (advanced || needsRecovery && !recovering) {
 			c.healthAt = time.Now()
 		}
 		return
@@ -299,6 +303,9 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 	}
 	if ok {
 		c.updateSchedule(result.kind, applied)
+	} else if c.d.awaitingRecovery() {
+		// A session lost again before the result applied failed to recover.
+		c.updateSchedule(result.kind, appliedCheck{})
 	} else {
 		c.healthAt = time.Now()
 	}

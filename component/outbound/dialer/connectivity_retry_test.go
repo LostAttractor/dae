@@ -6,11 +6,42 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
+
+// Reconnecting a failed path publishes its own session transitions. They are
+// the attempt's outcome rather than new evidence, so a path that stays
+// unreachable keeps backing off instead of reconnecting back to back.
+func TestUnreachablePathReconnectKeepsBackoff(t *testing.T) {
+	transport := newTestSessionTransport(netproxy.SessionConnected)
+	d := newTestDialer(t, transport)
+	prepareRecoveryDialer(d)
+	const backoff = 25 * time.Millisecond
+	d.CheckIntervalMax = backoff
+	transport.connectErr = errors.New("unreachable")
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error { return nil })
+	start := make(chan struct{})
+	var worker sync.WaitGroup
+	worker.Go(func() { checker.run(start) })
+	t.Cleanup(func() {
+		_ = d.Close()
+		worker.Wait()
+	})
+	close(start)
+	transport.state.Transition(netproxy.SessionDisconnected, errors.New("carrier reset"))
+
+	const window = 10 * backoff
+	time.Sleep(window)
+	// Each retry waits at least 80% of the capped backoff.
+	if connects := transport.connects.Load(); connects > int32(window/(backoff*4/5))+1 {
+		t.Fatalf("unreachable path reconnected %d times in %v; backoff was bypassed", connects, window)
+	}
+}
 
 func TestSecondHealthProbeAuthBlocksRetry(t *testing.T) {
 	d := newTestDialer(t, authProxyParent{})
