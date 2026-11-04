@@ -16,6 +16,8 @@ import (
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,9 +45,17 @@ type PathPool struct {
 
 // Relearn makes every path resolve and probe its nodes again, including the
 // paths in use; lookups and dials in flight cannot refill what it drops.
+// Paths also relearn their network capabilities without leaving service.
 func (p *PathPool) Relearn() {
 	p.addresses.Reset()
 	p.multipath.Reset()
+	p.mu.Lock()
+	paths := slices.Collect(maps.Values(p.paths))
+	p.mu.Unlock()
+	// Group callbacks run outside the pool lock.
+	for _, path := range paths {
+		path.RelearnCapabilities()
+	}
 }
 
 func (p *PathPool) prune() {

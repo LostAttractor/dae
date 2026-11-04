@@ -189,7 +189,10 @@ func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkA
 	case checkInitial:
 		result.probes = c.probeNetworks(ctx, modes(states, networkUntested, allNetworks))
 	case checkSupport:
-		result.probes = c.probeNetworks(ctx, modes(states, networkUnknown, allNetworks))
+		c.d.mu.RLock()
+		discovery := c.d.discoveryModesLocked()
+		c.d.mu.RUnlock()
+		result.probes = c.probeNetworks(ctx, discovery)
 	case checkHealth:
 		representative := representative(states, failing)
 		if failed || !representative.Valid() {

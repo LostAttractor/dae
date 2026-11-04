@@ -15,8 +15,8 @@ import (
 )
 
 // networkState records what the path can carry. Failures never change it:
-// only probes that settle a mode do. Reachability is separate, in
-// pathHealth.phase and pathHealth.failing.
+// only probes that settle a mode do, and a reload relearns every mode.
+// Reachability is separate, in pathHealth.phase and pathHealth.failing.
 type networkState uint8
 
 const (
@@ -60,7 +60,10 @@ type pathHealth struct {
 	networks           [common.NetworkTypeCount]networkState
 	// failing marks supported modes whose latest probe failed. They carry no
 	// traffic, cannot represent the path and are probed again by health checks.
-	failing      networkMask
+	failing networkMask
+	// relearn marks supported modes a reload asked to settle again. They keep
+	// serving until a probe succeeds or the protocol rejects the mode.
+	relearn      networkMask
 	pendingForce SelectionForceMask
 	lastLatency  time.Duration
 	measuredAt   time.Time
@@ -119,6 +122,48 @@ func (d *pathRuntime) awaitingRecovery() bool {
 	return d.awaitingRecoveryLocked()
 }
 
+// discoveryModesLocked lists the modes a capability sweep tests: unknown ones
+// and those a reload asked to relearn. The representative is relearned by its
+// own health probes, so a sweep never decides the path's health.
+func (d *pathRuntime) discoveryModesLocked() []common.NetworkIndex {
+	representative := d.representativeLocked()
+	var networks []common.NetworkIndex
+	for _, network := range canonicalNetworkOrder {
+		state := d.health.networks[network]
+		if state == networkUnknown || state == networkSupported && d.health.relearn.has(network) && network != representative {
+			networks = append(networks, network)
+		}
+	}
+	return networks
+}
+
+// RelearnCapabilities settles every mode again, as a reload does for other
+// learned node facts. Supported modes keep serving until a probe settles
+// them; unsupported ones become unknown, so selection can test them again.
+func (d *pathRuntime) RelearnCapabilities() {
+	d.mu.Lock()
+	if d.ctx.Err() != nil || !d.checksConnectivity {
+		d.mu.Unlock()
+		return
+	}
+	for i, state := range d.health.networks {
+		switch state {
+		case networkUnsupported:
+			d.health.networks[i] = networkUnknown
+		case networkSupported:
+			d.health.relearn.set(common.NetworkIndex(i), true)
+		}
+	}
+	d.statusRevision++
+	if !d.checks.paused {
+		// Restart the discovery round, like any other environment change.
+		d.checks.pending |= checkRequestEnvironment
+	}
+	d.mu.Unlock()
+	d.signalConnectivityCheck()
+	d.notifyGroups(SelectionForceNone)
+}
+
 // markHealthyLocked ends the outage that confirmFailureLocked started.
 func (d *pathRuntime) markHealthyLocked() {
 	d.health.phase = healthHealthy
@@ -175,11 +220,20 @@ func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
 
 // applyReachabilityLocked records the outcome of each probed supported mode.
 // Capability is unchanged: a mode that stops answering is failing, not
-// unsupported.
+// unsupported, unless a reload asked to relearn it.
 func (d *pathRuntime) applyReachabilityLocked(result checkResult) (lost, recovered networkMask) {
 	for _, probe := range result.probes {
 		if d.health.networks[probe.network] != networkSupported {
 			continue
+		}
+		rejected := errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError)
+		if d.health.relearn.has(probe.network) && (probe.err == nil || rejected) {
+			d.health.relearn.set(probe.network, false)
+			if rejected {
+				d.health.networks[probe.network] = networkUnsupported
+				d.health.failing.set(probe.network, false)
+				continue
+			}
 		}
 		failing := probe.err != nil
 		if failing == d.health.failing.has(probe.network) {
@@ -383,6 +437,7 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	initial := result.kind == checkInitial
 	transitions := d.applyCapabilityResultsLocked(result)
+	d.applyReachabilityLocked(result)
 	discovered := SelectionForceNone
 	for _, transition := range transitions {
 		if firstSupportConfirmed(transition) {

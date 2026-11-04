@@ -306,14 +306,10 @@ func initialRetryInterval(maximum time.Duration) time.Duration {
 }
 
 func (c *connectivityChecker) supportPending() bool {
-	pending := false
-	for _, state := range c.d.networkStates() {
-		if state == networkUntested {
-			return false
-		}
-		if state == networkUnknown {
-			pending = true
-		}
+	c.d.mu.RLock()
+	defer c.d.mu.RUnlock()
+	if !c.d.initialCheckCompletedLocked() {
+		return false
 	}
-	return pending
+	return len(c.d.discoveryModesLocked()) != 0
 }

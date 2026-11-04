@@ -270,3 +270,59 @@ func TestSelectionDiscoveryDoesNotLeaveAutomaticCheckDemand(t *testing.T) {
 		}
 	})
 }
+
+// A reload relearns capabilities without taking a path out of service:
+// supported modes keep serving until a probe settles them again, and modes
+// found unsupported become discoverable. The representative is settled by
+// its own health probe, so the sweep never changes the path's health.
+func TestRelearnSettlesCapabilitiesWithoutLeavingService(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
+		{network: common.NetworkTCP6}, {network: common.NetworkTCP4},
+		{network: common.NetworkUDP6, err: netproxy.UnsupportedTunnelTypeError},
+		{network: common.NetworkUDP4, err: context.DeadlineExceeded},
+	}})
+	group := d.group.observer.(*testGroup)
+	d.RelearnCapabilities()
+	if !d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) {
+		t.Fatal("relearning took supported modes out of service")
+	}
+	if state := d.networkStates()[common.NetworkUDP6]; state != networkUnknown {
+		t.Fatalf("unsupported mode was not made discoverable: %v", state)
+	}
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe([common.NetworkTypeCount]func(context.Context, *common.NetworkType) error{
+		common.NetworkTCP6: func(context.Context, *common.NetworkType) error { return nil },
+		common.NetworkTCP4: func(context.Context, *common.NetworkType) error { return netproxy.UnsupportedTunnelTypeError },
+		common.NetworkUDP6: func(context.Context, *common.NetworkType) error { return nil },
+		common.NetworkUDP4: func(context.Context, *common.NetworkType) error { return context.DeadlineExceeded },
+	}))
+	defer checker.stopRetries()
+	if !checker.supportPending() {
+		t.Fatal("relearning left no discovery work")
+	}
+	// The worker consumes the reload's request before sweeping.
+	sweep := checker.performAttempt(t.Context(), d.beginConnectivityCheck(checkSupport))
+	for _, probe := range sweep.probes {
+		if probe.network == common.NetworkTCP6 {
+			t.Fatal("the sweep probed the representative")
+		}
+	}
+	d.applyCheck(sweep)
+	want := [common.NetworkTypeCount]networkState{
+		common.NetworkTCP4: networkUnsupported, common.NetworkTCP6: networkSupported,
+		common.NetworkUDP4: networkUnknown, common.NetworkUDP6: networkSupported,
+	}
+	if states := d.networkStates(); states != want || !d.RuntimeStatus().Healthy || !d.Usable(common.NetworkUDP6.NetworkType()) {
+		t.Fatalf("sweep did not settle the relearned modes: %v", states)
+	}
+	if force := SelectionForceMask(group.forceMask.Load()); !force.Contains(common.NetworkUDP6) {
+		t.Fatalf("a newly supported mode did not refresh selection: %04b", force)
+	}
+	d.applyCheck(performCheck(checker, t.Context(), checkHealth))
+	d.mu.RLock()
+	relearn := d.health.relearn
+	d.mu.RUnlock()
+	if relearn != 0 {
+		t.Fatalf("modes left to relearn after their probes: %04b", relearn)
+	}
+}
