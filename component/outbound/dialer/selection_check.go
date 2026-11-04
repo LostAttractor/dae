@@ -127,7 +127,7 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) err
 	// Connecting and the representative probe belong to the path: a discovery
 	// must not delay, or be blamed for, proving a path that is not alive.
 	proving := false
-	if canonical := firstSupportedNetwork(d.health.networks); canonical.Valid() && probe != canonical && !d.aliveLocked(canonical) {
+	if canonical := d.representativeLocked(); canonical.Valid() && probe != canonical && !d.aliveLocked(canonical) {
 		probe, proving = canonical, true
 	}
 	flight := d.queueSelectionCheckLocked(probe, deadline)
@@ -182,9 +182,11 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) err
 	return errPathProven
 }
 
+// A serving mode is proven by the representative probe. Unknown and failing
+// modes are probed themselves.
 func (d *pathRuntime) selectionProbeNetworkLocked(network common.NetworkIndex) common.NetworkIndex {
-	if d.health.networks[network] == networkSupported {
-		return firstSupportedNetwork(d.health.networks)
+	if d.servesLocked(network) {
+		return d.representativeLocked()
 	}
 	return network
 }
@@ -208,10 +210,10 @@ func (d *pathRuntime) queueSelectionCheckLocked(network common.NetworkIndex, dea
 // worker dispatches and completes each of them.
 func (c *connectivityChecker) startSelectionChecks() bool {
 	c.d.mu.Lock()
-	canonical := firstSupportedNetwork(c.d.health.networks)
+	canonical := c.d.representativeLocked()
 	ready := c.d.session == nil || c.d.sessionSnapshot().Accepting
-	if canonical.Valid() {
-		ready = c.d.aliveLocked(canonical)
+	if firstSupportedNetwork(c.d.health.networks).Valid() {
+		ready = canonical.Valid() && c.d.aliveLocked(canonical)
 	}
 	var flights []*selectionCheck
 	for network, queued := range c.d.checks.selection {
@@ -291,7 +293,7 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 	}
 	c.d.mu.RLock()
 	network := c.d.selectionProbeNetworkLocked(flight.network)
-	states := c.d.health.networks
+	states, failing := c.d.health.networks, c.d.health.failing
 	c.d.mu.RUnlock()
 	probe := func(network common.NetworkIndex) probeResult {
 		c.d.probeQueued()
@@ -301,7 +303,8 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 	}
 	result.probes = []probeResult{probe(network)}
 	states[network] = networkSupported
-	canonical := firstSupportedNetwork(states)
+	failing.set(network, false)
+	canonical := representative(states, failing)
 	// Discovering another capability cannot replace a representative check of
 	// a path that is not alive for this session.
 	if result.probes[0].err == nil && canonical.Valid() && canonical != network {
@@ -320,7 +323,6 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	c.selections[flight.network] = nil
 	err := result.failure()
 	blocked := ""
-	rediscover := false
 	if err == nil && flight.ctx.Err() != nil {
 		err = flight.ctx.Err()
 		if len(result.probes) != 0 {
@@ -335,7 +337,6 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		}
 	} else {
 		applied, ok := c.d.applyCheck(result)
-		rediscover = ok && applied.rediscover
 		if ok && !applied.success {
 			blocked = recoveryBlockedReason(result.failure())
 		}
@@ -349,9 +350,11 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	if !result.attempted || errors.Is(flight.ctx.Err(), context.Canceled) {
 		c.d.resetRecoveryObservationLocked()
 	}
-	c.healthAt = time.Now().Add(c.d.recoveryCheckInterval())
-	if rediscover {
-		c.scheduleRediscovery()
+	now := time.Now()
+	if c.d.awaitingRecoveryLocked() {
+		c.healthAt = now.Add(c.recoveryRetryDelayLocked(now))
+	} else {
+		c.healthAt = now.Add(c.d.recoveryCheckInterval())
 	}
 	if blocked != "" {
 		c.blockedBy = blocked
@@ -382,20 +385,6 @@ func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck
 		d.mu.Unlock()
 		d.notifyGroups(SelectionForceNone)
 		return appliedCheck{}
-	}
-	if probe.err == nil {
-		canonical := resultProbe(result, firstSupportedNetwork(d.health.networks))
-		if canonical == nil {
-			// This request discovered a capability of an alive path. Keep the
-			// representative observation's timestamp and latency unchanged.
-			force := d.takePendingForceLocked()
-			success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())
-			d.statusRevision++
-			d.mu.Unlock()
-			d.notifyGroups(force)
-			return appliedCheck{success: success}
-		}
-		result.probes = []probeResult{*canonical}
 	}
 	return d.applyHealthCheckLocked(result)
 }

@@ -747,6 +747,13 @@
           "subtag": {
             "type": "string"
           },
+          "failing": {
+            "description": "Confirmed networks whose latest probe failed; they serve no traffic until a probe succeeds. Capability stays in support. Network order: tcp4, tcp6, udp4, udp6. Omitted when no network fails.",
+            "items": { "type": "boolean" },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
           "support": {
             "description": "Network order: tcp4, tcp6, udp4, udp6.",
             "items": {

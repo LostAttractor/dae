@@ -133,6 +133,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		ConfirmingFailure:  runtime.ConfirmingFailure,
 		Availability:       runtime.Availability,
 		Support:            api.NetworkValues[api.NetworkSupportState](runtime.SupportState),
+		Failing:            api.NetworkValues[bool](runtime.Failing),
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if failure := runtime.Failure; failure != nil {

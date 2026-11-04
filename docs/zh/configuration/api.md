@@ -157,7 +157,7 @@ MITM 的 `override` 为 `null` 时继承配置；`default` 是配置对该设备
 
 `POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。
 
-节点与 selector 节点的 `health` 由服务端统一计算：`unknown`（未检测或尚无观测）、`healthy`、`confirming`（失败确认中）、`unhealthy`。休眠节点保留最近的健康观测；`healthy` 布尔值仍表示当前运行时可用性。组的 `health` 为 `healthy`、`warning` 或 `degraded`。客户端直接渲染 `health`；`checking` 单独表示探测活动。
+节点与 selector 节点的 `health` 由服务端统一计算：`unknown`（未检测或尚无观测）、`healthy`、`confirming`（失败确认中）、`unhealthy`。休眠节点保留最近的健康观测；`healthy` 布尔值仍表示当前运行时可用性。节点的 `support` 按网络给出学到的能力，`failing` 标记最近一次探测失败的已确认网络；失效网络在再次探测成功前不承接流量，能力仍保持已确认。组的 `health` 为 `healthy`、`warning` 或 `degraded`。客户端直接渲染 `health`；`checking` 单独表示探测活动。
 
 `SelectorState.track_all` 是配置的只读值。仅显式 `selector(n)` 返回 `default_node_id`；裸 selector 省略此字段，客户端应据此隐藏默认标记与重置操作。
 

@@ -38,7 +38,6 @@ type checkAttempt struct {
 type appliedCheck struct {
 	success       bool
 	healthApplied bool
-	rediscover    bool
 }
 
 // connectivityChecker owns scheduling and in-flight operations in its run loop.
@@ -64,7 +63,6 @@ type connectivityChecker struct {
 
 	supportAt     time.Time
 	retryInterval time.Duration
-	rediscover    bool // One failure-triggered sweep, even if monitoring stops.
 
 	capacityInterval    time.Duration
 	capacityAt          time.Time
@@ -101,7 +99,6 @@ func (c *connectivityChecker) start(kind checkKind) {
 		c.healthAt = time.Time{}
 	case checkSupport:
 		c.supportAt = time.Time{}
-		c.rediscover = false
 	case checkCapacity:
 		c.capacityAt = time.Time{}
 	}

@@ -23,7 +23,7 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		for network := range common.NetworkIndex(common.NetworkTypeCount) {
 			d.health.networks[network] = networkSupported
 		}
-		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
+		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP6, err: errors.New("offline")}}})
 		var probes atomic.Int32
 		checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
 			if d.RuntimeStatus().Healthy && network.Index() != common.NetworkTCP6 {
@@ -47,7 +47,7 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		time.Sleep(29 * time.Second)
 		synctest.Wait()
 		if probes.Load() != 9 || !d.RuntimeStatus().Degraded {
-			t.Fatalf("recovery did not follow four-mode discovery with checks at 5/10/15/20/25 seconds: probes=%d", probes.Load())
+			t.Fatalf("recovery did not follow the four-mode attempt with checks at 5/10/15/20/25 seconds: probes=%d", probes.Load())
 		}
 		time.Sleep(time.Second)
 		synctest.Wait()
@@ -73,7 +73,7 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
 		var probes atomic.Int32
 		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
-			if probes.Add(1) <= common.NetworkTypeCount {
+			if probes.Add(1) == 1 {
 				return nil
 			}
 			ctx, cancel := context.WithTimeout(ctx, d.group.probeTimeout)
@@ -94,13 +94,8 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		time.Sleep(time.Until(first.Recovery.RetryAt))
 		synctest.Wait()
 		checking := d.RuntimeStatus()
-		if probes.Load() != 5 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != api.RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
+		if probes.Load() != 2 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != api.RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
 			t.Fatalf("pending probe was hidden behind zero recovery progress: %+v", checking)
-		}
-		time.Sleep(d.group.probeTimeout)
-		synctest.Wait()
-		if failed := d.RuntimeStatus(); failed.Healthy || !failed.Checking || !failed.Degraded {
-			t.Fatalf("timed-out observation did not invalidate health before rediscovery: %+v", failed)
 		}
 		time.Sleep(d.group.probeTimeout)
 		synctest.Wait()

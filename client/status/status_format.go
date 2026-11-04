@@ -280,7 +280,8 @@ func compactNetworks(mask uint8) string {
 func nodeNetworks(status api.NodeStatus, selected api.NetworkValues[string]) (string, bool) {
 	var support, selection uint8
 	for network, state := range status.Support {
-		if state == api.NetworkSupportConfirmed {
+		// A failing network keeps its capability but serves nothing.
+		if state == api.NetworkSupportConfirmed && !status.Failing[network] {
 			support |= 1 << network
 		}
 		if status.ID != "" && selected[network] == status.ID {

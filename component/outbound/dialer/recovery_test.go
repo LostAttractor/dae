@@ -148,8 +148,8 @@ func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
 				t.Fatalf("confirmation result = %+v", status)
 			}
 			if !succeeds {
-				if calls.Load() != 2 || !c.rediscover || c.supportAt.IsZero() {
-					t.Fatalf("confirmation did not schedule separate rediscovery: calls=%d status=%+v", calls.Load(), status)
+				if calls.Load() != 2 || c.healthAt.IsZero() {
+					t.Fatalf("confirmation did not schedule recovery: calls=%d status=%+v", calls.Load(), status)
 				}
 				d.ReportDataPlaneError(os.ErrDeadlineExceeded)
 				if d.connectivityCheckRequested() || d.RuntimeStatus().Recovery != status.Recovery {

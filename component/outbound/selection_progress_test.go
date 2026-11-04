@@ -29,10 +29,15 @@ func TestSelectedNetworksShareRepresentativeRecovery(t *testing.T) {
 		d.RequestManualCheck()
 		time.Sleep(10 * time.Millisecond)
 		synctest.Wait()
-		// The failed TCP6 representative invalidated every capability. One
-		// discovery sweep recovered TCP4 alone, as the new representative.
+		// The failed TCP6 representative stays supported but failing. A served
+		// group keeps its failed member monitored, which elections frozen here
+		// cannot do; the next recovery attempt proves TCP4 as representative.
+		d.SetMonitoring(true)
+		synctest.Wait()
+		time.Sleep(time.Until(d.RuntimeStatus().Recovery.RetryAt) + 10*time.Millisecond)
+		synctest.Wait()
 		if transport.tcp4Attempts.Load()-before4 != 1 || !d.Alive(common.NetworkTCP4.NetworkType()) {
-			t.Fatalf("IPv4 did not recover through rediscovery: tcp4 probes=%d", transport.tcp4Attempts.Load()-before4)
+			t.Fatalf("IPv4 did not recover as the new representative: tcp4 probes=%d", transport.tcp4Attempts.Load()-before4)
 		}
 		if selected, err := g.Select(t.Context(), common.NetworkTCP4.NetworkType()); err != nil || selected != d {
 			t.Fatalf("recovered IPv4 was not admitted: %v", err)

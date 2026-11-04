@@ -84,6 +84,7 @@ type NodeStatus struct {
 	Latency            *LatencyStats                      `json:"latency,omitempty"`
 	Selection          *SelectionStatus                   `json:"selection,omitempty"`
 	Support            NetworkValues[NetworkSupportState] `json:"support"`
+	Failing            NetworkValues[bool]                `json:"failing,omitzero"` // Confirmed networks whose latest probe failed; they serve nothing.
 	Stats              PathStats                          `json:"stats"`
 }
 

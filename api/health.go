@@ -40,7 +40,7 @@ func (group GroupStatus) NetworkRoutable(network NetworkIndex) bool {
 		return false
 	}
 	for _, node := range group.Nodes {
-		if node.Healthy && node.Support[network] == NetworkSupportConfirmed {
+		if node.Healthy && node.Support[network] == NetworkSupportConfirmed && !node.Failing[network] {
 			return true
 		}
 	}

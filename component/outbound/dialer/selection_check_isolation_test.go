@@ -70,9 +70,6 @@ func TestKnownCapabilitiesShareSelectionProbe(t *testing.T) {
 					if network == common.NetworkTCP6 {
 						want = 1
 					}
-					if failed {
-						want++ // One new discovery sweep after the shared failure.
-					}
 					if probes[network].Load() != want {
 						t.Errorf("%v probes=%d want=%d", network, probes[network].Load(), want)
 					}

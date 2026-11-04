@@ -182,19 +182,28 @@ func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkA
 		return result
 	}
 
-	states := c.d.networkStates()
+	c.d.mu.RLock()
+	states, failing, failed := c.d.health.networks, c.d.health.failing, !c.d.health.phase.usable()
+	c.d.mu.RUnlock()
 	switch attempt.kind {
 	case checkInitial:
-		result.probes = c.probeMany(ctx, states, networkUntested)
+		result.probes = c.probeNetworks(ctx, modes(states, networkUntested, allNetworks))
 	case checkSupport:
-		result.probes = c.probeMany(ctx, states, networkUnknown)
+		result.probes = c.probeNetworks(ctx, modes(states, networkUnknown, allNetworks))
 	case checkHealth:
-		first := firstSupportedNetwork(states)
-		if !first.Valid() {
-			return result
+		representative := representative(states, failing)
+		if failed || !representative.Valid() {
+			// A failed path recovers through whichever supported mode answers.
+			result.probes = c.probeNetworks(ctx, modes(states, networkSupported, allNetworks))
+			break
 		}
-		firstResult := c.probeHealth(ctx, first)
-		result.probes = append(result.probes, firstResult)
+		// Failing modes are probed again beside the representative.
+		var others []probeResult
+		var wg sync.WaitGroup
+		wg.Go(func() { others = c.probeNetworks(ctx, modes(states, networkSupported, failing)) })
+		result.probes = append(result.probes, c.probeHealth(ctx, representative))
+		wg.Wait()
+		result.probes = append(result.probes, others...)
 	}
 	return result
 }
@@ -226,16 +235,23 @@ func (c *connectivityChecker) connectFor(ctx context.Context, replenish bool) (n
 	return snapshot, nil
 }
 
-func (c *connectivityChecker) probeMany(ctx context.Context, states [common.NetworkTypeCount]networkState, wanted networkState) []probeResult {
-	results := make([]probeResult, 0, common.NetworkTypeCount)
+const allNetworks networkMask = 1<<common.NetworkTypeCount - 1
+
+// modes lists, in canonical order, the modes within the mask in state.
+func modes(states [common.NetworkTypeCount]networkState, state networkState, within networkMask) []common.NetworkIndex {
+	var networks []common.NetworkIndex
 	for _, network := range canonicalNetworkOrder {
-		if states[network] == wanted {
-			results = append(results, probeResult{network: network})
+		if states[network] == state && within.has(network) {
+			networks = append(networks, network)
 		}
 	}
+	return networks
+}
+
+func (c *connectivityChecker) probeNetworks(ctx context.Context, networks []common.NetworkIndex) []probeResult {
+	results := make([]probeResult, len(networks))
 	var wg sync.WaitGroup
-	for i := range results {
-		network := results[i].network
+	for i, network := range networks {
 		wg.Go(func() {
 			results[i] = c.runProbe(ctx, network)
 		})

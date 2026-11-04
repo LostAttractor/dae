@@ -66,7 +66,7 @@ func (d *pathRuntime) recoveryCheckPlan() (at time.Time, timeout time.Duration) 
 // join it and consume the same verified result through Check.
 func (c *connectivityChecker) startRecoveryCheck(timeout time.Duration) {
 	c.d.mu.Lock()
-	network := firstSupportedNetwork(c.d.health.networks)
+	network := c.d.representativeLocked()
 	c.d.queueSelectionCheckLocked(network, time.Now().Add(timeout)).waiters++
 	c.d.mu.Unlock()
 	c.startSelectionChecks()

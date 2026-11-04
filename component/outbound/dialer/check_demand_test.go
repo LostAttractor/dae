@@ -220,12 +220,12 @@ func TestPausedRetainedDialerRecoversUntilReleased(t *testing.T) {
 				transport.offline.Store(false)
 				time.Sleep(2 * time.Second)
 				synctest.Wait()
-				if status := d.RuntimeStatus(); !status.Healthy || status.CheckEnabled || transport.connects.Load() != 2 || probes.Load() != common.NetworkTypeCount {
+				if status := d.RuntimeStatus(); !status.Healthy || status.CheckEnabled || transport.connects.Load() != 2 || probes.Load() != 1 {
 					t.Fatalf("retained node did not reconnect and verify: %+v", status)
 				}
 				time.Sleep(2 * time.Hour)
 				synctest.Wait()
-				if probes.Load() != common.NetworkTypeCount {
+				if probes.Load() != 1 {
 					t.Fatal("recovery enabled periodic checks on the paused node")
 				}
 

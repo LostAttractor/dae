@@ -14,9 +14,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// networkState records capability within the current discovery round. A
-// confirmed path failure starts a new round for every mode. Reachability is
-// shared by all supported modes through pathHealth.phase.
+// networkState records what the path can carry. Failures never change it:
+// only probes that settle a mode do. Reachability is separate, in
+// pathHealth.phase and pathHealth.failing.
 type networkState uint8
 
 const (
@@ -38,6 +38,19 @@ func (p healthPhase) usable() bool {
 	return p == healthHealthy || p == healthConfirming
 }
 
+// networkMask is a set of network modes.
+type networkMask uint8
+
+func (m networkMask) has(index common.NetworkIndex) bool { return m&(1<<index) != 0 }
+
+func (m *networkMask) set(index common.NetworkIndex, on bool) {
+	if on {
+		*m |= 1 << index
+	} else {
+		*m &^= 1 << index
+	}
+}
+
 // pathHealth contains shared reachability, capabilities and successful observations.
 // It is protected by pathRuntime.mu; it carries no group monitoring policy.
 type pathHealth struct {
@@ -45,9 +58,12 @@ type pathHealth struct {
 	readiness          uint64
 	observedSessionSeq uint64
 	networks           [common.NetworkTypeCount]networkState
-	pendingForce       SelectionForceMask
-	lastLatency        time.Duration
-	measuredAt         time.Time
+	// failing marks supported modes whose latest probe failed. They carry no
+	// traffic, cannot represent the path and are probed again by health checks.
+	failing      networkMask
+	pendingForce SelectionForceMask
+	lastLatency  time.Duration
+	measuredAt   time.Time
 }
 
 func (d *pathRuntime) sessionSnapshot() netproxy.StateEvent {
@@ -66,7 +82,7 @@ func (d *pathRuntime) healthyLocked(session netproxy.StateEvent) bool {
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return !d.closed && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[networkType.Index()] == networkSupported
+	return !d.closed && d.healthyLocked(d.sessionSnapshot()) && d.servesLocked(networkType.Index())
 }
 
 // Alive is a node's own proof of validity: its last representative check
@@ -79,7 +95,16 @@ func (d *Dialer) Alive(networkType *common.NetworkType) bool {
 }
 
 func (d *pathRuntime) aliveLocked(network common.NetworkIndex) bool {
-	return d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[network] == networkSupported
+	return d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot()) && d.servesLocked(network)
+}
+
+// servesLocked reports a supported mode whose latest probe did not fail.
+func (d *pathRuntime) servesLocked(network common.NetworkIndex) bool {
+	return d.health.networks[network] == networkSupported && !d.health.failing.has(network)
+}
+
+func (d *pathRuntime) representativeLocked() common.NetworkIndex {
+	return representative(d.health.networks, d.health.failing)
 }
 
 // awaitingRecoveryLocked reports a confirmed failure that no check has
@@ -148,17 +173,26 @@ func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
 	return states
 }
 
-// Invalidate capabilities before notifying selectors, so an alternate probe
-// cannot revive modes that have not succeeded in the new discovery round.
-func (d *pathRuntime) restartCapabilityDiscoveryLocked() bool {
-	if !d.checksConnectivity || !firstSupportedNetwork(d.health.networks).Valid() {
-		return false
+// applyReachabilityLocked records the outcome of each probed supported mode.
+// Capability is unchanged: a mode that stops answering is failing, not
+// unsupported.
+func (d *pathRuntime) applyReachabilityLocked(result checkResult) (lost, recovered networkMask) {
+	for _, probe := range result.probes {
+		if d.health.networks[probe.network] != networkSupported {
+			continue
+		}
+		failing := probe.err != nil
+		if failing == d.health.failing.has(probe.network) {
+			continue
+		}
+		d.health.failing.set(probe.network, failing)
+		if failing {
+			lost.set(probe.network, true)
+		} else {
+			recovered.set(probe.network, true)
+		}
 	}
-	for i := range d.health.networks {
-		d.health.networks[i] = networkUnknown
-	}
-	d.health.pendingForce = SelectionForceNone
-	return true
+	return lost, recovered
 }
 
 type probeTransition struct {
@@ -199,8 +233,14 @@ var canonicalNetworkOrder = [...]common.NetworkIndex{
 }
 
 func firstSupportedNetwork(states [common.NetworkTypeCount]networkState) common.NetworkIndex {
+	return representative(states, 0)
+}
+
+// representative is the first supported mode in canonical order that has not
+// failed. Its probe answers for the whole path.
+func representative(states [common.NetworkTypeCount]networkState, failing networkMask) common.NetworkIndex {
 	for _, index := range canonicalNetworkOrder {
-		if states[index] == networkSupported {
+		if states[index] == networkSupported && !failing.has(index) {
 			return index
 		}
 	}
@@ -288,7 +328,6 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 	previousHealthy := d.healthyLocked(session)
 	blocksHealth := result.kind != checkSupport || recoveryBlockedReason(result.failure()) != ""
 	if blocksHealth {
-		d.restartCapabilityDiscoveryLocked()
 		d.confirmFailureLocked()
 		d.health.phase = healthUnhealthy
 		d.health.readiness = result.readiness
@@ -353,7 +392,7 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 
 	previousPhase := d.health.phase
 	previousHealthy := previousPhase.usable()
-	canonicalIndex := firstSupportedNetwork(d.health.networks)
+	canonicalIndex := d.representativeLocked()
 	canonicalResult := resultProbe(result, canonicalIndex)
 	if !initial && !discovered.Contains(canonicalIndex) {
 		canonicalResult = nil
@@ -387,28 +426,60 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 	}
 }
 
+// applyHealthCheckLocked lets the representative answer for the path. A usable
+// path fails when its representative fails, even if another mode answered: a
+// new representative does not bypass failure_recovery. A failed path recovers
+// through whichever supported mode answers first in canonical order. Without
+// the usable path's representative, a result changes only reachability.
 func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	previousHealthy := d.health.phase.usable()
-	var canonicalResult *probeResult
-	if len(result.probes) > 0 {
-		canonicalResult = &result.probes[0]
+	answering := d.representativeLocked()
+	lost, recovered := d.applyReachabilityLocked(result)
+	if !previousHealthy {
+		answering = d.representativeLocked()
 	}
-	failureReportedAt := d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
-	rediscover := false
-	if !d.health.phase.usable() {
-		rediscover = d.restartCapabilityDiscoveryLocked()
+	canonical := resultProbe(result, answering)
+	if previousHealthy && canonical == nil {
+		// Keep the representative observation's timestamp and latency.
+		force := d.takePendingForceLocked()
+		success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())
+		d.statusRevision++
+		d.mu.Unlock()
+		d.logModeChanges(lost, recovered)
+		d.notifyGroups(force)
+		return appliedCheck{success: success}
 	}
-	if canonicalResult != nil {
-		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
+	success := canonical != nil && canonical.err == nil
+	if canonical == nil && len(result.probes) > 0 {
+		canonical = &result.probes[0] // Reports why no mode recovered.
+	}
+	failureReportedAt := d.applyHealthResultLocked(result, success)
+	if canonical != nil {
+		d.recordLatencyLocked(canonical.latency, success)
 	}
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.phase.usable()
 	d.mu.Unlock()
 
-	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
+	d.logCheckOutcome(previousHealthy, currentHealthy, canonical, nil, result)
+	if currentHealthy {
+		d.logModeChanges(lost, recovered)
+	}
 	d.recordAvailability(currentHealthy, true, failureReportedAt)
 	d.notifyGroups(forceSelection)
-	return appliedCheck{success: currentHealthy, rediscover: rediscover}
+	return appliedCheck{success: currentHealthy}
+}
+
+// logModeChanges reports modes a usable path stopped or resumed serving.
+func (d *pathRuntime) logModeChanges(lost, recovered networkMask) {
+	for _, network := range canonicalNetworkOrder {
+		fields := log.Fields{"node": d.name, "network": network.String()}
+		if lost.has(network) {
+			log.WithFields(fields).Warn("Connectivity mode lost; other modes keep serving")
+		} else if recovered.has(network) {
+			log.WithFields(fields).Info("Connectivity mode recovered")
+		}
+	}
 }
 
 func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {

@@ -29,10 +29,13 @@ const (
 // operation the next attempt is, so every caller shares one cadence.
 func (c *connectivityChecker) recoveryRetryDelay(now time.Time) time.Duration {
 	c.d.mu.RLock()
-	since := c.d.failures.downSince
-	c.d.mu.RUnlock()
+	defer c.d.mu.RUnlock()
+	return c.recoveryRetryDelayLocked(now)
+}
+
+func (c *connectivityChecker) recoveryRetryDelayLocked(now time.Time) time.Duration {
 	var downtime time.Duration
-	if !since.IsZero() {
+	if since := c.d.failures.downSince; !since.IsZero() {
 		downtime = now.Sub(since)
 	}
 	maximum := c.d.CheckIntervalMax
@@ -47,7 +50,7 @@ func (c *connectivityChecker) scheduleSupport() {
 	if c.supportAt.IsZero() {
 		now := time.Now()
 		if c.d.awaitingRecovery() {
-			// Rediscovering a failed path is how it recovers, not capability discovery.
+			// A failed path that never confirmed a mode recovers by discovering one.
 			c.supportAt = now.Add(c.recoveryRetryDelay(now))
 			return
 		}
@@ -92,10 +95,6 @@ func (c *connectivityChecker) stopRetries() {
 }
 
 func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedCheck) {
-	if applied.rediscover {
-		c.scheduleRediscovery()
-		return
-	}
 	if !c.d.checksConnectivity {
 		if applied.success {
 			c.healthAt = time.Time{}
@@ -120,13 +119,6 @@ func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedChec
 		}
 	}
 	c.scheduleSupport()
-}
-
-func (c *connectivityChecker) scheduleRediscovery() {
-	c.rediscover = true
-	c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
-	c.healthAt = time.Time{}
-	c.supportAt = time.Now()
 }
 
 func (c *connectivityChecker) updateInitialSchedule(success bool) {
@@ -198,11 +190,7 @@ func (c *connectivityChecker) dispatch() {
 		c.d.setRecovery(api.RecoveryBlocked, time.Time{}, c.blockedBy)
 		return
 	}
-	// Selection requests can finish discovery before the background sweep runs.
-	if c.rediscover && !c.supportPending() {
-		c.rediscover = false
-	}
-	if !status.CheckEnabled && !c.rediscover {
+	if !status.CheckEnabled {
 		c.d.mu.RLock()
 		demand := c.d.retains > 0
 		for member := range c.d.members {
@@ -219,7 +207,7 @@ func (c *connectivityChecker) dispatch() {
 		if status.Healthy {
 			c.healthAt = time.Time{}
 		} else if c.healthAt.IsZero() {
-			// A failed rediscovery still has a retry deadline. Retained callers
+			// A failed discovery still has a retry deadline. Retained callers
 			// need recovery, but must not turn that backoff into a busy loop.
 			c.healthAt = c.supportAt
 			if c.healthAt.IsZero() {

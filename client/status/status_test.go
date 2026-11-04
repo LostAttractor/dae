@@ -508,6 +508,20 @@ func TestTrafficAndNetworkColorsCoverTheirCells(t *testing.T) {
 	}
 }
 
+// A failing network keeps its capability but drops out of the served set.
+func TestFailingNetworksServeNothing(t *testing.T) {
+	withoutStatusColors(t)
+	node := testNodeStatus(time.Now())
+	node.Support = api.NetworkValues[api.NetworkSupportState]{
+		api.NetworkSupportConfirmed, api.NetworkSupportConfirmed,
+		api.NetworkSupportConfirmed, api.NetworkSupportConfirmed,
+	}
+	node.Failing = api.NetworkValues[bool]{false, true, false, true}
+	if got, _ := nodeNetworks(node, api.NetworkValues[string]{}); got != "all ipv4" {
+		t.Fatalf("nodeNetworks() = %q, want all ipv4", got)
+	}
+}
+
 func TestNodeNetworksMergesSupportAndSelection(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())

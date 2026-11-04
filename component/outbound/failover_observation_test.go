@@ -104,7 +104,7 @@ func TestFailoverSwitchesToAlivePeerThenVerifies(t *testing.T) {
 				checks := int32(1)
 				if offline {
 					want = g.Dialers[0]
-					checks += 3 // The failed verification retries once, then starts a TCP4/TCP6 discovery sweep.
+					checks++ // The failed verification retries once; recovery waits for the path's schedule.
 				}
 				if g.SelectedDialer(testNetworkType) != want || peer.attempts.Load()-before != checks {
 					t.Fatalf("peer verification: selected=%v checks=%d, want checks=%d", g.SelectedDialer(testNetworkType), peer.attempts.Load()-before, checks)

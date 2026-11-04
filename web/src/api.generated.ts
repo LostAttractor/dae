@@ -1462,6 +1462,8 @@ export interface components {
             /** @description The physical transport has been released and is not being recreated. Omitted when false; independent of group-local selection tracking. */
             dormant?: boolean;
             egress?: components["schemas"]["NodeEgress"];
+            /** @description Confirmed networks whose latest probe failed; they serve no traffic until a probe succeeds. Capability stays in support. Network order: tcp4, tcp6, udp4, udp6. Omitted when no network fails. */
+            failing?: boolean[];
             failure?: components["schemas"]["FailureSnapshot"];
             health: components["schemas"]["NodeHealth"];
             healthy: boolean;

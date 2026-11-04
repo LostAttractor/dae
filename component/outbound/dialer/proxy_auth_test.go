@@ -87,7 +87,7 @@ func TestStreamAuthenticationDistinguishesProxyAndTarget(t *testing.T) {
 				if calls != 1 || c.blockedBy != "auth" || !d.RuntimeStatus().Recovery.RetryAt.IsZero() {
 					t.Fatalf("proxy credentials retried: calls=%d, state=%+v", calls, d.RuntimeStatus())
 				}
-			} else if calls != 2 || c.blockedBy != "" || !c.rediscover || c.supportAt.IsZero() {
+			} else if calls != 2 || c.blockedBy != "" || c.healthAt.IsZero() {
 				t.Fatalf("target rejection blocked node recovery: calls=%d, state=%+v", calls, d.RuntimeStatus())
 			}
 		})
