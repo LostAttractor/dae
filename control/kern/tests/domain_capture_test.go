@@ -93,6 +93,7 @@ func TestDomainCapturePreservesEBPFDirect(t *testing.T) {
 								if err := obj.RoutingTuplesMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 									t.Fatal(err)
 								}
+								advanceTCPSYN(packet, tcpOffset)
 								status, _, _, err := runBpfProgram(program, packet, ctx)
 								if err != nil || status != want {
 									t.Fatalf("%s: status=%d err=%v, want=%d", program, status, err, want)

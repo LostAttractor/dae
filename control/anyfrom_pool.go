@@ -92,6 +92,12 @@ func NewAnyfromPool() *AnyfromPool {
 	}
 }
 
+func (p *AnyfromPool) usage() (used, limit int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.pool) + len(p.creating), p.limit
+}
+
 // TryGet returns the live pooled socket bound to lAddr and refreshes its idle
 // time, or nil, without waiting, if there is none or the pool is locked.
 func (p *AnyfromPool) TryGet(lAddr netip.AddrPort) *Anyfrom {

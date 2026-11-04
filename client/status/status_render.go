@@ -45,14 +45,82 @@ func printTable(out io.Writer, header table.Row, rows []table.Row) {
 }
 
 func tableUsageRow(usage api.TableUsage) table.Row {
-	limit, ratio := "unlimited", "-"
+	used, limit, ratio := fmt.Sprint(usage.Used), "unlimited", "-"
 	if usage.Limit > 0 {
 		limit = fmt.Sprint(usage.Limit)
-		fraction := float64(usage.Used) / float64(usage.Limit)
-		ratio = colorUsage(fraction, formatRatio(fraction))
+		if usage.Error == "" {
+			fraction := float64(usage.Used) / float64(usage.Limit)
+			ratio = formatRatio(fraction)
+			if usage.OnFull == "reject" {
+				ratio = colorUsage(fraction, ratio)
+			}
+		}
 	}
-	return table.Row{fmt.Sprint(usage.Used), limit, ratio,
-		fmt.Sprint(usage.Candidates), fmt.Sprint(max(0, usage.Candidates-usage.Used))}
+	if usage.Error != "" {
+		used = "unavailable"
+	}
+	return table.Row{usage.Name, used, limit, ratio, usage.OnFull}
+}
+
+// tableNeedsAttention reports a table whose usage is unknown, deferred,
+// truncated, or near a capacity that rejects new entries. LRU fullness is
+// ordinary eviction.
+func tableNeedsAttention(usage api.TableUsage) bool {
+	return usage.Error != "" || usage.Pending > 0 || usage.Candidates > usage.Used ||
+		usage.OnFull == "reject" && usage.Limit > 0 &&
+			float64(usage.Used)/float64(usage.Limit) >= ampleUsageRatio
+}
+
+// printTables lists every table when verbose; otherwise only tables needing
+// attention, so a healthy daemon shows none.
+func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
+	// Present retained evidence before its kernel projection.
+	for _, usage := range usages {
+		if detail := usage.Breakdown; detail != nil {
+			limit := "unlimited"
+			if usage.Limit > 0 {
+				limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
+			}
+			fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
+			used := fmt.Sprint(usage.Used)
+			if usage.Error != "" {
+				used = "unavailable"
+			}
+			printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
+				{used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
+			})
+			if usage.Error != "" {
+				fmt.Fprintf(out, "%s: unavailable: %s\n", usage.Name, usage.Error)
+			}
+		}
+	}
+	for _, scope := range []string{"kernel", "userspace"} {
+		var shown []api.TableUsage
+		var rows []table.Row
+		for _, usage := range usages {
+			if usage.Scope == scope && usage.Breakdown == nil && (verbose || tableNeedsAttention(usage)) {
+				shown = append(shown, usage)
+				rows = append(rows, tableUsageRow(usage))
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\n%s tables:\n", strings.ToUpper(scope[:1])+scope[1:])
+		printTable(out, table.Row{"NAME", "USED", "LIMIT", "USAGE%", "ON FULL"}, rows)
+		for _, usage := range shown {
+			if usage.Error != "" {
+				fmt.Fprintf(out, "%s: unavailable: %s\n", usage.Name, usage.Error)
+			}
+			if usage.Name == "domain-kernel" {
+				omitted := "unavailable"
+				if usage.Error == "" {
+					omitted = fmt.Sprint(max(0, usage.Candidates-usage.Used))
+				}
+				fmt.Fprintf(out, "%s: CANDIDATES %d; OMITTED %s; PENDING %d\n", usage.Name, usage.Candidates, omitted, usage.Pending)
+			}
+		}
+	}
 }
 
 func nodeLabel(status api.NodeStatus, index int) string {
@@ -452,28 +520,7 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 	)
 	fmt.Fprintln(out)
 
-	// Present retained evidence before its kernel projection.
-	for _, usage := range snapshot.Tables {
-		if detail := usage.Breakdown; detail != nil {
-			limit := "unlimited"
-			if usage.Limit > 0 {
-				limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
-			}
-			fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
-			printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
-				{usage.Used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
-			})
-		}
-	}
-	for _, usage := range snapshot.Tables {
-		if usage.Breakdown == nil {
-			fmt.Fprintf(out, "\n%s:\n", usage.Name)
-			printTable(out, table.Row{"USED (IPs)", "LIMIT", "USAGE", "CANDIDATES", "OMITTED"}, []table.Row{tableUsageRow(usage)})
-			if usage.Pending != 0 {
-				fmt.Fprintf(out, "Pending kernel changes: %d (retrying; installed entries shown above)\n", usage.Pending)
-			}
-		}
-	}
+	printTables(out, snapshot.Tables, verbose)
 
 	printBuiltinStatus(out, snapshot, verbose)
 	for _, group := range snapshot.Groups {

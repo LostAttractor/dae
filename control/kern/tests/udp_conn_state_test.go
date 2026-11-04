@@ -173,6 +173,9 @@ func TestUDPInboundStateNeedsLocalSocket(t *testing.T) {
 			}); err != nil || updateErr != nil {
 				t.Fatal(err, updateErr)
 			}
+			if err := obj.DaemonIdentityMap.Update(uint32(0), uint64(os.Getpid()), ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
 			runUDP(t, obj.TproxyWanIngressL2, peer(4004), service, 0, tcxNext)
 			if _, ok := udpConnState(t, obj, service, peer(4004)); ok || pendingInbound(t, obj, service, peer(4004)) {
 				t.Fatal("datagram to dae's socket started an inbound flow")

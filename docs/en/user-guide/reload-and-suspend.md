@@ -61,6 +61,40 @@ dae reload --abort
 
 `--abort` takes effect even when configuration and resource contents are unchanged. Aborting reload and normal daemon shutdown reset captured TCP sockets before releasing their kernel return paths. Uncaptured kernel-direct connections are not owned by the daemon. Forced process termination does not run this cleanup. Changes to `tproxy_port` or `so_mark_from_dae` require a restart.
 
+## Normal Stop and Unexpected Exit
+
+Normal service shutdown removes dae's kernel attachments, pinned state, and
+internal network resources. Ordinary routing then applies without dae's marks,
+block rules, capture, or destination rewriting. Connections that depend on those
+marks may need to reconnect; there is no separate unload command. Starting dae
+again does not reset connections that kept running; they stay on ordinary routing
+until they end.
+
+Unexpected termination that cannot finish cleanup, such as SIGKILL, retains a
+small kernel fallback datapath. Valid native connections keep their saved marks;
+established proxy TCP connections end with dae's sockets and must reconnect.
+Choose the policy for new managed outbound connections in `global`:
+
+```dae
+global {
+    unexpected_exit_behavior: bypass
+}
+```
+
+`bypass` is the default. It bypasses **all** old routing, block, DNS/MITM capture,
+and destination-rewrite rules for new TCP handshakes and new UDP source lifetimes.
+Connections admitted by crash bypass can remain direct after restart; recovery
+does not splice them back into a proxy. Choose `block` if that exposure is not
+acceptable; existing valid native traffic and proven inbound replies remain
+allowed. This is independent of
+`no_connectivity_behavior` for unavailable proxy groups while dae is running.
+Both modes rely on the retained hooks; they do not govern unmanaged interfaces or
+traffic after those hooks have been detached.
+
+A restarted daemon takes over crash-retained links and becomes online when its
+listeners and rules are ready. Only the explicitly registered daemon's own sockets
+receive the bootstrap exemption; another process using the same mark does not.
+
 ## Suspend
 
 Suspend removes traffic interception using the accepted configuration and resources,

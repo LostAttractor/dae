@@ -53,6 +53,11 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		noConnectivityOutbound = consts.OutboundDirect
 	}
 
+	unexpectedExitOutbound := consts.OutboundDirect
+	if global.UnexpectedExitBehavior == "block" {
+		unexpectedExitOutbound = consts.OutboundBlock
+	}
+
 	wanInterface, autoWan := splitWanInterfaces(global.WanInterface)
 	clients := make(map[string]config.Client, len(conf.Client))
 	for _, client := range conf.Client {
@@ -66,6 +71,7 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		mitmClients:               mitmClients,
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		noConnectivityOutbound:    noConnectivityOutbound,
+		unexpectedExitOutbound:    unexpectedExitOutbound,
 		lanInterface:              uniqueInterfaceNames(global.LanInterface),
 		wanInterface:              wanInterface,
 		autoWan:                   autoWan,

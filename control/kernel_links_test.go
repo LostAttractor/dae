@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/vishvananda/netlink"
 )
@@ -42,7 +44,7 @@ func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 		core := &hostBinder{kernelLinks: new(kernelLinks), closed: t.Context(), wanBindings: make(map[int]*wanBinding)}
 		closed := 0
 		for _, role := range []hostTCXRole{hostTCXWanIngress, hostTCXWanEgress} {
-			core.ownHostTCXLink(hostTCXLink{linkIndex: 2, role: role, close: func() error { closed++; return nil }})
+			core.ownHostTCXLink(hostTCXLink{linkIndex: 2, role: role, program: new(ebpf.Program), close: func() error { closed++; return nil }})
 		}
 		core.beginRebind()
 		core.seedAutoWanBindings()
@@ -68,6 +70,56 @@ func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 		core.reconcileWanWith(&network.HostNetworkSnapshot{}, nil, lookup)
 		if closed != 2 {
 			t.Fatalf("discovery retained obsolete WAN attachments: closed=%d", closed)
+		}
+	}
+}
+
+type persistentTestLink struct {
+	link.Link
+	closed, unpinned int
+}
+
+func (l *persistentTestLink) Close() error { l.closed++; return nil }
+func (l *persistentTestLink) Unpin() error { l.unpinned++; return nil }
+
+func TestKernelCloseReleasesPersistentAttachments(t *testing.T) {
+	host, internal, pid, exit := new(persistentTestLink), new(persistentTestLink), new(persistentTestLink), new(persistentTestLink)
+	links := &kernelLinks{pinPath: t.TempDir(), netnsLinks: []link.Link{internal}, pidLinks: []link.Link{pid}, exitLink: exit}
+	links.ownHostTCXLink(hostTCXLink{linkIndex: 1, role: hostTCXLanIngress, link: host,
+		close: host.Close})
+	if err := links.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if host.closed != 1 || internal.closed != 1 || pid.closed != 1 || exit.closed != 1 {
+		t.Fatal("Close did not release every userspace descriptor")
+	}
+	if host.unpinned != 0 || pid.unpinned != 0 || internal.unpinned != 0 {
+		t.Fatalf("host unpins=%d pid unpins=%d netns unpins=%d", host.unpinned, pid.unpinned, internal.unpinned)
+	}
+	if err := links.Close(); err != nil || host.closed != 1 || pid.closed != 1 {
+		t.Fatalf("Close was not idempotent: %v", err)
+	}
+}
+
+func TestKernelLinksDetachHostTCX(t *testing.T) {
+	for _, pinned := range []bool{false, true} {
+		for _, rebind := range []bool{false, true} {
+			host := new(persistentTestLink)
+			links := new(kernelLinks)
+			if pinned {
+				links.pinPath = t.TempDir()
+			}
+			links.ownHostTCXLink(hostTCXLink{linkIndex: 1, role: hostTCXLanIngress, link: host, close: host.Close})
+			var err error
+			if rebind {
+				links.beginRebind()
+				err = links.finishRebind()
+			} else {
+				err = links.closeHostTCXLinks(1)
+			}
+			if err != nil || host.closed != 1 || (host.unpinned == 1) != pinned || len(links.hostTCXLinks) != 0 {
+				t.Fatalf("pinned=%v rebind=%v: closes=%d unpins=%d err=%v", pinned, rebind, host.closed, host.unpinned, err)
+			}
 		}
 	}
 }

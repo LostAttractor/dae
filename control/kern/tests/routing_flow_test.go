@@ -42,6 +42,7 @@ func TestHTTPClientAdmissionSkipsInvalidPredicates(t *testing.T) {
 			want = 2 // Admitted clients evaluate the deliberately invalid ID.
 		}
 		for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+			advanceTCPSYN(packet, 34)
 			status, _, output, err := runBpfProgram(program, packet, ctx)
 			if err != nil || status != want {
 				t.Fatalf("%s allowed=%d: status=%d want=%d err=%v", program, allowed, status, want, err)
@@ -75,6 +76,7 @@ func TestRoutingDomainShortCircuit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			installRoutingFlow(t, obj, []bpftestMatchSet{tc.first, tc.second, {Type: uint8(consts.MatchType_Fallback)}})
 			for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+				advanceTCPSYN(packet, 34)
 				status, _, _, err := runBpfProgram(program, packet, ctx)
 				if err != nil || status != tc.want {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
@@ -229,6 +231,7 @@ func TestRoutingShortCircuitActionBoundaries(t *testing.T) {
 				if err := obj.RoutingTuplesMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 					t.Fatal(err)
 				}
+				advanceTCPSYN(packet, 34)
 				status, _, _, err := runBpfProgram(program, packet, ctx)
 				if err != nil || status != want {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, want, err)
@@ -303,6 +306,7 @@ func TestRoutingJumpBounds(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+				advanceTCPSYN(packet, 34)
 				status, _, _, err := runBpfProgram(program, packet, ctx)
 				if err != nil || status != tc.want {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
@@ -347,6 +351,7 @@ func TestRoutingShortCircuitTailLookup(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+				advanceTCPSYN(packet, 34)
 				status, _, _, err := runBpfProgram(program, packet, ctx)
 				if err != nil || status != tc.want {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
@@ -409,6 +414,7 @@ func TestRoutingDomainLookupLifetime(t *testing.T) {
 				if err := obj.RoutingTuplesMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 					t.Fatal(err)
 				}
+				advanceTCPSYN(packet, 34)
 				status, _, _, err := runBpfProgram(program, packet, ctx)
 				if err != nil || status != tc.want {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)

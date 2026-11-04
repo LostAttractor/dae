@@ -27,13 +27,18 @@ func TestStatusWireRoundTrip(t *testing.T) {
 		{ID: "future", Type: "uncompiled", State: "disabled", HTTPReason: "disabled"},
 	}
 	want.BufferMemory = BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}
-	want.Tables = []TableUsage{{Name: "domain-registry", Used: 8,
-		Breakdown: &TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: ^uint64(0)}}}
+	want.Tables = []TableUsage{
+		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 8,
+			Breakdown: &TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: ^uint64(0)}},
+		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: 2, Limit: 4, Candidates: 3, Pending: 1},
+		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Limit: 16, Error: "read map: permission denied"},
+		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 4, Limit: 4},
+	}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":14`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":15`, `"scope":"kernel"`, `"on_full":"evict"`, `"error":"read map: permission denied"`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}
@@ -72,7 +77,7 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.Plugins, want.Plugins) || !reflect.DeepEqual(got.CompiledPlugins, want.CompiledPlugins) || got.BufferMemory != want.BufferMemory {
 		t.Fatal("plugin envelope or process statistics changed after round trip")
 	}
-	if !reflect.DeepEqual(got.Tables, want.Tables) {
-		t.Fatal("domain/IP counts changed after round trip")
+	if !reflect.DeepEqual(got.Tables, want.Tables) || strings.Count(string(payload), `"error":`) != 1 {
+		t.Fatal("table usage, availability or optional error changed after round trip")
 	}
 }

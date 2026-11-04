@@ -53,11 +53,20 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 		{name: "proxy to interruptible direct fallback", previous: bpftestRoutingResult{Outbound: proxy}, unavailable: true, fallback: 9},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			previous := bpftestTcpFlowState{Mark: test.previous.Mark}
 			if test.previous.Outbound == proxy {
-				previous.Owner = tcpFlowProxy
-			}
-			if err := obj.TcpFlowMap.Update(key, previous, ebpf.UpdateAny); err != nil {
+				// A proxy SYN removed any direct flow; its pending setup owns the tuple.
+				if err := obj.TcpFlowMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+					t.Fatal(err)
+				}
+				var now unix.Timespec
+				if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+					t.Fatal(err)
+				}
+				handoff := bpftestRoutingHandoff{Result: test.previous, Expires: uint32(now.Sec) + 30}
+				if err := obj.RoutingTuplesMap.Update(key, handoff, ebpf.UpdateAny); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := obj.TcpFlowMap.Update(key, bpftestTcpFlowState{Mark: test.previous.Mark}, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			fallback := bpftestMatchSet{Type: fallbackType, Outbound: direct, Mark: test.mark}
@@ -85,6 +94,7 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 				t.Fatalf("existing ACK: status %d, error %v; want %d", status, err, want)
 			}
 			// An unavailable group degrades to direct in the kernel.
+			advanceTCPSYN(syn, 34)
 			for _, packet := range [][]byte{syn, ack} {
 				status, _, ctxOut, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
 				if err != nil || status != next {
@@ -101,11 +111,7 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 			}
 			var flow bpftestTcpFlowState
 			err := obj.TcpFlowMap.Lookup(key, &flow)
-			if test.mark == 0 && test.fallback == 0 {
-				if !errors.Is(err, ebpf.ErrKeyNotExist) {
-					t.Fatalf("plain direct retained state: %+v, %v", flow, err)
-				}
-			} else if err != nil || flow.Owner != test.fallback || flow.Mark != test.mark {
+			if err != nil || flow.Fallback != test.fallback || flow.Mark != test.mark {
 				t.Fatalf("direct flow = %+v, %v", flow, err)
 			}
 			if test.fallback == 0 {

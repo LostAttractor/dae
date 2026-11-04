@@ -9,6 +9,10 @@ const (
 	CAPTURE_DESTINATION                     = 2
 	CAPTURE_HTTP_REQUEST                    = 4
 	CAPTURE_DNS                             = 8
+	DAEMON_ONLINE                           = 0
+	DAEMON_OFFLINE                          = 1
+	DAEMON_STARTING                         = 2
+	FALLBACK_LEASE_LIVE                     = 1
 	FALLBACK_TOKEN_RESERVED                 = 1
 	HANDOFF_LIFETIME_SECONDS                = 30
 	TPROXY_MARK                             = 134217728

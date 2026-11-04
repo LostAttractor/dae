@@ -8,6 +8,8 @@
 #include "../tproxy.c"
 #include "./bpf_test.h"
 
+static const __u32 one_key = 1;
+
 struct bridge_test_result {
 	__u32 ifindex;
 	__u32 physinif;
@@ -52,10 +54,15 @@ int test_bridge_ingress(struct __sk_buff *skb)
 	scratch->result.ifindex = skb->ifindex;
 	scratch->result.physinif = skb_bridge_physinif(skb);
 
-	scratch->result.verdict = do_tproxy(skb, false, ETH_HLEN);
-	scratch->result.mark = skb->mark;
-	bpf_map_update_elem(&bridge_test_results, &scratch->key, &scratch->result, BPF_ANY);
-	return scratch->result.verdict;
+	int verdict = do_tproxy(skb, false, ETH_HLEN);
+
+	scratch = bpf_map_lookup_elem(&bridge_test_scratch_map, &zero_key);
+	if (scratch) {
+		scratch->result.verdict = verdict;
+		scratch->result.mark = skb->mark;
+		bpf_map_update_elem(&bridge_test_results, &scratch->key, &scratch->result, BPF_ANY);
+	}
+	return verdict;
 }
 
 /* A full profile exceeds the BPF stack limit; prepare test values in .bss. */
@@ -93,10 +100,17 @@ static __always_inline void test_own_socket(struct __sk_buff *skb,
 		*owner = *value;
 }
 
+static __always_inline int test_register_daemon(__u64 pid)
+{
+	return bpf_map_update_elem(&daemon_identity_map, &zero_key, &pid, BPF_ANY);
+}
+
 static __always_inline int test_entry_mark_owner(struct __sk_buff *skb, bool daemon)
 {
 	struct pid_pname value = { .pid = PARAM.control_plane_pid + !daemon };
 
+	if (test_register_daemon(PARAM.control_plane_pid))
+		return TC_ACT_SHOT;
 	test_own_socket(skb, &value);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_SHOT;
@@ -140,7 +154,7 @@ int test_expire_closing_udp_route(struct __sk_buff *skb)
 	if (!value)
 		return TC_ACT_SHOT;
 	bpf_spin_lock(&value->lock);
-	value->fallback = UDP_ROUTE_CLOSING;
+	value->cached_until = 0;
 	bpf_spin_unlock(&value->lock);
 	expire_udp_route(&udp_routing_cache_map, &key, value);
 	return bpf_map_lookup_elem(&udp_routing_cache_map, &key) ? TC_ACT_SHOT : TC_ACT_OK;
@@ -337,6 +351,8 @@ int testsetup_so_mark_exact(struct __sk_buff *skb)
 {
 	struct pid_pname *pid_pname = NULL;
 
+	if (test_register_daemon(PARAM.control_plane_pid))
+		return TC_ACT_SHOT;
 	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
 }
@@ -358,6 +374,8 @@ int testsetup_so_mark_neighbor(struct __sk_buff *skb)
 {
 	struct pid_pname *pid_pname = NULL;
 
+	if (test_register_daemon(PARAM.control_plane_pid))
+		return TC_ACT_SHOT;
 	skb->mark = 0x100U ^ 1;
 	return pid_is_control_plane(skb, &pid_pname);
 }
@@ -380,6 +398,8 @@ int testsetup_so_mark_pid_precedence(struct __sk_buff *skb)
 	struct pid_pname value = { .pid = PARAM.control_plane_pid + 1 };
 	struct pid_pname *pid_pname = NULL;
 
+	if (test_register_daemon(PARAM.control_plane_pid))
+		return TC_ACT_SHOT;
 	test_own_socket(skb, &value);
 	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
@@ -641,6 +661,8 @@ int testsetup_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
 {
 	struct pid_pname value = { .pid = PARAM.control_plane_pid };
 
+	if (test_register_daemon(PARAM.control_plane_pid))
+		return TC_ACT_SHOT;
 	test_own_socket(skb, &value);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
@@ -3291,4 +3313,250 @@ int testcheck_udp_noalive_direct_forwards_in_kernel(struct __sk_buff *skb)
 	return check_ipv4_udp_routing_state(skb, TCX_NEXT,
 		IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443, false, true,
 		OUTBOUND_DIRECT);
+}
+
+SEC("tc/pktgen/tcp_unowned_packets_pass")
+int testpktgen_tcp_unowned_packets_pass(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,3,1), IPV4(203,0,113,1), 22001, 443);
+}
+
+/* Packets that no proxy setup or socket owns pass with their own mark; saved
+ * properties apply until the sender's RST or a new SYN replaces them. */
+SEC("tc/setup/tcp_unowned_packets_pass")
+int testsetup_tcp_unowned_packets_pass(struct __sk_buff *skb)
+{
+	struct tuples_key key;
+	struct tcphdr tcp = { .ack = 1, .seq = bpf_htonl(17), .ack_seq = bpf_htonl(42), .doff = 5 };
+	struct routing_result result = { .outbound = OUTBOUND_DIRECT, .mark = 0x55, .route_epoch = 4 };
+	int ret = TCX_DROP;
+
+	make_ipv4_udp_routing_key(&key, IPV4(192,168,3,1), IPV4(203,0,113,1), 22001, 443);
+	key.l4proto = IPPROTO_TCP;
+	__u64 *gate = tcp_handshake_gate(&key);
+
+	if (!gate)
+		return ret;
+	/* Flows that predate the datapath or lost their entry keep running. */
+	skb->mark = 0x42;
+	if (tcp_handshake_gate(&key) ||
+	    tcp_packet_action(skb, &key, &tcp, 4) != TCP_PACKET_NATIVE || skb->mark != 0x42 ||
+	    bpf_map_lookup_elem(&tcp_flow_map, &key))
+		goto out;
+	if (save_tcp_flow(&key, &result, 0, &tcp) ||
+	    tcp_packet_action(skb, &key, &tcp, 4) != TCP_PACKET_NATIVE || skb->mark != 0x55)
+		goto out;
+	/* A changed device policy ends the flow through the listener. */
+	if (tcp_packet_action(skb, &key, &tcp, 5) != TCP_PACKET_PROXY)
+		goto out;
+	/* The sender's RST follows its flow, then later packets are unowned. */
+	tcp.rst = 1;
+	if (tcp_packet_action(skb, &key, &tcp, 4) != TCP_PACKET_NATIVE || skb->mark != 0x55 ||
+	    bpf_map_lookup_elem(&tcp_flow_map, &key))
+		goto out;
+	tcp.rst = 0;
+	skb->mark = 0x42;
+	if (tcp_packet_action(skb, &key, &tcp, 4) != TCP_PACKET_NATIVE || skb->mark != 0x42)
+		goto out;
+	/* Only routed SYNs change properties: a SYN-ACK follows the tuple's flow. */
+	tcp.syn = 1;
+	if (save_tcp_flow(&key, &result, 0, &tcp) ||
+	    tcp_packet_action(skb, &key, &tcp, 4) != TCP_PACKET_NATIVE || skb->mark != 0x55 ||
+	    !bpf_map_lookup_elem(&tcp_flow_map, &key))
+		goto out;
+	ret = TCX_NEXT;
+out:
+	tcp_handshake_release(gate);
+	return ret;
+}
+
+SEC("tc/check/tcp_unowned_packets_pass")
+int testcheck_tcp_unowned_packets_pass(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/tcp_new_syn_replaces_flow")
+int testpktgen_tcp_new_syn_replaces_flow(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,3,2), IPV4(203,0,113,2), 22002, 443);
+}
+
+/* A retransmission keeps its handshake's decision; a new SYN replaces it. A
+ * proxy setup owns every packet of its tuple. */
+SEC("tc/setup/tcp_new_syn_replaces_flow")
+int testsetup_tcp_new_syn_replaces_flow(struct __sk_buff *skb)
+{
+	struct tuples_key key;
+	struct tcphdr tcp = { .syn = 1, .seq = bpf_htonl(21), .doff = 5 };
+	struct routing_result result = { .outbound = OUTBOUND_DIRECT, .mark = 0x55 };
+	int ret = TCX_DROP;
+
+	make_ipv4_udp_routing_key(&key, IPV4(192,168,3,2), IPV4(203,0,113,2), 22002, 443);
+	key.l4proto = IPPROTO_TCP;
+	__u64 *gate = tcp_handshake_gate(&key);
+
+	if (!gate)
+		return ret;
+	if (save_tcp_flow(&key, &result, 0, &tcp) ||
+	    tcp_packet_action(skb, &key, &tcp, 0) != TCP_PACKET_NATIVE || skb->mark != 0x55)
+		goto out;
+	tcp.seq = bpf_htonl(22);
+	if (tcp_packet_action(skb, &key, &tcp, 0) != TCP_PACKET_ROUTE ||
+	    bpf_map_lookup_elem(&tcp_flow_map, &key))
+		goto out;
+	result.outbound = OUTBOUND_USER_DEFINED_MIN;
+	if (publish_handoff(&key, &result, NULL, bpf_htonl(22)) ||
+	    tcp_packet_action(skb, &key, &tcp, 0) != TCP_PACKET_PROXY)
+		goto out;
+	tcp.syn = 0;
+	tcp.ack = 1;
+	if (tcp_packet_action(skb, &key, &tcp, 0) != TCP_PACKET_PROXY)
+		goto out;
+	tcp.syn = 1;
+	if (tcp_packet_action(skb, &key, &tcp, 0) != TCP_PACKET_PROXY ||
+	    bpf_map_lookup_elem(&tcp_flow_map, &key))
+		goto out;
+	ret = TCX_NEXT;
+out:
+	tcp_handshake_release(gate);
+	return ret;
+}
+
+SEC("tc/check/tcp_new_syn_replaces_flow")
+int testcheck_tcp_new_syn_replaces_flow(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/offline_fallback_lease")
+int testpktgen_offline_fallback_lease(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,3,3), IPV4(203,0,113,3), 22003, 443);
+}
+
+SEC("tc/setup/offline_fallback_lease")
+int testsetup_offline_fallback_lease(struct __sk_buff *skb)
+{
+	const __u32 token = 9, invalid_token = 10, next_token = 11;
+	const __u32 reserved = FALLBACK_TOKEN_RESERVED;
+	struct outbound_connectivity_query query = {
+		.outbound = OUTBOUND_USER_DEFINED_MIN, .l4proto = IPPROTO_UDP, .ipversion = 4,
+	};
+	struct outbound_connectivity connectivity = {
+		.state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT, .fallback = token,
+	};
+	struct routing_result result = { .outbound = OUTBOUND_USER_DEFINED_MIN, .mark = 0x35 };
+	struct udp_routing_cache_key key = { .sport = bpf_htons(22003) };
+	__u32 fallback = 0;
+	__u8 lease = FALLBACK_LEASE_LIVE, exited = DAEMON_ONLINE;
+	int ret = TCX_DROP;
+
+	if (bpf_map_update_elem(&fallback_lease_map, &reserved, &lease, BPF_ANY) ||
+	    bpf_map_update_elem(&fallback_lease_map, &token, &lease, BPF_ANY))
+		goto out;
+	lease = 2;
+	if (bpf_map_update_elem(&fallback_lease_map, &invalid_token, &lease, BPF_ANY))
+		goto out;
+#pragma unroll
+	for (int state = DAEMON_ONLINE; state <= DAEMON_STARTING; state++) {
+		exited = state;
+		if (bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY) ||
+		    daemon_offline() != (state != DAEMON_ONLINE) || !fallback_live(0) ||
+		    fallback_live(reserved) || fallback_live(invalid_token) || !fallback_live(token))
+			goto out;
+	}
+	/* Network fallback is evaluated online, separately from unexpected exit. */
+	if (bpf_map_update_elem(&outbound_connectivity_map, &query, &connectivity, BPF_ANY) ||
+	    !degrade_unavailable(&result, bpf_htons(ETH_P_IP), IPPROTO_UDP, &fallback))
+		goto out;
+	exited = DAEMON_ONLINE;
+	if (bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY) ||
+	    degrade_unavailable(&result, bpf_htons(ETH_P_IP), IPPROTO_UDP, &fallback) ||
+	    result.outbound != OUTBOUND_DIRECT || result.mark != 0x35 || fallback != token)
+		goto out;
+	result.generation = routing_generation;
+	if (save_udp_route(&key, &result, fallback) || read_udp_route(&key, &result) != 1)
+		goto out;
+	exited = DAEMON_OFFLINE;
+	if (bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY) ||
+	    !fallback_live(token) || read_udp_route(&key, &result) != 1)
+		goto out;
+	/* A fresh runtime's private lease set cannot revive the old native grant. */
+	if (bpf_map_delete_elem(&fallback_lease_map, &token) || fallback_live(token) ||
+	    read_udp_route(&key, &result) != 0)
+		goto out;
+	lease = FALLBACK_LEASE_LIVE;
+	if (bpf_map_update_elem(&fallback_lease_map, &next_token, &lease, BPF_ANY) ||
+	    !fallback_live(next_token) || fallback_live(token))
+		goto out;
+	ret = TCX_NEXT;
+out:
+	exited = DAEMON_ONLINE;
+	bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY);
+	return ret;
+}
+
+SEC("tc/check/offline_fallback_lease")
+int testcheck_offline_fallback_lease(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/registered_daemon_socket")
+int testpktgen_registered_daemon_socket(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,3,4), IPV4(203,0,113,4), 22004, 443);
+}
+
+SEC("tc/setup/registered_daemon_socket")
+int testsetup_registered_daemon_socket(struct __sk_buff *skb)
+{
+	struct pid_pname owner = { .pid = PARAM.control_plane_pid + 1 };
+	struct pid_pname *actual = NULL;
+	__u32 registered = owner.pid;
+	__u8 exited = 1;
+	int ret = TCX_DROP;
+
+	if (test_register_daemon(registered) ||
+	    bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY))
+		goto out;
+	/* Registration and a packet mark cannot grant a packet without socket ownership. */
+	skb->mark = 0x100;
+	if (pid_is_control_plane(skb, &actual))
+		goto out;
+	test_own_socket(skb, &owner);
+	if (!pid_is_control_plane(skb, &actual) || !actual || actual->pid != registered)
+		goto out;
+	/* The old generation's PID and the same mark are insufficient. */
+	owner.pid = PARAM.control_plane_pid;
+	test_own_socket(skb, &owner);
+	if (pid_is_control_plane(skb, &actual))
+		goto out;
+	owner.pid = registered;
+	test_own_socket(skb, &owner);
+	unregister_daemon(PARAM.control_plane_pid);
+	if (!pid_is_control_plane(skb, &actual))
+		goto out;
+	unregister_daemon(registered);
+	if (pid_is_control_plane(skb, &actual) || daemon_pid_registered(registered))
+		goto out;
+	/* A late exit cannot clear a newer daemon's registration. */
+	if (test_register_daemon(registered + 1))
+		goto out;
+	unregister_daemon(registered);
+	if (!daemon_pid_registered(registered + 1) || pid_is_control_plane(skb, &actual))
+		goto out;
+	ret = TCX_NEXT;
+out:
+	test_register_daemon(0);
+	exited = 0;
+	bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY);
+	return ret;
+}
+
+SEC("tc/check/registered_daemon_socket")
+int testcheck_registered_daemon_socket(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
 }

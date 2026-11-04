@@ -8,6 +8,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,12 +19,16 @@ import (
 func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 	t.Setenv("DAE_API_KEY", "cli-secret")
 	requests := 0
+	tables := []api.TableUsage{
+		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 3, Limit: 16, Error: "read map: permission denied"},
+		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 6, Limit: 8},
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer cli-secret" {
 			t.Errorf("wrong API request: %s %s", r.Method, r.URL.Path)
 		}
-		snapshot := api.StatusSnapshot{Schema: api.StatusSchemaVersion, Version: "cli-daemon", StartedAt: time.Now(), Groups: []api.GroupStatus{{Name: "direct", TargetKind: "builtin"}}}
+		snapshot := api.StatusSnapshot{Schema: api.StatusSchemaVersion, Version: "cli-daemon", StartedAt: time.Now(), Tables: tables, Groups: []api.GroupStatus{{Name: "direct", TargetKind: "builtin"}}}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.MarshalWrite(w, snapshot, jsonv1.FormatDurationAsNano(true))
 	}))
@@ -39,11 +44,24 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 			args = []string{mode}
 		}
 		cmd.SetArgs(args)
+		before := requests
 		if err := cmd.Execute(); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(output.String(), "cli-daemon") {
-			t.Fatalf("mode %s ignored command output: %s", mode, output.String())
+		if requests != before+1 || !strings.Contains(output.String(), "cli-daemon") {
+			t.Fatalf("mode %s did not render one API snapshot: %s", mode, output.String())
+		}
+		if mode == "--json" {
+			var snapshot api.StatusSnapshot
+			if err := json.Unmarshal(output.Bytes(), &snapshot, jsonv1.FormatDurationAsNano(true)); err != nil || snapshot.Schema != 15 || !reflect.DeepEqual(snapshot.Tables, tables) {
+				t.Fatalf("JSON changed table usage: %+v, %v", snapshot.Tables, err)
+			}
+		} else {
+			for _, want := range []string{"Kernel tables:", "Userspace tables:", "tcp_flow_map", "udp-sources", "unavailable: read map: permission denied"} {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("mode %s missing %q: %s", mode, want, output.String())
+				}
+			}
 		}
 	}
 	before := requests

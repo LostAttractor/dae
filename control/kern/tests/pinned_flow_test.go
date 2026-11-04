@@ -25,17 +25,17 @@ func TestPinnedTCPFlowEncoding(t *testing.T) {
 	for _, ipv6 := range []bool{false, true} {
 		for _, test := range []struct {
 			name     string
-			owner    uint32
+			fallback uint32
 			mark     uint32
 			leased   bool
 			ack, rst uint32
 		}{
 			{"direct", 0, 0, false, tcxNext, tcxNext},
 			{"marked", 0, 37, false, tcxNext, tcxNext},
-			{"proxy", 1, 0, false, tcxRedirect, tcxRedirect},
+			{"offline fallback after recovery", 1, 0, false, tcxRedirect, tcxRedirect},
 			{"first token", 2, 73, true, tcxNext, tcxNext},
 			{"last token", ^uint32(0), 73, true, tcxNext, tcxNext},
-			{"ended token", 9, 0, false, tcxRedirect, 2},
+			{"ended token", 9, 0, false, tcxRedirect, tcxRedirect},
 		} {
 			t.Run(fmt.Sprintf("%s/IPv6=%v", test.name, ipv6), func(t *testing.T) {
 				source, destination := netip.MustParseAddrPort("192.168.1.2:40000"), netip.MustParseAddrPort("203.0.113.1:443")
@@ -49,14 +49,14 @@ func TestPinnedTCPFlowEncoding(t *testing.T) {
 				binary.BigEndian.PutUint16(key[32:34], source.Port())
 				binary.BigEndian.PutUint16(key[34:36], destination.Port())
 				key[36] = unix.IPPROTO_TCP
-				var value [16]byte
+				var value [24]byte
 				binary.NativeEndian.PutUint32(value[8:12], test.mark)
-				binary.NativeEndian.PutUint32(value[12:16], test.owner)
+				binary.NativeEndian.PutUint32(value[12:16], test.fallback)
 				if err := obj.TcpFlowMap.Update(key, value, ebpf.UpdateAny); err != nil {
 					t.Fatal(err)
 				}
 				if test.leased {
-					if err := obj.FallbackLeaseMap.Update(test.owner, uint8(1), ebpf.UpdateAny); err != nil {
+					if err := obj.FallbackLeaseMap.Update(test.fallback, uint8(1), ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -67,10 +67,10 @@ func TestPinnedTCPFlowEncoding(t *testing.T) {
 					data := bridgePacket(source, destination, unix.IPPROTO_TCP, net.HardwareAddr{2, 0, 0, 0, 0, 1}, packet.flags)
 					status, _, ctx, err := runBpfProgram(obj.LanIngressL2, data, make([]byte, 256))
 					if err != nil || status != packet.want {
-						t.Fatalf("owner=%#x flags=%#x: status=%d, %v; want %d", test.owner, packet.flags, status, err, packet.want)
+						t.Fatalf("fallback=%#x flags=%#x: status=%d, %v; want %d", test.fallback, packet.flags, status, err, packet.want)
 					}
 					if packet.want == tcxNext && binary.NativeEndian.Uint32(ctx[8:12]) != test.mark {
-						t.Fatalf("owner=%#x flags=%#x: lost mark %#x", test.owner, packet.flags, test.mark)
+						t.Fatalf("fallback=%#x flags=%#x: lost mark %#x", test.fallback, packet.flags, test.mark)
 					}
 				}
 			})

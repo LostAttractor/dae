@@ -37,6 +37,28 @@ function Records({ entries }: { entries: [string, ReactNode][] }) {
   </div>)}</dl>;
 }
 
+function TableDetails({ table }: { table: GlobalStatus["tables"][number] }) {
+  const detail = table.breakdown;
+  return <>
+    <span>{table.scope === "kernel" ? "Kernel" : "Userspace"}</span>
+    {table.error ? <InlineNotice tone="error">Unavailable: {table.error}; limit: {table.limit ? table.limit.toLocaleString() : "unlimited"}</InlineNotice> : <span>
+      {table.used.toLocaleString()} / {table.limit ? table.limit.toLocaleString() : "unlimited"} {table.name === "domain-registry" ? "pairs" : "entries"}
+      {table.limit > 0 && ` (${(table.used / table.limit * 100).toFixed(1)}%)`}
+    </span>}
+    <span>On full: {table.on_full}</span>
+    {table.name === "domain-kernel" && <>
+      <span>Candidates: {(table.candidates ?? 0).toLocaleString()}</span>
+      <span>Omitted: {table.error ? "unavailable" : Math.max(0, (table.candidates ?? 0) - table.used).toLocaleString()}</span>
+      <span>Pending: {(table.pending ?? 0).toLocaleString()}</span>
+    </>}
+    {detail && <>
+      <span>Domains: {detail.domains.toLocaleString()}</span><span>IPs: {detail.ips.toLocaleString()}</span>
+      <span>IPv4: {detail.ipv4.toLocaleString()}</span><span>IPv6: {detail.ipv6.toLocaleString()}</span>
+      <span>GC (pairs): {detail.gc.toLocaleString()}</span>
+    </>}
+  </>;
+}
+
 function GroupEntry({ group }: { group: GroupStatus }) {
   const [open, setOpen] = useState(false);
   return <Disclosure className="status-entry px-4" name={group.name} isOpen={open} onOpenChange={setOpen}
@@ -80,9 +102,9 @@ function StatusDetails({ snapshot, global, prefix }: { prefix: string } & ({ sna
         : !snapshot.outbounds.length && <p className={muted}>No attributed upstream connections yet.</p>}
     </StatusSection>
     {global && <>
-      <StatusSection className="tables-section" title="Domain Tables" count={snapshot.tables.length}>
-        <Records entries={snapshot.tables.map(table => [table.name, `${table.used.toLocaleString()} / ${table.limit ? table.limit.toLocaleString() : "unbounded"} entries`])} />
-        {!snapshot.tables.length && <p className={muted}>No domain tables configured.</p>}
+      <StatusSection className="tables-section" title="Tables" count={snapshot.tables.length}>
+        <Records entries={snapshot.tables.map(table => [table.name, <TableDetails table={table} />])} />
+        {!snapshot.tables.length && <p className={muted}>No tables available.</p>}
       </StatusSection>
       <StatusSection className="plugins-section" title="Plugins" count={snapshot.plugins?.length || 0}>
         <p className="buffer-memory text-sm text-kumo-subtle">Body buffers (process): {bytes(snapshot.buffer_memory.used)} / {bytes(snapshot.buffer_memory.limit)}; peak: {bytes(snapshot.buffer_memory.peak)}; denied: {snapshot.buffer_memory.denied.toLocaleString()}</p>

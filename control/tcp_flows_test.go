@@ -18,7 +18,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/internal/routingabi"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,10 +33,17 @@ func TestTCPProxyTupleBecomesInbound(t *testing.T) {
 					spec.Programs["lan_egress_l2"] = full.Programs["lan_egress_l2"]
 					spec.Programs["tproxy_wan_ingress_l2"] = full.Programs["tproxy_wan_ingress_l2"]
 				})
-				src, dst := netip.MustParseAddrPort("192.0.2.1:40000"), netip.MustParseAddrPort("198.51.100.1:50000")
+				network, address := "tcp4", "127.0.0.1:0"
+				dst := netip.MustParseAddrPort("198.51.100.1:50000")
 				if ipv6 {
-					src, dst = netip.MustParseAddrPort("[2001:db8::1]:40000"), netip.MustParseAddrPort("[2001:db8::2]:50000")
+					network, address, dst = "tcp6", "[::1]:0", netip.MustParseAddrPort("[2001:db8::2]:50000")
 				}
+				listener, err := net.Listen(network, address)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer listener.Close()
+				src := listener.Addr().(*net.TCPAddr).AddrPort()
 				prepared := prepareFlowRulesForTest(t, "", "l4proto(tcp) -> direct(mark:17)")
 				prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: plugin.Scope{{Host: dst.Addr().String(), Ports: []uint16{dst.Port()}}}, PreserveRoute: true}}})
 				builder, _ := routingMatcherForTest(t, prepared)
@@ -58,16 +64,19 @@ func TestTCPProxyTupleBecomesInbound(t *testing.T) {
 					run(paths[0], syn, 7)
 					reply := slices.Clone(syn)
 					reply[len(reply)-7] = 0x12
+					binary.BigEndian.PutUint32(reply[len(reply)-16:], 0x5678)
+					binary.BigEndian.PutUint32(reply[len(reply)-12:], 0x1235)
 					// A pending proxy handshake must not be cleared by a SYN-ACK from the other direction.
 					run(paths[0], reply, 7)
 					if _, err := retrieveRoutingResult(collection.Maps["routing_tuples_map"], src, dst, unix.IPPROTO_TCP); err != nil {
 						t.Fatal(err)
 					}
 					inbound, _ := routingKernelPacket(dst, src, consts.L4ProtoType_TCP)
+					binary.BigEndian.PutUint32(inbound[len(inbound)-16:], 0x1234)
 					run(paths[1], inbound, ^uint32(0))
 					var old bpfTcpFlowState
-					if err := collection.Maps["tcp_flow_map"].Lookup(key, &old); err != nil || old.Owner != routingabi.FALLBACK_TOKEN_RESERVED {
-						t.Fatalf("inbound SYN alone removed the old proxy state: %+v, %v", old, err)
+					if err := collection.Maps["tcp_flow_map"].Lookup(key, &old); !errors.Is(err, ebpf.ErrKeyNotExist) {
+						t.Fatalf("inbound SYN created flow properties: %+v, %v", old, err)
 					}
 					if fragmented {
 						// Four payload bytes align the TCP first fragment to eight bytes.
@@ -81,9 +90,11 @@ func TestTCPProxyTupleBecomesInbound(t *testing.T) {
 							binary.BigEndian.PutUint16(reply[20:22], 0x2000)
 						}
 					}
+					// Once accept consumed the setup, the answer is native and
+					// carries none of the outbound rule's properties.
 					run(paths[0], reply, ^uint32(0))
 					if err := collection.Maps["tcp_flow_map"].Lookup(key, &old); !errors.Is(err, ebpf.ErrKeyNotExist) {
-						t.Fatalf("new inbound handshake retained old proxy state: %+v, %v", old, err)
+						t.Fatalf("inbound answer acquired flow properties: %+v, %v", old, err)
 					}
 					syn[len(syn)-7] = 0x10
 					run(paths[0], syn, ^uint32(0))
@@ -144,7 +155,7 @@ func TestTCPFlowSurvivesRealIngressRelayClose(t *testing.T) {
 		}
 		defer client.Close()
 		key := tuplesKey(client.LocalAddr().(*net.TCPAddr).AddrPort(), client.RemoteAddr().(*net.TCPAddr).AddrPort(), unix.IPPROTO_TCP)
-		flow := bpfTcpFlowState{Owner: routingabi.FALLBACK_TOKEN_RESERVED}
+		flow := bpfTcpFlowState{Mark: 37}
 		if err := objects.TcpFlowMap.Update(key, flow, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
@@ -236,20 +247,20 @@ func TestTCPFlowStateOwnedByKernel(t *testing.T) {
 					err := flowMap.Lookup(&key, &flow)
 					if want == nil {
 						if !errors.Is(err, ebpf.ErrKeyNotExist) {
-							t.Fatalf("plain direct routing did not clear old state: %+v, %v", flow, err)
+							t.Fatalf("proxy retained a native admission: %+v, %v", flow, err)
 						}
 					} else if err != nil || flow != *want {
 						t.Fatalf("TCP state=%+v err=%v, want %+v", flow, err, *want)
 					}
 				}
-				// Accept the old proxy flow: consume its handoff while retaining kernel forwarding state.
+				// Accept the old proxy flow without a native forwarding admission.
 				configure(state, true, 17)
 				syn, _ := routingKernelPacket(src, dst, consts.L4ProtoType_TCP)
 				run(collection, syn, 7)
 				if _, err := retrieveRoutingResult(collection.Maps["routing_tuples_map"], src, dst, unix.IPPROTO_TCP); err != nil {
 					t.Fatal(err)
 				}
-				oldFlow := new(bpfTcpFlowState{Mark: 17, Owner: routingabi.FALLBACK_TOKEN_RESERVED})
+				var oldFlow *bpfTcpFlowState
 				checkFlow(oldFlow)
 				closeRelay := func() {
 					t.Helper()
@@ -270,11 +281,12 @@ func TestTCPFlowStateOwnedByKernel(t *testing.T) {
 				}
 				if closeFirst {
 					closeRelay()
-					// Late ACK, FIN and RST packets must still reach userspace, not the origin.
+					// The proxy lifetime ended with dae's socket: late packets are
+					// native and never acquire properties.
 					for _, flags := range []byte{0x10, 0x11, 0x14} {
 						late := slices.Clone(syn)
 						late[len(late)-7] = flags
-						run(collection, late, 7)
+						run(collection, late, ^uint32(0))
 						checkFlow(oldFlow)
 					}
 				}
@@ -283,11 +295,9 @@ func TestTCPFlowStateOwnedByKernel(t *testing.T) {
 				fresh := slices.Clone(syn)
 				fresh[len(fresh)-13]++
 				verdict := ^uint32(0)
-				want := new(bpfTcpFlowState{Mark: next.mark})
+				want := new(bpfTcpFlowState{Mark: next.mark, SynSeq: binary.NativeEndian.Uint32(fresh[len(fresh)-16:])})
 				if next.capture {
-					verdict, want.Owner = 7, routingabi.FALLBACK_TOKEN_RESERVED
-				} else if next.mark == 0 {
-					want = nil
+					verdict, want = 7, nil
 				}
 				run(replacement, fresh, verdict)
 				checkFlow(want)

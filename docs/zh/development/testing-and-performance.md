@@ -21,11 +21,17 @@ Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` �
 
 ## 固定内核状态
 
-跨进程保留的表为 `tcp_flow_map`（LRU hash，40 字节键、16 字节值）和 `cookie_pid_map`（socket-local storage，4 字节键、20 字节值）。daemon 重启按表比较类型、键值大小、容量和 flags；匹配的 pin 及其内容直接复用，仅删除并重建明确不兼容的 pin。程序或非固定表的变化不会使这些 pin 失效。同进程 reload 使用 Runtime 的共享表。
+跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`cookie_pid_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。daemon 重启按表比较元数据，复用兼容的 pin；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
 
-固定表的字节布局及含义是稳定约定。TCP 流值的 `route_epoch` 位于偏移 0，`mark` 位于 8，`owner` 位于 12；owner 为 0 表示直通，1 表示用户态代理，其余值为 fallback 令牌。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时的 map 元数据比较无法识别字段改名或数值含义变化；`TestPinnedMapABI` 独立于生成类型锁定布局与保留值，不应仅为通过测试而改写不兼容变更的预期。容量仍可在构建时指定；容量不匹配只替换对应的表。
+固定表的字节布局及含义是显式契约。TCP 连接属性的 `route_epoch`、`mark`、`fallback`、`syn_seq` 分别位于偏移 0、8、12、16，偏移 20 是显式填充。fallback 为 0 表示不受代次撤销约束，1 始终无效，其余值为唯一的组代次令牌；持久发行序号不回卷、不重用。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时元数据比较不能识别相同大小的语义变化；`TestPinnedMapABI` 与固定字节夹具独立于生成类型检查布局。容量不匹配只替换对应表。
 
-`TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 使用固定字节夹具验证直连 mark、代理 ACK/RST 和令牌边界。前者在 root control 测试中运行，后者在内核测试中运行；均使用隔离表，不接触正在运行的 daemon 的 pin。保留内核状态不等于保留跨 daemon 进程替换的用户态 relay socket。Fallback lease 属于单个进程，因此携带令牌的 fallback 流可能随重启结束；不兼容的表也会丢失其自身状态。
+`TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 验证直通 mark 和令牌边界。`TestPersistentKernelLifecycle` 在私有网络、mount、bpffs 和 `/run` 中启动自己的 helper 进程，验证同一真实 TCP 连接跨 SIGKILL 与接管的转发，以及正常退出完整清理、身份撤销、版本恢复、异常退出后的新 UDP 转发、私有 timer map 替换和清理失败边界。NAT 测试使用自建命名空间和最小 nftables 规则，覆盖双栈本机、DNAT 到本机及 LAN 转发；握手并发测试验证新 SYN 与迟到 SYN-ACK 不会混用策略。测试不得接触宿主正在运行的 dae pins 或杀死非夹具进程。保留内核状态不保留用户态 relay socket；进程级 fallback 代次仍可能随冷重启结束。
+
+## 表项容量快照
+
+状态通过内核已有元素计数采样 hash/LRU 占用。独立按需加载的 BPF iterator 只对当前控制面选中的 map ID 读取计数，不扫描 flow entries、不刷新 LRU，也不在转发路径增加计数。并发增删时的 per-CPU 合计是采样值，不是事务快照。数组展示实际编译的指令或 LPM 表槽位数，不把预分配的数组单元误报为已占满。
+
+用户态 UDP 表直接读取 source、packet resource 和回包 socket 的已有准入预算，共享资源只计一次；建立中、关闭中的预留按实际准入所有者释放时机计数。已占用表项不等于活动连接数，读取失败显示不可用而不是空表。测试使用私有小表与自写资源池夹具，不读取生产表内容。
 
 ## 性能测量
 
@@ -35,7 +41,7 @@ Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` �
 
 内核 fixture 构造集中在 `routing_test_helpers_test.go`，功能回归在 `routing_flow_test.go`，计时循环在 `routing_flow_benchmark_test.go`。`make ebpf-lint` 同时检查本项目的内核 C 文件和路由头文件。
 
-`BenchmarkRoutingFlow` 覆盖域名映射缺失、空位图、AND/OR 短路及普通顺序扫描。`BenchmarkRoutingLPM` 覆盖目的 IP、源 IP、MAC 的单次和连续查询，用未命中的路由规则和连续命中的 AND 链分别测量两条路径，单条命中规则直接结束路由；计时前验证实际命中结果，避免意外短路掩盖查询成本。`BenchmarkRoutingConditionalBlock` 比较逐条条件与共享条件块，`BenchmarkHTTPClientAdmission` 比较 HTTP 准入允许和拒绝路径。比较包处理性能时使用 `bpf-ns/op` 指标；`ns/op` 包含批量调用开销。`BenchmarkUDPRoutingCache` 分开测冷路由与缓存命中。生成内核测试后可运行：
+`BenchmarkRoutingFlow` 覆盖域名映射缺失、空位图、AND/OR 短路及普通顺序扫描。`BenchmarkRoutingLPM` 覆盖目的 IP、源 IP、MAC 的单次和连续查询，用未命中的路由规则和连续命中的 AND 链分别测量两条路径，单条命中规则直接结束路由；计时前验证实际命中结果，避免意外短路掩盖查询成本。路由基准以 block 结束 SYN 决策，不建立直通准入或用户态交接；重复报文必须遍历规则，而不是命中先前的连接准入。`BenchmarkRoutingConditionalBlock` 比较逐条条件与共享条件块，`BenchmarkHTTPClientAdmission` 比较 HTTP 准入允许和拒绝路径。比较包处理性能时使用 `bpf-ns/op` 指标；`ns/op` 包含批量调用开销。`BenchmarkUDPRoutingCache` 分开测冷路由与缓存命中。生成内核测试后可运行：
 
 ```sh
 go test -c -tags dae_bpf_tests -o /tmp/dae-kernel.test ./control/kern/tests

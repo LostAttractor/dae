@@ -255,8 +255,13 @@ and two labelled results shown as tinted pills. The results appear side by side
 when space permits and stack on narrow screens.
 Status emphasizes active connections and current upload/download rates. Below
 each chart, **Connection statistics** and **Outbounds** are separate, initially
-collapsed sections. Global status also has sibling **Domain Tables** and
-**Plugins** sections, with counts and empty states. Cumulative totals, uptime and
+collapsed sections. Global status also has sibling **Tables** and
+**Plugins** sections, with counts and empty states. Tables identify kernel or
+userspace scope, usage, capacity and full-table behavior (`evict`, `reject`,
+`omit` or `unlimited`). A full LRU table is normal eviction, not an error.
+Unavailable usage shows its error instead of zero or 0%; domain records retain
+candidates, omissions, pending changes and registry breakdowns. Plugin-defined
+reports remain in plugin status rather than being interpreted as capacity tables. Cumulative totals, uptime and
 direct fallback counts belong to Connection statistics. Outbound groups are rows
 of one framed list, each with a compact name-and-count trigger; expanding a row
 reveals its metrics and a named node list. Long node lists scroll inside the group, leaving group headers and

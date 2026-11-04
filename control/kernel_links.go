@@ -20,6 +20,7 @@ type kernelLinks struct {
 	pidLinks     []link.Link
 	exitLink     link.Link
 	generation   uint64
+	pinPath      string
 }
 
 func (k *kernelLinks) ownHostTCXLink(owned hostTCXLink) bool {
@@ -46,6 +47,13 @@ func (k *kernelLinks) hostTCXLink(index int, role hostTCXRole) (link.Link, bool)
 	return nil, false
 }
 
+func (k *kernelLinks) detachHostTCXLink(owned hostTCXLink) error {
+	if k.pinPath != "" && owned.link != nil {
+		return unpinLink(owned.link)
+	}
+	return owned.close()
+}
+
 func (k *kernelLinks) closeHostTCXLinks(index int, roles ...hostTCXRole) error {
 	k.mu.Lock()
 	var removed []hostTCXLink
@@ -61,7 +69,7 @@ func (k *kernelLinks) closeHostTCXLinks(index int, roles ...hostTCXRole) error {
 	k.mu.Unlock()
 	var err error
 	for i := len(removed) - 1; i >= 0; i-- {
-		err = errors.Join(err, removed[i].close())
+		err = errors.Join(err, k.detachHostTCXLink(removed[i]))
 	}
 	return err
 }
@@ -139,7 +147,7 @@ func (k *kernelLinks) finishRebind() error {
 		if owned.generation == k.generation {
 			kept = append(kept, owned)
 		} else {
-			err = errors.Join(err, owned.close())
+			err = errors.Join(err, k.detachHostTCXLink(owned))
 		}
 	}
 	k.hostTCXLinks = kept
@@ -154,11 +162,12 @@ func (k *kernelLinks) Close() error {
 		err = errors.Join(err, k.hostTCXLinks[i].close())
 	}
 	k.hostTCXLinks = nil
-	err = errors.Join(err, closeBpfLinks(k.netnsLinks), closeBpfLinks(k.pidLinks))
+	err = errors.Join(err, closeBpfLinks(k.netnsLinks))
+	err = errors.Join(err, closeBpfLinks(k.pidLinks))
 	k.netnsLinks, k.pidLinks = nil, nil
 	if k.exitLink != nil {
 		err = errors.Join(err, k.exitLink.Close())
 		k.exitLink = nil
 	}
-	return err
+	return k.removePinnedLinks(err)
 }

@@ -65,21 +65,21 @@ func indexTrafficStats(snapshot stats.TrafficSnapshot) pathStatsIndex {
 
 func (c *ControlPlane) tableStatuses() []api.TableUsage {
 	var tables []api.TableUsage
-	if c.core == nil || c.core.domainRegistry == nil {
-		return tables
-	}
-
-	usage := c.core.domainRegistry.Usage()
-	return append(tables,
-		api.TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax, Candidates: usage.KernelCandidates, Pending: usage.KernelPending},
-		api.TableUsage{
-			Name: "domain-registry",
-			Used: usage.UserUsed,
-			Breakdown: &api.TableUsageBreakdown{
-				Domains: usage.Domains, IPs: usage.IPs, IPv4: usage.IPv4, IPv6: usage.IPv6, GC: usage.GC,
+	if c.core != nil && c.core.domainRegistry != nil {
+		usage := c.core.domainRegistry.Usage()
+		tables = append(tables,
+			api.TableUsage{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: usage.KernelUsed, Limit: usage.KernelMax, Candidates: usage.KernelCandidates, Pending: usage.KernelPending},
+			api.TableUsage{
+				Name: "domain-registry", Scope: "userspace", OnFull: "unlimited",
+				Used: usage.UserUsed,
+				Breakdown: &api.TableUsageBreakdown{
+					Domains: usage.Domains, IPs: usage.IPs, IPv4: usage.IPv4, IPv6: usage.IPv6, GC: usage.GC,
+				},
 			},
-		},
-	)
+		)
+	}
+	tables = append(tables, c.kernelTableStatuses()...)
+	return append(tables, c.userspaceTableStatuses()...)
 }
 
 func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *api.NodeAnnotationStatus {

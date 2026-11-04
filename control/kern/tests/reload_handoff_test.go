@@ -5,6 +5,7 @@
 package tests
 
 import (
+	"math"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -45,13 +46,19 @@ func TestReloadPendingSYNAndConsumedHandoff(t *testing.T) {
 	installRoutingFlow(t, obj, []bpftestMatchSet{{Type: 11, Outbound: 1}})
 	run(syn, 7) // retransmission must stay with the old generation
 	var retained bpftestRoutingHandoff
-	if err := obj.RoutingTuplesMap.LookupAndDelete(key, &retained); err != nil {
+	if err := obj.RoutingTuplesMap.Lookup(key, &retained); err != nil {
 		t.Fatal(err)
 	}
 	if retained != original {
 		t.Fatal("SYN retry changed generation or extended the setup deadline")
 	}
-	run(ack, 7) // consuming setup must not remove established forwarding state
+	run(ack, 7) // the pending setup owns its handshake
+	if err := obj.RoutingTuplesMap.LookupAndDelete(key, &retained); err != nil {
+		t.Fatal(err)
+	}
+	// After accept consumes the setup, only dae's socket owns the flow; this
+	// fixture has none, so its packets are native.
+	run(ack, math.MaxUint32)
 	syn[41]++
 	run(syn, 2)
 }

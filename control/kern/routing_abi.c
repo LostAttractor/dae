@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-only */
+// SPDX-License-Identifier: AGPL-3.0-only
 /* Only compiled for constant generation, never loaded into the kernel.
  * Typed globals retain every enum in BTF, including purely numeric layouts.
  */
@@ -8,6 +8,8 @@ enum routing_limits export_routing_limits;
 enum outbound_index export_outbound_index;
 enum outbound_connectivity_state export_outbound_connectivity_state;
 enum fallback_token export_fallback_token;
+enum fallback_lease_state export_fallback_lease_state;
+enum daemon_state export_daemon_state;
 enum capture_flags export_capture_flags;
 enum route_result_bits export_route_result_bits;
 enum match_flags export_match_flags;

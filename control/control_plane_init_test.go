@@ -26,6 +26,20 @@ func (p *constructionTestPlugin) Close() error {
 	return p.closeErr
 }
 
+func TestControlPlaneUnexpectedExitPolicy(t *testing.T) {
+	for _, test := range []struct {
+		setting string
+		want    consts.OutboundIndex
+	}{{"bypass", consts.OutboundDirect}, {"block", consts.OutboundBlock}} {
+		conf := outboundUsageConfig(t, "global { unexpected_exit_behavior: "+test.setting+" }\nrouting { fallback: direct }")
+		store := newControlPlaneTestBuilder(t).withSettings().build().settings
+		plane, err := configuredControlPlane(conf, &conf.Global, store)
+		if err != nil || plane.unexpectedExitOutbound != test.want {
+			t.Fatalf("%s: plane=%+v err=%v", test.setting, plane, err)
+		}
+	}
+}
+
 func TestControlPlaneValidationPreservesPreparation(t *testing.T) {
 	conf := outboundUsageConfig(t, "global {}\nrouting { fallback: direct }")
 	conf.Global.RerouteMode = consts.RerouteMode("invalid")

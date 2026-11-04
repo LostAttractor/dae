@@ -100,7 +100,9 @@ func TestReloadKernelPreservesEstablishedTCP(t *testing.T) {
 				if err := next.Maps["routing_tuples_map"].Delete(key); err != nil {
 					t.Fatal(err)
 				}
-				run(t, next, f.ack, f.verdict, f.mark) // accept consumed only the short handoff
+				// After accept consumes the setup, only dae's socket owns the
+				// flow; this fixture has none, so its packets are native.
+				run(t, next, f.ack, ^uint32(0), 0)
 			}
 			freshSYN := append([]byte(nil), f.syn...)
 			freshSYN[len(freshSYN)-13]++ // a new initial sequence, not a SYN retransmit

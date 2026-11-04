@@ -17,7 +17,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/internal/routingabi"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -131,15 +130,12 @@ func TestTCPProxyTupleKeepsAcceptedSocket(t *testing.T) {
 				run(late, 7)
 				key := tuplesKey(src, dst, unix.IPPROTO_TCP)
 				var flow bpfTcpFlowState
-				if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); err != nil || flow.Owner != routingabi.FALLBACK_TOKEN_RESERVED {
-					t.Fatalf("late SYN-ACK replaced an accepted proxy flow: %+v, %v", flow, err)
+				if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); !errors.Is(err, ebpf.ErrKeyNotExist) {
+					t.Fatalf("proxy retained native admission after late SYN-ACK: %+v, %v", flow, err)
 				}
 				syn[len(syn)-7] = 0x10
 				run(syn, 7)
-				// LRU reclamation must not send an accepted proxy flow to its origin.
-				if err := collection.Maps["tcp_flow_map"].Delete(key); err != nil {
-					t.Fatal(err)
-				}
+				// dae's live socket owns every segment of its flow.
 				for _, flags := range []byte{0x10, 0x11, 0x14, 0x12} {
 					packet := slices.Clone(syn)
 					packet[len(packet)-7] = flags
@@ -165,11 +161,12 @@ func TestTCPProxyTupleKeepsAcceptedSocket(t *testing.T) {
 				if _, err := io.ReadFull(accepted, data[:]); err != nil || string(data[:]) != "ok" {
 					t.Fatalf("socket lookup disturbed the accepted connection: %q, %v", data, err)
 				}
+				// Once the socket is gone the tuple is unowned: native, without properties.
 				_ = accepted.Close()
 				_ = client.Close()
 				run(late, ^uint32(0))
 				if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); !errors.Is(err, ebpf.ErrKeyNotExist) {
-					t.Fatalf("closed proxy socket prevented inbound reuse: %+v, %v", flow, err)
+					t.Fatalf("unowned SYN-ACK created flow properties: %+v, %v", flow, err)
 				}
 			})
 		}

@@ -76,6 +76,11 @@ func (c *ControlPlane) activateLinks() error {
 
 func (c *ControlPlane) commitKernelState() error {
 	core := c.core
+	if core.bpf.UnexpectedExitBehavior != nil {
+		if err := core.bpf.UnexpectedExitBehavior.Set(uint32(c.unexpectedExitOutbound)); err != nil {
+			return fmt.Errorf("publish unexpected exit behavior: %w", err)
+		}
+	}
 	if err := c.publishAPIObservation(); err != nil {
 		return err
 	}

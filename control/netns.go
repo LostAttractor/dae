@@ -94,13 +94,17 @@ func (ns *DaeNetns) Close() (err error) {
 	ns.closed = true
 	ready := ns.setupDone.Swap(false)
 	if ns.dae0 != nil {
-		DeleteNamedNetns(NsName)
-		DeleteLink(hostLinkName)
+		if nsErr := DeleteNamedNetns(NsName); nsErr != nil && !errors.Is(nsErr, os.ErrNotExist) {
+			err = errors.Join(err, nsErr)
+		}
+		if linkErr := DeleteLink(hostLinkName); linkErr != nil && !onlyLinkDisappearanceErrors(linkErr) {
+			err = errors.Join(err, linkErr)
+		}
 	}
 	if ready {
-		return ns.closeHandles()
+		err = errors.Join(err, ns.closeHandles())
 	}
-	return nil
+	return err
 }
 
 func (ns *DaeNetns) closeHandles() error {

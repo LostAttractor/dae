@@ -52,7 +52,7 @@ export interface Fixture {
   certificate: CertificateMetadata | null;
   caTest?: Schema<"CertificateTest">;
   groups: FixtureGroup[];
-  tables: Pick<GlobalStatus["tables"][number], "name" | "used" | "limit">[];
+  tables: GlobalStatus["tables"];
   compiled_plugins: GlobalStatus["compiled_plugins"];
   plugins: NonNullable<GlobalStatus["plugins"]>;
   stats: FixtureStats;

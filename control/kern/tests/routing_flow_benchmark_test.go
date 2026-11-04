@@ -41,12 +41,13 @@ func BenchmarkRoutingConditionalBlock(b *testing.B) {
 						}
 						rules = append(rules, routingPortRule(2, consts.MatchActionRoute, consts.OutboundBlock))
 					}
-					rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)})
+					rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)})
 					installRoutingFlow(b, obj, rules)
+					advanceTCPSYN(packet, 34)
 					var runtimeTotal time.Duration
 					for b.Loop() {
 						status, duration, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
-						if err != nil || status != ^uint32(0) {
+						if err != nil || status != 2 {
 							b.Fatalf("status=%d err=%v", status, err)
 						}
 						runtimeTotal += duration
@@ -112,16 +113,15 @@ func BenchmarkRoutingLPM(b *testing.B) {
 						rules[i] = bpftestMatchSet{Type: uint8(kind.matchType), Outbound: uint8(consts.OutboundBlock)}
 						if hit && count > 1 {
 							rules[i].Action = uint8(consts.MatchActionAnd)
-						} else if hit {
-							rules[i].Outbound = uint8(consts.OutboundDirect)
 						}
 					}
-					rules[count] = bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)}
+					rules[count] = bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)}
 					installRoutingFlow(b, obj, rules)
+					advanceTCPSYN(packet, 34)
 					var runtimeTotal time.Duration
 					for b.Loop() {
 						status, duration, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
-						if err != nil || status != ^uint32(0) {
+						if err != nil || status != 2 {
 							b.Fatalf("status=%d err=%v", status, err)
 						}
 						runtimeTotal += duration
@@ -163,13 +163,13 @@ func BenchmarkHTTPClientAdmission(b *testing.B) {
 						rules = append(rules, rule)
 					}
 				}
-				rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)})
+				rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)})
 				installRoutingFlow(b, obj, rules)
 				var runtimeTotal time.Duration
 				for b.Loop() {
 					status, perRun, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
-					if err != nil || status != ^uint32(0) {
-						b.Fatalf("expected kernel direct: status=%d err=%v", status, err)
+					if err != nil || status != 2 {
+						b.Fatalf("expected kernel block: status=%d err=%v", status, err)
 					}
 					runtimeTotal += perRun
 				}
@@ -179,8 +179,8 @@ func BenchmarkHTTPClientAdmission(b *testing.B) {
 	}
 }
 
-// TCP SYNs always evaluate routing and direct does not create a cache entry.
-// This isolates instruction traversal from UDP cache hits and userspace handoff.
+// Rejected SYNs create neither a direct admission nor a userspace handoff.
+// Repeated benchmark packets must traverse routing, not reuse a direct grant.
 func BenchmarkRoutingFlow(b *testing.B) {
 	for _, count := range []int{16, 128, 1024} {
 		for _, scenario := range []string{"domain-missing", "domain-empty", "and-short-circuit", "or-short-circuit", "port-sequential"} {
@@ -194,7 +194,7 @@ func BenchmarkRoutingFlow(b *testing.B) {
 				for i := range rules {
 					rules[i] = routingDomainRule(uint32(i), consts.MatchActionRoute, consts.OutboundBlock)
 				}
-				rules[count-1] = bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect)}
+				rules[count-1] = bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)}
 				switch scenario {
 				case "port-sequential":
 					for i := 0; i < count-1; i++ {
@@ -214,31 +214,35 @@ func BenchmarkRoutingFlow(b *testing.B) {
 					for i := 1; i < count-2; i++ {
 						rules[i].Action = uint8(consts.MatchActionOr)
 					}
-					rules[count-2].Outbound = uint8(consts.OutboundDirect)
-					rules[count-1].Outbound = uint8(consts.OutboundBlock)
+					rules[count-2].Outbound = uint8(consts.OutboundBlock)
+					rules[count-1].Outbound = uint8(consts.OutboundDirect)
 				}
 				installRoutingFlow(b, obj, rules)
 				// Benchmark cannot pass a custom skb context. Verify that this
 				// default-policy packet follows the same path with either input.
 				for _, inputCtx := range [][]byte{ctx, nil} {
 					status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, inputCtx)
-					if err != nil || status != ^uint32(0) {
-						b.Fatalf("expected kernel direct before timing: status=%d err=%v", status, err)
+					if err != nil || status != 2 {
+						b.Fatalf("expected kernel block before timing: status=%d err=%v", status, err)
 					}
 				}
 				var runtimeTotal time.Duration
 				b.ResetTimer()
 				for range b.N {
 					status, perRun, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
-					if err != nil || status != ^uint32(0) {
-						b.Fatalf("expected kernel direct during timing: status=%d err=%v", status, err)
+					if err != nil || status != 2 {
+						b.Fatalf("expected kernel block during timing: status=%d err=%v", status, err)
 					}
 					runtimeTotal += perRun
 				}
 				b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(max(b.N, 1)), "bpf-ns/op")
 				var route bpftestRoutingResult
 				if err := lookupHandoff(obj.RoutingTuplesMap, key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
-					b.Fatalf("direct benchmark created proxy state: %+v, %v", route, err)
+					b.Fatalf("routing benchmark created proxy state: %+v, %v", route, err)
+				}
+				var flow bpftestTcpFlowState
+				if err := obj.TcpFlowMap.Lookup(key, &flow); !errors.Is(err, ebpf.ErrKeyNotExist) {
+					b.Fatalf("routing benchmark cached an admission: %+v, %v", flow, err)
 				}
 			})
 		}

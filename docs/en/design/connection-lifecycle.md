@@ -29,46 +29,106 @@ retransmitted SYN packets reuse the same handoff for up to 30 seconds without
 extending its expiry. UDP reads a snapshot. Handoff capacity and expiry do not
 control forwarding state for established TCP connections.
 
-## TCP Flow State
+## TCP Flow Ownership
 
-Long-lived TCP forwarding uses a separate 16-byte `tcp_flow_state` containing the
-device-policy version, packet mark, and owner:
+A TCP packet belongs to a proxy only while dae owns its tuple: through the setup
+handoff until accept, then through the accepted socket in dae's network
+namespace, which the kernel looks up directly. Proxy lifetimes begin with a SYN
+that dae routes and end with dae's sockets, so no table has to remember them: a
+cold start owns none, and normal shutdown resets them. A packet that neither owns
+is native and keeps its own mark. This includes connections that predate the
+datapath and late segments after dae's socket has gone.
 
-| Owner | Meaning |
+`tcp_flow_map` is a bounded LRU of the properties of kernel-forwarded
+connections, fixed by their SYN's routing decision. Its 24-byte `tcp_flow_state`
+contains the device-policy version, mark, fallback token, and the SYN's sequence
+number. Only a SYN that dae routes creates or replaces an entry, including for
+ordinary unmarked direct connections, whose entry spares later packets the socket
+lookup. The sender's RST is forwarded with the saved mark and then removes the
+entry.
+
+| Fallback token | Meaning |
 | --- | --- |
-| `0` | Ordinary kernel-direct forwarding |
-| `1` | Redirect to the userspace proxy |
-| Other values | Token for a kernel-direct fallback generation |
+| `0` | Direct flow not tied to a revocable fallback generation |
+| `1` | Reserved invalid grant; never permits direct forwarding |
+| Other values | Unique group/network fallback grant issued by userspace |
 
-Userspace allocates fallback tokens excluding both reserved values. Ordinary
-direct forwarding without a mark, device-policy version, or fallback token needs
-no flow entry.
+A packet whose entry is valid receives the saved mark. An entry becomes invalid
+when its device-policy version changes or its fallback grant is revoked. Its
+packets then enter the transparent TCP stack, whose listener resets the
+connection so that it reconnects under current policy; offline, they are
+dropped. LRU eviction removes a connection's properties, not the connection: it
+continues natively with its packets' own mark and is no longer reset when its
+fallback grant ends. First fragments cannot carry a mark or split across proxy
+paths, so fragments of proxy-owned, marked, or invalid flows are dropped.
 
-The kernel owns flow-state transitions:
+New outbound SYN packets establish a new decision; retransmissions with the same
+initial sequence number retain it. Selecting a proxy removes the tuple's old
+entry. A SYN-ACK answers an inbound handshake: it follows the tuple's entry if
+one exists and never creates one. Inbound connections need no entry.
 
-- For a kernel-forwarded flow, the initiating peer's RST is forwarded using the
-  saved state and then removes the entry. Later RST packets no longer inherit its
-  mark.
-- For a proxied flow, neither an RST nor relay completion removes the entry. Late
-  closing packets still reach dae rather than the original destination. A flow-state
-  cache miss also checks for a live proxy socket in dae's network namespace:
-  complete packets still redirect to it, while first fragments are dropped rather
-  than routed to the original destination.
-- A new outbound SYN replaces the tuple's state using current routing. A plain
-  direct decision that needs no state removes the old entry.
-- A SYN-ACK can replace an old proxy entry with direct state only after its setup
-  handoff has expired or been consumed and no live TCP socket owns the tuple in
-  dae's network namespace. The kernel queries its socket table, not a userspace
-  lease or timer; listeners and TIME_WAIT entries do not count as live proxies.
-  This keeps delayed SYN-ACK packets from rerouting an accepted proxy connection.
-  Direct state uses the current device version and packet mark, or removes the
-  entry if neither is needed. A remote SYN alone does not change proxy state.
-- Remaining idle entries are reclaimed by the bounded LRU. Userspace does not
-  delete TCP flow entries by tuple.
+A fixed array of nonblocking, tuple-hashed atomic gates serializes handshake
+decisions and reset cleanup. Contention drops the affected handshake packet for
+TCP to retry, without spinning or blocking established data traffic. These gates
+and `tcp_flow_map` are shared across reloads and pinned across process
+replacement. Userspace has no per-flow cleanup timers and does not delete entries
+by tuple.
 
-The transparent listener sets `TCP_LINGER2` to a negative value. If dae closes
-before the client, acknowledging dae's FIN resets the client instead of leaving a
-socket that can keep sending after the relay has ended.
+The transparent listener sets `TCP_LINGER2` to a negative value to avoid keeping
+FIN_WAIT2 sockets after dae's FIN has been acknowledged. This socket option is not
+a deadline proving that every closing TCP socket has disappeared.
+
+## Normal Stop and Unexpected Exit
+
+Normal shutdown drains userspace and removes dae's host attachments, pinned state,
+and internal network resources. It does not retain a second, offline daemon.
+Once cleanup completes, ordinary network routing applies; dae no longer restores
+marks or enforces routing and capture rules. Connections depending on those marks
+can need to reconnect. A later cold start has no entries; connections that kept
+running in the meantime remain native. An instance lock excludes concurrent
+daemon ownership.
+
+An exit that cannot complete cleanup, such as SIGKILL, leaves pinned programs and
+`tcp_flow_map` behind. The exit hook marks this runtime offline. Its small
+fallback datapath keeps applying valid entries and their marks. Proxy connections
+end with the process's sockets and must reconnect; packets of a pending proxy
+setup are dropped, and other unowned packets stay native.
+
+`unexpected_exit_behavior` controls new managed outbound lifetimes:
+
+- `bypass` (default) bypasses all old routing, block, DNS/MITM capture, and
+  destination-rewrite rules. A new TCP handshake or UDP source retains the
+  packet's original mark and receives an ordinary direct entry, not a group
+  fallback lease. This favors availability and can expose traffic that would
+  normally be proxied or blocked.
+- `block` rejects new managed outbound lifetimes while preserving native traffic.
+  Replies to inbound connections remain replies; this setting does not turn dae
+  into an inbound firewall.
+
+A UDP source still owned by a proxy binding or live proxy cache cannot escape by
+changing its destination to DNS. Offline fragments without enough lifetime
+identity are conservatively dropped. This mode is separate from
+`no_connectivity_behavior`, which governs unavailable groups while userspace is
+running; it does not run the old rule interpreter to select a replacement group.
+
+Starting, online, and terminal offline states are distinct. Startup does not
+activate crash bypass, and an offline runtime cannot publish another generation.
+A new process takes over compatible crash-retained links and becomes online only
+after listeners and its routing generation are ready. Only sockets owned by the
+explicitly registered daemon process receive the bootstrap exemption; an equal
+socket mark does not grant it. Process exit revokes the registration.
+
+The two UDP maps containing BPF timers use private, per-runtime pins: a program
+reference alone does not retain the userspace reference required by those timers.
+They keep UDP handling usable after process death. A cold runtime creates fresh
+UDP caches instead of adopting old group identifiers. Unreferenced timer pins are
+reclaimed at lifecycle boundaries, not by a per-flow userspace GC.
+
+A pinned monotonic counter prevents fallback token reuse across crashes. The live
+set is process-local, so cold takeover can end old interruptible grants. Normal
+cleanup removes the counter only after all older grants and attachments are gone;
+failed cleanup retains it. Interface or host teardown and LRU pressure can still
+end connections: crash retention is not an unconditional survival guarantee.
 
 ## Configuration and Plugin Handover
 

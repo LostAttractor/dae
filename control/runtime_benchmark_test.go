@@ -90,6 +90,7 @@ func TestPreparedGenerationRefreshesLatestKernelMembership(t *testing.T) {
 	if err := c.restoreRuntimeSettings(true); err != nil {
 		t.Fatal(err)
 	}
+	packet[len(packet)-13]++ // a new connection; a SYN retransmission keeps its decision
 	run(2)
 }
 

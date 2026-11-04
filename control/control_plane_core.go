@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -26,10 +28,11 @@ type controlPlaneCore struct {
 	quiesceOnce sync.Once
 	quiesceErr  error
 
-	cleanupMu  sync.Mutex
-	cleanups   cleanupStack
-	bpf        *BPFState
-	hostBinder *hostBinder
+	cleanupMu   sync.Mutex
+	cleanups    cleanupStack
+	tableReader kernelTableReader
+	bpf         *BPFState
+	hostBinder  *hostBinder
 
 	isReload bool
 
@@ -109,6 +112,7 @@ func newControlPlaneCore(
 	}
 	core.domainRegistry.Start()
 	core.addCleanup(core.closeBpf)
+	core.addCleanup(core.tableReader.Close)
 	core.addCleanup(core.domainRegistry.Close)
 	return core, nil
 }
@@ -195,13 +199,32 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		{Prog: c.bpf.TproxyWanCgSendmsg6, Attach: ebpf.AttachCGroupUDP6Sendmsg},
 	}
 	for _, prog := range cgProgs {
-		attached, err := ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
-			Path:    cgroupPath,
-			Attach:  prog.Attach,
-			Program: prog.Prog,
-		})
-		if err != nil {
-			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
+		var attached ciliumLink.Link
+		path := filepath.Join(c.pinPath, fmt.Sprintf("pid_%d", prog.Attach))
+		if c.pinPath != "" {
+			attached, err = ciliumLink.LoadPinnedLink(path, nil)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("load socket identity hook: %w", err)
+			}
+		}
+		if attached != nil {
+			if err := attached.Update(prog.Prog); err != nil {
+				return errors.Join(fmt.Errorf("update socket identity hook: %w", err), attached.Close())
+			}
+		} else {
+			attached, err = ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
+				Path:    cgroupPath,
+				Attach:  prog.Attach,
+				Program: prog.Prog,
+			})
+			if err != nil {
+				return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
+			}
+			if c.pinPath != "" {
+				if err := attached.Pin(path); err != nil {
+					return errors.Join(fmt.Errorf("pin socket identity hook: %w", err), attached.Close())
+				}
+			}
 		}
 		c.pidLinks = append(c.pidLinks, attached)
 	}
@@ -217,6 +240,9 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 	link, err := ciliumLink.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
 	if err != nil {
 		return fmt.Errorf("Tracepoint: %w", err)
+	}
+	if err := c.pinExitLink(link); err != nil {
+		return errors.Join(fmt.Errorf("pin exit handler: %w", err), link.Close())
 	}
 	c.exitLink = link
 	return nil

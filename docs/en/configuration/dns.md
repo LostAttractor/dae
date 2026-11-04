@@ -440,9 +440,12 @@ the caller to retry.
   by capacity. Registry IP totals also include zero-bitmap addresses that need no
   kernel entry, so they differ from candidate counts.
 
-The CLI shows `USED (IPs)`, `CANDIDATES` and `OMITTED` for the kernel table, followed
-by `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` in the
-`domain-registry (unlimited)` detail table.
+The CLI retains `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` in the
+`domain-registry (unlimited)` detail table. `domain-kernel` appears in the compact
+`Kernel tables` group with `USED`, `LIMIT`, `USAGE%` and `ON FULL` (`omit`), plus
+`CANDIDATES`, `OMITTED` and `PENDING` in a note. Pending projection changes await
+kernel retry. A nonempty table `error` makes usage and omissions unavailable,
+not zero. Ordinary and `--recent` views share these statistics.
 
 Startup logs state the window and observation coverage. Capacity exclusions emit
 rate-limited summaries. Unobserved direct flows cannot receive per-flow omission

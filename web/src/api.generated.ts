@@ -1736,13 +1736,14 @@ export interface components {
              * Format: int64
              * @constant
              */
-            schema: 14;
+            schema: 15;
             /** Format: date-time */
             started_at: string;
             stats: components["schemas"]["PathStats"];
             tables: components["schemas"]["TableUsage"][];
             version: string;
         };
+        /** @description Shared snapshot of kernel tables and userspace resource pools, including the unbounded domain registry. A full evicting table is normal; reject means new entries cannot be admitted. */
         TableUsage: {
             breakdown?: components["schemas"]["TableUsageBreakdown"] | null;
             /**
@@ -1750,14 +1751,29 @@ export interface components {
              * @description IP states with a nonzero domain bitmap before capacity selection. candidates - used is the number excluded by kernel capacity.
              */
             candidates?: number;
-            /** Format: int64 */
+            /** @description When nonempty, used is unavailable and must not be rendered as zero usage or 0%. */
+            error?: string;
+            /**
+             * Format: int64
+             * @description Maximum entries or resources; zero means no capacity limit.
+             */
             limit: number;
             name: string;
+            /**
+             * @description Capacity behavior: evict existing entries (LRU), reject new entries, omit excess kernel projection candidates, or retain without a capacity limit.
+             * @enum {string}
+             */
+            on_full: "evict" | "reject" | "omit" | "unlimited";
             /** @description Pending kernel projection updates or removals. */
             pending?: number;
             /**
+             * @description Where the table or resource pool is maintained.
+             * @enum {string}
+             */
+            scope: "kernel" | "userspace";
+            /**
              * Format: int64
-             * @description Resident IP count for domain-kernel; retained domain-IP pair count for domain-registry.
+             * @description Current entries or resources; resident IPs for domain-kernel and retained domain-IP pairs for domain-registry. Unavailable when error is nonempty.
              */
             used: number;
         };

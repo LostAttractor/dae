@@ -24,6 +24,14 @@ func NewPacketBudget(limit int) *PacketBudget {
 	return &PacketBudget{limit: int64(limit)}
 }
 
+// Usage includes reservations still opening or closing their underlying resource.
+func (b *PacketBudget) Usage() (used, limit int) {
+	if b == nil {
+		return 0, 0
+	}
+	return int(b.used.Load()), int(b.limit)
+}
+
 type packetBudgetKey struct{}
 
 func PacketBudgetFromContext(ctx context.Context) *PacketBudget {

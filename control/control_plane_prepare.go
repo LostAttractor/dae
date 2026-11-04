@@ -18,6 +18,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/internal/kernel"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -58,6 +59,9 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		return nil, net.ErrClosed
 	default:
 	}
+	if runtime.offline {
+		return nil, net.ErrClosed
+	}
 	if err := runtime.checkSocketMark(soMarkFromDae); err != nil {
 		return nil, err
 	}
@@ -68,6 +72,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 
+	runtime.kernelOwned = true
 	InitDaeNetns()
 	if err = InitSysctlManager(); err != nil {
 		return nil, err
@@ -79,9 +84,28 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		return nil, err
 	}
 
-	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
+	pinPath := kernelPinPath()
 	if err = os.MkdirAll(pinPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
+	}
+
+	if err := runtime.kernelLinks.preparePins(pinPath); err != nil {
+		return nil, err
+	}
+	mapReplacements := runtime.shared
+	var previousRoutes *ebpf.Map
+	if len(runtime.shared) == 0 {
+		if err := runtime.pruneUDPTimerPins(false); err != nil {
+			return nil, fmt.Errorf("prune unreferenced runtime timer pins: %w", err)
+		}
+		previousRoutes, err = loadPinnedDeviceRoutes(pinPath)
+		if err != nil {
+			return nil, err
+		}
+		if previousRoutes != nil {
+			defer previousRoutes.Close()
+			mapReplacements = map[string]*ebpf.Map{"device_routes_map": previousRoutes}
+		}
 	}
 
 	log.Debug("Loading eBPF programs and maps")
@@ -90,7 +114,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		programOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
 	}
 	collectionOpts := &ebpf.CollectionOptions{
-		MapReplacements: runtime.shared,
+		MapReplacements: mapReplacements,
 		Cache:           kernelBTFCache,
 		Maps:            ebpf.MapOptions{PinPath: pinPath},
 		Programs:        programOptions,
@@ -109,7 +133,21 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if len(runtime.shared) != 0 {
 		return bpf, nil
 	}
+	if err := bpf.ExitedMap.Update(uint32(0), uint8(routingabi.DAEMON_STARTING), ebpf.UpdateAny); err != nil {
+		return nil, errors.Join(fmt.Errorf("initialize starting datapath: %w", err), bpf.Close())
+	}
+	if err := bpf.DaemonIdentityMap.Update(uint32(0), uint64(os.Getpid()), ebpf.UpdateAny); err != nil {
+		return nil, errors.Join(fmt.Errorf("register daemon socket identity: %w", err), bpf.Close())
+	}
+	if previousRoutes == nil {
+		if err := bpf.DeviceRoutesMap.Pin(filepath.Join(pinPath, "device_routes_map")); err != nil {
+			return nil, errors.Join(fmt.Errorf("pin device route epochs: %w", err), bpf.Close())
+		}
+	}
 	if err := runtime.retainMaps(bpf.bpfObjects); err != nil {
+		return nil, errors.Join(err, bpf.Close())
+	}
+	if err := runtime.pinUDPTimers(); err != nil {
 		return nil, errors.Join(err, bpf.Close())
 	}
 	runtime.soMarkFromDae = soMarkFromDae

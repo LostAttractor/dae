@@ -1928,6 +1928,40 @@ try {
     assert.match(await js<string>('document.querySelector("#global-traffic .plugins-section").textContent'), /Compiled plugins: http, unused.*No plugins configured/s);
   });
 
+  await test("capacity tables distinguish scopes, full behavior and unavailable usage", async () => {
+    fixture.tables = [
+      { name: "domain-registry", scope: "userspace", on_full: "unlimited", used: 8, limit: 0, breakdown: { domains: 3, ips: 5, ipv4: 4, ipv6: 1, gc: 2 } },
+      { name: "domain-kernel", scope: "kernel", on_full: "omit", used: 2, limit: 4, candidates: 3, pending: 1 },
+      { name: "tcp_flow_map", scope: "kernel", on_full: "evict", used: 16, limit: 16 },
+      { name: "udp-sources", scope: "userspace", on_full: "reject", used: 0, limit: 8, error: "read pool: unavailable" },
+    ];
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await setDisclosure("#global-traffic .tables-section");
+    const records = await js<string[]>('[...document.querySelectorAll("#global-traffic .tables-section .status-records > div")].map(row => row.textContent)');
+    for (const [index, expected] of [
+      ["domain-registry", "Userspace", "8 / unlimited pairs", "On full: unlimited", "Domains: 3", "IPs: 5", "IPv4: 4", "IPv6: 1", "GC (pairs): 2"],
+      ["domain-kernel", "Kernel", "2 / 4 entries (50.0%)", "On full: omit", "Candidates: 3", "Omitted: 1", "Pending: 1"],
+      ["tcp_flow_map", "Kernel", "16 / 16 entries (100.0%)", "On full: evict"],
+      ["udp-sources", "Userspace", "Unavailable: read pool: unavailable; limit: 8", "On full: reject"],
+    ].entries()) for (const value of expected) assert.ok(records[index].includes(value), value);
+    assert.doesNotMatch(records[3], /0\.0%|0 \/ 8/);
+    assert.equal(await js('document.querySelectorAll("#global-traffic .tables-section [data-tone=error]").length'), 1, "a full LRU table is not an error");
+    fixture.tables[0].error = "read registry count failed";
+    fixture.tables[1].error = "read map: permission denied";
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    const failed = await js<string>('document.querySelectorAll("#global-traffic .tables-section .status-records > div")[1].textContent');
+    assert.match(failed, /Unavailable: read map: permission denied/);
+    assert.match(failed, /Omitted: unavailable/);
+    assert.doesNotMatch(failed, /50\.0%|Omitted: 1/);
+    const registry = await js<string>('document.querySelectorAll("#global-traffic .tables-section .status-records > div")[0].textContent');
+    assert.match(registry, /Unavailable: read registry count failed/);
+    assert.match(registry, /Domains: 3.*GC \(pairs\): 2/);
+    assert.doesNotMatch(registry, /8 \/ unlimited pairs/);
+    fixture.tables = [];
+  });
+
   await test("expanded outbound details preserve focus and scrolling across polls", async () => {
     fixture.groups = [
       { name: "proxy_jp", policy: "min_moving_avg", health: "healthy", connectivity: "available", stats: fixture.stats, nodes: Array.from({ length: 80 }, (_, index) => ({
@@ -1940,7 +1974,7 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     await setDisclosure("#global-traffic .outbounds-section");
-    assert.deepEqual(await js('[...document.querySelectorAll("#global-traffic .status-sections > .status-section > .disclosure-trigger .disclosure-title")].map(label => label.textContent)'), ["Connection statistics", "Outbounds", "Domain Tables", "Plugins"]);
+    assert.deepEqual(await js('[...document.querySelectorAll("#global-traffic .status-sections > .status-section > .disclosure-trigger .disclosure-title")].map(label => label.textContent)'), ["Connection statistics", "Outbounds", "Tables", "Plugins"]);
     assert.equal(await js('document.querySelector("#global-traffic .connection-details > .disclosure-trigger").getAttribute("aria-expanded")'), "false", "outbounds open independently of connection totals");
     assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes li").length'), 0);
     await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector(".disclosure-trigger").click(); openGroup.querySelector(".disclosure-trigger").focus()');
@@ -1990,7 +2024,7 @@ try {
       }
     };
     fixture.groups = statusGroups(fixture.stats);
-    fixture.tables = [{ name: "resolved_domains", used: 128, limit: 4096 }];
+    fixture.tables = [{ name: "domain-kernel", scope: "kernel", on_full: "omit", used: 128, limit: 4096, candidates: 130, pending: 1 }];
     fixture.compiled_plugins = ["http"];
     fixture.plugins = [{ id: "request_rules", type: "http", enabled: true, state: "active", scopes: 1, declared_scopes: 1, destination_rules: 0, http_active: true, http_reason: "" }];
     fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", mitm_test_generation: "layout" };

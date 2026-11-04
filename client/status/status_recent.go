@@ -129,6 +129,7 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 	}
 	writeStatusLine(out, strings.Join(summary, "  "), width)
 
+	printTables(out, snapshot.Tables, false)
 	printBuiltinStatus(out, snapshot, false)
 	if groups := renderRecentGroups(snapshot.Groups); groups != "" {
 		fmt.Fprintf(out, "\n%s\n", groups)

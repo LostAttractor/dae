@@ -4,6 +4,7 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"math"
 	"net/netip"
 	"slices"
@@ -127,10 +128,10 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		run(ack, next) // rolled-back update preserves native flow
 		epoch(1, 0)
 		run(ack, redirect)
-		run(rst, drop)
+		run(rst, redirect)
 		other := slices.Clone(ack)
 		other[11]++
-		run(other, next)
+		run(other, next) // the retained admission still matches this unchanged device epoch
 		// API TCP traffic survives even with an old/missing tuple. Exemptions
 		// are published together with the API port.
 		exempt := bpftestIpPort{Port: key.Dport}
@@ -171,19 +172,21 @@ func TestDeviceRouteEpochs(t *testing.T) {
 			t.Fatal(err)
 		}
 		run(ack, redirect) // removing the exemption restores epoch enforcement
+		binary.BigEndian.PutUint32(syn[transportOffset+4:transportOffset+8], 1)
 		run(syn, next)
 		run(ack, next)
 		var saved bpftestTcpFlowState
-		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 || saved.Owner != 0 {
+		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 || saved.Fallback != 0 {
 			t.Fatalf("new direct flow %+v: %v", saved, err)
 		}
 		epoch(2, 0)
 		run(ack, redirect)
 		route(2)
+		binary.BigEndian.PutUint32(syn[transportOffset+4:transportOffset+8], 2)
 		run(syn, redirect)
 		run(ack, redirect)
-		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 2 || saved.Owner != tcpFlowProxy {
-			t.Fatalf("new proxy flow %+v: %v", saved, err)
+		if err := obj.TcpFlowMap.Lookup(key, &saved); !errors.Is(err, ebpf.ErrKeyNotExist) {
+			t.Fatalf("proxy retained a native admission %+v: %v", saved, err)
 		}
 		run(rst, redirect) // a live proxied flow's RST reaches its relay
 

@@ -34,31 +34,50 @@ including matched build conditions and loss-aware latency interpretation.
 
 ## Pinned kernel state
 
-The persistent maps are `tcp_flow_map` (LRU hash, 40-byte key and 16-byte value)
-and `cookie_pid_map` (socket-local storage, 4-byte key and 20-byte value).
-A daemon restart reuses each pin whose type, key/value sizes, capacity and flags
-match. Only a pin that fails that comparison is removed and recreated; other
-pins and their contents are kept. Changes to programs or unpinned maps do not
-invalidate these pins. Reload within a process uses the Runtime's shared maps.
+Persistent state includes `tcp_flow_map` (LRU hash, 40-byte key and 24-byte value)
+and its atomic gate array (4-byte key, 8-byte value). `cookie_pid_map` uses socket-local storage with a 4-byte
+key and 20-byte value; `daemon_identity_map` and `fallback_sequence_map` each use
+a 4-byte key and 8-byte value.
+The device-policy outer/inner maps retain device epochs. Restart reuses compatible
+pins; replacing an incompatible flow map drops its connections' marks and
+fallback constraints, not the connections.
+Reload within a process shares the Runtime's maps.
 
-Treat pinned bytes and their meanings as a stable contract. TCP flow values keep
-`route_epoch` at offset 0, `mark` at 8 and `owner` at 12. Owner 0 means direct,
-1 means userspace proxying, and the remaining values are fallback tokens.
-Socket owner values keep `pid` at offset 0 and the 16-byte `pname` at 4.
-A field rename or change of numeric meaning is not detected by the runtime's
-map metadata comparison. `TestPinnedMapABI` fixes layouts and reserved values
-independently of generated types; do not update its expectations just to make
-an incompatible change pass. Capacity overrides remain build-time choices;
-a capacity mismatch replaces only that map.
+Pinned bytes and meanings are an explicit contract. TCP flow properties store
+`route_epoch`, `mark`, `fallback`, and `syn_seq` at offsets 0, 8, 12, and 16, with
+explicit padding at 20. Fallback zero is not tied to
+a revocable generation, one is always invalid, and other values name unique
+group grants. The pinned issuance counter never reuses tokens. Socket owner values keep `pid` at offset 0 and
+the 16-byte `pname` at 4. Metadata comparisons cannot detect same-size semantic
+changes; `TestPinnedMapABI` and fixed-byte fixtures independently check the
+contract. A capacity mismatch replaces only the corresponding map.
 
-`TestRemoveIncompatiblePinnedMaps` checks selective replacement and the retained
-map's ID and contents. `TestPinnedTCPFlowEncoding` feeds fixed byte fixtures to
-the kernel to check direct marks, proxy ACK/RST handling and token boundaries.
-Run the former as root in the `control` tests and the latter with the kernel
-suite; both use isolated maps and never touch the running daemon's pins.
-Keeping kernel state does not preserve userspace relay sockets across daemon
-process replacement. Fallback leases belong to one process, so token-bearing
-fallback flows can end on restart; incompatible maps also lose their own state.
+`TestRemoveIncompatiblePinnedMaps` checks selective replacement and retained IDs
+and contents. `TestPinnedTCPFlowEncoding` checks direct marks and token boundaries.
+`TestPersistentKernelLifecycle` creates private network/mount namespaces, bpffs,
+and `/run`, and starts only its own helper processes. It verifies one real TCP
+connection across SIGKILL and takeover, together with normal-stop cleanup, identity
+revocation, epoch recovery, fresh UDP routing after process exit, private timer
+map replacement, and cleanup failure boundaries. Native NAT tests use disposable namespaces
+and minimal nftables rules for IPv4/IPv6 local sockets, local DNAT, and LAN
+forwarding; concurrent handshakes must not mix a new SYN's policy with a delayed
+SYN-ACK. Never access a running daemon's pins or kill unrelated processes.
+Keeping kernel state does not preserve userspace relay sockets; process-local
+fallback generations can still end on cold restart.
+
+## Table capacity snapshots
+
+Status samples hash/LRU map occupancy with the kernel's existing element counters.
+The optional BPF iterator samples counters only for map IDs selected by the current control plane;
+it does not walk flow entries, refresh LRU entries, or count packets. Per-CPU sums
+are sampled rather than transactional during concurrent churn. Array rows report
+compiled instruction or LPM-map slots, not the array's preallocated cells.
+
+Userspace UDP rows read the existing source, packet-resource, and reply-socket
+admission budgets once per shared resource. Opening and closing reservations stay
+charged until their admission owner releases them. Occupied entries are not active
+connection counts. A failed read is unavailable, never an empty table. Tests use
+private small maps and pool fixtures; no production table contents are inspected.
 
 ## Pre-commit Hook
 

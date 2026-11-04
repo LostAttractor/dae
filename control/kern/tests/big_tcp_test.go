@@ -57,6 +57,10 @@ func TestBigTCP(t *testing.T) {
 		t.Run(format.name, func(t *testing.T) {
 			packet, ctx, tcpOffset := bigTCPPacket(format.ipv6, format.hopopts)
 			t.Run("direct", func(t *testing.T) {
+				_, key := apiClientPacket(format.ipv6, 2)
+				if err := obj.TcpFlowMap.Update(key, bpftestTcpFlowState{}, ebpf.UpdateAny); err != nil {
+					t.Fatal(err)
+				}
 				for _, prog := range programs {
 					status, output, _, err := runBpfProgram(prog, packet, ctx)
 					if err != nil || status != ^uint32(0) {
@@ -185,6 +189,10 @@ func TestBigTCPRouting(t *testing.T) {
 					want = 7
 				}
 				for _, prog := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+					// Each classifier starts an independent connection before BIG TCP data.
+					if err := obj.TcpFlowMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+						t.Fatal(err)
+					}
 					for _, input := range []struct{ data, ctx []byte }{{syn, make([]byte, 256)}, {packet, ctx}} {
 						status, _, outputCtx, err := runBpfProgram(prog, input.data, input.ctx)
 						if err != nil || status != want {

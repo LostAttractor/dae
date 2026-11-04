@@ -84,7 +84,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 // Param keys:
 static const __u32 zero_key;
-static const __u32 one_key = 1;
 
 // Outbound Connectivity Map:
 
@@ -108,8 +107,8 @@ struct {
 	__uint(max_entries, 256 * 2 * 2); // outbound * l4proto * ipversion
 } outbound_connectivity_map SEC(".maps");
 
-/* Live fallback tokens, shared across configuration generations. Userspace
- * deletes a token when its fallback generation ends; degraded flows stamped
+/* Runtime-private live leases are shared by its configuration generations.
+ * Userspace deletes a token when its generation ends; degraded flows stamped
  * with it are then interrupted like flows of a changed device route. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -117,6 +116,15 @@ struct {
 	__type(value, __u8);
 	__uint(max_entries, 256 * 2 * 2 * 2); // both generations during a reload
 } fallback_lease_map SEC(".maps");
+
+/* Persist issuance, not liveness: a restarted runtime cannot revive old grants. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, 1);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} fallback_sequence_map SEC(".maps");
 
 // Sockmap:
 struct {
@@ -210,16 +218,15 @@ struct routing_result {
 	__u32 generation;
 };
 
-/* Long-lived TCP forwarding state is independent of rule generations. owner
- * ends the flow: zero for plain direct, TCP_FLOW_PROXY for a userspace relay,
- * otherwise the fallback token of a degraded direct flow. */
+/* Properties of a kernel-forwarded TCP flow, fixed by its SYN's decision. SYN
+ * identity keeps a retransmission's decision apart from tuple reuse. */
 struct tcp_flow_state {
 	__u64 route_epoch;
 	__u32 mark;
-	__u32 owner;
+	__u32 fallback;
+	__be32 syn_seq;
+	__u32 padding;
 };
-
-#define TCP_FLOW_PROXY FALLBACK_TOKEN_RESERVED
 
 /* Bounded setup mailbox. TCP consumes its entry at accept; UDP snapshots it.
  * Unconsumed entries expire logically and are reclaimed by the LRU. pname is
@@ -231,11 +238,11 @@ struct routing_handoff {
 	__u8 pname[TASK_COMM_LEN];
 };
 
-_Static_assert(sizeof(struct tcp_flow_state) == 16, "TCP flow ABI size");
+_Static_assert(sizeof(struct tcp_flow_state) == 24, "TCP flow ABI size");
+_Static_assert(sizeof(struct outbound_connectivity) == 8, "outbound connectivity ABI size");
 _Static_assert(sizeof(struct routing_handoff) == 64, "routing handoff ABI size");
 
-/* fallback is the decision's fallback token, as in tcp_flow_state, until
- * UDP_ROUTE_CLOSING marks its lifetime as ending. */
+/* cached_until == 0 marks a closing lifetime; fallback contains only a lease. */
 struct udp_routing_cache_value {
 	struct routing_result result;
 	__u64 cached_until;
@@ -243,8 +250,6 @@ struct udp_routing_cache_value {
 	struct bpf_spin_lock lock;
 	__u32 fallback;
 };
-
-#define UDP_ROUTE_CLOSING FALLBACK_TOKEN_RESERVED
 
 /* Zeroed timer/lock bytes for insertion, without a timer in a per-CPU map. */
 struct udp_routing_scratch {
@@ -335,6 +340,8 @@ volatile __be16 api_port;
 volatile __u32 default_routing_profile;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
+/* Published per generation; only terminal unexpected exit uses this policy. */
+volatile __u32 unexpected_exit_behavior = OUTBOUND_DIRECT;
 
 /* Exemptions are TCP to API addresses on the API port, published together
  * with api_port. */
@@ -376,6 +383,15 @@ struct {
 	__uint(max_entries, MAX_DST_MAPPING_NUM);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } tcp_flow_map SEC(".maps");
+
+/* Share gates across pinned program generations during link replacement. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, 1024);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} tcp_handshake_gate_map SEC(".maps");
 
 /* Kernel owns direct and pending decisions. Timers reclaim idle entries;
  * LRU eviction must never silently change the route of an active source. */
@@ -462,6 +478,42 @@ struct {
     __type(key, __u32);
     __type(value, __u8);
 } exited_map SEC(".maps");
+
+/* Registration outlives individual program generations, never the daemon. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} daemon_identity_map SEC(".maps");
+
+static __always_inline bool daemon_pid_registered(__u32 pid)
+{
+	__u64 *registered = bpf_map_lookup_elem(&daemon_identity_map, &zero_key);
+
+	return pid && registered && *(volatile __u64 *)registered == pid;
+}
+
+static __always_inline void unregister_daemon(__u32 pid)
+{
+	__u64 *registered = bpf_map_lookup_elem(&daemon_identity_map, &zero_key);
+
+	if (pid && registered)
+		__sync_val_compare_and_swap(registered, pid, 0);
+}
+
+static __always_inline __u8 daemon_status(void)
+{
+	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
+
+	return exited ? *exited : DAEMON_STARTING;
+}
+
+static __always_inline bool daemon_offline(void)
+{
+	return daemon_status() != DAEMON_ONLINE;
+}
 
 // Functions:
 
@@ -915,10 +967,10 @@ static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
 	bpf_spin_lock(&value->lock);
 	/* A closing element is deleted too. Its closer deletes by its own key,
 	 * which misses the element once it is reused for another source. */
-	if (value->fallback != UDP_ROUTE_CLOSING && value->cached_until > now)
+	if (value->cached_until > now)
 		remaining = value->cached_until - now;
 	else
-		value->fallback = UDP_ROUTE_CLOSING;
+		value->cached_until = 0;
 	bpf_spin_unlock(&value->lock);
 	if (remaining)
 		bpf_timer_start(&value->timer, remaining, 0);
@@ -930,12 +982,13 @@ static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
 /* A degraded direct decision lives until its fallback generation ends. */
 static __always_inline bool fallback_live(__u32 fallback)
 {
-	return !fallback || bpf_map_lookup_elem(&fallback_lease_map, &fallback);
-}
+	if (!fallback)
+		return true;
+	if (fallback == FALLBACK_TOKEN_RESERVED)
+		return false;
+	__u8 *lease = bpf_map_lookup_elem(&fallback_lease_map, &fallback);
 
-static __always_inline bool tcp_flow_live(const struct tcp_flow_state *flow)
-{
-	return flow->owner == TCP_FLOW_PROXY || fallback_live(flow->owner);
+	return lease && *lease == FALLBACK_LEASE_LIVE;
 }
 
 /* Apply an unavailable user-defined group's no-connectivity behavior in the
@@ -958,7 +1011,9 @@ static __always_inline int degrade_unavailable(struct routing_result *result,
 	struct outbound_connectivity *connectivity =
 		bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
-	if (!connectivity || connectivity->state == OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK)
+	if (!connectivity || daemon_offline())
+		return -1;
+	if (connectivity->state == OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK)
 		return -1;
 	if (connectivity->state == OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT &&
 	    fallback_live(connectivity->fallback)) {
@@ -987,20 +1042,20 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 	 * close, because its element may already hold another source's route. */
 	__u32 fallback = *(volatile __u32 *)&value->fallback;
 
-	if (fallback == UDP_ROUTE_CLOSING)
+	if (!*(volatile __u64 *)&value->cached_until)
 		return -1;
 	bool stale = (device && device->epoch != value->result.route_epoch) ||
 		value->result.generation != routing_generation ||
 		!fallback_live(fallback);
 
 	bpf_spin_lock(&value->lock);
-	if (value->fallback == UDP_ROUTE_CLOSING) {
+	if (!value->cached_until) {
 		bpf_spin_unlock(&value->lock);
 		return -1;
 	}
 	expired = stale || value->cached_until <= now;
 	if (expired) {
-		value->fallback = UDP_ROUTE_CLOSING;
+		value->cached_until = 0;
 	} else {
 		value->cached_until = now + UDP_ROUTING_CACHE_TTL_NS;
 		*result = value->result;
@@ -1063,6 +1118,8 @@ static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len,
 	struct tuples *tuples, struct ethhdr *ethh)
 {
+	if (daemon_offline())
+		return -1;
 	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> netkit */
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
@@ -1225,8 +1282,8 @@ static __always_inline __u32 fill_socket_tuple(struct bpf_sock_tuple *tuple,
 /* Whether an inbound packet reaches a local socket other than dae's. dae's
  * own flows never consult their state, since WAN egress passes dae's packets
  * first. */
-static __always_inline bool udp_to_local_socket(struct __sk_buff *skb,
-						const struct tuples_key *five)
+static __always_inline bool
+packet_to_local_socket(struct __sk_buff *skb, const struct tuples_key *five)
 {
 	struct bpf_sock_tuple tuple = {};
 	__u32 size = fill_socket_tuple(&tuple, five, skb->protocol);
@@ -1234,11 +1291,14 @@ static __always_inline bool udp_to_local_socket(struct __sk_buff *skb,
 	struct bpf_sock *sk;
 	bool local;
 
-	sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
+	if (five->l4proto == IPPROTO_TCP)
+		sk = bpf_skc_lookup_tcp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
+	else
+		sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
 	if (!sk)
 		return false;
 	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0);
-	local = !owner || owner->pid != PARAM.control_plane_pid;
+	local = !owner || !daemon_pid_registered(owner->pid);
 	bpf_sk_release(sk);
 	return local;
 }
@@ -1309,36 +1369,28 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 						 struct pid_pname **pid_pname)
 {
 	*pid_pname = socket_owner(skb);
-	if (!PARAM.control_plane_pid) {
-		bpf_printk("control_plane_pid is not set.");
-		return false;
-	}
-	if (!*pid_pname)
-		return false;
-	return (*pid_pname)->pid == PARAM.control_plane_pid;
+	return *pid_pname && daemon_pid_registered((*pid_pname)->pid);
 }
 
-/* fallback is the token of a degraded direct decision; proxied flows have none. */
 static __always_inline int save_tcp_flow(struct tuples_key *key,
-					 const struct routing_result *result, __u32 fallback)
+					 const struct routing_result *result, __u32 fallback,
+					 const struct tcphdr *tcp)
 {
 	struct tcp_flow_state flow = {
 		.route_epoch = result->route_epoch,
 		.mark = result->mark,
-		.owner = result->outbound != OUTBOUND_DIRECT || result->capture_flags ?
-			TCP_FLOW_PROXY : fallback,
+		.fallback = fallback,
+		.syn_seq = tcp->seq,
 	};
 
-	if (!flow.owner && !flow.mark && !flow.route_epoch) {
-		bpf_map_delete_elem(&tcp_flow_map, key);
-		return 0;
-	}
+	if (result->outbound != OUTBOUND_DIRECT || result->capture_flags)
+		return -1;
 	return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);
 }
 
 /* The accepted socket, not the consumed handoff, owns the active proxy lifetime. */
-static __always_inline bool tcp_proxy_socket_live(struct __sk_buff *skb,
-						  const struct tuples_key *key)
+static __noinline bool
+tcp_proxy_socket_live(struct __sk_buff *skb, const struct tuples_key *key)
 {
 	struct bpf_sock_tuple tuple = {};
 	__u32 size = fill_socket_tuple(&tuple, key, skb->protocol);
@@ -1353,29 +1405,101 @@ static __always_inline bool tcp_proxy_socket_live(struct __sk_buff *skb,
 	return live;
 }
 
-static __always_inline int replace_tcp_proxy_reply(struct __sk_buff *skb,
-						   struct tuples_key *key,
-						   __u64 route_epoch, __u32 mark)
+/* A nonblocking gate allows map helpers while serializing tuple replacement.
+ * Colliding handshakes retry through TCP; established packets never take it. */
+static __always_inline __u64 *tcp_handshake_gate(struct tuples_key *key)
 {
-	struct tcp_flow_state *flow = bpf_map_lookup_elem(&tcp_flow_map, key);
+	const __u32 *words = (const void *)key;
+	__u32 hash = 2166136261U;
 
-	if (!flow || flow->owner != TCP_FLOW_PROXY)
-		return 0;
+#pragma unroll
+	for (int i = 0; i < sizeof(*key) / sizeof(*words); i++)
+		hash = (hash ^ words[i]) * 16777619U;
+	hash &= 1023;
+	__u64 *gate = bpf_map_lookup_elem(&tcp_handshake_gate_map, &hash);
+
+	return gate && __sync_val_compare_and_swap(gate, 0, 1) == 0 ? gate : NULL;
+}
+
+static __always_inline void tcp_handshake_release(__u64 *gate)
+{
+	__sync_val_compare_and_swap(gate, 1, 0);
+}
+
+static __always_inline bool tcp_handoff_live(struct tuples_key *key, __be32 syn_seq,
+					     __u64 route_epoch, bool syn)
+{
 	struct routing_handoff *pending = bpf_map_lookup_elem(&routing_tuples_map, key);
-	__u32 now = bpf_ktime_get_ns() / 1000000000ULL;
+	__u32 now = bpf_ktime_get_ns() / NSEC_PER_SEC;
 
-	if ((pending && (__s32)(pending->expires - now) > 0) || tcp_proxy_socket_live(skb, key))
-		return 0;
-	struct routing_result direct = {
-		.outbound = OUTBOUND_DIRECT,
-		.route_epoch = route_epoch,
-		.mark = mark,
-	};
+	return pending && (__s32)(pending->expires - now) > 0 &&
+	       (!syn || (pending->syn_seq == syn_seq &&
+			 pending->result.route_epoch == route_epoch));
+}
 
-	if (save_tcp_flow(key, &direct, 0))
-		return -1;
-	bpf_map_delete_elem(&routing_tuples_map, key);
-	return 1;
+enum tcp_packet_action {
+	TCP_PACKET_ROUTE,
+	TCP_PACKET_NATIVE,
+	TCP_PACKET_PROXY,
+};
+
+/* tcp_flow_map holds only the properties of kernel-forwarded flows: a SYN
+ * that dae routes creates or replaces them, the sender's RST removes them.
+ * Proxy ownership is the setup handoff and then dae's socket, which live and
+ * end with dae; a packet that neither owns is native and keeps its own mark.
+ * LRU eviction thus drops a flow's mark and revocation, never its connection.
+ * All SYN, SYN-ACK and RST callers hold the tuple gate. */
+static __noinline int
+tcp_packet_action(struct __sk_buff *skb, struct tuples_key *key,
+		  const struct tcphdr *tcp, __u64 route_epoch)
+{
+	struct tcp_flow_state *saved = bpf_map_lookup_elem(&tcp_flow_map, key);
+	struct tcp_flow_state flow = {};
+	bool valid = false;
+
+	if (saved) {
+		flow = *saved;
+		valid = flow.route_epoch == route_epoch && fallback_live(flow.fallback);
+	}
+	if (tcp->syn && !tcp->ack) {
+		if (saved && flow.syn_seq == tcp->seq) {
+			if (!valid)
+				return TCP_PACKET_PROXY;
+			skb->mark = flow.mark;
+			return TCP_PACKET_NATIVE;
+		}
+		int ret = bpf_map_delete_elem(&tcp_flow_map, key);
+
+		if (ret && ret != -ENOENT)
+			return -1;
+		if (tcp_handoff_live(key, tcp->seq, route_epoch, true))
+			return TCP_PACKET_PROXY;
+		if (daemon_status() == DAEMON_OFFLINE) {
+			if (unexpected_exit_behavior != OUTBOUND_DIRECT)
+				return -1;
+			__builtin_memset(&flow, 0, sizeof(flow));
+			flow.route_epoch = route_epoch;
+			flow.mark = skb->mark;
+			flow.syn_seq = tcp->seq;
+			if (bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY))
+				return -1;
+			bpf_map_delete_elem(&routing_tuples_map, key);
+			return TCP_PACKET_NATIVE;
+		}
+		return TCP_PACKET_ROUTE;
+	}
+	if (saved) {
+		/* Revoked properties end the flow: the listener resets it. */
+		if (!valid)
+			return TCP_PACKET_PROXY;
+		skb->mark = flow.mark;
+		if (tcp->rst)
+			bpf_map_delete_elem(&tcp_flow_map, key);
+		return TCP_PACKET_NATIVE;
+	}
+	if (tcp_handoff_live(key, 0, 0, false) || tcp_proxy_socket_live(skb, key))
+		return TCP_PACKET_PROXY;
+	return TCP_PACKET_NATIVE;
 }
 
 static __always_inline int publish_handoff(struct tuples_key *key,
@@ -1484,26 +1608,14 @@ static __always_inline int do_tproxy_first_fragment(
 		}
 	}
 
-	if (l4proto == IPPROTO_TCP && l4h->tcph.syn && l4h->tcph.ack && !skb->mark) {
-		int reply = replace_tcp_proxy_reply(skb, &tuples->five, route_epoch, 0);
+	if (l4proto == IPPROTO_TCP) {
+		int action = tcp_packet_action(skb, &tuples->five, &l4h->tcph, route_epoch);
 
-		if (reply < 0)
+		/* Fragments can neither carry a mark nor split across proxy paths. */
+		if (action < 0 || action == TCP_PACKET_PROXY || skb->mark)
 			return TCX_DROP;
-		if (reply)
+		if (action == TCP_PACKET_NATIVE)
 			goto direct;
-	}
-	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
-		struct tcp_flow_state *saved = bpf_map_lookup_elem(&tcp_flow_map, &tuples->five);
-
-		/* An invalid first fragment must not complete the old TCP segment. */
-		if (route_epoch && (!saved || saved->route_epoch != route_epoch))
-			return TCX_DROP;
-		if (saved && (saved->owner == TCP_FLOW_PROXY || saved->mark ||
-			      !fallback_live(saved->owner)))
-			return TCX_DROP;
-		if (!saved && tcp_proxy_socket_live(skb, &tuples->five))
-			return TCX_DROP;
-		goto direct;
 	}
 	struct udp_routing_cache_key udp_key = {};
 
@@ -1522,6 +1634,10 @@ static __always_inline int do_tproxy_first_fragment(
 		if (hit)
 			goto direct;
 	}
+	/* Later fragments cannot prove an offline lifetime; do not admit a new
+	 * fragmented UDP source using rules that crash mode has bypassed. */
+	if (daemon_status() == DAEMON_OFFLINE)
+		return TCX_DROP;
 
 	struct route_params *params = &scratch->params;
 
@@ -1531,17 +1647,18 @@ static __always_inline int do_tproxy_first_fragment(
 	__s64 route_result = route(params, &scratch->state);
 
 	if (route_result < 0 ||
+	    ((route_result & ROUTE_RESULT_SKIPPED_NOALIVE) &&
+	     daemon_offline() != scratch->state.offline) ||
 	    (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
 		return TCX_DROP;
 	struct routing_result decoded = {};
 	__u32 fallback = 0;
 
 	decode_route_result(&decoded, route_result);
-	if (tuples->five.dport != bpf_htons(53) &&
-	    degrade_unavailable(&decoded, skb->protocol, l4proto, &fallback))
+	if (degrade_unavailable(&decoded, skb->protocol, l4proto, &fallback))
 		return TCX_DROP;
 	if (decoded.outbound == OUTBOUND_DIRECT) {
-		if (decoded.mark || skb->mark)
+		if (!fallback_live(fallback) || decoded.mark || skb->mark)
 			return TCX_DROP;
 		struct routing_result *result = &scratch->result;
 
@@ -1552,8 +1669,10 @@ static __always_inline int do_tproxy_first_fragment(
 			if (save_udp_route(&udp_key, result, fallback) ||
 			    result->outbound != OUTBOUND_DIRECT)
 				return TCX_DROP;
-		} else if (save_tcp_flow(&tuples->five, result, fallback)) {
-			return TCX_DROP;
+		} else {
+			if (save_tcp_flow(&tuples->five, result, fallback, &l4h->tcph))
+				return TCX_DROP;
+			bpf_map_delete_elem(&routing_tuples_map, &tuples->five);
 		}
 		goto direct;
 	}
@@ -1640,72 +1759,20 @@ static __always_inline int do_tproxy_unfragmented(
 		return TCX_DROP;
 	__u64 route_epoch = device ? device->epoch : 0;
 
-	struct tuples_key routing_tuples_key = tuples->five;
+	struct tuples_key *routing_tuples_key = &tuples->five;
 
-	if (l4proto == IPPROTO_TCP && l4h->tcph.syn && l4h->tcph.ack) {
-		int reply = replace_tcp_proxy_reply(skb, &routing_tuples_key,
-						    route_epoch, skb->mark);
-
-		if (reply)
-			return reply < 0 ? TCX_DROP : TCX_NEXT;
-	}
-	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
-		// Established TCP Connection.
-		struct tcp_flow_state *saved =
-			bpf_map_lookup_elem(&tcp_flow_map, &routing_tuples_key);
-		struct tcp_flow_state flow = {};
-
-		if (saved) {
-			flow = *saved;
-			/* The sender's RST ends a kernel-forwarded connection, so the
-			 * tuple's later packets start a new one. Forward this RST by the
-			 * copied state. A relayed flow keeps its state after the relay
-			 * ends: the sender answers the relay's segments in flight with
-			 * more RSTs, which must not reach the origin. */
-			if (l4h->tcph.rst && flow.owner != TCP_FLOW_PROXY)
-				bpf_map_delete_elem(&tcp_flow_map, &routing_tuples_key);
-		}
-		if ((route_epoch && (!saved || flow.route_epoch != route_epoch)) ||
-		    (saved && !tcp_flow_live(&flow))) {
-			/* Never re-route established TCP. The transparent listener rejects
-			 * an ACK without a connection with RST; existing relays also receive
-			 * the userspace Abort. A recovered group interrupts its direct
-			 * fallback flows the same way. Do not answer an incoming RST. */
-			if (l4h->tcph.rst)
-				return TCX_DROP;
-			goto control_plane;
-		}
-
-		if (saved) {
-			if (flow.owner != TCP_FLOW_PROXY) {
-				// Restore the policy-routing mark for the rest of a
-				// direct(mark:N) TCP flow.
-				skb->mark = flow.mark;
-				return TCX_NEXT;
-			}
-			goto control_plane;
-		}
-
-		/* LRU eviction does not end the accepted socket's proxy lifetime. */
-		if (tcp_proxy_socket_live(skb, &routing_tuples_key))
-			goto control_plane;
-		return TCX_NEXT;
-	}
 	if (l4proto == IPPROTO_TCP) {
-		struct routing_handoff *pending =
-			bpf_map_lookup_elem(&routing_tuples_map, &routing_tuples_key);
-		__u32 now = bpf_ktime_get_ns() / 1000000000ULL;
+		int action = tcp_packet_action(skb, routing_tuples_key, &l4h->tcph, route_epoch);
 
-		/* A retransmitted SYN belongs to the same admitted setup, including
-		 * while interfaces switch generations. Never extend its grace period. */
-		if (pending && pending->syn_seq == l4h->tcph.seq &&
-		    (__s32)(pending->expires - now) > 0 &&
-		    pending->result.route_epoch == route_epoch) {
-			if (save_tcp_flow(&routing_tuples_key, &pending->result, 0))
-				return TCX_DROP;
+		if (action < 0)
+			return TCX_DROP;
+		if (action == TCP_PACKET_NATIVE)
+			return TCX_NEXT;
+		if (action == TCP_PACKET_PROXY)
 			goto control_plane;
-		}
 	}
+
+	bool crashed = l4proto == IPPROTO_UDP && daemon_status() == DAEMON_OFFLINE;
 
 	if (l4proto == IPPROTO_UDP) {
 		struct tuples_key *five = &tuples->five;
@@ -1731,9 +1798,9 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (l4proto == IPPROTO_UDP)
 		fill_udp_routing_cache_key(&udp_key, tuples);
-	/* DNS is a per-destination observation flow, even if the same UDP source
-	 * already owns a non-DNS association. Explicit must is evaluated below. */
-	if (l4proto == IPPROTO_UDP && !isdns) {
+	/* Online DNS is per-destination. Crash bypass must not let an old proxy
+	 * source escape its binding merely by sending to a DNS destination. */
+	if (l4proto == IPPROTO_UDP && (!isdns || crashed)) {
 		__u64 *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
 
 		if (binding) {
@@ -1755,16 +1822,29 @@ static __always_inline int do_tproxy_unfragmented(
 	fill_route_params(params, skb, is_wan, ethh, l4h, tuples, pid_pname,
 			  l4proto, offset, packet_end, protocol, ifindex);
 
+	if (crashed) {
+		if (unexpected_exit_behavior != OUTBOUND_DIRECT)
+			return TCX_DROP;
+		routing_result->outbound = OUTBOUND_DIRECT;
+		routing_result->mark = skb->mark;
+		fill_route_metadata(routing_result, params, generation, route_epoch);
+		if (l4proto == IPPROTO_UDP && save_udp_route(&udp_key, routing_result, 0))
+			return TCX_DROP;
+		goto selected;
+	}
+
 	__s64 route_ret = route(params, &scratch->state);
 
-	if (route_ret < 0)
+	if (route_ret < 0 ||
+	    ((route_ret & ROUTE_RESULT_SKIPPED_NOALIVE) &&
+	     daemon_offline() != scratch->state.offline))
 		return TCX_DROP;
 	decode_route_result(routing_result, route_ret);
 	fill_route_metadata(routing_result, params, generation, route_epoch);
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;
-	if (!isdns && !routing_result->capture_flags &&
+	if (!routing_result->capture_flags &&
 	    degrade_unavailable(routing_result, protocol, l4proto, &fallback))
 		return TCX_DROP;
 	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must)) {
@@ -1785,17 +1865,18 @@ selected:
 	if (device && (device->updating || device->epoch != route_epoch) && !exempt)
 		return TCX_DROP;
 	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags) {
+		if (!fallback_live(fallback))
+			return TCX_DROP;
 		if (l4proto == IPPROTO_TCP &&
-		    save_tcp_flow(&routing_tuples_key, routing_result, fallback))
+		    save_tcp_flow(routing_tuples_key, routing_result, fallback, &l4h->tcph))
 			return TCX_DROP;
 		if (l4proto == IPPROTO_TCP)
-			bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
+			bpf_map_delete_elem(&routing_tuples_map, routing_tuples_key);
 		goto direct;
 	}
-	if (publish_handoff(&routing_tuples_key, routing_result, pid_pname,
+	if (daemon_offline() ||
+	    publish_handoff(routing_tuples_key, routing_result, pid_pname,
 			    l4proto == IPPROTO_TCP ? l4h->tcph.seq : 0))
-		return TCX_DROP;
-	if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result, 0))
 		return TCX_DROP;
 
 control_plane:
@@ -1813,11 +1894,6 @@ direct:
 static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
 				     u32 link_h_len)
 {
-	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
-
-	if (exited && *exited)
-		return TCX_NEXT;
-
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
 	struct l4_hdr l4h;
@@ -1838,12 +1914,32 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
 			return TCX_DROP;
 	}
 	if (fragment_state == FRAGMENT_NONFIRST)
-		return TCX_NEXT;
+		return daemon_offline() ? TCX_DROP : TCX_NEXT;
+	__u64 *gate = NULL;
+
+	if (!ret && l4proto == IPPROTO_TCP && l4h.tcph.syn &&
+	    (l4h.tcph.rst || l4h.tcph.fin))
+		return TCX_DROP;
+	if (!ret && l4proto == IPPROTO_TCP && (l4h.tcph.syn || l4h.tcph.rst)) {
+		struct ingress_scratch *scratch =
+			bpf_map_lookup_elem(&ingress_scratch_map, &zero_key);
+
+		if (!scratch)
+			return TCX_DROP;
+		get_tuples(skb, &scratch->tuples, &l3h, &l4h, l4proto);
+		gate = tcp_handshake_gate(&scratch->tuples.five);
+		if (!gate)
+			return TCX_DROP;
+	}
 	if (fragment_state == FRAGMENT_FIRST)
-		return do_tproxy_first_fragment(skb, is_wan, &ethh, &l3h,
-			&l4h, l4proto, offset, packet_end, ret);
-	return do_tproxy_unfragmented(skb, is_wan, link_h_len, &ethh, &l3h,
-		&l4h, l4proto, offset, packet_end, ret);
+		ret = do_tproxy_first_fragment(skb, is_wan, &ethh, &l3h,
+					       &l4h, l4proto, offset, packet_end, ret);
+	else
+		ret = do_tproxy_unfragmented(skb, is_wan, link_h_len, &ethh, &l3h,
+					     &l4h, l4proto, offset, packet_end, ret);
+	if (gate)
+		tcp_handshake_release(gate);
+	return ret;
 }
 
 /* Return traffic toward LAN hosts (lan_egress) or local sockets (wan_ingress),
@@ -1908,7 +2004,7 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 			return TCX_NEXT;
 		if (relayed && !new_udp_conn_state(&reversed_tuples_key, false))
 			return TCX_DROP;
-		if (!relayed && (!wan || udp_to_local_socket(skb, &tuples.five)))
+		if (!relayed && (!wan || packet_to_local_socket(skb, &tuples.five)))
 			note_inbound_udp(&reversed_tuples_key);
 	}
 
@@ -2255,8 +2351,12 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx)
 	if (pid != tid)
 		return 0;
 
-	if (pid == PARAM.control_plane_pid)
-		bpf_map_update_elem(&exited_map, &zero_key, &one_key, BPF_ANY);
+	unregister_daemon(pid);
+	if (pid == PARAM.control_plane_pid) {
+		__u8 exited = DAEMON_OFFLINE;
+
+		bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY);
+	}
 	return 0;
 }
 

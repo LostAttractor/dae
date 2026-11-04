@@ -338,6 +338,9 @@ routing {
 	if g.NoConnectivityBehavior != "block" {
 		t.Errorf("NoConnectivityBehavior: got %v", g.NoConnectivityBehavior)
 	}
+	if g.UnexpectedExitBehavior != "bypass" {
+		t.Errorf("UnexpectedExitBehavior: got %v", g.UnexpectedExitBehavior)
+	}
 	if g.UDPHopInterval != 30*time.Second {
 		t.Errorf("UDPHopInterval: got %v", g.UDPHopInterval)
 	}
@@ -504,6 +507,9 @@ func TestConfigValidatesControlPolicies(t *testing.T) {
 		{name: "block and keep", body: `global { no_connectivity_behavior: block route_change_behavior: keep }`},
 		{name: "direct and close", body: `global { no_connectivity_behavior: direct route_change_behavior: close }`},
 		{name: "invalid connectivity", body: `global { no_connectivity_behavior: keep }`, wantError: "no_connectivity_behavior"},
+		{name: "exit bypass", body: `global { unexpected_exit_behavior: bypass }`},
+		{name: "exit block", body: `global { unexpected_exit_behavior: block }`},
+		{name: "invalid exit behavior", body: `global { unexpected_exit_behavior: direct }`, wantError: "unexpected_exit_behavior"},
 		{name: "invalid route change", body: `global { route_change_behavior: direct }`, wantError: "route_change_behavior"},
 		{name: "valid clients", body: `global {} mitm { enabled: true client_source_address: '192.0.2.0/24', '-2001:db8::1', '02:00:00:00:00:01', all }`},
 		{name: "invalid enabled client", body: `global {} mitm { enabled: true client_source_address: invalid }`, wantError: "mitm.client_source_address"},

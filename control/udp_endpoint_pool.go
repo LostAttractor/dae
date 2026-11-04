@@ -458,6 +458,13 @@ func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok 
 	return ue, true
 }
 
+func (p *UdpEndpointPool) sourceCapacity() int {
+	if p.sourceLimit > 0 {
+		return p.sourceLimit
+	}
+	return maxUDPSources
+}
+
 func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
 	endpoint.mu.Lock()
 	if endpoint.closed.Load() {
@@ -465,10 +472,7 @@ func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) b
 		return false
 	}
 	if _, exists := p.pool.Load(key); !exists {
-		limit := int64(maxUDPSources)
-		if p.sourceLimit > 0 {
-			limit = int64(p.sourceLimit)
-		}
+		limit := int64(p.sourceCapacity())
 		for {
 			used := p.sources.Load()
 			if used >= limit {

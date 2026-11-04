@@ -135,7 +135,7 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 								}
 								if proto == consts.L4ProtoType_TCP && mark != 0 {
 									var flow bpfTcpFlowState
-									if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); err != nil || flow.Owner != 0 || flow.Mark != mark {
+									if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); err != nil || flow.Fallback != 0 || flow.Mark != mark {
 										t.Fatalf("direct flow=%+v, %v", flow, err)
 									}
 								}

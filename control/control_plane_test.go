@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
@@ -238,8 +239,8 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 	}
 	// Avoid a real TCX attachment after preparation succeeds.
 	core.hostTCXLinks = []hostTCXLink{
-		{linkIndex: index, role: hostTCXWanIngress},
-		{linkIndex: index, role: hostTCXWanEgress},
+		{linkIndex: index, role: hostTCXWanIngress, program: new(ebpf.Program)},
+		{linkIndex: index, role: hostTCXWanEgress, program: new(ebpf.Program)},
 	}
 	if core.reconcileWanWith(nil, func(string) error {
 		attempts++
@@ -298,8 +299,8 @@ func TestWanRenameBeforeRemovalCallback(t *testing.T) {
 				closed:      t.Context(),
 				wanBindings: map[int]*wanBinding{2: {ifname: "eth0", manualPatterns: owners}},
 				kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{
-					{linkIndex: 2, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
-					{linkIndex: 2, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
+					{linkIndex: 2, role: hostTCXWanIngress, program: new(ebpf.Program), close: func() error { closes++; return nil }},
+					{linkIndex: 2, role: hostTCXWanEgress, program: new(ebpf.Program), close: func() error { closes++; return nil }},
 				}},
 			}
 			lookup := func(int) (netlink.Link, error) { return &netlink.Dummy{Index: 2, Name: "lan0"}, nil }

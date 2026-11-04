@@ -51,8 +51,8 @@ type hostTCXLink struct {
 	linkIndex  int
 	role       hostTCXRole
 	link       ciliumLink.Link
-	program    *ebpf.Program
-	close      func() error
+	program    *ebpf.Program // Nil until a cold pin uses this runtime's programs.
+	close      func() error  // Releases only the userspace descriptor.
 	generation uint64
 }
 
@@ -75,7 +75,7 @@ func (c *hostBinder) resetHostTCXLinks() {
 	c.hostTCXLinks = nil
 	c.kernelLinks.mu.Unlock()
 	for i := len(links) - 1; i >= 0; i-- {
-		if err := links[i].close(); err != nil {
+		if err := c.detachHostTCXLink(links[i]); err != nil {
 			log.WithError(err).WithFields(log.Fields{"interface_index": links[i].linkIndex, "role": links[i].role}).Error("Could not close stale TCX link")
 		}
 	}
@@ -188,14 +188,18 @@ func (c *hostBinder) attachHostTCXProgram(linkIndex int, spec hostTCXProgram) (b
 	if err != nil {
 		return false, fmt.Errorf("attach %s TCX program: %w", spec.role, err)
 	}
-	if !c.ownHostTCXLink(hostTCXLink{
+	if err := c.pinHostTCXLink(attached, linkIndex, spec.role); err != nil {
+		return false, errors.Join(fmt.Errorf("pin %s TCX link: %w", spec.role, err), attached.Close())
+	}
+	owned := hostTCXLink{
 		linkIndex: linkIndex,
 		role:      spec.role,
 		link:      attached,
 		program:   spec.program,
 		close:     attached.Close,
-	}) {
-		return false, attached.Close()
+	}
+	if !c.ownHostTCXLink(owned) {
+		return false, c.detachHostTCXLink(owned)
 	}
 	return true, nil
 }
@@ -555,8 +559,16 @@ func (c *hostBinder) reconcileWanWith(
 }
 
 func (c *hostBinder) wanAttached(linkIndex int) bool {
-	_, ingress := c.hostTCXLink(linkIndex, hostTCXWanIngress)
-	_, egress := c.hostTCXLink(linkIndex, hostTCXWanEgress)
+	c.kernelLinks.mu.Lock()
+	defer c.kernelLinks.mu.Unlock()
+	var ingress, egress bool
+	for _, owned := range c.hostTCXLinks {
+		if owned.linkIndex != linkIndex || owned.program == nil {
+			continue
+		}
+		ingress = ingress || owned.role == hostTCXWanIngress
+		egress = egress || owned.role == hostTCXWanEgress
+	}
 	return ingress && egress
 }
 

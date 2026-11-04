@@ -56,6 +56,7 @@ func TestRoutingConditionalBlocks(t *testing.T) {
 			installRoutingFlow(t, obj, tc.rules)
 			for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
 				_ = obj.RoutingTuplesMap.Delete(key)
+				advanceTCPSYN(packet, 34)
 				status, _, output, err := runBpfProgram(program, packet, ctx)
 				want := ^uint32(0)
 				if tc.bump {

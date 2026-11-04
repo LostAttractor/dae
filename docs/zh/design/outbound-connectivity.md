@@ -82,9 +82,17 @@ HTTP/2 与 QUIC 连接池使用 `netproxy.PoolState` 聚合成员可用性、容
 
 开启 `dial_target_override` 时，代理把嗅探到的 TCP 名称经任一地址族拨出。因此即使不是 `while_possible`，组在一个 TCP 地址族不可用、另一族可用时，该族的流量仍交给用户态：嗅探到可信名称的流量经另一地址族的节点代理，没有名称的流量在用户态按 `no_connectivity_behavior` 降级。另一族的可用性变化时，该族的发布状态随之更新。UDP 中继保留客户端地址，不受影响。
 
-降级连接属于原组对应网络类型的 fallback 代次。组的 `reselect_behavior` 或全局 `route_change_behavior` 为 `close` 时，代次可以结束：`route_change_behavior: close` 下恢复、`reselect_behavior: close` 下改选，以及任一策略下删除组，都会关闭旧代次的用户态 relay。内核直连的 fallback 流在 TCP 流状态和 UDP 路由缓存中记录代次令牌，代次结束时令牌从共享集合撤销，后续报文按失效处理，具体行为见[Relay 生命周期与恢复](../development/relay-error-recovery.md)。已发布的代次结束、替代代次尚未发布时（例如 reload 交接期间），新流交给用户态降级，不加入已结束的代次。策略均为 `keep` 时不分配令牌，内核 fallback 流持续到自然结束；reload 改为 `keep` 时，此前带令牌的连接不再随恢复或改选结束，但仍随删除组结束。令牌集合只属于当前进程，令牌从随机起点分配，重启后带令牌的旧流结束；集合已满时新流不带令牌并记录警告。TCP 流状态表按 LRU 淘汰，被淘汰的空闲流不再受代次约束，持续到自然结束。
+降级连接属于原组对应网络类型的 fallback 代次。组的 `reselect_behavior` 或全局 `route_change_behavior` 为 `close` 时，代次可以结束：`route_change_behavior: close` 下恢复、`reselect_behavior: close` 下改选，以及任一策略下删除组，都会关闭旧代次的用户态 relay。内核直连的 fallback 流在 TCP 流状态和 UDP 路由缓存中记录代次令牌，代次结束时令牌从共享集合撤销，后续报文按失效处理，具体行为见[Relay 生命周期与恢复](../development/relay-error-recovery.md)。已发布的代次结束、替代代次尚未发布时（例如 reload 交接期间），新流交给用户态降级，不加入已结束的代次。策略均为 `keep` 时不分配令牌，内核 fallback 流持续到自然结束；reload 改为 `keep` 时，此前带令牌的连接不再随恢复或改选结束，但仍随删除组结束。令牌集合只属于当前 Runtime，发行序号由固定内核表跨进程保留且不回卷，重启不能重用旧令牌；集合已满、序号耗尽或发行失败时记录警告，不能把需要约束的新流降为无令牌直通。TCP 直通连接属性表按 LRU 淘汰；条目被淘汰的连接按原生转发继续，不再受代次约束，也不会因此中断。
 
 状态先发布、旧代次后结束：恢复时内核先按原组路由新流；改选或 reload 交接时先发布新代次，新流不会加入即将结束的代次。
+
+正常退出会完整清理 dae 自有挂载、固定表和内部网络资源，不继续执行离线规则，也不提供单独的 unload 命令。无法完成清理的异常退出才保留内核兜底：已有有效直连保持 mark 和代次约束，已有代理 TCP 随进程的 socket 结束，必须重新握手。
+
+异常退出的新出站流由独立的 `unexpected_exit_behavior` 控制。默认 `bypass` 绕过全部旧路由、block、DNS/MITM 捕获和目的地址重写规则，新 TCP 握手与新 UDP 源生命周期保留报文原有 mark、使用令牌 0；旁路接纳的连接重启后仍可保持直连，不会自动接回代理；希望避免这种泄露风险时选 `block`。block 保留已有原生转发及入站回复，不扩展成入站防火墙。旧 UDP proxy binding/cache 不能仅通过改发 DNS 目的端口逃逸。无足够生命周期证明的离线分片保守丢弃。两种模式均依赖残留 hook，不约束未接管的接口，也不能在 hook 已被卸下后继续约束流量。
+
+启动中、在线、终态离线是不同状态，启动中不启用异常旁路，终态 Runtime 不能再次发布。启动仅为显式登记的当前 daemon 自身 socket 保留豁免，进程退出撤销登记；相同 mark 不构成身份。普通 fallback 令牌的发行序号最后清理：旧连接条目、挂载或其他清理步骤失败时保留序号，防止下次启动复用旧授权。
+
+含 BPF timer 的两张 UDP 表使用每个 Runtime 私有的 pin。仅保留程序引用不足以维持 timer 所需的用户引用，因此这些 pin 在异常退出后仍保留；冷启动创建新表，不继承旧组编号或 UDP cache。启动、发布和退出只在核实已挂载程序不再引用后清理旧 timer pins，不引入按连接定时回收。
 
 ## 观测数据
 

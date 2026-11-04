@@ -40,7 +40,7 @@ type Options struct {
 
 // Run owns daemon startup, serialized configuration changes and shutdown.
 // The caller installs process-wide name resolution before concurrent work.
-func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver, options Options) error {
+func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver, options Options) (runErr error) {
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
@@ -55,6 +55,14 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	if err := control.CheckKernelFeatures(ctx); err != nil {
 		return err
+	}
+	instance, err := acquireInstanceLock("/run/dae.lock")
+	if err != nil {
+		return err
+	}
+	defer instance.Close()
+	if err := control.RegisterDaemonIdentity(); err != nil {
+		return fmt.Errorf("register daemon socket identity: %w", err)
 	}
 	certificates, err := prepareCertificates(conf, nil)
 	if err != nil {
@@ -87,9 +95,12 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	defer watcher.Close()
 
 	started := time.Now()
-	defer cleanupKernelResources()
 	datapath := control.NewRuntime()
-	defer datapath.Close()
+	defer func() {
+		if closeErr := datapath.Close(); closeErr != nil && !errors.Is(runErr, closeErr) {
+			runErr = errors.Join(runErr, closeErr)
+		}
+	}()
 	worker, closeWorker := datapath.NewWorkerClient()
 	defer closeWorker()
 	app := &application{
@@ -245,6 +256,9 @@ func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func())
 }
 
 func exit(datapath *control.Runtime, servers ...*apiserver.Server) {
+	if err := datapath.GoOffline(); err != nil {
+		log.WithError(err).Error("Could not mark kernel datapath offline")
+	}
 	startPprofServer(0)
 	startMetricsServer(0)
 	for _, server := range servers {

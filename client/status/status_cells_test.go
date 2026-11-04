@@ -87,11 +87,11 @@ func TestNetworkConnectionsAndUsageAlignParts(t *testing.T) {
 		t.Fatalf("network counts: %+v", rows)
 	}
 	usage := []table.Row{
-		tableUsageRow(api.TableUsage{Name: "one", Candidates: 20000}),
-		tableUsageRow(api.TableUsage{Name: "two", Candidates: 4}),
+		tableUsageRow(api.TableUsage{Name: "one", Used: 20000}),
+		tableUsageRow(api.TableUsage{Name: "two", Used: 4}),
 	}
 	got := clitable.AlignRows(usage)
-	if got[0][3] != "20000" || got[1][3] != "4" {
+	if got[0][1] != "20000" || got[1][1] != "4" {
 		t.Fatalf("usage counts: %+v", got)
 	}
 }

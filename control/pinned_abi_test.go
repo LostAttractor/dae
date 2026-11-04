@@ -22,8 +22,11 @@ func TestPinnedMapABI(t *testing.T) {
 		kind              ebpf.MapType
 		key, value, flags uint32
 	}{
-		"tcp_flow_map":   {ebpf.LRUHash, 40, 16, 0},
-		"cookie_pid_map": {ebpf.SkStorage, 4, 20, unix.BPF_F_NO_PREALLOC},
+		"tcp_flow_map":           {ebpf.LRUHash, 40, 24, 0},
+		"tcp_handshake_gate_map": {ebpf.Array, 4, 8, 0},
+		"daemon_identity_map":    {ebpf.Array, 4, 8, 0},
+		"fallback_sequence_map":  {ebpf.Array, 4, 8, 0},
+		"cookie_pid_map":         {ebpf.SkStorage, 4, 20, unix.BPF_F_NO_PREALLOC},
 	}
 	for name, m := range spec.Maps {
 		if m.Pinning != ebpf.PinByName {
@@ -56,7 +59,7 @@ func TestPinnedMapABI(t *testing.T) {
 		fields []field
 	}{
 		"tcp_flow_map/key":     {spec.Maps["tcp_flow_map"].Key, 40, []field{{"sip", 0, 16}, {"dip", 16, 16}, {"sport", 32, 2}, {"dport", 34, 2}, {"l4proto", 36, 1}}},
-		"tcp_flow_map/value":   {spec.Maps["tcp_flow_map"].Value, 16, []field{{"route_epoch", 0, 8}, {"mark", 8, 4}, {"owner", 12, 4}}},
+		"tcp_flow_map/value":   {spec.Maps["tcp_flow_map"].Value, 24, []field{{"route_epoch", 0, 8}, {"mark", 8, 4}, {"fallback", 12, 4}, {"syn_seq", 16, 4}, {"padding", 20, 4}}},
 		"cookie_pid_map/value": {spec.Maps["cookie_pid_map"].Value, 20, []field{{"pid", 0, 4}, {"pname", 4, 16}}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -80,6 +83,6 @@ func TestPinnedMapABI(t *testing.T) {
 		})
 	}
 	if routingabi.FALLBACK_TOKEN_RESERVED != 1 {
-		t.Fatal("TCP proxy owner and UDP closing marker must remain 1; fallback tokens start at 2")
+		t.Fatal("invalid fallback marker must remain 1; issued fallback tokens start at 2")
 	}
 }

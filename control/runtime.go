@@ -69,6 +69,8 @@ type Runtime struct {
 	errors         chan error
 	closeOnce      sync.Once
 	closeErr       error
+	offline        bool // Terminal transition, guarded by lifecycle.
+	kernelOwned    bool // Set before this Runtime starts netns/sysctl setup.
 
 	kernelLinks       kernelLinks
 	tcpConnections    tcpConnectionSet
@@ -140,13 +142,17 @@ func (r *Runtime) waitForRetirement(ctx context.Context) error {
 
 func (r *Runtime) retainMaps(b *bpfObjects) error {
 	for name, m := range map[string]*ebpf.Map{
-		"cookie_pid_map":    b.CookiePidMap,
-		"device_routes_map": b.DeviceRoutesMap,
-		"exited_map":        b.ExitedMap, "fallback_lease_map": b.FallbackLeaseMap,
-		"listen_socket_map": b.ListenSocketMap, "redirect_track": b.RedirectTrack,
-		"routing_tuples_map": b.RoutingTuplesMap,
-		"tcp_flow_map":       b.TcpFlowMap,
-		"udp_bindings_map":   b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
+		"cookie_pid_map":        b.CookiePidMap,
+		"daemon_identity_map":   b.DaemonIdentityMap,
+		"device_routes_map":     b.DeviceRoutesMap,
+		"exited_map":            b.ExitedMap,
+		"fallback_lease_map":    b.FallbackLeaseMap,
+		"fallback_sequence_map": b.FallbackSequenceMap,
+		"listen_socket_map":     b.ListenSocketMap, "redirect_track": b.RedirectTrack,
+		"routing_tuples_map":     b.RoutingTuplesMap,
+		"tcp_flow_map":           b.TcpFlowMap,
+		"tcp_handshake_gate_map": b.TcpHandshakeGateMap,
+		"udp_bindings_map":       b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
 		"udp_inbound_pending_map": b.UdpInboundPendingMap,
 		"udp_routing_cache_map":   b.UdpRoutingCacheMap,
 	} {
@@ -157,7 +163,10 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		r.shared[name] = owned
 	}
 	r.deviceRoutes = &deviceRoutes{outer: r.shared["device_routes_map"]}
-	r.fallbacks = newFallbackTokens(r.shared["fallback_lease_map"])
+	if err := restoreDeviceEpochs(r.deviceRoutes); err != nil {
+		return fmt.Errorf("restore device route epochs: %w", err)
+	}
+	r.fallbacks = newFallbackTokens(r.shared["fallback_lease_map"], r.shared["fallback_sequence_map"])
 	return nil
 }
 
@@ -171,6 +180,17 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 	case <-r.done:
 		return net.ErrClosed
 	default:
+	}
+	if r.offline {
+		return net.ErrClosed
+	}
+	if r.shared["exited_map"] != nil {
+		r.mu.Lock()
+		ready := r.listener != nil
+		r.mu.Unlock()
+		if !ready {
+			return fmt.Errorf("%w: datapath listener is not ready", ErrPublicationRejected)
+		}
 	}
 	// Static rules and subscriptions are already prepared. Only selections
 	// and changed client tries need refreshing after draining API writers.
@@ -274,6 +294,12 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 			r.mu.Unlock()
 		}()
 	}
+	if err := r.pruneUDPTimerPins(true); err != nil {
+		return fmt.Errorf("retire unreferenced runtime timer pins: %w", err)
+	}
+	if err := r.setExited(routingabi.DAEMON_ONLINE); err != nil {
+		return fmt.Errorf("publish online datapath: %w", err)
+	}
 	return nil
 }
 
@@ -305,10 +331,40 @@ func (r *Runtime) reportError(err error) {
 	}
 }
 
+func (r *Runtime) setExited(value uint8) error {
+	if m := r.shared["exited_map"]; m != nil {
+		return m.Update(uint32(0), value, ebpf.UpdateAny)
+	}
+	return nil
+}
+
+func (r *Runtime) goOffline() error {
+	r.offline = true
+	err := r.setExited(routingabi.DAEMON_OFFLINE)
+	if r.fallbacks != nil {
+		r.fallbacks.Freeze()
+	}
+	return err
+}
+
+// GoOffline marks userspace offline before management requests are drained.
+func (r *Runtime) GoOffline() error {
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
+	select {
+	case <-r.done:
+		return r.closeErr
+	default:
+		return r.goOffline()
+	}
+}
+
+// Close drains userspace and removes this Runtime's kernel resources.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.lifecycle.Lock()
 		defer r.lifecycle.Unlock()
+		r.closeErr = r.goOffline()
 		close(r.done)
 		r.pluginStates.StopAcquiring()
 		r.mu.Lock()
@@ -326,7 +382,7 @@ func (r *Runtime) Close() error {
 		r.udpEndpoints.closeAll()
 		if listener != nil {
 			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				r.closeErr = err
+				r.closeErr = errors.Join(r.closeErr, err)
 			}
 		}
 		r.ingress.Wait()
@@ -343,10 +399,23 @@ func (r *Runtime) Close() error {
 		if r.interfaces != nil {
 			r.closeErr = errors.Join(r.closeErr, r.interfaces.Close())
 		}
-		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close())
+		linksErr := r.kernelLinks.Close()
+		r.closeErr = errors.Join(r.closeErr, linksErr)
+		if linksErr == nil {
+			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false), r.removePinnedMaps())
+		}
 		r.tcpMonitor.close()
 		for _, m := range r.shared {
 			r.closeErr = errors.Join(r.closeErr, m.Close())
+		}
+		if r.kernelOwned {
+			if ns := GetDaeNetns(); ns != nil {
+				r.closeErr = errors.Join(r.closeErr, ns.Close())
+			}
+			CloseSysctlManager()
+		}
+		if r.closeErr == nil {
+			r.closeErr = r.finishPinnedCleanup()
 		}
 	})
 	return r.closeErr

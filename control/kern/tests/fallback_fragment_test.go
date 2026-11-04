@@ -53,7 +53,7 @@ func TestFallbackGenerationEndsFirstFragments(t *testing.T) {
 		key := bpftestTuplesKey{Sport: nativeUint16(19310), Dport: nativeUint16(80), L4proto: unix.IPPROTO_TCP}
 		key.Sip.U6Addr8, key.Dip.U6Addr8 = netip.MustParseAddr("192.168.0.10").As16(), netip.MustParseAddr("1.1.1.10").As16()
 		var flow bpftestTcpFlowState
-		if err := obj.TcpFlowMap.Lookup(key, &flow); err != nil || flow.Owner != token {
+		if err := obj.TcpFlowMap.Lookup(key, &flow); err != nil || flow.Fallback != token {
 			t.Fatalf("degraded flow = %+v, %v; want token %d", flow, err, token)
 		}
 		packet[14+20+13] = 0x10 // An established flow's ACK.

@@ -61,6 +61,12 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 
 状态表中的 `UP/24H` 和流量的 `AVG/MAX` 使用复合表头，与数据共用各子字段的宽度：标题与数值都从各自字段左侧开始，`/` 在各行中的位置固定。显示宽度计算支持中文和 ANSI 颜色。
 
+## 容量表
+
+普通、`--verbose` 和 `--recent` 状态视图渲染同一份 `tables` 快照。`domain-registry (unlimited)` 始终显示配对数、域名数、IP 数、地址类型和 GC 明细；其余表与资源池按 `Kernel tables`、`Userspace tables` 分组，以 `NAME`、`USED`、`LIMIT`、`USAGE%`、`ON FULL` 紧凑展示，包括内核动态 hash/LRU 表和全局 UDP source、packet resource、reply socket 三个池。`--verbose` 列出全部条目；普通和 `--recent` 视图只列出需要关注的条目：用量不可用、有待重试的内核变更、有被省略的候选，或 `reject` 表使用率达到 70%，没有这类条目的分组整体省略。`domain-kernel` 的说明保留 `CANDIDATES`、`OMITTED`、`PENDING`；pending 表示等待重试的内核变更。
+
+每项的 `scope` 为 `kernel` 或 `userspace`，`on_full` 描述满载行为：`evict` 按 LRU 淘汰已有条目，`reject` 拒绝新增，`omit` 不把超额域名候选投影进内核，`unlimited` 无容量上限。`limit: 0` 始终表示无限容量。LRU 满载属于正常淘汰，不等于硬耗尽；只有 `reject` 的使用率应用容量告警色。非空 `error` 表示 `used` 不可用，文本显示 `unavailable` 及具体错误，不显示误导性的零或 0%；`--json` 原样保留这些字段。Web 的 **Tables** 区域使用相同的范围、满载行为和可用性字段。插件自定义报告仍单独显示在插件状态中。
+
 ## 流量表
 
 对于 `selector` 组，API 的 `nodes` 只包含当前选中、持续追踪、正在测试或仍有活动连接的节点；所有 status 模式均遵守此范围，组及全局统计仍保留未展示路径的累计量。完整候选及其上次测试结果通过 `/api/selectors` 查询。
@@ -225,7 +231,7 @@ CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以�
 
 ## 状态字段
 
-当前 `StatusSnapshot.schema` 为 `14`。顶层 `direct_fallback_connections` 是单一的 direct fallback 计数；`PathStats` 只包含活动/累计连接、流量总量及历史，不包含 fallback 字段。Prometheus 的 `dae_fallback_connections_total` 是一条无标签的进程级计数。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。顶层 `buffer_memory` 提供进程级 body buffer 内存预算，没有活动插件时仍提供。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
+当前 `StatusSnapshot.schema` 为 `15`。顶层 `direct_fallback_connections` 是单一的 direct fallback 计数；`PathStats` 只包含活动/累计连接、流量总量及历史，不包含 fallback 字段。Prometheus 的 `dae_fallback_connections_total` 是一条无标签的进程级计数。`tables` 覆盖内核表和用户态资源池，提供 `scope`、`on_full` 和可选 `error`；`limit: 0` 表示无容量上限，非空 `error` 表示 `used` 不可用。域名表 `breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。顶层 `buffer_memory` 提供进程级 body buffer 内存预算，没有活动插件时仍提供。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
 
 节点延迟统计只包含成功探测。自动组的 `selection` 提供本组角色（选中、监测、备用）、有效优先级、有符号评分、已验证的恢复时长和测量时间。CLI 在故障期间显示 `[degraded]`，首次恢复成功后显示 `[recover 5s/30s verified]`，进度仅在成功探测后推进。状态列同时显示正在验证、排队或恢复观察期间下次 recheck 的实际倒计时。节点 `dormant` 为真才表示物理休眠，在状态列显示一次，历史延迟附带样本年龄；备用路径仍可共享其他组的监测，`recovery` 报告实际检查与重试。详见[自动节点选择](outbound-selection.md)。
 

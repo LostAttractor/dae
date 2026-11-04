@@ -7,6 +7,7 @@ package status
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -80,13 +81,33 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 
 func TestTableUsageRow(t *testing.T) {
 	withoutStatusColors(t)
-	row := tableUsageRow(api.TableUsage{
-		Name: "domain-kernel", Used: 2, Limit: 4, Candidates: 3,
-	})
-	want := []string{"2", "4", "50.0%", "3", "1"}
-	for index, expected := range want {
-		if got := fmt.Sprint(row[index]); got != expected {
-			t.Errorf("tableUsageRow()[%d] = %q, want %q", index, got, expected)
+	for _, test := range []struct {
+		name, onFull, usageError string
+		used, limit              int
+		want                     []string
+	}{
+		{"bounded", "omit", "", 2, 4, []string{"bounded", "2", "4", "50.0%", "omit"}},
+		{"unlimited", "unlimited", "", 8, 0, []string{"unlimited", "8", "unlimited", "-", "unlimited"}},
+		{"failed", "evict", "read map failed", 0, 16, []string{"failed", "unavailable", "16", "-", "evict"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			row := tableUsageRow(api.TableUsage{Name: test.name, OnFull: test.onFull, Used: test.used, Limit: test.limit, Error: test.usageError})
+			for index, expected := range test.want {
+				if got := fmt.Sprint(row[index]); got != expected {
+					t.Errorf("tableUsageRow()[%d] = %q, want %q", index, got, expected)
+				}
+			}
+		})
+	}
+	colorsEnabled = true
+	for _, onFull := range []string{"evict", "reject", "omit"} {
+		ratio := fmt.Sprint(tableUsageRow(api.TableUsage{Used: 4, Limit: 4, OnFull: onFull})[3])
+		want := "100.0%"
+		if onFull == "reject" {
+			want = colorize(want, text.FgRed)
+		}
+		if ratio != want {
+			t.Errorf("full %s usage = %q, want %q", onFull, ratio, want)
 		}
 	}
 }
@@ -96,25 +117,22 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 	withStatusTerminalWidth(t, 80)
 	var out strings.Builder
 	Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
-		{Name: "domain-kernel", Used: 161, Limit: 65536, Candidates: 163},
-		{Name: "domain-registry", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
+		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: 161, Limit: 65536, Candidates: 163, Pending: 3},
+		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
 	}}, false)
 	output := out.String()
-	for _, label := range []string{"domain-kernel:", "USED (IPs)", "CANDIDATES", "OMITTED", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
+	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 2; PENDING 3", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
 		if !strings.Contains(output, label) {
 			t.Fatalf("missing %q:\n%s", label, output)
 		}
 	}
-	if strings.Contains(output, "Tables:") || strings.Contains(output, "TABLE ") {
-		t.Fatalf("redundant table heading or name column:\n%s", output)
-	}
-	if strings.Index(output, "domain-registry (unlimited):") > strings.Index(output, "domain-kernel:") {
+	if strings.Index(output, "domain-registry (unlimited):") > strings.Index(output, "Kernel tables:") {
 		t.Fatalf("kernel projection appeared before registry evidence:\n%s", output)
 	}
 	kernel, registry := false, false
 	for _, line := range strings.Split(output, "\n") {
 		cells := strings.Join(strings.Fields(line), " ")
-		kernel = kernel || cells == "161 65536 0.2% 163 2"
+		kernel = kernel || cells == "domain-kernel 161 65536 0.2% omit"
 		registry = registry || cells == "6896 2000 5000 4000 1000 123"
 	}
 	if !kernel || !registry {
@@ -125,8 +143,8 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 	for _, gc := range []uint64{0, ^uint64(0)} {
 		out.Reset()
 		Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
-			{Name: "domain-kernel", Limit: 65536},
-			{Name: "domain-registry", Breakdown: &api.TableUsageBreakdown{GC: gc}},
+			{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 65536},
+			{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Breakdown: &api.TableUsageBreakdown{GC: gc}},
 		}}, false)
 		found := false
 		for _, line := range strings.Split(out.String(), "\n") {
@@ -135,6 +153,76 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 		if !found {
 			t.Fatalf("empty registry/GC count changed:\n%s", out.String())
 		}
+	}
+}
+
+func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 80)
+	snapshot := &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
+		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 16, Limit: 16},
+		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 16, Candidates: 3, Pending: 2, Error: "read map: permission denied"},
+		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 4, Limit: 8},
+		{Name: "udp-reply-sockets", Scope: "userspace", OnFull: "reject", Used: 7, Limit: 10},
+		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Error: "registry unavailable", Breakdown: &api.TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: 2}},
+	}}
+	render := func(verbose bool) string {
+		var tables strings.Builder
+		printTables(&tables, snapshot.Tables, verbose)
+		return tables.String()
+	}
+	all, attention := render(true), render(false)
+	for _, mode := range []struct {
+		tables string
+		print  func(io.Writer)
+	}{
+		{attention, func(out io.Writer) { Print(out, snapshot, false) }},
+		{all, func(out io.Writer) { Print(out, snapshot, true) }},
+		{attention, func(out io.Writer) { PrintRecent(out, snapshot) }},
+	} {
+		var out strings.Builder
+		mode.print(&out)
+		if strings.Count(out.String(), mode.tables) != 1 {
+			t.Fatalf("status did not share the table rendering:\n%s", out.String())
+		}
+	}
+	// Healthy LRU and pool usage stays out of ordinary views.
+	brief := strings.Join(strings.Fields(attention), " ")
+	for _, want := range []string{
+		"domain-kernel unavailable 16 - omit", "udp-reply-sockets 7 10 70.0% reject",
+		"domain-kernel: CANDIDATES 3; OMITTED unavailable; PENDING 2",
+		"domain-registry: unavailable: registry unavailable",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("ordinary view missing %q:\n%s", want, attention)
+		}
+	}
+	if strings.Contains(brief, "tcp_flow_map") || strings.Contains(brief, "udp-sources") {
+		t.Fatalf("ordinary view listed healthy tables:\n%s", attention)
+	}
+	var healthy strings.Builder
+	printTables(&healthy, snapshot.Tables[:1], false)
+	if healthy.Len() != 0 {
+		t.Fatalf("healthy tables printed a section:\n%s", healthy.String())
+	}
+	tables := all
+	output := strings.Join(strings.Fields(tables), " ")
+	for _, want := range []string{
+		"tcp_flow_map 16 16 100.0% evict", "domain-kernel unavailable 16 - omit",
+		"Userspace tables:", "udp-sources 4 8 50.0% reject",
+		"domain-kernel: unavailable: read map: permission denied",
+		"domain-kernel: CANDIDATES 3; OMITTED unavailable; PENDING 2",
+		"unavailable 3 5 4 1 2", "domain-registry: unavailable: registry unavailable",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q:\n%s", want, tables)
+		}
+	}
+	if strings.Contains(output, " 0.0% ") || strings.Index(output, "Kernel tables:") > strings.Index(output, "Userspace tables:") {
+		t.Fatalf("unavailable usage shown as zero or scopes mixed:\n%s", tables)
+	}
+	if text.LongestLineLen(tables) > 80 {
+		t.Fatalf("capacity tables overflowed:\n%s", tables)
 	}
 }
 

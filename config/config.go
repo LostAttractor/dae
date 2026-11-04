@@ -55,6 +55,7 @@ type Global struct {
 	BandwidthMaxRx            string                 `mapstructure:"bandwidth_max_rx" default:"0" reload:"plane"`
 	// TODO: skip?
 	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block" reload:"plane"`
+	UnexpectedExitBehavior string        `mapstructure:"unexpected_exit_behavior" default:"bypass" reload:"plane"`
 	RouteChangeBehavior    string        `mapstructure:"route_change_behavior" default:"keep" reload:"plane"`
 	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s" reload:"plane"`
 }
@@ -89,6 +90,9 @@ type Group struct {
 func (g Global) ValidateConnectionBehaviors() error {
 	if g.NoConnectivityBehavior != "direct" && g.NoConnectivityBehavior != "block" {
 		return fmt.Errorf("invalid no_connectivity_behavior: %v", g.NoConnectivityBehavior)
+	}
+	if g.UnexpectedExitBehavior != "bypass" && g.UnexpectedExitBehavior != "block" {
+		return fmt.Errorf("invalid unexpected_exit_behavior: %v", g.UnexpectedExitBehavior)
 	}
 	return ValidateConnectionBehavior("route_change_behavior", g.RouteChangeBehavior)
 }

@@ -72,6 +72,29 @@ Status tables use composite titles for `UP/24H` and the traffic
 and value starts at the left of its field, and `/` stays
 at the same position across rows. Display widths account for CJK text and ANSI colors.
 
+## Capacity tables
+
+Ordinary, `--verbose` and `--recent` status render the same `tables` snapshot.
+`domain-registry (unlimited)` always shows its detailed pair, domain, IP,
+address-family and GC counts. Other tables and resource pools are grouped under
+`Kernel tables` and `Userspace tables`, with `NAME`, `USED`, `LIMIT`, `USAGE%` and
+`ON FULL` columns. These include dynamic kernel hash/LRU tables and the global
+UDP source, packet-resource and reply-socket pools. `--verbose` lists all of them.
+Ordinary and `--recent` views list only items needing attention: unavailable usage,
+pending kernel changes, omitted candidates, or `reject` usage of at least 70%; a
+group with no such item is omitted. The `domain-kernel` note keeps `CANDIDATES`,
+`OMITTED` and `PENDING` visible; pending changes await kernel retry.
+
+Each item identifies its `scope` (`kernel` or `userspace`) and capacity behavior
+in `on_full`: `evict` replaces existing LRU entries, `reject` refuses new entries,
+`omit` leaves excess domain candidates out of the kernel projection, and
+`unlimited` has no capacity limit. `limit: 0` always means unlimited. A full LRU
+table is normal eviction, not hard exhaustion; only `reject` usage receives
+capacity-warning colors. A nonempty `error` makes `used` unavailable: text views
+show `unavailable` and the error, never a misleading zero or 0%. `--json` retains
+the original fields. Web's **Tables** section uses the same scope, behavior and
+availability fields. Plugin-defined reports remain separate in plugin status.
+
 ## Traffic table
 
 For `selector` groups, the API's `nodes` includes only selected, continuously monitored, currently testing, or actively connected nodes. All status modes respect this scope; group/global totals still include omitted paths. Fetch `/api/selectors` for every candidate and its last test result.
@@ -262,7 +285,7 @@ Only the proof GET allows HTTP-to-HTTPS CORS at the same IP and port; ordinary `
 
 ## Snapshot semantics and TUI integration
 
-The current status schema is `14`. Top-level `direct_fallback_connections` contains the single direct fallback counter; `PathStats` contains active/total connections, payload totals and history without fallback fields. Prometheus exports `dae_fallback_connections_total` as one unlabeled process counter. Domain table `limit: 0` means unbounded userspace retention; `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. The top-level `buffer_memory` object reports the process-wide body buffer budget even with no active plugins. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
+The current status schema is `15`. Top-level `direct_fallback_connections` contains the single direct fallback counter; `PathStats` contains active/total connections, payload totals and history without fallback fields. Prometheus exports `dae_fallback_connections_total` as one unlabeled process counter. `tables` covers kernel tables and userspace resource pools with `scope`, `on_full` and optional `error`; `limit: 0` means unlimited and a nonempty `error` makes `used` unavailable. Domain `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. The top-level `buffer_memory` object reports the process-wide body buffer budget even with no active plugins. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
 
 Node latency statistics contain successful probes only. Automatic selection exposes `selection` with the group-local role (selected, monitoring or standby), effective priority, signed score, verified recovery duration and measurement time. Failed nodes show `[degraded]`; `[recover 5s/30s verified]` appears after the first recovery success and advances only on successful probes. The state column also shows active verification, queueing or the actual next recheck countdown during recovery observation. Node `dormant` denotes physical sleep, shown once in the state column with historical latency age. Standby paths may share monitoring from other groups; `recovery` reports actual check/retry progress. See [outbound selection](outbound-selection.md).
 

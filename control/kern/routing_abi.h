@@ -50,10 +50,19 @@ enum outbound_index {
 	OUTBOUND_LOGICAL_AND = 0xFF,
 };
 
-/* Userspace issues fallback tokens other than 0 and FALLBACK_TOKEN_RESERVED,
- * so flow state can keep a token in a field it shares with a marker. */
+/* Zero keeps a flow; all issued leases use globally unique tokens above one. */
 enum fallback_token {
 	FALLBACK_TOKEN_RESERVED = 1,
+};
+
+enum fallback_lease_state {
+	FALLBACK_LEASE_LIVE = 1,
+};
+
+enum daemon_state {
+	DAEMON_ONLINE = 0,
+	DAEMON_OFFLINE = 1,
+	DAEMON_STARTING = 2,
 };
 
 enum outbound_connectivity_state {

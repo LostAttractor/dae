@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 14
+const StatusSchemaVersion = 15
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -24,10 +24,13 @@ type StatusSnapshot struct {
 	Groups                    []GroupStatus            `json:"groups"`
 }
 
-// TableUsage describes a domain table. Limit zero means no capacity limit.
+// TableUsage describes a table or resource pool. Limit zero means no capacity limit.
 type TableUsage struct {
 	Name       string               `json:"name"`
-	Used       int                  `json:"used"` // IPs for domain-kernel; domain-IP pairs for domain-registry
+	Scope      string               `json:"scope"`           // kernel or userspace
+	OnFull     string               `json:"on_full"`         // evict, reject, omit, or unlimited
+	Error      string               `json:"error,omitempty"` // nonempty means Used is unavailable
+	Used       int                  `json:"used"`            // entries or resources; domain-IP pairs for domain-registry
 	Limit      int                  `json:"limit"`
 	Candidates int                  `json:"candidates,omitempty"`
 	Pending    int                  `json:"pending,omitzero"` // desired kernel changes awaiting retry

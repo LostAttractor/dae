@@ -103,11 +103,15 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 	}
 	data := b[5:recordLen]
 	buf := make([]byte, 5+int(min(int64(len(data)), f.config.maxLength)))
-	writeFragments := func(records []byte) error {
+	writeFragments := func(records []byte, payloadLen int) error {
 		written, err := f.write(records)
 		// Only the first record header belongs to the input; later headers are synthetic.
 		if n == 0 {
 			n = min(written, 5)
+		}
+		if written == len(records) {
+			n += payloadLen
+			return err
 		}
 		for written > 5 {
 			size := 5 + ((int(records[3]) << 8) | int(records[4]))
@@ -130,7 +134,7 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 		if f.config.maxInterval == 0 {
 			hello = append(hello, buf[:5+l]...)
 		} else {
-			if err := writeFragments(buf[:5+l]); err != nil {
+			if err := writeFragments(buf[:5+l], l); err != nil {
 				return n, err
 			}
 			if from < len(data) {
@@ -153,7 +157,7 @@ func (f *FragmentConn) Write(b []byte) (n int, err error) {
 		}
 	}
 	if len(hello) > 0 {
-		if err := writeFragments(hello); err != nil {
+		if err := writeFragments(hello, len(data)); err != nil {
 			return n, err
 		}
 	}

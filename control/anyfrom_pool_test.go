@@ -78,6 +78,9 @@ func TestAnyfromPoolBoundsConcurrentCreators(t *testing.T) {
 	if p.TryGet(cachedAddr) != cached {
 		t.Fatal("ListenPacket prevented reuse of an existing reply socket")
 	}
+	if used, limit := p.usage(); used != 3 || limit != 3 {
+		t.Fatalf("usage omitted in-flight socket creation: %d/%d", used, limit)
+	}
 	// A caller of the same address shares its reservation, even at capacity.
 	go create(first)
 	dropped := dropReplySocketLimit.Load()

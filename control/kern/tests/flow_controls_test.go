@@ -96,6 +96,9 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 						if redirect {
 							want = 7 // TC_ACT_REDIRECT
 						}
+						if network.proto == 6 {
+							advanceTCPSYN(packet, 34)
+						}
 						status, _, _, err := runBpfProgram(program, packet, ctx)
 						if err != nil || status != want {
 							t.Fatalf("%s: status=%d err=%v, want=%d", program, status, err, want)

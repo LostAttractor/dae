@@ -68,6 +68,7 @@ struct route_state {
 	bool rule_uncertain;
 	bool flow_bump;
 	bool skipped_noalive;
+	bool offline;
 };
 
 struct route_ctx {
@@ -202,8 +203,13 @@ static __always_inline int route_predicate(struct route_ctx *ctx,
 }
 
 static __always_inline bool route_outbound_alive(const struct route_params *params,
-						 __u8 outbound)
+						 __u8 outbound, bool offline)
 {
+	if (outbound == OUTBOUND_DIRECT)
+		return true;
+	if (outbound >= OUTBOUND_USER_DEFINED_MIN &&
+	    outbound <= OUTBOUND_USER_DEFINED_MAX && offline)
+		return false;
 	struct outbound_connectivity_query query = {
 		.outbound = outbound,
 		.ipversion = (params->ipversion_type & IpVersionType_4) ? 4 : 6,
@@ -264,7 +270,7 @@ __noinline enum route_step_result route_apply(struct route_state *state,
 	}
 
 	if ((match->flags & MATCH_FLAG_SKIP_NOALIVE) &&
-	    !route_outbound_alive(params, match->outbound)) {
+	    !route_outbound_alive(params, match->outbound, state->offline)) {
 		state->skipped_noalive = true;
 		return ROUTE_CONTINUE;
 	}
@@ -385,6 +391,7 @@ __noinline __s64 route(struct route_params *params, struct route_state *state)
 	ctx.profile = profile;
 	ctx.params = params;
 	__builtin_memset(state, 0, sizeof(*state));
+	state->offline = daemon_offline();
 	state->result = -EFAULT;
 	ctx.state = state;
 

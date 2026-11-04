@@ -68,6 +68,7 @@ func TestRoutingProfileReplacementAndBounds(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			advanceTCPSYN(packet, 34)
 			status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
 			if err != nil || status != tc.want {
 				t.Fatalf("status = %d, want %d, error = %v", status, tc.want, err)

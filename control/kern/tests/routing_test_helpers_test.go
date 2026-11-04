@@ -68,6 +68,12 @@ func installRoutingFlow(t testing.TB, obj *bpftestObjects, rules []bpftestMatchS
 	}
 }
 
+// Policy cases use a new ISN, not a retransmission of an admitted connection.
+func advanceTCPSYN(packet []byte, tcpOffset int) {
+	seq := packet[tcpOffset+4 : tcpOffset+8]
+	binary.BigEndian.PutUint32(seq, binary.BigEndian.Uint32(seq)+1)
+}
+
 func routingFlowPacket(t testing.TB, obj *bpftestObjects) (packet, ctx []byte, key bpftestTuplesKey) {
 	t.Helper()
 	status, packet, ctx, err := runBpfProgram(obj.TestpktgenMacMatch, make([]byte, 4096-256-320), make([]byte, 256))
