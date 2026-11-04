@@ -87,7 +87,7 @@ global {
 
     # Check interval while the node is alive. A failed node retries after a quarter of its downtime so far, from 1s.
     check_interval: 3m
-    # Maximum interval for retries of failed nodes and connectivity-mode support retries.
+    # Maximum wait between retries of failed nodes, connectivity-mode discovery and pool replenishment.
     check_interval_max: 1h
 
     # Outside first support confirmation for a mode, a new node must improve latency by more than this value.

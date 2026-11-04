@@ -61,10 +61,10 @@ type connectivityChecker struct {
 	healthInterval time.Duration
 	staggerNext    bool
 
-	supportAt     time.Time
-	retryInterval time.Duration
+	supportAt      time.Time
+	discoverySince time.Time // Start of the current capability discovery round.
 
-	capacityInterval    time.Duration
+	capacitySince       time.Time // First failed replenishment of missing capacity.
 	capacityAt          time.Time
 	capacityBlockReason string
 	capacityActive      bool
@@ -74,12 +74,10 @@ func newConnectivityChecker(d *pathRuntime, probe func(context.Context, *common.
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	healthInterval := time.Duration(mathrand.Int64N(int64(d.CheckInterval)))
-	retryInterval := initialRetryInterval(d.CheckIntervalMax)
 	return &connectivityChecker{
 		d:              d,
 		probe:          probe,
 		results:        make(chan checkResult, 1),
-		retryInterval:  retryInterval,
 		healthInterval: healthInterval,
 		timer:          timer,
 	}
@@ -134,8 +132,7 @@ func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 			// A replacement can disappear before Connect's result is consumed.
 			// Let finishCapacity validate the final capacity before clearing retry state.
 			if c.cancel == nil || c.runningKind != checkCapacity {
-				c.capacityAt = time.Time{}
-				c.capacityInterval = 0
+				c.capacityAt, c.capacitySince = time.Time{}, time.Time{}
 				c.capacityBlockReason = ""
 			}
 		}
@@ -326,8 +323,7 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 		return
 	}
 	if result.connectErr == nil && (!snapshot.RecoveryRequired || snapshot.UsableCapacity > result.capacityBefore) {
-		c.capacityInterval = 0
-		c.capacityAt = time.Time{}
+		c.capacitySince, c.capacityAt = time.Time{}, time.Time{}
 		// Pooled transports may repair one slot per Connect. Continue only when
 		// capacity actually survives; a nil error alone need not mean progress.
 		// A new slot still needs an end-to-end check before restoring health.
@@ -342,12 +338,9 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 	} else {
 		log.WithField("node", c.d.name).Debug("Outbound capacity replenishment made no observable progress; retrying with backoff")
 	}
-	maximum := c.d.CheckIntervalMax
-	if c.capacityInterval == 0 {
-		c.capacityInterval = checkBackoffInitialInterval
-	} else {
-		c.capacityInterval = min(c.capacityInterval*2, maximum)
+	now := time.Now()
+	if c.capacitySince.IsZero() {
+		c.capacitySince = now
 	}
-	deadline := time.Now().Add(checktime.Jitter(c.capacityInterval, maximum))
-	c.capacityAt = deadline
+	c.capacityAt = now.Add(checktime.Retry(now.Sub(c.capacitySince), c.d.CheckIntervalMax))
 }

@@ -45,7 +45,7 @@ type selectionNetwork struct {
 	job          *selectionJob
 	retryAt      time.Time
 	upgradeAt    time.Time
-	retryDelay   time.Duration
+	unavailable  time.Time // First failed election since the network was served.
 	upgradeDelay time.Duration
 	changed      chan struct{}
 	force        bool // A new capability: the next decision ignores the tolerance.
@@ -273,7 +273,7 @@ func (s *automaticSelection) scheduleLocked(cause *dialer.Dialer) (changed commi
 		when := state.retryAt
 		if usable {
 			// A served network elects at once when its path fails again.
-			state.disabled, state.retryAt, state.retryDelay = false, time.Time{}, 0
+			state.disabled, state.retryAt, state.unavailable = false, time.Time{}, time.Time{}
 			when = time.Time{}
 			var best selectorCandidate
 			for _, d := range s.g.Dialers {
@@ -371,8 +371,10 @@ func (s *automaticSelection) selectNetwork(network common.NetworkIndex, job *sel
 	}
 	now := time.Now()
 	if _, usable := s.current(network); !usable {
-		state.retryDelay = min(max(time.Second, saturatingDurationAdd(state.retryDelay, state.retryDelay)), s.g.selectionPolicy.UpgradeIntervalMax)
-		state.retryAt = now.Add(checktime.Jitter(state.retryDelay, s.g.selectionPolicy.UpgradeIntervalMax))
+		if state.unavailable.IsZero() {
+			state.unavailable = now
+		}
+		state.retryAt = now.Add(checktime.Retry(now.Sub(state.unavailable), s.g.selectionPolicy.UpgradeIntervalMax))
 	}
 	if job.committed {
 		clear(state.visited)

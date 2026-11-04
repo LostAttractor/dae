@@ -898,7 +898,7 @@ func TestServedNetworkElectsWithoutEarlierBackoff(t *testing.T) {
 		synctest.Wait()
 		g.automatic.mu.Lock()
 		state := &g.automatic.networks[common.NetworkTCP4]
-		state.retryAt, state.retryDelay = time.Now().Add(time.Hour), time.Hour
+		state.retryAt, state.unavailable = time.Now().Add(time.Hour), time.Now().Add(-4*time.Hour)
 		g.automatic.mu.Unlock()
 		g.DialerChanged(g.Dialers[0], dialer.SelectionForceNone)
 		primary.offline.Store(true)

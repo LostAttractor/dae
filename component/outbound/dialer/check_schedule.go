@@ -14,17 +14,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
-const (
-	checkBackoffInitialInterval = time.Second
-	supportRetryInitialInterval = time.Second
-	// Unknown capabilities back off faster than retries of a known healthy path.
-	supportRetryMultiplier = 4
-	// A failed path waits a quarter of its downtime so far between attempts.
-	// Recovery is noticed within 25% of the outage, while a dead path needs
-	// only logarithmically many probes to reach check_interval_max.
-	recoveryRetryDivisor = 4
-)
-
 // recoveryRetryDelay spaces the attempts of a path that failed, whatever
 // operation the next attempt is, so every caller shares one cadence.
 func (c *connectivityChecker) recoveryRetryDelay(now time.Time) time.Duration {
@@ -38,13 +27,20 @@ func (c *connectivityChecker) recoveryRetryDelayLocked(now time.Time) time.Durat
 	if since := c.d.failures.downSince; !since.IsZero() {
 		downtime = now.Sub(since)
 	}
-	maximum := c.d.CheckIntervalMax
-	return checktime.Jitter(min(max(downtime/recoveryRetryDivisor, checkBackoffInitialInterval), maximum), maximum)
+	return checktime.Retry(downtime, c.d.CheckIntervalMax)
+}
+
+// discoveryRetryDelay spaces capability discovery by how long it has gone on.
+func (c *connectivityChecker) discoveryRetryDelay(now time.Time) time.Duration {
+	if c.discoverySince.IsZero() {
+		c.discoverySince = now
+	}
+	return checktime.Retry(now.Sub(c.discoverySince), c.d.CheckIntervalMax)
 }
 
 func (c *connectivityChecker) scheduleSupport() {
 	if !c.supportPending() {
-		c.supportAt = time.Time{}
+		c.supportAt, c.discoverySince = time.Time{}, time.Time{}
 		return
 	}
 	if c.supportAt.IsZero() {
@@ -54,8 +50,7 @@ func (c *connectivityChecker) scheduleSupport() {
 			c.supportAt = now.Add(c.recoveryRetryDelay(now))
 			return
 		}
-		c.supportAt = now.Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
-		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
+		c.supportAt = now.Add(c.discoveryRetryDelay(now))
 	}
 }
 
@@ -72,10 +67,8 @@ func (c *connectivityChecker) requestedCheckKind() checkKind {
 func (c *connectivityChecker) resetForRequest(reasons checkRequestReason) {
 	if reasons&(checkRequestEnvironment|checkRequestManual) != 0 {
 		c.capacityBlockReason = ""
-		c.capacityInterval = 0
-		c.capacityAt = time.Time{}
-		c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
-		c.supportAt = time.Time{}
+		c.capacitySince, c.capacityAt = time.Time{}, time.Time{}
+		c.discoverySince, c.supportAt = time.Time{}, time.Time{}
 	}
 	if reasons&(checkRequestEnvironment|checkRequestManual|checkRequestDataPlane|checkRequestVerification) != 0 {
 		c.resetHealthRetry()
@@ -123,11 +116,15 @@ func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedChec
 
 func (c *connectivityChecker) updateInitialSchedule(success bool) {
 	if !c.d.initialCheckCompleted() {
-		c.healthAt = time.Now().Add(checktime.Jitter(c.retryInterval, c.d.CheckIntervalMax))
-		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
+		now := time.Now()
+		if c.d.awaitingRecovery() {
+			c.healthAt = now.Add(c.recoveryRetryDelay(now))
+		} else {
+			c.healthAt = now.Add(c.discoveryRetryDelay(now))
+		}
 		return
 	}
-	c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
+	c.discoverySince = time.Time{}
 	if !success {
 		if !c.supportPending() && !firstSupportedNetwork(c.d.networkStates()).Valid() {
 			c.blockedBy = "no_supported_network"
@@ -292,17 +289,6 @@ func (c *connectivityChecker) dispatch() {
 	default:
 		c.d.setRecovery(api.RecoveryReady, time.Time{}, "")
 	}
-}
-
-func nextRetryInterval(interval, maximum time.Duration) time.Duration {
-	if interval >= maximum/time.Duration(supportRetryMultiplier) {
-		return maximum
-	}
-	return min(interval*time.Duration(supportRetryMultiplier), maximum)
-}
-
-func initialRetryInterval(maximum time.Duration) time.Duration {
-	return min(supportRetryInitialInterval, maximum)
 }
 
 func (c *connectivityChecker) supportPending() bool {

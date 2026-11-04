@@ -435,28 +435,6 @@ func TestSupportRetryBackoffAndJitter(t *testing.T) {
 			t.Fatalf("sub-jitter retry interval = %v, want %v", got, interval)
 		}
 	}
-	interval := supportRetryInitialInterval
-	want := []time.Duration{
-		4 * time.Second,
-		16 * time.Second,
-		time.Minute + 4*time.Second,
-		4*time.Minute + 16*time.Second,
-		17*time.Minute + 4*time.Second,
-		time.Hour,
-		time.Hour,
-	}
-	for i, expected := range want {
-		interval = nextRetryInterval(interval, time.Hour)
-		if interval != expected {
-			t.Fatalf("retry interval %d = %v, want %v", i, interval, expected)
-		}
-	}
-	if got := initialRetryInterval(time.Hour); got != time.Second {
-		t.Fatalf("initial interval = %v, want 1s", got)
-	}
-	if got := initialRetryInterval(time.Second); got != time.Second {
-		t.Fatalf("capped initial interval = %v, want 1s", got)
-	}
 	if low, high := checktime.Bounds(time.Hour, time.Hour); low != 48*time.Minute || high != time.Hour {
 		t.Fatalf("capped jitter range = [%v, %v], want [48m, 1h]", low, high)
 	}
@@ -529,12 +507,12 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
-	checker.retryInterval = time.Hour
+	checker.discoverySince = time.Now().Add(-time.Hour)
 	checker.scheduleSupport()
 	d.RequestConnectivityCheck()
 	checker.start(checker.requestedCheckKind())
-	if checker.retryInterval != supportRetryInitialInterval || !checker.supportAt.IsZero() || checker.runningKind != checkSupport {
-		t.Fatalf("support retry after request = %v, scheduled=%v, kind=%v", checker.retryInterval, !checker.supportAt.IsZero(), checker.runningKind)
+	if !checker.discoverySince.IsZero() || !checker.supportAt.IsZero() || checker.runningKind != checkSupport {
+		t.Fatalf("support retry after request: round since %v, scheduled=%v, kind=%v", checker.discoverySince, !checker.supportAt.IsZero(), checker.runningKind)
 	}
 	if d.connectivityCheckRequested() {
 		t.Fatal("explicit connectivity request was not consumed")
@@ -548,8 +526,10 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	if !finishCheck(checker, <-checker.results) {
 		t.Fatal("checker stopped after requested support check")
 	}
-	if checker.retryInterval != 4*time.Second || checker.supportAt.IsZero() {
-		t.Fatalf("support retry after failed check = %v, scheduled=%v", checker.retryInterval, !checker.supportAt.IsZero())
+	// The restarted round has just begun: the shortest delay.
+	low, high := checktime.Bounds(time.Second, d.CheckIntervalMax)
+	if delay := time.Until(checker.supportAt); checker.discoverySince.IsZero() || delay < low-10*time.Millisecond || delay > high {
+		t.Fatalf("support retry after failed check in %v, round since %v", delay, checker.discoverySince)
 	}
 }
 
@@ -1125,14 +1105,15 @@ func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
-	checker.retryInterval = time.Hour
+	since := time.Now().Add(-time.Hour)
+	checker.discoverySince = since
 	checker.supportAt = time.Now().Add(time.Hour)
 	checker.healthAt = time.Now().Add(time.Hour)
 	checker.healthInterval = time.Minute
 
 	checker.resetForRequest(checkRequestDataPlane)
-	if checker.retryInterval != time.Hour || checker.supportAt.IsZero() {
-		t.Fatalf("data-plane request reset support retry: interval=%v scheduled=%v", checker.retryInterval, !checker.supportAt.IsZero())
+	if checker.discoverySince != since || checker.supportAt.IsZero() {
+		t.Fatalf("data-plane request reset support retry: round since %v scheduled=%v", checker.discoverySince, !checker.supportAt.IsZero())
 	}
 	if !checker.healthAt.IsZero() || checker.healthInterval != d.CheckInterval {
 		t.Fatalf("data-plane request did not reset health retry: interval=%v scheduled=%v", checker.healthInterval, !checker.healthAt.IsZero())

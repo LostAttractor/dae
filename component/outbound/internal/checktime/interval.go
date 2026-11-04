@@ -28,3 +28,11 @@ func Jitter(interval, maximum time.Duration) time.Duration {
 	}
 	return low + time.Duration(rand.Int64N(int64(high-low+1)))
 }
+
+// Retry spaces attempts to clear a condition by a quarter of how long it has
+// lasted, at least one second and at most maximum, with jitter. Its end is
+// noticed within about 25% of its duration, while a lasting condition costs
+// only logarithmically many attempts before reaching maximum.
+func Retry(lasted, maximum time.Duration) time.Duration {
+	return Jitter(min(max(lasted/4, time.Second), maximum), maximum)
+}

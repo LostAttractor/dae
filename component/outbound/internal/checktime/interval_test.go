@@ -26,3 +26,19 @@ func TestJitterBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryFollowsHowLongTheConditionLasted(t *testing.T) {
+	for _, test := range []struct{ lasted, maximum, want time.Duration }{
+		{0, time.Hour, time.Second},
+		{2 * time.Second, time.Hour, time.Second},
+		{time.Minute, time.Hour, 15 * time.Second},
+		{20 * time.Minute, time.Hour, 5 * time.Minute},
+		{10 * time.Hour, time.Hour, time.Hour},
+		{time.Minute, 25 * time.Millisecond, 25 * time.Millisecond},
+	} {
+		low, high := Bounds(test.want, test.maximum)
+		if got := Retry(test.lasted, test.maximum); got < low || got > high {
+			t.Fatalf("retry after %v capped at %v = %v, want %v..%v", test.lasted, test.maximum, got, low, high)
+		}
+	}
+}

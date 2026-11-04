@@ -9,6 +9,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -162,8 +163,8 @@ func TestCapacityBackoffDeadlineMatchesItsTimer(t *testing.T) {
 	transport.state.Publish(event)
 	d := newTestDialer(t, transport)
 	prepareRecoveryDialer(d)
+	d.CheckIntervalMax = time.Millisecond
 	c := testRecoveryChecker(t, d)
-	c.capacityInterval = time.Millisecond
 	c.finishCapacity(checkResult{kind: checkCapacity, connectErr: errors.New("failed")}, true)
 	c.dispatch()
 	snapshot := d.RuntimeStatus().Recovery
@@ -240,7 +241,7 @@ func TestCapacityProgressDoesNotBackOff(t *testing.T) {
 	d := newTestDialer(t, transport)
 	prepareRecoveryDialer(d)
 	c := testRecoveryChecker(t, d)
-	c.capacityInterval = time.Minute
+	c.capacitySince = time.Now().Add(-time.Hour)
 	c.dispatch()
 	for range 3 {
 		if c.cancel == nil || c.runningKind != checkCapacity {
@@ -248,7 +249,7 @@ func TestCapacityProgressDoesNotBackOff(t *testing.T) {
 		}
 		finishCheck(c, <-c.results)
 	}
-	if c.cancel != nil || c.capacityInterval != 0 || transport.Snapshot().RecoveryRequired || transport.connects.Load() != 3 {
+	if c.cancel != nil || !c.capacitySince.IsZero() || transport.Snapshot().RecoveryRequired || transport.connects.Load() != 3 {
 		t.Fatal("pool did not finish replenishing with one operation per missing slot")
 	}
 }
@@ -262,6 +263,7 @@ func TestCapacityReplacementLostBeforeCompletionBacksOff(t *testing.T) {
 	prepareRecoveryDialer(d)
 	c := testRecoveryChecker(t, d)
 	c.healthAt = time.Now().Add(time.Hour)
+	var since time.Time
 	for i := range 3 {
 		c.dispatch()
 		if c.cancel == nil || c.runningKind != checkCapacity {
@@ -278,8 +280,13 @@ func TestCapacityReplacementLostBeforeCompletionBacksOff(t *testing.T) {
 		transport.state.Publish(event)
 		c.handleSessionEvent(transport.Snapshot())
 		finishCheck(c, result)
-		if c.cancel != nil || !c.capacityAt.After(time.Now()) || c.capacityInterval != time.Second<<i {
-			t.Fatalf("replacement loss bypassed backoff: running=%v retry=%v interval=%s", c.cancel != nil, c.capacityAt, c.capacityInterval)
+		if i == 0 {
+			since = c.capacitySince
+		}
+		// The missing capacity has lasted moments: the shortest delay.
+		low, high := checktime.Bounds(time.Second, d.CheckIntervalMax)
+		if delay := time.Until(c.capacityAt); c.cancel != nil || delay < low-10*time.Millisecond || delay > high || since.IsZero() || c.capacitySince != since {
+			t.Fatalf("replacement loss bypassed backoff: running=%v retry in %v since=%v", c.cancel != nil, delay, c.capacitySince)
 		}
 		if !d.RuntimeStatus().Healthy {
 			t.Fatal("failed replenishment invalidated healthy sibling slots")
@@ -288,7 +295,7 @@ func TestCapacityReplacementLostBeforeCompletionBacksOff(t *testing.T) {
 	}
 	c.dispatch()
 	finishCheck(c, <-c.results)
-	if c.cancel != nil || c.capacityInterval != 0 || transport.Snapshot().RecoveryRequired {
+	if c.cancel != nil || !c.capacitySince.IsZero() || transport.Snapshot().RecoveryRequired {
 		t.Fatal("a surviving replacement did not clear the retry backoff")
 	}
 }

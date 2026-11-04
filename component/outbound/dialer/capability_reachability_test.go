@@ -141,7 +141,7 @@ func TestMonitoringFailedPathResumesRecoverySchedule(t *testing.T) {
 			t.Fatal("monitoring a failed path bypassed its recovery schedule")
 		}
 		checker.dispatch()
-		low, high := checktime.Bounds(time.Minute/recoveryRetryDivisor, d.CheckIntervalMax)
+		low, high := checktime.Bounds(time.Minute/4, d.CheckIntervalMax)
 		if delay := time.Until(checker.healthAt); checker.cancel != nil || delay < low || delay > high {
 			t.Fatalf("monitoring resumed recovery in %v, want [%v, %v]", delay, low, high)
 		}
@@ -215,7 +215,7 @@ func TestFailedPathRetriesFollowDowntime(t *testing.T) {
 		d.failures.downSince = time.Now().Add(-time.Minute)
 		since := d.failures.downSince
 		d.mu.Unlock()
-		round := checker.retryInterval
+		round := checker.discoverySince
 		time.Sleep(time.Until(checker.healthAt))
 		for range 3 {
 			checker.dispatch()
@@ -223,7 +223,7 @@ func TestFailedPathRetriesFollowDowntime(t *testing.T) {
 				t.Fatal("recovery was not dispatched")
 			}
 			checker.finish(<-checker.results)
-			low, high := checktime.Bounds(time.Since(since)/recoveryRetryDivisor, d.CheckIntervalMax)
+			low, high := checktime.Bounds(time.Since(since)/4, d.CheckIntervalMax)
 			if delay := time.Until(checker.healthAt); delay < low || delay > high || !checker.supportAt.IsZero() {
 				t.Fatalf("recovery delay=%v support=%v want [%v,%v]", delay, checker.supportAt, low, high)
 			}
@@ -233,8 +233,8 @@ func TestFailedPathRetriesFollowDowntime(t *testing.T) {
 			}
 			time.Sleep(time.Until(checker.healthAt))
 		}
-		if checker.retryInterval != round {
-			t.Fatalf("recovery advanced the capability round: %v -> %v", round, checker.retryInterval)
+		if checker.discoverySince != round {
+			t.Fatalf("recovery advanced the capability round: %v -> %v", round, checker.discoverySince)
 		}
 	})
 }
