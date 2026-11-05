@@ -1,13 +1,13 @@
 package shadowsocks_stream
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 )
@@ -31,18 +31,21 @@ func NewDialer(parent netproxy.Dialer, header protocol.Header) (netproxy.Dialer,
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	switch network {
 	case "tcp":
-		header := pool.GetBytesBuffer()
-		defer pool.PutBytesBuffer(header)
-		if err := socks5.WriteAddr(address, header); err != nil {
+		var header bytes.Buffer
+		if err := socks5.WriteAddr(address, &header); err != nil {
 			return nil, err
 		}
 		conn, err := d.DialTCPTransport(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if err := protocol.Handshake(ctx, conn, func() error { _, err := conn.Write(header.Bytes()); return err }); err != nil {
-			return nil, err
+		if lease := conn.DependencyLease(); !lease.Valid() {
+			_ = conn.Close()
+			return nil, lease.Cause()
 		}
+		// The first Write carries the address header; see TcpConn.
+		conn.header = header.Bytes()
+		conn.headerDone = make(chan struct{})
 		return conn, nil
 	case "udp":
 		if _, err := socks5.AddressFromString(address); err != nil {
