@@ -168,15 +168,16 @@ func TestTLSCarriersDrainToRawAndCloseWriteUsesActiveDirection(t *testing.T) {
 				if err := <-done; err != nil {
 					t.Fatal(err)
 				}
+				// The read came first, so it started the stream with an empty record.
+				if command, payload, err := readRecord(server, true); err != nil || command != commandPaddingContinue || len(payload) != 0 {
+					t.Fatalf("first frame=%d,%x,%v", command, payload, err)
+				}
 				app := []byte{23, 3, 3, 0, 3, 'a', 'b', 'c'}
-				for i, want := range []byte{commandPaddingContinue, commandPaddingDirect} {
-					if _, err := c.Write(app); err != nil {
-						t.Fatal(err)
-					}
-					command, payload, err := readRecord(server, i == 0)
-					if err != nil || command != want || !bytes.Equal(payload, app) {
-						t.Fatalf("frame %d=%d,%x,%v", i, command, payload, err)
-					}
+				if _, err := c.Write(app); err != nil {
+					t.Fatal(err)
+				}
+				if command, payload, err := readRecord(server, false); err != nil || command != commandPaddingDirect || !bytes.Equal(payload, app) {
+					t.Fatalf("direct frame=%d,%x,%v", command, payload, err)
 				}
 				if _, err := c.Write([]byte("raw")); err != nil {
 					t.Fatal(err)

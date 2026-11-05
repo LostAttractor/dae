@@ -27,6 +27,7 @@ type PacketConn struct {
 }
 
 func NewPacketConn(conn *Conn, target net.Addr) *PacketConn {
+	conn.packet = true
 	return &PacketConn{Conn: conn, target: target, reader: bufio.NewReaderSize(conn, 65535)}
 }
 func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {

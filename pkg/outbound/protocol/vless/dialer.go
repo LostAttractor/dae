@@ -1,6 +1,7 @@
 package vless
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -103,20 +104,23 @@ func (d *Dialer) open(ctx context.Context, network, address string) (net.Conn, e
 		return nil, err
 	}
 	netproxy.CaptureDependency(ctx, parent)
-	conn := &Conn{Conn: parent}
-	var result net.Conn = conn
-	err = protocol.Handshake(ctx, parent, func() error {
-		if d.flow == XRV {
-			var err error
-			result, err = vision.NewConn(conn, d.key)
-			if err != nil {
-				return err
-			}
-		}
-		_, err := conn.Write(header.Bytes())
-		return err
-	})
+	if err := ctx.Err(); err != nil {
+		_ = parent.Close()
+		return nil, err
+	}
+	if lease := netproxy.DependencyOf(parent); !lease.Valid() {
+		_ = parent.Close()
+		return nil, lease.Cause()
+	}
+	// The request travels with the caller's first write; see Conn.
+	conn := &Conn{Conn: parent, request: bytes.Clone(header.Bytes())}
+	conn.readFlush.Store(network == "tcp")
+	if d.flow != XRV {
+		return conn, nil
+	}
+	result, err := vision.NewConn(conn, d.key)
 	if err != nil {
+		_ = parent.Close()
 		return nil, err
 	}
 	return result, nil
