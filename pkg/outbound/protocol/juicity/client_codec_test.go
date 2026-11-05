@@ -100,7 +100,7 @@ func TestStreamUDPReadReportsTruncation(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = stream.SetReadDeadline(time.Now().Add(time.Second))
-			conn := &PacketConn{Conn: &Conn{Stream: stream, lease: netproxy.NewLease(netproxy.NewResourceRef())}}
+			conn := &PacketConn{Conn: &Conn{Stream: stream, Metadata: &m, lease: netproxy.NewLease(netproxy.NewResourceRef())}}
 			defer conn.Close()
 			buf := make([]byte, tc.size)
 			n, addr, err := conn.ReadFrom(buf)

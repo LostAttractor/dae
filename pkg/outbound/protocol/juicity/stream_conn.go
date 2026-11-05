@@ -18,7 +18,9 @@ type Conn struct {
 	lAddr, rAddr net.Addr
 
 	writeMutex sync.Mutex
-	onceWrite  bool
+	// requestSent lets Read skip writeMutex once the request is on the stream.
+	requestSent atomic.Bool
+	requestErr  error // guarded by writeMutex
 
 	closeOnce sync.Once
 	wroteFIN  atomic.Bool
@@ -34,12 +36,22 @@ func (c *Conn) wrap(err error, op netproxy.Operation) error {
 	return common.WrapQUICError(err, c.lease.Resource(), c.lease, op, c.fail)
 }
 
+// Write sends the request (network and target) in the same stream write as
+// the first payload.
 func (c *Conn) Write(b []byte) (n int, err error) {
 	defer func() { err = c.wrap(err, netproxy.OpWrite) }()
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
-	if c.onceWrite {
+	if c.requestSent.Load() {
 		return c.Stream.Write(b)
+	}
+	return c.writeRequest(b)
+}
+
+// writeRequest writes the request followed by b. The caller holds writeMutex.
+func (c *Conn) writeRequest(b []byte) (int, error) {
+	if c.requestErr != nil {
+		return 0, c.requestErr
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
@@ -54,18 +66,38 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 	if err := c.Metadata.appendTo(buf); err != nil {
 		return 0, err
 	}
-
 	headerLen := buf.Len()
 	buf.Write(b)
 	written, err := c.Stream.Write(buf.Bytes())
-	if err != nil {
-		return max(0, written-headerLen), fmt.Errorf("write request: %w", err)
+	if written < headerLen {
+		// The stream may hold part of the request, so it cannot be resent.
+		c.requestErr = fmt.Errorf("write request: %w", err)
+		return 0, c.requestErr
 	}
-	c.onceWrite = true
-	return len(b), nil
+	c.requestSent.Store(true)
+	return written - headerLen, err
 }
 
+// sendRequest sends a pending request alone, for a peer that speaks first.
+func (c *Conn) sendRequest() error {
+	c.writeMutex.Lock()
+	defer c.writeMutex.Unlock()
+	if c.requestSent.Load() {
+		return nil
+	}
+	_, err := c.writeRequest(nil)
+	return err
+}
+
+// Read sends a pending TCP request first so server-first protocols work. UDP
+// streams leave it to the first datagram: replies follow one, and their
+// readers start before the first write.
 func (c *Conn) Read(b []byte) (int, error) {
+	if len(b) > 0 && c.Metadata.Network == "tcp" && !c.requestSent.Load() {
+		if err := c.sendRequest(); err != nil {
+			return 0, c.wrap(err, netproxy.OpWrite)
+		}
+	}
 	n, err := c.Stream.Read(b)
 	return n, c.wrap(err, netproxy.OpRead)
 }
@@ -83,6 +115,11 @@ func (c *Conn) Close() error {
 func (c *Conn) CloseWrite() error {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	if !c.requestSent.Load() {
+		if _, err := c.writeRequest(nil); err != nil {
+			return c.wrap(err, netproxy.OpWrite)
+		}
+	}
 
 	// As documented by the quic-go library, this doesn't actually close the entire stream.
 	// It prevents further writes, which in turn will result in an EOF signal being sent the other side of stream when

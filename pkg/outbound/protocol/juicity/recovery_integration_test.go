@@ -91,6 +91,10 @@ func TestRecoveryStreamResetDoesNotKillSharedQUICConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The peer sees the stream once the request is written.
+		if _, err := client.Write(nil); err != nil {
+			t.Fatal(err)
+		}
 		remote, err := server.AcceptStream(ctx)
 		if err != nil {
 			t.Fatal(err)

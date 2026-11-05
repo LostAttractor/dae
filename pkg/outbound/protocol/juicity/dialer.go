@@ -128,9 +128,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if err != nil {
 		return nil, err
 	}
-	if err = protocol.Handshake(ctx, conn, func() error { _, err := conn.Write(nil); return err }); err != nil {
-		return nil, err
-	}
 	return conn, nil
 }
 
@@ -146,9 +143,6 @@ func (d *Dialer) ListenPacket(ctx context.Context, address string) (net.PacketCo
 	if metadata.Port != 0 {
 		conn, err := d.clientRing.DialContext(ctx, m)
 		if err != nil {
-			return nil, err
-		}
-		if err = protocol.Handshake(ctx, conn, func() error { _, err := conn.Write(nil); return err }); err != nil {
 			return nil, err
 		}
 		return &PacketConn{Conn: conn}, nil
