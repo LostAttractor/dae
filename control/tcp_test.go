@@ -10,10 +10,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -477,5 +479,95 @@ func TestRelayTCPDrainGracePreservesReverseTraffic(t *testing.T) {
 				t.Fatalf("relay within drain grace period: %v", err)
 			}
 		})
+	}
+}
+
+// A proxy defers its request header to the first write, so setup sends the
+// sniffed bytes as that write before the relay can read the upstream. A client
+// that has sent nothing leaves the header to the relay's first upstream read.
+func TestTCPSetupSendsSniffedBytesAsFirstUpstreamWrite(t *testing.T) {
+	for name, payload := range map[string]string{"sniffed": "\x00\x01request", "silent": ""} {
+		t.Run(name, func(t *testing.T) {
+			upstream, peer := net.Pipe()
+			defer peer.Close()
+			unexpected := func(context.Context, string, string) (net.Conn, error) {
+				t.Error("dialed a non-proxy outbound")
+				return nil, net.ErrClosed
+			}
+			proxy := downloadTestGroup(t, "proxy", func(context.Context, string, string) (net.Conn, error) { return upstream, nil })
+			c := downloadTestPlane(t, "l4proto(tcp) -> proxy", downloadTestGroup(t, "direct", unexpected), downloadTestGroup(t, "block", unexpected), proxy)
+			c.core.domainRegistry = newRoutingDomainRegistry()
+			c.core.bpf = &BPFState{}
+			c.deviceRoutes = new(deviceRoutes)
+			c.sniffingTimeout = 50 * time.Millisecond
+			accepted, client := relayTestTCPPair(t)
+			if _, err := client.Write([]byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			received := make(chan string, 1)
+			go func() {
+				buf := make([]byte, 64)
+				n, _ := peer.Read(buf)
+				received <- string(buf[:n])
+			}()
+			relay, err := c.prepareTCPRelay(t.Context(), accepted, &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
+			if err != nil || relay == nil {
+				t.Fatalf("relay = %v, error = %v", relay, err)
+			}
+			defer relay.rConn.Close()
+			defer relay.lConn.Close()
+			if payload == "" {
+				select {
+				case got := <-received:
+					t.Fatalf("setup wrote %q for a silent client", got)
+				case <-time.After(50 * time.Millisecond):
+				}
+			} else {
+				select {
+				case got := <-received:
+					if got != payload {
+						t.Fatalf("first upstream write = %q, want %q", got, payload)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("setup did not write the sniffed bytes")
+				}
+			}
+			if relay.prefix != uint64(len(payload)) {
+				t.Fatalf("prefix = %d, want %d", relay.prefix, len(payload))
+			}
+			var rest strings.Builder
+			if err := relay.lConn.(interface{ WriteBufferedTo(io.Writer) error }).WriteBufferedTo(&rest); err != nil || rest.Len() != 0 {
+				t.Fatalf("relay would resend %q: %v", rest.String(), err)
+			}
+		})
+	}
+}
+
+// Bytes setup already sent upstream count as upload once.
+func TestRelayTCPCountsSetupPrefix(t *testing.T) {
+	path := stats.Path{Dialer: t.Name()}
+	before := stats.DefaultStore.Snapshot()[path].UploadBytes
+	traffic := stats.DefaultStore.OpenConnection(path, false)
+	left, client := relayTestTCPPair(t)
+	right, peer := relayTestTCPPair(t)
+	done := make(chan error, 1)
+	go func() {
+		relay := &tcpRelay{lConn: left, rConn: right, prefix: 7}
+		done <- relay.copyTCP(traffic, time.Second)
+	}()
+	if _, err := client.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.CloseWrite()
+	_ = peer.CloseWrite()
+	if got, err := io.ReadAll(peer); err != nil || string(got) != "abc" {
+		t.Fatalf("upstream read %q, %v", got, err)
+	}
+	if err := waitTCPRelayTest(t, done); err != nil {
+		t.Fatal(err)
+	}
+	_ = traffic.Close()
+	if got := stats.DefaultStore.Snapshot()[path].UploadBytes - before; got != 7+3 {
+		t.Fatalf("upload = %d, want %d", got, 7+3)
 	}
 }

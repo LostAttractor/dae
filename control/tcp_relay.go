@@ -30,6 +30,7 @@ type tcpRelay struct {
 	policyLease    *netproxy.Lease
 	ownerLease     *netproxy.Lease
 	activity       func()
+	prefix         uint64 // sniffed bytes setup sent as the first upstream write
 
 	// DNS and MITM take over the accepted connection instead of copying bytes.
 	custom func() error
@@ -80,6 +81,9 @@ func (r *tcpRelay) runMITM() error {
 // EOF half-closes the destination; failures and owner aborts close both endpoints.
 func (r *tcpRelay) copyTCP(traffic *stats.Connection, drainTimeout time.Duration) error {
 	pair := newTCPCopyPair(r, traffic)
+	if r.prefix > 0 {
+		pair.progress.record(0, r.prefix)
+	}
 	var leaseDone [len(pair.leases)]<-chan struct{}
 	for i, lease := range pair.leases {
 		leaseDone[i] = lease.Done()

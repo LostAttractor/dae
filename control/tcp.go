@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 )
 
 // prepareTCPRelay owns connection setup through sniffing, routing, and dialing.
@@ -124,8 +125,22 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		_ = lConn.Close()
 	}
 	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
+	var prefix uint64
 	rConn, err := upstream.establishUpstream(setupCtx, func(ctx context.Context) (net.Conn, error) {
-		return dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
+		conn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
+		if err != nil || dialOption.Direct {
+			return conn, err
+		}
+		// Proxy protocols defer their request header to the first write.
+		// Send the sniffed payload as that write before both copy directions
+		// start, so an early upstream read cannot flush the header alone.
+		err = protocol.Handshake(ctx, conn, func() error {
+			return sniffer.WriteBufferedTo(&trafficWriter{Writer: conn, add: func(n uint64) { prefix += n }})
+		})
+		if err != nil {
+			return nil, err
+		}
+		return conn, nil
 	})
 	if err != nil {
 		if cause := connectionAbortCause(dialOption.PolicyLease, routeLease); cause != nil {
@@ -152,6 +167,10 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		routeLease:  routeLease,
 		dst:         dst,
 		domain:      domain,
+		prefix:      prefix,
+	}
+	if prefix > 0 {
+		observe()
 	}
 	if dialOption.Direct {
 		relay.outboundOrigin = netproxy.OriginTarget
