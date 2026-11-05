@@ -41,6 +41,9 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	}
 	return len(p), nil
 }
+
+// ReadFrom leaves the request header to the first WriteTo: replies follow a
+// datagram, and readers start before the first write.
 func (c *PacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()

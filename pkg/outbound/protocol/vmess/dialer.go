@@ -94,13 +94,18 @@ func (d *Dialer) open(ctx context.Context, network, address string) (*Conn, erro
 		return nil, err
 	}
 	netproxy.CaptureDependency(ctx, parent)
+	// The request header waits for the caller's first write, so only checks
+	// that need no I/O guard the parent here.
+	err = ctx.Err()
+	if lease := netproxy.DependencyOf(parent); err == nil && !lease.Valid() {
+		err = lease.Cause()
+	}
 	var conn *Conn
-	err = protocol.Handshake(ctx, parent, func() error {
-		var err error
+	if err == nil {
 		conn, err = newConn(parent, request{address: target, network: network, cipher: d.cipher}, d.key[:])
-		return err
-	})
+	}
 	if err != nil {
+		_ = parent.Close()
 		return nil, err
 	}
 	return conn, nil

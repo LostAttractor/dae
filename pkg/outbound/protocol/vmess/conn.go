@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -18,9 +19,13 @@ import (
 const MaxChunkSize = 1 << 14
 
 // Conn owns one VMess request stream. Shared transports remain owned by their dialer.
+// The request header goes out in the same carrier write as the first chunk
+// (Write, WriteTo or CloseWrite); a stream Read that comes first sends it alone.
 type Conn struct {
 	net.Conn
 	readMu, writeMu         sync.Mutex
+	header                  []byte      // pending request header (pooled), guarded by writeMu
+	sent                    atomic.Bool // header reached the carrier
 	reader                  *bufio.Reader
 	writeCipher, readCipher cipher.AEAD
 	writeSize, readSize     *ShakeSizeParser
@@ -59,15 +64,7 @@ func newConn(parent net.Conn, request request, key []byte) (*Conn, error) {
 	}
 	c.writeSize = NewShakeSizeParser(c.writeIV[:])
 	c.readSize = NewShakeSizeParser(c.readIV[:])
-	header, err := EncryptReqHeaderFromPool(instruction, key)
-	if err != nil {
-		return nil, err
-	}
-	defer pool.PutBuffer(header)
-	n, err := parent.Write(header)
-	if err == nil && n != len(header) {
-		err = io.ErrShortWrite
-	}
+	c.header, err = EncryptReqHeaderFromPool(instruction, key)
 	if err != nil {
 		return nil, err
 	}
@@ -93,26 +90,60 @@ func (c *Conn) writeChunk(p []byte) error {
 	}
 	padding := int(c.writeSize.NextPaddingLen())
 	size := len(p) + c.writeCipher.Overhead() + padding
-	data := pool.GetBuffer(2 + size)
+	data := pool.GetBuffer(len(c.header) + 2 + size)
 	defer pool.PutBuffer(data)
-	c.writeSize.Encode(uint16(size), data)
-	c.writeCipher.Seal(data[2:2], chunkNonce(c.writeIV, c.writeCount, c.writeCipher.NonceSize()), p, nil)
+	frame := data[copy(data, c.header):]
+	c.writeSize.Encode(uint16(size), frame)
+	c.writeCipher.Seal(frame[2:2], chunkNonce(c.writeIV, c.writeCount, c.writeCipher.NonceSize()), p, nil)
 	c.writeCount++
-	rand.Read(data[len(data)-padding:])
+	rand.Read(frame[len(frame)-padding:])
+	return c.writeCarrier(data)
+}
+
+// writeCarrier writes data, which begins with the pending request header
+// until a write carries it. The header is never retried: a failed attempt
+// leaves the stream unusable, so its error stays sticky.
+func (c *Conn) writeCarrier(data []byte) error {
 	n, err := c.Conn.Write(data)
 	if err == nil && n != len(data) {
 		err = io.ErrShortWrite
+	}
+	if c.header != nil {
+		pool.PutBuffer(c.header)
+		c.header = nil
+		c.sent.Store(err == nil)
 	}
 	if err != nil {
 		c.writeErr = err
 	}
 	return err
 }
+
+// flushLocked sends the pending request header alone.
+func (c *Conn) flushLocked() error {
+	if c.writeErr != nil || c.sent.Load() {
+		return c.writeErr
+	}
+	return c.writeCarrier(c.header)
+}
+
+// flush runs before every read: the server replies only after the request header.
+func (c *Conn) flush() error {
+	if c.sent.Load() {
+		return nil
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.flushLocked()
+}
 func (c *Conn) Write(p []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.writeErr != nil {
 		return 0, c.writeErr
+	}
+	if len(p) == 0 {
+		return 0, c.flushLocked()
 	}
 	written := 0
 	size := MaxChunkSize - 2 - c.writeCipher.Overhead() - int(c.writeSize.MaxPaddingLen())
@@ -231,11 +262,14 @@ func (c *Conn) readChunk() ([]byte, error) {
 	return plain, nil
 }
 func (c *Conn) Read(p []byte) (int, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
+	if err := c.flush(); err != nil {
+		return 0, err
+	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if len(c.pending) == 0 {
 		var err error
 		c.pending, err = c.readChunk()

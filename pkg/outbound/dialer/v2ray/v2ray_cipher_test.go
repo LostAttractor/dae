@@ -64,6 +64,10 @@ func buildRequestSecurity(t *testing.T, builder dialer.Builder) byte {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	// The request header waits for the first write; send it alone.
+	if _, err := conn.Write(nil); err != nil {
+		t.Fatal(err)
+	}
 	wire := sink.Bytes()
 	if len(wire) < 58 {
 		t.Fatalf("short request: %x", wire)
