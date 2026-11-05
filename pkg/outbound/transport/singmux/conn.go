@@ -58,8 +58,21 @@ func rejection(layer netproxy.FailureLayer, message []byte) error {
 	return netproxy.WrapFailure(fmt.Errorf("%s target rejected connection: %s%s", layer, message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: layer, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
 }
 
+// Read sends a pending TCP stream request first: the server answers only
+// after it, and a server-first protocol may never write. UDP streams leave it
+// to the first datagram.
 func (c *Conn) Read(b []byte) (n int, err error) {
 	if !c.onceRead {
+		if !c.udp {
+			c.writeMu.Lock()
+			if !c.onceWrite {
+				_, err = c.write(nil)
+			}
+			c.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
 		err = readResponse(c.Conn, c.layer)
 		if err != nil {
 			return

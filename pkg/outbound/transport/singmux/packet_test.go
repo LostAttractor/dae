@@ -94,7 +94,7 @@ func TestUDPReadPreservesDatagramBoundaries(t *testing.T) {
 				}
 				done <- nil
 			}()
-			conn := &UDPConn{Conn: Conn{Conn: stream}}
+			conn := &UDPConn{Conn: Conn{Conn: stream, udp: true}}
 			buf := make([]byte, tc.capacity)
 			n, from, err := conn.ReadFrom(buf)
 			var wantErr error

@@ -1,6 +1,7 @@
 package singmux
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -81,5 +82,38 @@ func TestStreamReadDeadlineRemainsFailure(t *testing.T) {
 	failure := netproxy.ClassifyFailure(err)
 	if failure.Reason != netproxy.ReasonDeadline || failure.Origin == netproxy.OriginLocalCleanup {
 		t.Fatalf("upstream read deadline was suppressed: %+v", failure)
+	}
+}
+
+// A server-first protocol never writes, so Read sends the stream request.
+func TestStreamReadSendsPendingRequest(t *testing.T) {
+	_, stream, server := testLeasedStream(t)
+	peer, err := server.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
+	conn := &Conn{Conn: stream, addr: "192.0.2.1:25"}
+	read := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 16)
+		n, _ := conn.Read(buf)
+		read <- string(buf[:n])
+	}()
+	var want bytes.Buffer
+	if err := WriteStreamRequest(&want, &StreamRequest{Destination: "192.0.2.1:25"}); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, want.Len())
+	if _, err := io.ReadFull(peer, got); err != nil || !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("stream request = %x, %v; want %x", got, err, want.Bytes())
+	}
+	if _, err := peer.Write([]byte("\x00220 ready")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-read; got != "220 ready" {
+		t.Fatalf("Read = %q", got)
 	}
 }
