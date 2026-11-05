@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -133,5 +134,61 @@ func TestDialSendsNothingBeforeFirstWrite(t *testing.T) {
 	got := make([]byte, 5)
 	if _, err := io.ReadFull(request, got); err != nil || string(got) != "hello" {
 		t.Fatalf("payload=%q err=%v", got, err)
+	}
+}
+
+// A reconnect resumes the node's TLS session without 0-RTT, even when the
+// server would accept early data.
+func TestReconnectResumesTLSWithoutEarlyData(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	listener, err := quic.ListenAddrEarly("127.0.0.1:0", recoveryTLS(t), &quic.Config{EnableDatagrams: true, Allow0RTT: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	// NewDialer gives every node one session cache.
+	d, err := NewDialer(loopbackPacketParent{}, protocol.Header{ProxyAddress: listener.Addr().String(), User: "00000000-0000-0000-0000-000000000000", Password: "test", Feature1: "bbr", TlsConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"tuic-test"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for i := range 2 {
+		if err := d.Connect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		server, err := listener.Accept(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The peer leaves first; closing the dialer then waits for no stream.
+		defer server.CloseWithError(0, "")
+		// The reply follows the session ticket, so reading it stores the ticket.
+		client, err := d.DialContext(ctx, "tcp", "example.test:443")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		remote, err := server.AcceptStream(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := remote.Write([]byte("y")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(client, make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		_ = client.Close()
+		var member *clientImpl
+		if err := d.clientRing.Allocate(ctx, false, func(_ context.Context, c *clientImpl) error { member = c; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if state := member.quicConn.ConnectionState(); state.TLS.DidResume != (i == 1) || state.Used0RTT {
+			t.Fatalf("connection %d: resumed=%v 0-RTT=%v", i, state.TLS.DidResume, state.Used0RTT)
+		}
+		member.failConnection(errors.New("reconnect"))
 	}
 }

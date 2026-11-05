@@ -53,6 +53,9 @@ func (s *Juicity) Build(option *dialer.ExtraOption, upstream dialer.Upstream) (n
 		MinVersion:         tls.VersionTLS13,
 		ServerName:         s.Sni,
 		InsecureSkipVerify: s.AllowInsecure || option.AllowInsecure,
+		// Reconnects resume without the certificate chain. Juicity dials
+		// without 0-RTT, so nothing is sent before the handshake completes.
+		ClientSessionCache: tls.NewLRUClientSessionCache(8),
 	}
 	if s.PinnedCertchainSha256 != "" {
 		pinnedHash, err := base64.URLEncoding.DecodeString(s.PinnedCertchainSha256)

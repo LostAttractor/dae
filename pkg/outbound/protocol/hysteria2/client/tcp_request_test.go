@@ -3,8 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"slices"
 	"sync"
@@ -190,5 +192,30 @@ func TestFastOpenFailedRequestSticks(t *testing.T) {
 	_, readErr := conn.Read(make([]byte, 1))
 	if writeErr != err || readErr != err || netproxy.CloseWrite(conn) != err {
 		t.Fatalf("failure not sticky: write=%v read=%v", writeErr, readErr)
+	}
+}
+
+// A reconnect resumes the node's TLS session without 0-RTT, even when the
+// server would accept early data.
+func TestReconnectResumesTLSWithoutEarlyData(t *testing.T) {
+	addr := serveH3(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(protocol.StatusAuthOK) })
+	// NewDialer gives every node one session cache.
+	client, err := NewClient(&Config{Addr: addr, NextDialer: authTestDialer{}, TLSConfig: tls.Config{InsecureSkipVerify: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for i := range 2 {
+		if err := client.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		resource, err := client.currentResource()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state := resource.conn.ConnectionState(); state.TLS.DidResume != (i == 1) || state.Used0RTT {
+			t.Fatalf("connection %d: resumed=%v 0-RTT=%v", i, state.TLS.DidResume, state.Used0RTT)
+		}
+		_ = resource.conn.CloseWithError(0, "")
 	}
 }

@@ -2,6 +2,7 @@ package tuic
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -42,11 +43,17 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 	if header.Flags&protocol.Flags_Tuic_UdpRelayModeQuic > 0 {
 		udpRelayMode = common.QUIC
 	}
+	// Ring members share one session cache, so a reconnect resumes TLS
+	// without the certificate chain. Dials never use 0-RTT.
+	tlsConfig := header.TlsConfig.Clone()
+	if tlsConfig.ClientSessionCache == nil {
+		tlsConfig.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	}
 	return &Dialer{
 		clientRing: newClientRing(func(capabilityCallback func(streamType quic.StreamType, n int64)) *clientImpl {
 			return &clientImpl{
 				ClientOption: &ClientOption{
-					TlsConfig: header.TlsConfig,
+					TlsConfig: tlsConfig,
 					QuicConfig: &quic.Config{
 						InitialStreamReceiveWindow:     common.InitialStreamReceiveWindow,
 						MaxStreamReceiveWindow:         common.MaxStreamReceiveWindow,

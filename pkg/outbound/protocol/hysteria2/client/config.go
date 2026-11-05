@@ -43,6 +43,11 @@ func (c *Config) verifyAndFill() error {
 	if c.NextDialer == nil {
 		return errors.New("Hysteria2 config: NextDialer must be set")
 	}
+	// One session cache per client lets reconnects resume TLS without the
+	// certificate chain. The client dials without 0-RTT.
+	if c.TLSConfig.ClientSessionCache == nil {
+		c.TLSConfig.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+	}
 	if c.BandwidthConfig.MaxTx > math.MaxInt64 || c.BandwidthConfig.MaxRx > math.MaxInt64 {
 		return errors.New("Hysteria2 bandwidth must not exceed MaxInt64 bytes per second")
 	}

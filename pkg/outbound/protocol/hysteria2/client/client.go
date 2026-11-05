@@ -248,7 +248,10 @@ func (c *Client) establish(ctx context.Context) (resource *clientResource, err e
 		TLSClientConfig: &c.config.TLSConfig,
 		QUICConfig:      &quicConfig,
 		Dial: func(ctx context.Context, _ string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-			qc, err := quic.DialEarly(ctx, resource.pktConn, addr, tlsCfg, cfg)
+			// Dial, not DialEarly: the auth request waits for the handshake
+			// anyway, and 0-RTT on a resumed session only risks a rejection
+			// that fails every later stream, as http3 never calls NextConnection.
+			qc, err := quic.Dial(ctx, resource.pktConn, addr, tlsCfg, cfg)
 			if err != nil {
 				return nil, err
 			}
