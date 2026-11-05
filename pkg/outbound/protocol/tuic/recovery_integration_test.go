@@ -92,6 +92,9 @@ func TestRecoveryStreamResetDoesNotKillSharedQUICConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := client.Write(nil); err != nil {
+			t.Fatal(err)
+		}
 		remote, err := server.AcceptStream(ctx)
 		if err != nil {
 			t.Fatal(err)

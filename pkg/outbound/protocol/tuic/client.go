@@ -9,6 +9,7 @@ import (
 	mathrand "math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -244,10 +245,8 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 		defer func() {
 			t.deferQuicConn(err)
 		}()
-		buf := pool.GetBytesBuffer()
-		defer pool.PutBytesBuffer(buf)
-		buf.Write([]byte{Ver5, ConnectType})
-		if err := addressFromMetadata(metadata).appendTo(buf); err != nil {
+		command := bytes.NewBuffer([]byte{Ver5, ConnectType})
+		if err := addressFromMetadata(metadata).appendTo(command); err != nil {
 			return nil, err
 		}
 
@@ -263,17 +262,94 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 		}
 		tracked := common.NewSafeStreamConn(quicStream, quicConn.LocalAddr(), quicConn.RemoteAddr())
 		tracked.BindRecovery(lease, t.failConnection)
-		stream = tracked
-		if err = protocol.Handshake(ctx, stream, func() error { _, err := stream.Write(buf.Bytes()); return err }); err != nil {
-			_ = stream.Close()
-			return nil, err
-		}
-		return stream, err
+		return newConnectConn(tracked, command.Bytes()), nil
 	}()
 	if err != nil {
 		return nil, common.WrapQUICError(err, t.resource, nil, netproxy.OpOpenStream, t.failConnection)
 	}
 	return stream, nil
+}
+
+type trackedStream interface {
+	net.Conn
+	netproxy.CloseWriter
+	netproxy.DependencyProvider
+}
+
+// connectConn sends the CONNECT command in the same stream write as the
+// first payload, so a lone fixed-size command never precedes it. A Read or
+// CloseWrite before any Write sends the command alone; Close never sends it.
+type connectConn struct {
+	trackedStream
+	pending atomic.Bool
+	mu      sync.Mutex // orders the command before any payload or FIN
+	command []byte
+	err     error // sticky command write failure
+}
+
+func newConnectConn(stream trackedStream, command []byte) *connectConn {
+	c := &connectConn{trackedStream: stream, command: command}
+	c.pending.Store(true)
+	return c
+}
+
+// writeCommandLocked writes the pending command followed by b and reports
+// the bytes of b written.
+func (c *connectConn) writeCommandLocked(b []byte) (int, error) {
+	if c.err != nil {
+		return 0, c.err
+	}
+	if !c.pending.Load() {
+		if len(b) == 0 {
+			return 0, nil
+		}
+		return c.trackedStream.Write(b)
+	}
+	buf := pool.GetBuffer(len(c.command) + len(b))
+	defer pool.PutBuffer(buf)
+	copy(buf[copy(buf, c.command):], b)
+	n, err := c.trackedStream.Write(buf)
+	if err != nil {
+		c.err = err
+		return max(n-len(c.command), 0), err
+	}
+	c.command = nil
+	c.pending.Store(false)
+	return len(b), nil
+}
+
+func (c *connectConn) Write(b []byte) (int, error) {
+	if !c.pending.Load() {
+		return c.trackedStream.Write(b)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeCommandLocked(b)
+}
+
+func (c *connectConn) Read(p []byte) (int, error) {
+	// Whoever holds mu while the command is pending is sending it; a reader
+	// that waited could stall behind a write blocked on flow control.
+	if len(p) > 0 && c.pending.Load() && c.mu.TryLock() {
+		_, err := c.writeCommandLocked(nil)
+		c.mu.Unlock()
+		if err != nil {
+			return 0, err
+		}
+	}
+	return c.trackedStream.Read(p)
+}
+
+func (c *connectConn) CloseWrite() error {
+	if c.pending.Load() {
+		c.mu.Lock()
+		_, err := c.writeCommandLocked(nil)
+		c.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return c.trackedStream.CloseWrite()
 }
 
 func (t *clientImpl) ListenPacket(ctx context.Context, metadata *protocol.Metadata) (*quicStreamPacketConn, error) {

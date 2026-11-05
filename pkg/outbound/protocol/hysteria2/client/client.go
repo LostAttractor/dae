@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -121,24 +122,12 @@ func (c *Client) openStream(ctx context.Context, resource *clientResource) (*uti
 	}, nil
 }
 
+// dialConn sends the request and waits for its response.
 func (c *Client) dialConn(stream *utils.QStream, addr string) (net.Conn, error) {
-	// Send request
 	err := protocol.WriteTCPRequest(stream, addr)
 	if err != nil {
 		return nil, err
 	}
-	if c.config.FastOpen {
-		// Don't wait for the response when fast open is enabled.
-		// Return the connection immediately, defer the response handling
-		// to the first Read() call.
-		return &tcpConn{
-			Orig:             stream,
-			PseudoLocalAddr:  stream.LocalAddr(),
-			PseudoRemoteAddr: stream.RemoteAddr(),
-			Established:      false,
-		}, nil
-	}
-	// Read response
 	ok, msg, err := protocol.ReadTCPResponse(stream)
 	if err != nil {
 		return nil, responseError(stream, err)
@@ -193,6 +182,13 @@ func (c *Client) DialContext(ctx context.Context, network, address string) (conn
 	stream, err := c.openStream(ctx, resource)
 	if err != nil {
 		return nil, err
+	}
+	if c.config.FastOpen {
+		// The request goes with the first Write and its response is parsed
+		// on the first Read.
+		var request bytes.Buffer
+		_ = protocol.WriteTCPRequest(&request, address)
+		return newFastOpenConn(stream, request.Bytes()), nil
 	}
 	err = P.Handshake(ctx, stream, func() error {
 		var exchangeErr error

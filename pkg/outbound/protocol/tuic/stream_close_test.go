@@ -75,7 +75,8 @@ func newCloseFixture(t *testing.T, ctx context.Context, peer quic.Config) *close
 	return f
 }
 
-// open dials a stream and accepts it on the peer, past the CONNECT header.
+// open dials a stream, sends its CONNECT alone and accepts it on the peer,
+// past the CONNECT header.
 func (f *closeFixture) open(t *testing.T, ctx context.Context) (net.Conn, *quic.Stream, *bufio.Reader) {
 	t.Helper()
 	client, err := f.runtime.Dialer().DialContext(ctx, "tcp", "example.test:443")
@@ -83,6 +84,10 @@ func (f *closeFixture) open(t *testing.T, ctx context.Context) (net.Conn, *quic.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
+	// The peer sees the stream only once the deferred CONNECT is sent.
+	if _, err := client.Write(nil); err != nil {
+		t.Fatal(err)
+	}
 	remote, err := f.server.AcceptStream(ctx)
 	if err != nil {
 		t.Fatal(err)

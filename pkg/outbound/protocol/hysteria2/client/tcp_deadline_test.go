@@ -18,7 +18,8 @@ import (
 	"github.com/daeuniverse/quic-go"
 )
 
-func fastOpenTestPair(t *testing.T) (*tcpConn, *quic.Stream, *netproxy.Lease) {
+// quicTestPair connects a loopback client to a listener using serverConfig.
+func quicTestPair(t *testing.T, serverConfig *quic.Config) (client, server *quic.Conn) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -29,23 +30,31 @@ func fastOpenTestPair(t *testing.T) (*tcpConn, *quic.Stream, *netproxy.Lease) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := quic.ListenAddr("127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}}, NextProtos: []string{"hy2-deadline"}}, nil)
+	listener, err := quic.ListenAddr("127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}}, NextProtos: []string{"hy2-deadline"}}, serverConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithTimeout(t.Context(), 2*netproxy.DialTimeout)
-	t.Cleanup(cancel)
-	conn, err := quic.DialAddr(ctx, listener.Addr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"hy2-deadline"}}, nil)
+	defer cancel()
+	client, err = quic.DialAddr(ctx, listener.Addr().String(), &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"hy2-deadline"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
-	server, err := listener.Accept(ctx)
+	t.Cleanup(func() { _ = client.CloseWithError(0, "") })
+	server, err = listener.Accept(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = server.CloseWithError(0, "") })
+	return client, server
+}
+
+func fastOpenTestPair(t *testing.T) (*tcpConn, *quic.Stream, *netproxy.Lease) {
+	t.Helper()
+	conn, server := quicTestPair(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*netproxy.DialTimeout)
+	t.Cleanup(cancel)
 	stream, err := conn.OpenStream()
 	if err != nil {
 		t.Fatal(err)
