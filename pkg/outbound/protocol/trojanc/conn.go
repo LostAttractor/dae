@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
@@ -18,14 +19,23 @@ const (
 	commandUDP     = 3
 )
 
+// Conn sends the request header with the first Write in one carrier write.
+// A CONNECT Read or a CloseWrite before any Write sends the header alone, so
+// server-first protocols and read-first callers still reach the target.
 type Conn struct {
 	net.Conn
 	addr        *socks5.AddressInfo
 	command     byte
 	pass        [56]byte
 	writeMutex  sync.Mutex
-	wroteHeader bool
+	wroteHeader atomic.Bool
 	writeErr    error
+}
+
+// closeWriteConn exposes CloseWrite only over carriers that can half-close.
+type closeWriteConn struct {
+	*Conn
+	carrier netproxy.CloseWriter
 }
 
 func newConn(conn net.Conn, addr *socks5.AddressInfo, command byte, password string) net.Conn {
@@ -33,18 +43,53 @@ func newConn(conn net.Conn, addr *socks5.AddressInfo, command byte, password str
 	c := &Conn{Conn: conn, addr: addr, command: command}
 	hex.Encode(c.pass[:], hash[:])
 	if writer, ok := conn.(netproxy.CloseWriter); ok {
-		return &netproxy.CloseWriteConn{Conn: c, CloseWriter: writer}
+		return &closeWriteConn{Conn: c, carrier: writer}
 	}
 	return c
+}
+
+func (c *closeWriteConn) CloseWrite() error {
+	if err := c.flushHeader(); err != nil {
+		return err
+	}
+	return c.carrier.CloseWrite()
+}
+
+func (c *Conn) Read(b []byte) (int, error) {
+	// UDP replies follow a datagram, and packet readers start before the first
+	// WriteTo, so a UDP Read must neither send the header nor see write errors.
+	if len(b) > 0 && c.command == commandConnect {
+		if err := c.flushHeader(); err != nil {
+			return 0, err
+		}
+	}
+	return c.Conn.Read(b)
+}
+
+func (c *Conn) flushHeader() error {
+	if c.wroteHeader.Load() {
+		return nil
+	}
+	c.writeMutex.Lock()
+	defer c.writeMutex.Unlock()
+	if c.wroteHeader.Load() {
+		return nil
+	}
+	_, err := c.writeLocked(nil)
+	return err
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	return c.writeLocked(b)
+}
+
+func (c *Conn) writeLocked(b []byte) (int, error) {
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
-	if c.wroteHeader {
+	if c.wroteHeader.Load() {
 		return c.Conn.Write(b)
 	}
 	buf := pool.GetBytesBuffer()
@@ -67,7 +112,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 		c.writeErr = err
 		return 0, err
 	}
-	c.wroteHeader = true
+	c.wroteHeader.Store(true)
 	c.addr = nil
 	return n - headerLen, err
 }

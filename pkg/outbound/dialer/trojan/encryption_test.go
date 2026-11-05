@@ -51,7 +51,6 @@ func TestShadowsocksTransportStartsWithTrojanHeader(t *testing.T) {
 	wantHeader = append(wantHeader, targetHost...)
 	wantHeader = binary.BigEndian.AppendUint16(wantHeader, 8443)
 	wantHeader = append(wantHeader, '\r', '\n')
-	headerReceived := make(chan struct{})
 	peerResult := make(chan error, 1)
 	go func() {
 		peerResult <- func() error {
@@ -76,11 +75,10 @@ func TestShadowsocksTransportStartsWithTrojanHeader(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if !bytes.Equal(first, wantHeader) {
-				return fmt.Errorf("first plaintext = %x, want Trojan hash and target = %x", first, wantHeader)
+			payload, ok := bytes.CutPrefix(first, wantHeader)
+			if !ok || len(payload) == 0 {
+				return fmt.Errorf("first plaintext = %x, want Trojan hash and target %x followed by payload", first, wantHeader)
 			}
-			close(headerReceived)
-			var payload []byte
 			for {
 				frame, err := readAEADFrame(conn, decrypt, nonce)
 				if err == io.EOF {
@@ -127,13 +125,6 @@ func TestShadowsocksTransportStartsWithTrojanHeader(t *testing.T) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	select {
-	case <-headerReceived:
-	case err := <-peerResult:
-		t.Fatalf("handshake: %v", err)
-	case <-ctx.Done():
-		t.Fatal("DialContext did not send the Trojan handshake")
-	}
 	if _, err := conn.Write([]byte("request")); err != nil {
 		t.Fatal(err)
 	}

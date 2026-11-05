@@ -22,6 +22,7 @@ func NewDialer(parent netproxy.Dialer, header protocol.Header) (netproxy.Dialer,
 	return &Dialer{ParentDialer: parent, proxyAddress: header.ProxyAddress, password: header.Password}, nil
 }
 
+// dial performs no I/O: Conn sends the request header with the first write.
 func (d *Dialer) dial(ctx context.Context, address string, command byte) (net.Conn, error) {
 	target, err := socks5.AddressFromString(address)
 	if err != nil {
@@ -31,11 +32,15 @@ func (d *Dialer) dial(ctx context.Context, address string, command byte) (net.Co
 	if err != nil {
 		return nil, err
 	}
-	conn := newConn(carrier, target, command, d.password)
-	if err := protocol.Handshake(ctx, conn, func() error { _, err := conn.Write(nil); return err }); err != nil {
+	if err := ctx.Err(); err != nil {
+		_ = carrier.Close()
 		return nil, err
 	}
-	return conn, nil
+	if lease := netproxy.DependencyOf(carrier); !lease.Valid() {
+		_ = carrier.Close()
+		return nil, lease.Cause()
+	}
+	return newConn(carrier, target, command, d.password), nil
 }
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

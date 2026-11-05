@@ -28,56 +28,125 @@ func (p testParent) ListenPacket(context.Context, string) (net.PacketConn, error
 	panic("unexpected UDP carrier")
 }
 
-func TestDialSendsHeaderBeforeApplicationWrite(t *testing.T) {
-	for _, network := range []string{"tcp", "udp"} {
-		t.Run(network, func(t *testing.T) {
-			client, server := net.Pipe()
-			defer server.Close()
-			d, _ := NewDialer(testParent{client}, protocol.Header{Password: "secret", ProxyAddress: "proxy:443"})
-			done := make(chan error, 1)
-			go func() {
-				hash := sha256.Sum224([]byte("secret"))
-				expected := []byte(hex.EncodeToString(hash[:]) + "\r\n")
-				cmd := byte(1)
-				if network == "udp" {
-					cmd = 3
-				}
-				expected = append(expected, cmd, 3, 11)
-				expected = append(expected, []byte("example.org")...)
-				expected = append(expected, 0, 80, 13, 10)
-				got := make([]byte, len(expected))
-				_, err := io.ReadFull(server, got)
-				if err == nil && !bytes.Equal(got, expected) {
-					err = errors.New("incorrect request wire")
-				}
-				done <- err
-			}()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			conn, err := d.DialContext(ctx, network, "example.org:80")
-			if err != nil {
-				t.Fatal(err)
+func requestHeader(command byte) []byte {
+	hash := sha256.Sum224([]byte("secret"))
+	b := append([]byte(hex.EncodeToString(hash[:])), '\r', '\n', command, 3, 11)
+	b = append(b, "example.org"...)
+	return append(b, 0, 53, '\r', '\n')
+}
+
+func dialCarrier(t *testing.T, network string, carrier net.Conn) net.Conn {
+	d, _ := NewDialer(testParent{carrier}, protocol.Header{Password: "secret", ProxyAddress: "proxy:443"})
+	conn, err := d.DialContext(t.Context(), network, "example.org:53")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func TestFirstWriteCarriesHeader(t *testing.T) {
+	for _, tc := range []struct {
+		network string
+		wire    []byte
+	}{
+		{"tcp", append(requestHeader(commandConnect), "payload"...)},
+		{"udp", append(requestHeader(commandUDP), udpFrame([]byte("payload"))...)},
+	} {
+		t.Run(tc.network, func(t *testing.T) {
+			carrier := &memoryConn{}
+			conn := dialCarrier(t, tc.network, carrier)
+			if carrier.writes != 0 {
+				t.Fatal("dial wrote to the carrier")
 			}
-			defer conn.Close()
-			if err := <-done; err != nil {
-				t.Fatal(err)
+			if n, err := conn.Write([]byte("payload")); n != 7 || err != nil {
+				t.Fatalf("write %d %v", n, err)
+			}
+			if carrier.writes != 1 || !bytes.Equal(carrier.written.Bytes(), tc.wire) {
+				t.Fatalf("%d carrier writes %q", carrier.writes, carrier.written.Bytes())
 			}
 		})
 	}
 }
 
-func TestDialCancellationClosesIncompleteRequest(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	d, _ := NewDialer(testParent{client}, protocol.Header{Password: "secret", ProxyAddress: "proxy:443"})
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	conn, err := d.DialContext(ctx, "tcp", "example.org:80")
-	if conn != nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("conn=%v error=%v", conn, err)
+func TestReadBeforeWriteSendsHeaderAlone(t *testing.T) {
+	carrier := &memoryConn{reader: bytes.NewReader([]byte("reply"))}
+	conn := dialCarrier(t, "tcp", carrier)
+	b := make([]byte, 16)
+	if n, err := conn.Read(b); err != nil || string(b[:n]) != "reply" {
+		t.Fatalf("read %q %v", b[:n], err)
 	}
-	if _, err := server.Read(make([]byte, 1)); err != io.EOF {
-		t.Fatalf("carrier remained open: %v", err)
+	if carrier.writes != 1 || !bytes.Equal(carrier.written.Bytes(), requestHeader(commandConnect)) {
+		t.Fatalf("%d carrier writes %q", carrier.writes, carrier.written.Bytes())
+	}
+	if _, err := conn.Write([]byte("next")); err != nil || !bytes.Equal(carrier.written.Bytes(), append(requestHeader(commandConnect), "next"...)) {
+		t.Fatalf("header resent or payload lost: %q %v", carrier.written.Bytes(), err)
+	}
+}
+
+func TestUDPReadLeavesHeaderToFirstWrite(t *testing.T) {
+	carrier := &memoryConn{reader: bytes.NewReader(append(udpFrame([]byte("reply")), udpFrame([]byte("next"))...))}
+	conn := dialCarrier(t, "udp", carrier)
+	b := make([]byte, 16)
+	if n, err := conn.Read(b); err != nil || string(b[:n]) != "reply" || carrier.writes != 0 {
+		t.Fatalf("read %q %v after %d writes", b[:n], err, carrier.writes)
+	}
+	carrier.short = true
+	if _, err := conn.Write([]byte("x")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatal(err)
+	}
+	// A sticky write error returned by every read would spin the UDP reader.
+	if n, err := conn.Read(b); err != nil || string(b[:n]) != "next" {
+		t.Fatalf("read after failed write %q %v", b[:n], err)
+	}
+}
+
+type halfCloseConn struct {
+	*memoryConn
+	writesAtCloseWrite int
+}
+
+func (c *halfCloseConn) CloseWrite() error { c.writesAtCloseWrite = c.writes; return nil }
+
+func TestCloseWriteBeforeWriteSendsHeaderAlone(t *testing.T) {
+	addr, _ := socks5.AddressFromString("example.org:53")
+	if _, ok := newConn(&memoryConn{}, addr, commandConnect, "secret").(netproxy.CloseWriter); ok {
+		t.Fatal("half-close exposed over a carrier without it")
+	}
+	carrier := &halfCloseConn{memoryConn: &memoryConn{}}
+	if err := netproxy.CloseWrite(newConn(carrier, addr, commandConnect, "secret")); err != nil {
+		t.Fatal(err)
+	}
+	if carrier.writesAtCloseWrite != 1 || !bytes.Equal(carrier.written.Bytes(), requestHeader(commandConnect)) {
+		t.Fatalf("half-closed after %d writes %q", carrier.writesAtCloseWrite, carrier.written.Bytes())
+	}
+}
+
+type leasedConn struct {
+	*memoryConn
+	lease *netproxy.Lease
+}
+
+func (c *leasedConn) DependencyLease() *netproxy.Lease { return c.lease }
+
+func TestDialRejectsUnusableCarrierWithoutIO(t *testing.T) {
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	invalid := netproxy.NewLease(netproxy.NewResourceRef())
+	invalid.Invalidate(netproxy.ErrDependencyInvalid)
+	for _, tc := range []struct {
+		ctx   context.Context
+		lease *netproxy.Lease
+		want  error
+	}{
+		{canceled, nil, context.Canceled},
+		{t.Context(), invalid, netproxy.ErrDependencyInvalid},
+	} {
+		carrier := &leasedConn{memoryConn: &memoryConn{}, lease: tc.lease}
+		d, _ := NewDialer(testParent{carrier}, protocol.Header{Password: "secret", ProxyAddress: "proxy:443"})
+		conn, err := d.DialContext(tc.ctx, "tcp", "example.org:53")
+		if conn != nil || !errors.Is(err, tc.want) || !carrier.closed || carrier.writes != 0 {
+			t.Fatalf("conn=%v error=%v closed=%v writes=%d", conn, err, carrier.closed, carrier.writes)
+		}
 	}
 }
 
@@ -183,15 +252,21 @@ func TestUDPBoundsShortBufferAndWriteFailure(t *testing.T) {
 }
 
 func TestInitialShortWriteIsSticky(t *testing.T) {
-	carrier := &memoryConn{reader: bytes.NewReader(nil), short: true}
+	carrier := &memoryConn{reader: bytes.NewReader([]byte("reply")), short: true}
 	addr, _ := socks5.AddressFromString("example.org:80")
 	conn := newConn(carrier, addr, commandConnect, "secret")
-	if _, err := conn.Write(nil); !errors.Is(err, io.ErrShortWrite) {
+	if _, err := conn.Read(make([]byte, 8)); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatal(err)
 	}
 	carrier.short = false
 	if _, err := conn.Write(nil); !errors.Is(err, io.ErrShortWrite) || carrier.writes != 1 {
 		t.Fatal("header replayed after partial write")
+	}
+	if _, err := conn.Write([]byte("payload")); !errors.Is(err, io.ErrShortWrite) || carrier.writes != 1 {
+		t.Fatal("payload written after partial header")
+	}
+	if _, err := conn.Read(make([]byte, 8)); !errors.Is(err, io.ErrShortWrite) || carrier.writes != 1 {
+		t.Fatal("read after partial header")
 	}
 }
 
