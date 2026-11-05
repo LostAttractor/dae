@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,7 +101,7 @@ func TestTCPConnCloseUnblocksRead(t *testing.T) {
 		readStarted: make(chan struct{}),
 		closed:      make(chan struct{}),
 	}
-	conn := NewTCPConn(underlay, &ciphers.CipherConf{SaltLen: 1}, nil, nil, nil)
+	conn := NewTCPConn(underlay, ciphers.AeadCiphersConf["aes-128-gcm"], make([]byte, 16), RandomSaltGenerator(16), nil)
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
@@ -140,8 +141,8 @@ func TestTCPConnWriteRejectsShortUnderlayWrite(t *testing.T) {
 		Conn:        underlay,
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
-		onceWrite:   true,
 	}
+	conn.onceWrite.Store(true)
 
 	if n, err := conn.Write([]byte("payload")); n != 0 || !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Write() = %d, %v; want 0, %v", n, err, io.ErrShortWrite)
@@ -169,8 +170,8 @@ func TestTCPConnWriteKeepsAlignedStreamUsableAfterFullWriteError(t *testing.T) {
 		Conn:        underlay,
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
-		onceWrite:   true,
 	}
+	conn.onceWrite.Store(true)
 	payload := []byte("payload")
 
 	if n, err := conn.Write(payload); n != len(payload) || !errors.Is(err, writeErr) {
@@ -202,7 +203,7 @@ func TestTCPConnWriteRejectsInvalidAddressBeforeWriting(t *testing.T) {
 	if underlay.writes != 0 {
 		t.Fatalf("underlay writes = %d, want 0", underlay.writes)
 	}
-	if conn.onceWrite {
+	if conn.onceWrite.Load() {
 		t.Fatal("failed address encoding marked the first write complete")
 	}
 }
@@ -221,8 +222,8 @@ func TestTCPConnWriteBuffersSealsWholeChunks(t *testing.T) {
 		Conn:        underlay,
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
-		onceWrite:   true,
 	}
+	conn.onceWrite.Store(true)
 	// An 8-byte frame header, then payload crossing a chunk boundary.
 	v := [][]byte{[]byte("header.."), bytes.Repeat([]byte("x"), TCPChunkMaxLen), nil, []byte("tail")}
 	var payload []byte
@@ -273,7 +274,7 @@ type readStep struct {
 	err  error
 }
 type interruptedReader struct {
-	shortWriteConn
+	fullWriteErrorConn
 	steps []readStep
 	reads int
 }
@@ -297,7 +298,7 @@ func TestTCPConnTimeoutResumesInsideFrames(t *testing.T) {
 	for _, cut := range []int{0, 5, 16, 16 + 7, 16 + 18, 16 + 18 + 9, len(wire) - 3} {
 		t.Run(strconv.Itoa(cut), func(t *testing.T) {
 			raw := &interruptedReader{steps: []readStep{{wire[:cut], timeout}, {wire[cut:], nil}}}
-			c := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+			c := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
 			got := make([]byte, 0, 2*len(payload))
 			buf := make([]byte, len(payload))
 			for len(got) < cap(got) {
@@ -323,82 +324,140 @@ func (p pipeParent) ListenPacket(context.Context, string) (net.PacketConn, error
 	return nil, errors.New("unused")
 }
 
-func TestDialContextSendsRequestBeforeApplicationWrite(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
-	done := make(chan error, 1)
-	go func() {
-		salt := make([]byte, 16)
-		if _, err := io.ReadFull(server, salt); err != nil {
-			done <- err
-			return
-		}
-		key := common.EVPBytesToKey("password", 16)
-		subkey := make([]byte, 16)
-		if _, err := io.ReadFull(hkdf.New(sha1.New, key, salt, []byte("ss-subkey")), subkey); err != nil {
-			done <- err
-			return
-		}
-		block, _ := aes.NewCipher(subkey)
-		aead, _ := cipher.NewGCM(block)
-		nonce := make([]byte, 12)
-		encrypted := make([]byte, 18)
-		if _, err := io.ReadFull(server, encrypted); err != nil {
-			done <- err
-			return
-		}
-		length, err := aead.Open(nil, nonce, encrypted, nil)
+// peerConn records carrier writes, serves response only after the client has
+// written and notes how many writes preceded each half-close.
+type peerConn struct {
+	fullWriteErrorConn
+	response bytes.Reader
+	finAt    []int
+}
+
+func (c *peerConn) Read(p []byte) (int, error) {
+	if c.writes == 0 {
+		return 0, errors.New("read before request")
+	}
+	return c.response.Read(p)
+}
+func (c *peerConn) CloseWrite() error { c.finAt = append(c.finAt, c.writes); return nil }
+
+// openRequest decrypts a whole aes-128-gcm client stream as the server would.
+func openRequest(t *testing.T, key, wire []byte) (*socks5.AddressInfo, []byte) {
+	t.Helper()
+	subkey := make([]byte, 16)
+	if _, err := io.ReadFull(hkdf.New(sha1.New, key, wire[:16], []byte("ss-subkey")), subkey); err != nil {
+		t.Fatal(err)
+	}
+	block, _ := aes.NewCipher(subkey)
+	aead, _ := cipher.NewGCM(block)
+	nonce := make([]byte, 12)
+	wire = wire[16:]
+	open := func(size int) []byte {
+		t.Helper()
+		plain, err := aead.Open(nil, nonce, wire[:size+16], nil)
 		if err != nil {
-			done <- err
-			return
+			t.Fatal(err)
 		}
-		encrypted = make([]byte, int(binary.BigEndian.Uint16(length))+16)
-		if _, err := io.ReadFull(server, encrypted); err != nil {
-			done <- err
-			return
-		}
-		nonce[0] = 1
-		plain, err := aead.Open(nil, nonce, encrypted, nil)
-		if err != nil {
-			done <- err
-			return
-		}
-		addr, err := socks5.ReadAddrInfo(bytes.NewReader(plain))
-		if err == nil && (addr.Hostname != "example.com" || addr.Port != 443) {
-			err = errors.New("incorrect target")
-		}
-		done <- err
-	}()
-	dialer, err := NewDialer(pipeParent{client}, protocol.Header{Cipher: "aes-128-gcm", Password: "password", ProxyAddress: "proxy:443"})
+		wire = wire[size+16:]
+		common.BytesIncLittleEndian(nonce)
+		return plain
+	}
+	var plain []byte
+	for len(wire) > 0 {
+		plain = append(plain, open(int(binary.BigEndian.Uint16(open(2))))...)
+	}
+	reader := bytes.NewReader(plain)
+	addr, err := socks5.ReadAddrInfo(reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	conn, err := dialer.DialContext(ctx, "tcp", "example.com:443")
+	return addr, plain[len(plain)-reader.Len():]
+}
+
+func TestDialContextDefersRequestToFirstWrite(t *testing.T) {
+	raw := new(peerConn)
+	dialer, err := NewDialer(pipeParent{raw}, protocol.Header{Cipher: "aes-128-gcm", Password: "password", ProxyAddress: "proxy:443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	conn, err := dialer.DialContext(t.Context(), "tcp", "example.com:443")
+	if err != nil || raw.writes != 0 {
+		t.Fatalf("dial wrote %d times: %v", raw.writes, err)
+	}
+	if n, err := conn.Write([]byte("payload")); n != 7 || err != nil {
+		t.Fatalf("Write() = %d, %v", n, err)
+	}
+	addr, payload := openRequest(t, common.EVPBytesToKey("password", 16), raw.Bytes())
+	if raw.writes != 1 || addr.Hostname != "example.com" || addr.Port != 443 || string(payload) != "payload" {
+		t.Fatalf("request %v %q in %d writes", addr, payload, raw.writes)
 	}
 }
 
-func TestDialContextCancellationClosesIncompleteRequest(t *testing.T) {
+func TestDialContextCanceledClosesCarrier(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
 	dialer, err := NewDialer(pipeParent{client}, protocol.Header{Cipher: "aes-128-gcm", Password: "password", ProxyAddress: "proxy:443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if conn, err := dialer.DialContext(ctx, "tcp", "example.com:443"); conn != nil || !errors.Is(err, context.DeadlineExceeded) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if conn, err := dialer.DialContext(ctx, "tcp", "example.com:443"); conn != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled dial=%v %v", conn, err)
 	}
 	if _, err := client.Write([]byte("retry")); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("partial request kept carrier open: %v", err)
+		t.Fatalf("canceled dial kept carrier open: %v", err)
+	}
+}
+
+func TestTCPConnReadSendsRequestFirst(t *testing.T) {
+	key, response := responseStream(t, "aes-128-gcm", []byte("pong"), 1)
+	raw := new(peerConn)
+	raw.response.Reset(response)
+	target, _ := socks5.AddressFromString("example.com:443")
+	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), target)
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != "pong" {
+		t.Fatalf("Read() = %q, %v", got, err)
+	}
+	if addr, payload := openRequest(t, key, raw.Bytes()); raw.writes != 1 || addr.Hostname != "example.com" || len(payload) != 0 {
+		t.Fatalf("request %v %q in %d writes", addr, payload, raw.writes)
+	}
+}
+
+func TestTCPConnCloseWriteSendsRequestFirst(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	target, _ := socks5.AddressFromString("example.com:443")
+	for _, addr := range []*socks5.AddressInfo{target, nil} {
+		raw := new(peerConn)
+		conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), addr).(*TCPConn)
+		if err := conn.CloseWrite(); err != nil || !slices.Equal(raw.finAt, []int{1}) {
+			t.Fatalf("CloseWrite() = %v after writes %v", err, raw.finAt)
+		}
+		if addr == nil {
+			// Without a destination the header is the salt.
+			if raw.Len() != 16 {
+				t.Fatalf("encryption-only header is %d bytes", raw.Len())
+			}
+			continue
+		}
+		if got, payload := openRequest(t, key, raw.Bytes()); got.Hostname != "example.com" || len(payload) != 0 {
+			t.Fatalf("request %v %q", got, payload)
+		}
+	}
+}
+
+func TestTCPConnFailedRequestIsSticky(t *testing.T) {
+	raw := new(shortWriteConn)
+	target, _ := socks5.AddressFromString("example.com:443")
+	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], make([]byte, 16), RandomSaltGenerator(16), target).(*TCPConn)
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Read() = %v", err)
+	}
+	if _, err := conn.Write([]byte("retry")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Write() = %v", err)
+	}
+	if err := conn.CloseWrite(); !errors.Is(err, io.ErrShortWrite) || raw.writes != 1 {
+		t.Fatalf("CloseWrite() = %v after %d writes", err, raw.writes)
 	}
 }
 
@@ -424,5 +483,30 @@ func TestUDPShortCallerBufferStillAuthenticatesWholePacket(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type writeCountingReader struct {
+	net.Conn
+	io.Reader
+	writes int
+}
+
+func (c *writeCountingReader) Read(b []byte) (int, error) { return c.Reader.Read(b) }
+func (c *writeCountingReader) Write(b []byte) (int, error) {
+	c.writes++
+	return len(b), nil
+}
+
+// Without a destination the enclosing protocol owns the request, so a Read
+// before any write sends nothing; a Trojan UDP reader must not emit the salt.
+func TestTransportReadLeavesRequestToEnclosingProtocol(t *testing.T) {
+	payload := []byte("response")
+	key, wire := responseStream(t, "aes-128-gcm", payload, 1)
+	carrier := &writeCountingReader{Reader: bytes.NewReader(wire)}
+	c := NewTCPConn(carrier, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
+	buf := make([]byte, len(payload))
+	if n, err := io.ReadFull(c, buf); err != nil || !bytes.Equal(buf[:n], payload) || carrier.writes != 0 {
+		t.Fatalf("Read = %q, %v; carrier writes = %d", buf[:n], err, carrier.writes)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -19,7 +20,9 @@ const (
 	TCPChunkMaxLen = (1 << 14) - 1
 )
 
-// TCPConn represents a Shadowsocks TCP connection
+// TCPConn represents a Shadowsocks TCP connection. Its request header (the
+// salt, then the target address unless addr is nil) goes with the first
+// write; a Read or CloseWrite before any write sends it alone.
 type TCPConn struct {
 	net.Conn
 	addr       *socks5.AddressInfo
@@ -29,7 +32,7 @@ type TCPConn struct {
 
 	cipherWrite cipher.AEAD
 	onceRead    bool
-	onceWrite   bool
+	onceWrite   atomic.Bool // Set under writeMutex once the header is sealed.
 	nonceWrite  []byte
 	writeErr    error // Sticky after an incomplete ciphertext write.
 
@@ -58,7 +61,15 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg Sa
 	return tcpConn
 }
 
+// Read sends a pending destination header first so the server can answer a
+// client that reads before writing. Without a destination, the enclosing
+// protocol owns the request and decides when to send it.
 func (c *TCPConn) Read(b []byte) (int, error) {
+	if len(b) > 0 && c.addr != nil {
+		if err := c.flushHeader(); err != nil {
+			return 0, err
+		}
+	}
 	c.readMutex.Lock()
 	defer c.readMutex.Unlock()
 	if !c.onceRead && len(b) > 0 {
@@ -89,6 +100,9 @@ func (c *TCPConn) Close() error {
 func (c *TCPConn) CloseWrite() error {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	if err := c.flushHeaderLocked(); err != nil {
+		return err
+	}
 	if c.writeErr != nil {
 		return c.writeErr
 	}
@@ -109,9 +123,31 @@ func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{
 
 // WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
 // and writes them at once. An incomplete write is sticky, as in Write.
-func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
+func (c *TCPConn) WriteBuffers(v [][]byte) (int, error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	return c.writeLocked(v)
+}
+
+// flushHeader lets the server answer a client that reads before writing.
+func (c *TCPConn) flushHeader() error {
+	if c.onceWrite.Load() {
+		return nil
+	}
+	c.writeMutex.Lock()
+	defer c.writeMutex.Unlock()
+	return c.flushHeaderLocked()
+}
+
+func (c *TCPConn) flushHeaderLocked() error {
+	if c.onceWrite.Load() {
+		return nil
+	}
+	_, err := c.writeLocked(nil)
+	return err
+}
+
+func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
@@ -121,9 +157,9 @@ func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
 	}
 	var salt []byte
 	payload := v
-	if !c.onceWrite {
+	if !c.onceWrite.Load() {
 		defer func() {
-			if err != nil && !c.onceWrite {
+			if err != nil && !c.onceWrite.Load() {
 				c.writeErr = err
 			}
 		}()
@@ -142,7 +178,7 @@ func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
 			}
 			payload = append([][]byte{address.Bytes()}, v...)
 		}
-		c.onceWrite = true
+		c.onceWrite.Store(true)
 	}
 	buf := pool.GetBuffer(len(salt) + aeadframe.SealedSize(c.cipherWrite, payload, TCPChunkMaxLen))
 	defer pool.PutBuffer(buf)

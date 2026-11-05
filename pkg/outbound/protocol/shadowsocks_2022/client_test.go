@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +257,7 @@ func TestClientTCPReadBoundaryTimeoutRetry(t *testing.T) {
 	key := bytes.Repeat([]byte{0x11}, 16)
 	raw, peer := net.Pipe()
 	defer peer.Close()
+	go io.Copy(io.Discard, peer)
 	c := newClientForTest(t, raw, key)
 	defer c.Close()
 	payload := []byte("retry after a boundary timeout")
@@ -362,8 +364,17 @@ func TestClientTCPIncompleteWriteAndInitFailureAreSticky(t *testing.T) {
 	}
 	c.addr, _ = socks5.AddressFromString("valid.test:443")
 	_, second := c.Write(nil)
-	if second != first || raw.writes != 0 {
+	_, third := c.Read(make([]byte, 1))
+	if second != first || third != first || c.CloseWrite() != first || raw.writes != 0 {
 		t.Fatal("failed initial header was retried")
+	}
+	raw = &memoryConn{short: true}
+	c = newClientForTest(t, raw, key)
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Read=%v", err)
+	}
+	if _, err := c.Write([]byte("again")); !errors.Is(err, io.ErrShortWrite) || raw.writes != 1 {
+		t.Fatal("partial request flushed by Read was retried")
 	}
 }
 
@@ -482,84 +493,112 @@ func (p pipeParent) ListenPacket(context.Context, string) (net.PacketConn, error
 	return nil, errors.New("unused")
 }
 
-func TestDialContextSendsRequestBeforeApplicationWrite(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
+// requestFirstConn fails reads until the client has written and notes how
+// many writes preceded each half-close.
+type requestFirstConn struct {
+	memoryConn
+	finAt []int
+}
+
+func (c *requestFirstConn) Read(b []byte) (int, error) {
+	if c.writes == 0 {
+		return 0, errors.New("read before request")
+	}
+	return c.memoryConn.Read(b)
+}
+func (c *requestFirstConn) CloseWrite() error { c.finAt = append(c.finAt, c.writes); return nil }
+
+// openRequest decrypts a whole single-PSK client stream as the server would.
+func openRequest(t testing.TB, key, wire []byte) (addr *socks5.AddressInfo, padding int, payload []byte) {
+	t.Helper()
+	aead := peerCipher(t, key, wire[:len(key)])
+	wire = wire[len(key):]
+	nonce := make([]byte, 12)
+	open := func(size int) []byte {
+		t.Helper()
+		plain, err := aead.Open(nil, nonce, wire[:size+aead.Overhead()], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire = wire[size+aead.Overhead():]
+		for i := range nonce {
+			nonce[i]++
+			if nonce[i] != 0 {
+				break
+			}
+		}
+		return plain
+	}
+	fixed := open(11)
+	initial := open(int(binary.BigEndian.Uint16(fixed[9:])))
+	reader := bytes.NewReader(initial)
+	addr, err := socks5.ReadAddrInfo(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pad [2]byte
+	io.ReadFull(reader, pad[:])
+	padding = int(binary.BigEndian.Uint16(pad[:]))
+	payload = initial[len(initial)-reader.Len()+padding:]
+	for len(wire) > 0 {
+		payload = append(payload, open(int(binary.BigEndian.Uint16(open(2))))...)
+	}
+	return addr, padding, payload
+}
+
+func TestDialContextDefersRequestToFirstWrite(t *testing.T) {
+	raw := new(memoryConn)
 	key := bytes.Repeat([]byte{7}, 16)
-	done := make(chan error, 1)
-	go func() {
-		salt := make([]byte, 16)
-		if _, err := io.ReadFull(server, salt); err != nil {
-			done <- err
-			return
-		}
-		aead := peerCipher(t, key, salt)
-		encrypted := make([]byte, 11+16)
-		if _, err := io.ReadFull(server, encrypted); err != nil {
-			done <- err
-			return
-		}
-		nonce := make([]byte, 12)
-		fixed, err := aead.Open(nil, nonce, encrypted, nil)
-		if err != nil {
-			done <- err
-			return
-		}
-		variable := make([]byte, int(binary.BigEndian.Uint16(fixed[9:]))+16)
-		if _, err = io.ReadFull(server, variable); err != nil {
-			done <- err
-			return
-		}
-		nonce[0] = 1
-		plain, err := aead.Open(nil, nonce, variable, nil)
-		if err != nil {
-			done <- err
-			return
-		}
-		reader := bytes.NewReader(plain)
-		addr, err := socks5.ReadAddrInfo(reader)
-		if err != nil {
-			done <- err
-			return
-		}
-		var padding [2]byte
-		_, err = io.ReadFull(reader, padding[:])
-		if err == nil && ((addr.Hostname != "example.com" || addr.Port != 443) || binary.BigEndian.Uint16(padding[:]) == 0) {
-			err = errors.New("empty request missing target or mandatory padding")
-		}
-		done <- err
-	}()
-	dialer, err := NewDialer(pipeParent{client}, protocol.Header{Cipher: "2022-blake3-aes-128-gcm", Password: base64.StdEncoding.EncodeToString(key), ProxyAddress: "proxy:443"})
+	dialer, err := NewDialer(pipeParent{raw}, protocol.Header{Cipher: "2022-blake3-aes-128-gcm", Password: base64.StdEncoding.EncodeToString(key), ProxyAddress: "proxy:443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	conn, err := dialer.DialContext(ctx, "tcp", "example.com:443")
-	if err != nil {
-		t.Fatal(err)
+	conn, err := dialer.DialContext(t.Context(), "tcp", "example.com:443")
+	if err != nil || raw.writes != 0 {
+		t.Fatalf("dial wrote %d times: %v", raw.writes, err)
 	}
-	defer conn.Close()
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	if n, err := conn.Write([]byte("payload")); n != 7 || err != nil || raw.writes != 1 {
+		t.Fatalf("Write=%d %v in %d writes", n, err, raw.writes)
+	}
+	// A request carrying payload needs no padding.
+	if addr, padding, payload := openRequest(t, key, raw.sent[0]); addr.Hostname != "example.com" || addr.Port != 443 || padding != 0 || string(payload) != "payload" {
+		t.Fatalf("request %v padding=%d %q", addr, padding, payload)
 	}
 }
 
-func TestDialContextCancellationClosesIncompleteRequest(t *testing.T) {
-	client, server := net.Pipe()
-	defer server.Close()
+func TestDialContextCanceledClosesCarrier(t *testing.T) {
+	raw := new(memoryConn)
 	key := bytes.Repeat([]byte{7}, 16)
-	dialer, err := NewDialer(pipeParent{client}, protocol.Header{Cipher: "2022-blake3-aes-128-gcm", Password: base64.StdEncoding.EncodeToString(key), ProxyAddress: "proxy:443"})
+	dialer, err := NewDialer(pipeParent{raw}, protocol.Header{Cipher: "2022-blake3-aes-128-gcm", Password: base64.StdEncoding.EncodeToString(key), ProxyAddress: "proxy:443"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if conn, err := dialer.DialContext(ctx, "tcp", "example.com:443"); conn != nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("canceled dial=%v %v", conn, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if conn, err := dialer.DialContext(ctx, "tcp", "example.com:443"); conn != nil || !errors.Is(err, context.Canceled) || !raw.closed {
+		t.Fatalf("canceled dial=%v %v closed=%t", conn, err, raw.closed)
 	}
-	if _, err := client.Write([]byte("retry")); !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("partial request kept carrier open: %v", err)
+}
+
+// A header sent without payload is padded, as SIP022 requires.
+func TestClientTCPReadAndCloseWriteSendRequestFirst(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	for _, read := range []bool{true, false} {
+		raw := new(requestFirstConn)
+		c := newClientForTest(t, raw, key)
+		if read {
+			raw.reader = bytes.NewReader(responseFrame(t, key, c.requestSalt, []byte("pong"), uint64(time.Now().Unix())))
+			got := make([]byte, 4)
+			if _, err := io.ReadFull(c, got); err != nil || string(got) != "pong" {
+				t.Fatalf("Read=%q %v", got, err)
+			}
+		} else if err := c.CloseWrite(); err != nil || !slices.Equal(raw.finAt, []int{1}) {
+			t.Fatalf("CloseWrite=%v after writes %v", err, raw.finAt)
+		}
+		addr, padding, payload := openRequest(t, key, raw.sent[0])
+		if raw.writes != 1 || addr.Hostname != "example.com" || padding < 1 || padding > MaxPaddingLength || len(payload) != 0 {
+			t.Fatalf("request %v padding=%d %q in %d writes", addr, padding, payload, raw.writes)
+		}
 	}
 }
 
@@ -590,44 +629,9 @@ func testClientTCPLargeRequest(t *testing.T, vectorised bool) {
 	if n != len(payload) || err != nil || len(raw.sent) != 1 {
 		t.Fatalf("write=%d %v in %d writes", n, err, len(raw.sent))
 	}
-	wire := bytes.NewReader(raw.sent[0])
-	salt := make([]byte, 16)
-	io.ReadFull(wire, salt)
-	aead := peerCipher(t, key, salt)
-	nonce := make([]byte, 12)
-	open := func(size int) []byte {
-		t.Helper()
-		ciphertext := make([]byte, size+aead.Overhead())
-		if _, err := io.ReadFull(wire, ciphertext); err != nil {
-			t.Fatal(err)
-		}
-		plain, err := aead.Open(nil, nonce, ciphertext, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i := range nonce {
-			nonce[i]++
-			if nonce[i] != 0 {
-				break
-			}
-		}
-		return plain
-	}
-	fixed := open(11)
-	initial := open(int(binary.BigEndian.Uint16(fixed[9:])))
-	reader := bytes.NewReader(initial)
-	if _, err := socks5.ReadAddrInfo(reader); err != nil {
-		t.Fatal(err)
-	}
-	var pad [2]byte
-	io.ReadFull(reader, pad[:])
-	if padding := int(binary.BigEndian.Uint16(pad[:])); padding != 0 {
+	_, padding, got := openRequest(t, key, raw.sent[0])
+	if padding != 0 {
 		t.Fatal("unexpected padding with application payload")
-	}
-	got := append([]byte(nil), initial[len(initial)-reader.Len():]...)
-	for wire.Len() > 0 {
-		length := open(2)
-		got = append(got, open(int(binary.BigEndian.Uint16(length)))...)
 	}
 	if !bytes.Equal(got, payload) {
 		t.Fatal("large request changed chunk contents or nonce sequence")

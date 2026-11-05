@@ -171,19 +171,21 @@ func TestEncryptedCloseWriteWaitsForFrameAndKeepsRead(t *testing.T) {
 
 type failingHalfClose struct {
 	net.Conn
-	cause error
-	calls int
+	cause  error
+	calls  int
+	writes int
 }
 
-func (c *failingHalfClose) CloseWrite() error { c.calls++; return c.cause }
+func (c *failingHalfClose) Write(b []byte) (int, error) { c.writes++; return len(b), nil }
+func (c *failingHalfClose) CloseWrite() error           { c.calls++; return c.cause }
 
 func TestEncryptedCloseWriteFailureIsSticky(t *testing.T) {
 	for _, modern := range []bool{false, true} {
 		cause := errors.New("half-close failed")
 		raw := &failingHalfClose{cause: cause}
 		client := encryptedClient(raw, modern)
-		if err := client.(netproxy.CloseWriter).CloseWrite(); !errors.Is(err, cause) {
-			t.Fatal(err)
+		if err := client.(netproxy.CloseWriter).CloseWrite(); !errors.Is(err, cause) || raw.writes != 1 {
+			t.Fatalf("half-close = %v after %d request writes", err, raw.writes)
 		}
 		if err := client.(netproxy.CloseWriter).CloseWrite(); !errors.Is(err, cause) || raw.calls != 1 {
 			t.Fatalf("half-close retried: %v, %d", err, raw.calls)
@@ -191,7 +193,7 @@ func TestEncryptedCloseWriteFailureIsSticky(t *testing.T) {
 		if _, err := client.Write(nil); !errors.Is(err, cause) {
 			t.Fatalf("failed half-close permitted write: %v", err)
 		}
-		client = encryptedClient(struct{ net.Conn }{}, modern)
+		client = encryptedClient(struct{ net.Conn }{new(failingHalfClose)}, modern)
 		if err := client.(netproxy.CloseWriter).CloseWrite(); !errors.Is(err, errors.ErrUnsupported) {
 			t.Fatalf("unsupported half-close: %v", err)
 		}

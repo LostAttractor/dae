@@ -50,6 +50,11 @@ func BenchmarkTCPReadFrames(b *testing.B) {
 								return
 							}
 							_, err = conn.Write(wire)
+							if err == nil {
+								// Closing with the client's request unread would reset the stream.
+								err = conn.(*net.TCPConn).CloseWrite()
+								_, _ = io.Copy(io.Discard, conn)
+							}
 							conn.Close()
 							if err != nil {
 								b.Error(err)

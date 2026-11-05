@@ -31,7 +31,8 @@ func (c *frameReadConn) Read(p []byte) (int, error) {
 	return c.reader.Read(p)
 }
 
-func (c *frameReadConn) Close() error { return nil }
+func (c *frameReadConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c *frameReadConn) Close() error                { return nil }
 
 // Build peer frames independently of TCPConn's framing and key derivation.
 func responseStream(t testing.TB, method string, payload []byte, frames int) (key, wire []byte) {
@@ -73,7 +74,8 @@ func TestTCPReadFrames(t *testing.T) {
 						carrier = simpleobfs.NewHTTPObfs(raw, "example.org", "80", "/")
 					}
 					raw.reader.Reset(wire)
-					conn := NewTCPConn(carrier, ciphers.AeadCiphersConf[method], key, nil, nil)
+					conf := ciphers.AeadCiphersConf[method]
+					conn := NewTCPConn(carrier, conf, key, RandomSaltGenerator(conf.SaltLen), nil)
 					defer conn.Close()
 					var got bytes.Buffer
 					buf := make([]byte, 137)
@@ -102,7 +104,7 @@ func TestTCPReadBufferedAuthenticationFailure(t *testing.T) {
 	wire[len(wire)-1] ^= 1
 	raw := new(frameReadConn)
 	raw.reader.Reset(wire)
-	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
 	defer conn.Close()
 	got := make([]byte, len(payload))
 	if _, err := io.ReadFull(conn, got); err != nil || !bytes.Equal(got, payload) {
@@ -133,7 +135,7 @@ func TestTCPReadTimeoutAtFrameBoundary(t *testing.T) {
 		}
 		raw.steps = append(raw.steps, step)
 	}
-	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+	conn := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
 	defer conn.Close()
 	got := make([]byte, len(payload))
 	if n, err := conn.Read(got); n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -177,6 +179,11 @@ func BenchmarkTCPReadFrames(b *testing.B) {
 									return
 								}
 								_, err = conn.Write(wire)
+								if err == nil {
+									// Closing with the client's request unread would reset the stream.
+									err = conn.(*net.TCPConn).CloseWrite()
+									_, _ = io.Copy(io.Discard, conn)
+								}
 								conn.Close()
 								if err != nil {
 									b.Error(err)
@@ -205,7 +212,7 @@ func BenchmarkTCPReadFrames(b *testing.B) {
 						if obfs {
 							carrier = simpleobfs.NewHTTPObfs(carrier, "example.org", "80", "/")
 						}
-						conn := NewTCPConn(carrier, ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+						conn := NewTCPConn(carrier, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
 						_, err := io.ReadFull(conn, buf)
 						conn.Close()
 						if err != nil {

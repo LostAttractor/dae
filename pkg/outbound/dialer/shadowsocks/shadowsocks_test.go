@@ -40,7 +40,7 @@ func TestV2rayPluginWebSocketPathAndHandshake(t *testing.T) {
 				}
 				defer conn.Close()
 				_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-				for range 2 { // New mux session, then encrypted Shadowsocks handshake.
+				for range 2 { // New mux session, then the Shadowsocks request with the first payload.
 					kind, data, err := conn.ReadMessage()
 					if err != nil {
 						done <- err
@@ -82,6 +82,9 @@ func TestV2rayPluginWebSocketPathAndHandshake(t *testing.T) {
 				t.Fatalf("no WebSocket request: %v", err)
 			}
 			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Write([]byte("request")); err != nil {
 				t.Fatal(err)
 			}
 			if err := <-done; err != nil {

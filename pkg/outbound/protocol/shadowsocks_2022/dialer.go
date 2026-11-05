@@ -77,9 +77,15 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 		if err != nil {
 			return nil, err
 		}
-		client := NewTCPConn(conn, d.conf, d.pskList, d.uPSK, d.sg, addrInfo)
-		if err = protocol.Handshake(ctx, client, func() error { _, err := client.Write(nil); return err }); err != nil {
+		if err := ctx.Err(); err != nil {
+			_ = conn.Close()
 			return nil, err
+		}
+		// The request header goes with the first write.
+		client := NewTCPConn(conn, d.conf, d.pskList, d.uPSK, d.sg, addrInfo)
+		if lease := netproxy.DependencyOf(client); !lease.Valid() {
+			_ = client.Close()
+			return nil, lease.Cause()
 		}
 		return client, nil
 

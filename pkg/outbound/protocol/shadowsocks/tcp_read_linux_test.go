@@ -44,7 +44,7 @@ func TestTCPReadTunesSocketBehindObfs(t *testing.T) {
 	if _, err := server.Write(wire[:stall]); err != nil {
 		t.Fatal(err)
 	}
-	conn := NewTCPConn(simpleobfs.NewHTTPObfs(client, "example.org", "80", "/"), ciphers.AeadCiphersConf["aes-128-gcm"], key, nil, nil)
+	conn := NewTCPConn(simpleobfs.NewHTTPObfs(client, "example.org", "80", "/"), ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), nil)
 	got := make([]byte, 2*len(payload))
 	if _, err := io.ReadFull(conn, got[:len(payload)]); err != nil {
 		t.Fatal(err)

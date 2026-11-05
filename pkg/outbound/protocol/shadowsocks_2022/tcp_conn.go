@@ -14,6 +14,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
@@ -34,6 +35,9 @@ const (
 	MaxPaddingLength       = 900
 )
 
+// TCPConn is a Shadowsocks 2022 client stream. Its request header goes with
+// the first write; a Read or CloseWrite before any write sends it alone,
+// padded as SIP022 requires of a header without payload.
 type TCPConn struct {
 	net.Conn
 	addr                  *socks5.AddressInfo
@@ -42,7 +46,8 @@ type TCPConn struct {
 	uPSK                  []byte
 	requestSalt           []byte // Immutable after construction; shared by reader and writer.
 	cipherWrite           cipher.AEAD
-	onceRead, onceWrite   bool
+	onceRead              bool
+	onceWrite             atomic.Bool // Set under writeMutex once the header is sealed.
 	nonceWrite            []byte
 	writeErr              error
 	readMutex, writeMutex sync.Mutex
@@ -59,6 +64,11 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf2022, pskList [][]byte, u
 }
 
 func (c *TCPConn) Read(b []byte) (int, error) {
+	if len(b) > 0 {
+		if err := c.flushHeader(); err != nil {
+			return 0, err
+		}
+	}
 	c.readMutex.Lock()
 	defer c.readMutex.Unlock()
 	if !c.onceRead && len(b) > 0 {
@@ -140,6 +150,9 @@ func (c *TCPConn) writeIdentityHeader(buf *bytes.Buffer) error {
 func (c *TCPConn) CloseWrite() error {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	if err := c.flushHeaderLocked(); err != nil {
+		return err
+	}
 	if c.writeErr != nil {
 		return c.writeErr
 	}
@@ -160,9 +173,31 @@ func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{
 
 // WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
 // and writes them at once. An incomplete write is sticky, as in Write.
-func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
+func (c *TCPConn) WriteBuffers(v [][]byte) (int, error) {
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
+	return c.writeLocked(v)
+}
+
+// flushHeader lets the server answer a client that reads before writing.
+func (c *TCPConn) flushHeader() error {
+	if c.onceWrite.Load() {
+		return nil
+	}
+	c.writeMutex.Lock()
+	defer c.writeMutex.Unlock()
+	return c.flushHeaderLocked()
+}
+
+func (c *TCPConn) flushHeaderLocked() error {
+	if c.onceWrite.Load() {
+		return nil
+	}
+	_, err := c.writeLocked(nil)
+	return err
+}
+
+func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
@@ -171,7 +206,7 @@ func (c *TCPConn) WriteBuffers(v [][]byte) (n int, err error) {
 		total += len(b)
 	}
 	var head []byte
-	if !c.onceWrite {
+	if !c.onceWrite.Load() {
 		header := pool.GetBytesBuffer()
 		defer pool.PutBytesBuffer(header)
 		if v, err = c.writeHeader(header, v, total); err != nil {
@@ -243,6 +278,6 @@ func (c *TCPConn) writeHeader(buf *bytes.Buffer, v [][]byte, total int) ([][]byt
 	common.BytesIncLittleEndian(c.nonceWrite)
 	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, variable.Bytes(), nil))
 	common.BytesIncLittleEndian(c.nonceWrite)
-	c.onceWrite = true
+	c.onceWrite.Store(true)
 	return v, nil
 }
