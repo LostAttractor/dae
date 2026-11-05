@@ -8,9 +8,14 @@ VLESS/Vision, Trojan, SOCKS5, HTTP, AnyTLS, TUIC, Juicity and Hysteria2.
 Transports: TLS/uTLS/REALITY, WebSocket, gRPC/Gun, HTTPUpgrade, Meek,
 simple-obfs and client multiplexing.
 
-Handshakes send the initial request before handoff. Sessions own shared resources
-and publish state for recovery; owners issue `Lease.Abort(cause)` to terminate
-dependent traffic. Stream failures never authorize shared-resource shutdown.
+Protocols that need no server reply defer their request header to the first
+write and send it with the caller's first payload. On a TCP stream, a read or
+half-close before any write sends the header first, with at most the protocol's
+own end-of-stream or padding record; a UDP stream waits for its first datagram.
+Exchanges that need a reply complete before handoff.
+Sessions own shared resources and publish state for recovery; owners issue
+`Lease.Abort(cause)` to terminate dependent traffic. Stream failures never
+authorize shared-resource shutdown.
 
 `Runtime.Dialer()` provides traffic operations and `Runtime.Session()` the optional
 controller. `Retire()` drains retained connections before releasing the chain.

@@ -4,7 +4,9 @@ outbound 仅提供客户端，使用 `net.Conn`、`net.PacketConn`、`DialContex
 
 ## 生命周期
 
-- `protocol.Handshake` 管理初始交换、取消、deadline 清除及连接交接。SS、SS2022、SSR、VMess、VLESS、Trojan 返回前发送目标请求；发送完成不代表目标已确认连接成功。
+- 无需等待应答的协议（SS、SS2022、流加密 SS、VMess、VLESS/Vision、Trojan、Juicity、TUIC、Hysteria2）在 `DialContext` 中不发送目标请求，请求头与首次 `Write` 的数据在同一次底层写入中发出。TCP 流在首次写入前 `Read` 时先发送请求头，服务端先说话的协议因此可用，Vision 随请求头发送一个空的长填充记录；首次写入前 `CloseWrite` 时，请求头与协议的结束记录（VMess 结束块、Vision PaddingEnd 记录）一同发送。UDP 流的请求等待首个数据报。sing-mux 流的请求同样随首次写入发送，TCP 流首次读取前先发送。代理出站的 TCP relay 在 setup 中把嗅探到的数据作为首次写入，受拨号预算约束。
+- SSR、SOCKS5、HTTP 等需要应答的交换由 `protocol.Handshake` 在返回前完成，它管理初始交换、取消、deadline 清除及连接交接。请求发送完成不代表目标已确认连接成功。
+- TUIC、Hysteria2、Juicity 按节点缓存 TLS 会话，重连时恢复会话；请求均在握手完成后发送，不使用 0-RTT。
 - 共享会话 owner 管理分配、实际依赖 lease 和关闭回收。Hysteria2 跳端口保持稳定 lease，正常轮换不使整个会话失效。状态传播见 [错误与恢复](relay-error-recovery.md)。
 - `ListenPacket` 支持多个目标；VLESS、普通 VMess 和 AnyTLS 按目标复用子流，共用关联的关闭与故障信号。AnyTLS 每流最多缓存 1 MiB 未读数据，超限只关闭该流。
 - gRPC 流绑定实际承载连接的 lease；GOAWAY 允许旧流排空，父连接 Abort 只终止依赖它的流，重连仍由 gRPC 执行。
