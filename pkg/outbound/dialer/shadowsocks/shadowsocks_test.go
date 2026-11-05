@@ -142,3 +142,21 @@ func TestShadowsocksPluginMustBeSupported(t *testing.T) {
 		})
 	}
 }
+
+// SIP002 links often leave the plugin's ';' separators unescaped, and some
+// providers name simple-obfs just "obfs".
+func TestParseSSURLUnescapedPluginOptions(t *testing.T) {
+	for _, link := range []string{
+		"ss://YWVzLTEyOC1nY206cGFzcw@proxy.example:443/?plugin=obfs;obfs=http;obfs-host=cdn.example#node",
+		"ss://YWVzLTEyOC1nY206cGFzcw@proxy.example:443/?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dcdn.example#node",
+	} {
+		server, err := ParseSSURL(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := Sip003{Name: "simple-obfs", Opts: Sip003Opts{Obfs: "http", Host: "cdn.example"}}
+		if server.Plugin != want || server.Name != "node" || server.UDP {
+			t.Fatalf("%s: parsed %+v", link, server)
+		}
+	}
+}
