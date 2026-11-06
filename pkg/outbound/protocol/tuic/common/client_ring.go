@@ -73,8 +73,13 @@ func (r *ClientRing[C]) Allocate(ctx context.Context, reserveStreams bool, alloc
 		return netproxy.ErrNotConnected
 	}
 	return r.tryNext(func(node *clientRingNode[C]) error {
-		// Credit the peer has not reported yet is left for quic-go to wait for.
-		if current, highest := node.credit.Credit(quic.StreamTypeBidi); reserveStreams && highest > 0 && current <= min(r.reserved, highest/2) {
+		pending := false
+		if member, ok := any(node.cli).(interface{ HandshakePending() bool }); ok {
+			pending = member.HandshakePending()
+		}
+		// A pending handshake can report zero while resetting rejected 0-RTT
+		// streams; QUIC's open distinguishes that reset from actual exhaustion.
+		if current, highest := node.credit.Credit(quic.StreamTypeBidi); reserveStreams && highest > 0 && current <= min(r.reserved, highest/2) && !(pending && current == 0) {
 			return ErrHoldOn
 		}
 		return allocate(ctx, node.cli)

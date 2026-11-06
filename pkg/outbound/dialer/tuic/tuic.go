@@ -31,6 +31,7 @@ type Tuic struct {
 	Alpn              []string
 	Protocol          string
 	UdpRelayMode      string
+	ReduceRtt         bool
 }
 
 func NewTuic(link string) (dialer.Builder, *dialer.Property, error) {
@@ -50,6 +51,9 @@ func (s *Tuic) Build(option *dialer.ExtraOption, upstream dialer.Upstream) (netp
 	var flags protocol.Flags
 	if s.UdpRelayMode == "quic" {
 		flags |= protocol.Flags_Tuic_UdpRelayModeQuic
+	}
+	if s.ReduceRtt {
+		flags |= protocol.Flags_Tuic_ReduceRtt
 	}
 	return protocol.Build("tuic", upstream, protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
@@ -97,6 +101,11 @@ func ParseTuicURL(u string) (data *Tuic, err error) {
 	if sni == "" {
 		sni = t.Hostname()
 	}
+	// sing-box names the option zero_rtt_handshake.
+	reduceRtt, _ := strconv.ParseBool(t.Query().Get("reduce_rtt"))
+	if !reduceRtt {
+		reduceRtt, _ = strconv.ParseBool(t.Query().Get("zero_rtt_handshake"))
+	}
 	disableSni, _ := strconv.ParseBool(t.Query().Get("disable_sni"))
 	if disableSni {
 		sni = ""
@@ -119,6 +128,7 @@ func ParseTuicURL(u string) (data *Tuic, err error) {
 		CongestionControl: t.Query().Get("congestion_control"),
 		Alpn:              alpn,
 		UdpRelayMode:      strings.ToLower(t.Query().Get("udp_relay_mode")),
+		ReduceRtt:         reduceRtt,
 		Protocol:          "tuic",
 	}
 	return data, nil
@@ -147,6 +157,9 @@ func (t *Tuic) ExportToURL() string {
 	}
 	if t.UdpRelayMode != "" {
 		common.SetValue(&q, "udp_relay_mode", t.UdpRelayMode)
+	}
+	if t.ReduceRtt {
+		common.SetValue(&q, "reduce_rtt", "1")
 	}
 
 	u.RawQuery = q.Encode()

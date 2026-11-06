@@ -8,6 +8,7 @@ import (
 	"io"
 	mathrand "math/rand/v2"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,8 @@ type clientImpl struct {
 	transport *quic.Transport
 	quicConn  *quic.Conn
 	connMutex sync.Mutex
+	uniMutex  sync.Mutex
+	authReady chan struct{}
 
 	closed bool
 
@@ -67,10 +70,31 @@ func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, di
 	if t.resource == (netproxy.ResourceRef{}) {
 		t.resource = netproxy.NewResourceRef()
 	}
+	deferAuth := false
+	var authStream *quic.SendStream
+	t.authReady = make(chan struct{})
 	established, err := common.EstablishQUIC(ctx, dialer, dialFn, t.resource, common.QUICHooks{
 		TLSConfig: t.TlsConfig, QUICConfig: t.QuicConfig,
 		CongestionController: t.CongestionController, CWND: t.CWND,
-		Early: t.ReduceRtt, Authenticate: t.sendAuthentication, AuthenticationError: ProtocolError,
+		Early: t.ReduceRtt, AuthenticationError: ProtocolError,
+		Authenticate: func(ctx context.Context, conn *quic.Conn) error {
+			var err error
+			authStream, err = conn.OpenUniStream()
+			if errors.Is(err, quic.Err0RTTRejected) {
+				if _, err = conn.NextConnection(ctx); err == nil {
+					authStream, err = conn.OpenUniStream()
+				}
+			}
+			if err != nil {
+				return err
+			}
+			// The token needs the exporter of the completed handshake. A
+			// server holds the commands sent in 0-RTT until it arrives.
+			if deferAuth = !handshakeComplete(conn); deferAuth {
+				return nil
+			}
+			return t.sendAuthentication(ctx, conn, authStream)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -84,6 +108,14 @@ func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, di
 		t.poolState.Ready(t.resource)
 	}
 	established.WatchFailure(t.failConnection)
+	if deferAuth {
+		go func() {
+			// WatchFailure reports a connection that ended first.
+			if err := t.sendAuthentication(quicConn.Context(), quicConn, authStream); err != nil && quicConn.Context().Err() == nil {
+				t.failConnection(err)
+			}
+		}()
+	}
 
 	if t.udp && t.UdpRelayMode == common.QUIC {
 		go func() {
@@ -97,11 +129,27 @@ func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, di
 	return quicConn, nil
 }
 
-func (t *clientImpl) sendAuthentication(ctx context.Context, conn *quic.Conn) error {
-	stream, err := conn.OpenUniStream()
+// Authentication reserves its stream before publication; otherwise early UDP
+// commands can consume all credit while the server holds them for authentication.
+func (t *clientImpl) sendAuthentication(ctx context.Context, conn *quic.Conn, stream *quic.SendStream) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-conn.Context().Done():
+		return context.Cause(conn.Context())
+	case <-conn.HandshakeComplete():
+	}
+	// No other caller enables the reset maps before this reservation is restored.
+	t.uniMutex.Lock()
+	_, err := conn.NextConnection(ctx)
+	if err == nil && errors.Is(context.Cause(stream.Context()), quic.Err0RTTRejected) {
+		stream, err = conn.OpenUniStream()
+	}
+	t.uniMutex.Unlock()
 	if err != nil {
 		return err
 	}
+	close(t.authReady)
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { stream.CancelWrite(0); close(done) })
 	defer func() {
@@ -119,6 +167,9 @@ func (t *clientImpl) sendAuthentication(ctx context.Context, conn *quic.Conn) er
 func (t *clientImpl) handleUniStream(conn *quic.Conn) error {
 	for {
 		stream, err := conn.AcceptUniStream(conn.Context())
+		if afterRejection(conn, t.authReady, err) {
+			continue
+		}
 		if err != nil {
 			t.deferQuicConn(err)
 			return err
@@ -250,7 +301,14 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 			return nil, err
 		}
 
+		// Checked before the open: the handshake may complete, and reject
+		// the stream, right after it.
+		early := !handshakeComplete(quicConn)
 		quicStream, err := quicConn.OpenStream()
+		if afterRejection(quicConn, t.authReady, err) {
+			early = false
+			quicStream, err = quicConn.OpenStream()
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -260,9 +318,28 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 			quicStream.CancelWrite(0)
 			return nil, lease.Cause()
 		}
-		tracked := common.NewSafeStreamConn(quicStream, quicConn.LocalAddr(), quicConn.RemoteAddr())
-		tracked.BindRecovery(lease, t.failConnection)
-		return newConnectConn(tracked, command.Bytes()), nil
+		track := func(stream *quic.Stream) trackedStream {
+			tracked := common.NewSafeStreamConn(stream, quicConn.LocalAddr(), quicConn.RemoteAddr())
+			tracked.BindRecovery(lease, t.failConnection)
+			return tracked
+		}
+		tracked := track(quicStream)
+		if !early {
+			return newConnectConn(tracked, command.Bytes()), nil
+		}
+		wrap := func(err error, op netproxy.Operation) error {
+			return common.WrapQUICError(err, lease.Resource(), lease, op, t.failConnection)
+		}
+		return newConnectConn(newEarlyStream(quicStream.Context(), quicConn, tracked, func() (trackedStream, error) {
+			if err := waitAuthentication(quicConn, t.authReady); err != nil {
+				return nil, wrap(err, netproxy.OpOpenStream)
+			}
+			stream, err := quicConn.OpenStream()
+			if err != nil {
+				return nil, wrap(err, netproxy.OpOpenStream)
+			}
+			return track(stream), nil
+		}, wrap), command.Bytes()), nil
 	}()
 	if err != nil {
 		return nil, common.WrapQUICError(err, t.resource, nil, netproxy.OpOpenStream, t.failConnection)
@@ -279,6 +356,8 @@ type trackedStream interface {
 // connectConn sends the CONNECT command in the same stream write as the
 // first payload, so a lone fixed-size command never precedes it. A Read or
 // CloseWrite before any Write sends the command alone; Close never sends it.
+// On an earlyStream, that write returns once the server accepted or rejected
+// the 0-RTT data.
 type connectConn struct {
 	trackedStream
 	pending atomic.Bool
@@ -309,6 +388,11 @@ func (c *connectConn) writeCommandLocked(b []byte) (int, error) {
 	defer pool.PutBuffer(buf)
 	copy(buf[copy(buf, c.command):], b)
 	n, err := c.trackedStream.Write(buf)
+	if early, ok := c.trackedStream.(*earlyStream); ok {
+		if err = early.settle(buf, err); err != nil {
+			n = 0
+		}
+	}
 	if err != nil {
 		c.err = err
 		return max(n-len(c.command), 0), err
@@ -352,6 +436,159 @@ func (c *connectConn) CloseWrite() error {
 	return c.trackedStream.CloseWrite()
 }
 
+// earlyStream is a stream opened while the handshake may still be incomplete,
+// so its first carrier write may travel in 0-RTT. A server rejecting early
+// data discards such a stream unread, and nothing is readable before the
+// handshake, so settle resends that write on a stream of the 1-RTT
+// connection, which then replaces the early stream. The embedded early stream
+// supplies the addresses and lease, which its replacement shares.
+type earlyStream struct {
+	trackedStream
+	conn    *quic.Conn
+	ctx     context.Context // of the early stream, canceled by the rejection
+	reopen  func() (trackedStream, error)
+	wrap    func(error, netproxy.Operation) error
+	settled chan struct{} // closed once current is final
+	closed  chan struct{}
+	timeout protocol.Deadline // the write deadline, for settle
+
+	mu                          sync.Mutex // guards current, the deadlines and closing closed
+	current                     trackedStream
+	readDeadline, writeDeadline time.Time
+}
+
+func newEarlyStream(ctx context.Context, conn *quic.Conn, stream trackedStream, reopen func() (trackedStream, error), wrap func(error, netproxy.Operation) error) *earlyStream {
+	return &earlyStream{trackedStream: stream, conn: conn, ctx: ctx, reopen: reopen, wrap: wrap, settled: make(chan struct{}), closed: make(chan struct{}), timeout: protocol.MakeDeadline(), current: stream}
+}
+
+func (s *earlyStream) stream() trackedStream {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.current
+}
+
+// settle returns once the server accepted or rejected the 0-RTT data of buf,
+// the first carrier write, whose write to the early stream returned err.
+func (s *earlyStream) settle(buf []byte, err error) error {
+	replacement, err := s.replace(err)
+	close(s.settled)
+	if replacement == nil {
+		return err
+	}
+	_, err = replacement.Write(buf)
+	return err
+}
+
+func (s *earlyStream) replace(err error) (trackedStream, error) {
+	if err != nil && !errors.Is(err, quic.Err0RTTRejected) {
+		return nil, err
+	}
+	select {
+	case <-s.conn.HandshakeComplete():
+	case <-s.conn.Context().Done():
+		return nil, s.wrap(context.Cause(s.conn.Context()), netproxy.OpWrite)
+	case <-s.closed:
+		return nil, s.wrap(net.ErrClosed, netproxy.OpWrite)
+	case <-s.timeout.Wait():
+		return nil, s.wrap(os.ErrDeadlineExceeded, netproxy.OpWrite)
+	}
+	// The rejection resets the 0-RTT streams before the handshake completes.
+	// A stream opened after another goroutine's NextConnection is a 1-RTT
+	// stream that already carries the write.
+	if !errors.Is(context.Cause(s.ctx), quic.Err0RTTRejected) {
+		return nil, err
+	}
+	replacement, err := s.reopen()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.closed:
+		_ = replacement.Close()
+		return nil, s.wrap(net.ErrClosed, netproxy.OpWrite)
+	default:
+	}
+	_ = replacement.SetReadDeadline(s.readDeadline)
+	_ = replacement.SetWriteDeadline(s.writeDeadline)
+	s.current = replacement
+	return replacement, nil
+}
+
+func (s *earlyStream) Read(p []byte) (int, error) {
+	n, err := s.stream().Read(p)
+	// The rejection reaches the first carrier write as it does this read;
+	// settle replaces the stream as soon as the handshake completes.
+	if len(p) > 0 && errors.Is(err, quic.Err0RTTRejected) {
+		select {
+		case <-s.settled:
+		case <-s.closed:
+		}
+		return s.stream().Read(p)
+	}
+	return n, err
+}
+
+func (s *earlyStream) Write(b []byte) (int, error) { return s.stream().Write(b) }
+func (s *earlyStream) CloseWrite() error           { return s.stream().CloseWrite() }
+
+func (s *earlyStream) Close() error {
+	s.mu.Lock()
+	select {
+	case <-s.closed:
+	default:
+		close(s.closed)
+	}
+	stream := s.current
+	s.mu.Unlock()
+	return stream.Close()
+}
+
+func (s *earlyStream) SetDeadline(t time.Time) error {
+	return errors.Join(s.SetReadDeadline(t), s.SetWriteDeadline(t))
+}
+
+func (s *earlyStream) SetReadDeadline(t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readDeadline = t
+	return s.current.SetReadDeadline(t)
+}
+
+func (s *earlyStream) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writeDeadline = t
+	s.timeout.Set(t)
+	return s.current.SetWriteDeadline(t)
+}
+
+func handshakeComplete(conn *quic.Conn) bool {
+	select {
+	case <-conn.HandshakeComplete():
+		return true
+	default:
+		return false
+	}
+}
+
+// afterRejection reports whether err refused a stream because the server
+// rejected 0-RTT, once the connection accepts streams again. A refused open
+// sent nothing.
+func afterRejection(conn *quic.Conn, ready <-chan struct{}, err error) bool {
+	return errors.Is(err, quic.Err0RTTRejected) && waitAuthentication(conn, ready) == nil
+}
+
+func waitAuthentication(conn *quic.Conn, ready <-chan struct{}) error {
+	select {
+	case <-ready:
+		return nil
+	case <-conn.Context().Done():
+		return context.Cause(conn.Context())
+	}
+}
+
 func (t *clientImpl) ListenPacket(ctx context.Context, metadata *protocol.Metadata) (*quicStreamPacketConn, error) {
 	quicConn, err := t.currentConn(ctx)
 	if err != nil {
@@ -360,6 +597,12 @@ func (t *clientImpl) ListenPacket(ctx context.Context, metadata *protocol.Metada
 
 	pc := &quicStreamPacketConn{
 		lease: t.lease.NewStream(), fail: t.failConnection, quicConn: quicConn,
+		authReady: t.authReady,
+		openUniStream: func() (*quic.SendStream, error) {
+			t.uniMutex.Lock()
+			defer t.uniMutex.Unlock()
+			return quicConn.OpenUniStream()
+		},
 		incomingPackets: newPacketQueue(), udpRelayMode: t.UdpRelayMode,
 		maxUdpRelayPacketSize: t.MaxUdpRelayPacketSize, readDeadline: protocol.MakeDeadline(),
 	}
@@ -406,3 +649,10 @@ func (t *clientImpl) BindPool(state *netproxy.PoolState, ref netproxy.ResourceRe
 }
 
 func (t *clientImpl) FailureCause() error { return t.lease.Cause() }
+
+// HandshakePending leaves early stream admission to QUIC's restored limits.
+func (t *clientImpl) HandshakePending() bool {
+	t.connMutex.Lock()
+	defer t.connMutex.Unlock()
+	return t.quicConn != nil && !handshakeComplete(t.quicConn)
+}

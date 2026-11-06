@@ -21,4 +21,5 @@ const (
 
 const (
 	Flags_Tuic_UdpRelayModeQuic = 1 << iota
+	Flags_Tuic_ReduceRtt        // opts the node into 0-RTT
 )

@@ -137,8 +137,8 @@ func TestDialSendsNothingBeforeFirstWrite(t *testing.T) {
 	}
 }
 
-// A reconnect resumes the node's TLS session without 0-RTT, even when the
-// server would accept early data.
+// Without protocol.Flags_Tuic_ReduceRtt, a reconnect resumes the node's TLS session without
+// 0-RTT, even when the server would accept early data.
 func TestReconnectResumesTLSWithoutEarlyData(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

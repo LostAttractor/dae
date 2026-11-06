@@ -52,6 +52,8 @@ type quicStreamPacketConn struct {
 	fail                  func(error)
 	connId                uint16
 	quicConn              *quic.Conn
+	openUniStream         func() (*quic.SendStream, error)
+	authReady             <-chan struct{}
 	incomingPackets       *packetQueue
 	udpRelayMode          common.UdpRelayMode
 	maxUdpRelayPacketSize int
@@ -77,7 +79,7 @@ func (q *quicStreamPacketConn) Close() error {
 		}
 
 		// Dissociate is best effort and bounded even when the peer stops reading.
-		stream, err := q.quicConn.OpenUniStream()
+		stream, err := q.openUniStream()
 		if err != nil {
 			q.closeErr = err
 			return
@@ -202,7 +204,7 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 
 func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error) {
 	defer func() {
-		if errors.Is(err, quic.ErrDatagramQueueFull) {
+		if _, limited := errors.AsType[*quic.StreamLimitReachedError](err); limited || errors.Is(err, quic.ErrDatagramQueueFull) {
 			netproxy.DropCarrierQueueFull.Add(1)
 			err = netproxy.ErrPacketDropped
 		} else {
@@ -238,7 +240,10 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 		return 0, err
 	}
 	if q.udpRelayMode == common.QUIC {
-		stream, openErr := q.quicConn.OpenUniStream()
+		stream, openErr := q.openUniStream()
+		if afterRejection(q.quicConn, q.authReady, openErr) {
+			stream, openErr = q.openUniStream()
+		}
 		if openErr != nil {
 			return 0, openErr
 		}
@@ -255,6 +260,11 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 		q.stateMu.Lock()
 		q.sendStream = nil
 		q.stateMu.Unlock()
+		if errors.Is(err, quic.Err0RTTRejected) {
+			// The server discarded the 0-RTT stream, as it does those whose
+			// write returned earlier: loss on the link, not a carrier failure.
+			err = nil
+		}
 		if err != nil {
 			stream.CancelWrite(0)
 		} else {

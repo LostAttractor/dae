@@ -29,8 +29,9 @@ type EstablishedQUIC struct {
 	Lease     *netproxy.Lease
 }
 
-// EstablishQUIC returns ownership only after handshake, authentication setup and
-// dependency validation. Every failure closes both QUIC and its packet transport.
+// EstablishQUIC returns ownership only after the handshake (with Early, once
+// 0-RTT can start), authentication setup and dependency validation. Every
+// failure closes both QUIC and its packet transport.
 func EstablishQUIC(ctx context.Context, dialer netproxy.Dialer, dial DialFunc, ref netproxy.ResourceRef, hooks QUICHooks) (_ EstablishedQUIC, err error) {
 	transport, addr, err := dial(ctx, dialer)
 	if err != nil {

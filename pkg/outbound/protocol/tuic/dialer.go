@@ -44,7 +44,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 		udpRelayMode = common.QUIC
 	}
 	// Ring members share one session cache, so a reconnect resumes TLS
-	// without the certificate chain. Dials never use 0-RTT.
+	// without the certificate chain, and with protocol.Flags_Tuic_ReduceRtt in 0-RTT.
 	tlsConfig := header.TlsConfig.Clone()
 	if tlsConfig.ClientSessionCache == nil {
 		tlsConfig.ClientSessionCache = tls.NewLRUClientSessionCache(8)
@@ -69,7 +69,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 					Password:              header.Password,
 					UdpRelayMode:          udpRelayMode,
 					CongestionController:  header.Feature1.(string),
-					ReduceRtt:             false,
+					ReduceRtt:             header.Flags&protocol.Flags_Tuic_ReduceRtt != 0,
 					CWND:                  10,
 					MaxUdpRelayPacketSize: maxDatagramFrameSize,
 				},
