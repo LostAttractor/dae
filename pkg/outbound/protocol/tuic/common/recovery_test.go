@@ -129,3 +129,14 @@ func TestRecoveryRetainsUnderlyingTCPFailureLayer(t *testing.T) {
 		t.Fatalf("TCP dependency failure relabeled as QUIC: %+v", failure)
 	}
 }
+
+func TestCapacityErrorMatchesQUICStreamLimits(t *testing.T) {
+	for _, err := range []error{quic.StreamLimitReachedError{}, &quic.StreamLimitReachedError{}, ErrTooManyOpenStreams, ErrHoldOn} {
+		if !IsCapacityError(err) || !IsCapacityError(fmt.Errorf("wrapped: %w", err)) {
+			t.Errorf("capacity error not recognized: %T", err)
+		}
+	}
+	if IsCapacityError(nil) || IsCapacityError(net.ErrClosed) {
+		t.Fatal("non-capacity error requested replenishment")
+	}
+}

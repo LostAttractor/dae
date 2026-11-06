@@ -10,8 +10,9 @@ import (
 
 // IsCapacityError describes admission pressure, not a failed QUIC connection.
 func IsCapacityError(err error) bool {
-	var limit quic.StreamLimitReachedError
-	return errors.As(err, &limit) || errors.Is(err, ErrTooManyOpenStreams) || errors.Is(err, ErrHoldOn)
+	_, value := errors.AsType[quic.StreamLimitReachedError](err)
+	_, pointer := errors.AsType[*quic.StreamLimitReachedError](err)
+	return value || pointer || errors.Is(err, ErrTooManyOpenStreams) || errors.Is(err, ErrHoldOn)
 }
 
 // WrapQUICError keeps the original error and the exact resource that produced it.
