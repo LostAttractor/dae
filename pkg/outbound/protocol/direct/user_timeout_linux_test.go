@@ -20,7 +20,7 @@ func TestDirectDialerSetsTCPUserTimeout(t *testing.T) {
 			}
 			defer conn.Close()
 			tcp := conn.(*net.TCPConn)
-			if mptcpSocket(tcp) {
+			if negotiated, _ := tcp.MultipathTCP(); negotiated {
 				return // The kernel rejects the option; the dial must still succeed.
 			}
 			raw, err := tcp.SyscallConn()

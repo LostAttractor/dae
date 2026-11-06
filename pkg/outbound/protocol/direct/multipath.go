@@ -26,9 +26,10 @@ const (
 
 // MultipathMemory remembers per mark, interface and destination whether an
 // MPTCP dial negotiated MPTCP. A Linux MPTCP socket whose peer answers with
-// plain TCP stays a fallen-back MPTCP socket for life, and the kernel keeps
-// no per-destination memory, so destinations that did not negotiate MPTCP
-// are dialed as plain TCP. The zero value is ready to use.
+// plain TCP stays a fallen-back MPTCP socket for life, without Fast Open, and
+// the kernel keeps no per-destination memory, so destinations that did not
+// negotiate MPTCP are dialed as plain TCP after their probe. The zero value
+// is ready to use.
 type MultipathMemory struct {
 	mu     sync.Mutex
 	states map[multipathKey]multipathState

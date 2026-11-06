@@ -1,15 +1,11 @@
 package direct
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"os"
 	"runtime"
@@ -49,6 +45,13 @@ func multipathTestListener(t testing.TB, multipath bool) string {
 	return listener.Addr().String()
 }
 
+// mptcpSocket reports whether conn is an MPTCP socket, also one that fell
+// back to TCP. Go dials plain TCP itself when the kernel refuses MPTCP.
+func mptcpSocket(conn *net.TCPConn) bool {
+	raw, err := conn.SyscallConn()
+	return err == nil && rawProtocol(raw) == unix.IPPROTO_MPTCP
+}
+
 // serve hands the test each connection listener accepts.
 func serve(t testing.TB, listener net.Listener) <-chan net.Conn {
 	accepted := make(chan net.Conn, 4)
@@ -73,7 +76,7 @@ func serve(t testing.TB, listener net.Listener) <-chan net.Conn {
 
 // dialServed dials address and reports the dialed socket's protocol and
 // how many connections the server accepted before it, each of which must
-// be closed: a fallen-back probe connects before the dial replacing it.
+// be closed: a dial must not leave other connections behind.
 func dialServed(t *testing.T, dialer netproxy.Dialer, address string, accepted <-chan net.Conn) (protocol, probes int) {
 	t.Helper()
 	conn, err := dialer.DialContext(t.Context(), "tcp", address)
@@ -169,10 +172,10 @@ func TestMultipathMemoryDialsTCPAfterFallback(t *testing.T) {
 	memory := new(MultipathMemory)
 	dialer := NewDirectDialer(Option{Mptcp: true, Multipath: memory})
 	probes, plains := countDials(dialer)
-	// The probe falls back and is closed once a plain TCP dial replaces it.
-	for i, want := range []int{1, 0, 0} {
-		if protocol, closed := dialServed(t, dialer, plain, accepted); protocol != syscall.IPPROTO_TCP || closed != want || *probes != 1 || *plains != i+1 {
-			t.Fatalf("fallen-back destination dialed with protocol %d after %d closed probes, %d probes and %d plain dials", protocol, closed, *probes, *plains)
+	// The probe falls back and is kept; later dials use plain TCP.
+	for i, want := range []int{unix.IPPROTO_MPTCP, syscall.IPPROTO_TCP, syscall.IPPROTO_TCP} {
+		if protocol, closed := dialServed(t, dialer, plain, accepted); protocol != want || closed != 0 || *probes != 1 || *plains != i {
+			t.Fatalf("fallen-back destination dialed with protocol %d after %d closed connections, %d probes and %d plain dials", protocol, closed, *probes, *plains)
 		}
 	}
 	before := *plains
@@ -183,8 +186,8 @@ func TestMultipathMemoryDialsTCPAfterFallback(t *testing.T) {
 	}
 	probed, replaced := *probes, *plains
 	memory.Reset()
-	if protocol, closed := dialServed(t, dialer, plain, accepted); protocol != syscall.IPPROTO_TCP || closed != 1 || *probes != probed+1 || *plains != replaced+1 {
-		t.Fatalf("dial after Reset used protocol %d after %d closed probes, %d probes and %d plain dials", protocol, closed, *probes-probed, *plains-replaced)
+	if protocol, closed := dialServed(t, dialer, plain, accepted); protocol != unix.IPPROTO_MPTCP || closed != 0 || *probes != probed+1 || *plains != replaced {
+		t.Fatalf("dial after Reset used protocol %d after %d closed connections, %d probes and %d plain dials", protocol, closed, *probes-probed, *plains-replaced)
 	}
 	if protocol, _ := dialProtocol(t, NewDirectDialer(Option{Multipath: memory}), multipath); protocol != syscall.IPPROTO_TCP {
 		t.Fatalf("disabled MPTCP dialed with protocol %d", protocol)
@@ -217,8 +220,9 @@ func TestMultipathMemoryIgnoresFailedDials(t *testing.T) {
 		t.Fatalf("failed dials were remembered: %v", memory.states)
 	}
 	failed := *probes
-	for range 2 {
-		if protocol, _ := dialProtocol(t, dialer, plain); protocol != syscall.IPPROTO_TCP || *probes != failed+1 {
+	// The first dial probes again and keeps the fallen-back probe.
+	for _, want := range []int{unix.IPPROTO_MPTCP, syscall.IPPROTO_TCP} {
+		if protocol, _ := dialProtocol(t, dialer, plain); protocol != want || *probes != failed+1 {
 			t.Fatalf("dial after failures used protocol %d after %d probes", protocol, *probes-failed)
 		}
 	}
@@ -234,147 +238,33 @@ func TestMultipathMemoryIgnoresFailedDials(t *testing.T) {
 	}
 }
 
-// A probe that fell back is kept when plain TCP cannot replace it, also
-// when that dial does not connect, without spending the caller's deadline.
-func TestMultipathFallbackKeptWithoutPlainTCP(t *testing.T) {
+// A probe that fell back is kept without another dial, and its only subflow
+// takes the user timeout the MPTCP socket refused before connecting.
+func TestMultipathFallbackKeepsProbeWithUserTimeout(t *testing.T) {
+	const timeout = 30 * time.Second
 	plain := multipathTestListener(t, false)
 	if protocol, negotiated := dialProtocol(t, NewDirectDialer(Option{Mptcp: true}), plain); protocol != unix.IPPROTO_MPTCP || negotiated {
-		t.Skipf("MPTCP unavailable: protocol=%d negotiated=%v", protocol, negotiated)
+		t.Skipf("MPTCP fallback unavailable: protocol=%d negotiated=%v", protocol, negotiated)
 	}
-	for name, control := range map[string]func(context.Context) error{
-		"refused": func(context.Context) error { return syscall.ECONNREFUSED },
-		// As for a SYN the server drops.
-		"unanswered": func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
-	} {
-		t.Run(name, func(t *testing.T) {
-			dialer := NewDirectDialer(Option{Mptcp: true, Multipath: new(MultipathMemory)}).(*directDialer)
-			plains := 0
-			dialer.dialer.ControlContext = func(ctx context.Context, _, _ string, _ syscall.RawConn) error {
-				plains++
-				return control(ctx)
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 10*synRetransmitTimeout)
-			defer cancel()
-			start := time.Now()
-			conn, err := dialer.DialContext(ctx, "tcp", plain)
-			elapsed := time.Since(start)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close()
-			raw, err := conn.(*net.TCPConn).SyscallConn()
-			if err != nil {
-				t.Fatal(err)
-			}
-			// A closed probe reports protocol -1.
-			if protocol := rawProtocol(raw); protocol != unix.IPPROTO_MPTCP || plains != 1 {
-				t.Fatalf("dial returned protocol %d after %d plain dials; want the open probe after 1", protocol, plains)
-			}
-			if elapsed >= 2*synRetransmitTimeout || ctx.Err() != nil {
-				t.Fatalf("dial took %v, caller context: %v", elapsed, ctx.Err())
-			}
-		})
-	}
-}
-
-func TestMultipathFallbackLeavesHandshakeBudget(t *testing.T) {
-	var config net.ListenConfig
-	config.SetMultipathTCP(false)
-	listener, err := config.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	dialer := NewDirectDialer(Option{Mptcp: true, Multipath: new(MultipathMemory), UserTimeout: timeout})
+	probes, plains := countDials(dialer)
+	conn, err := dialer.DialContext(t.Context(), "tcp", plain)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
-	}))
-	_ = server.Listener.Close()
-	server.Listener = listener
-	server.StartTLS()
-	t.Cleanup(server.Close)
-	var independent net.Dialer
-	independent.SetMultipathTCP(true)
-	if protocol, negotiated := dialProtocol(t, &independent, listener.Addr().String()); protocol != unix.IPPROTO_MPTCP || negotiated {
-		t.Skipf("MPTCP fallback unavailable: protocol=%d negotiated=%v", protocol, negotiated)
+	defer conn.Close()
+	tcp := conn.(*net.TCPConn)
+	if !mptcpSocket(tcp) || *probes != 1 || *plains != 0 {
+		t.Fatalf("did not keep the probe: MPTCP=%v, probes=%d, plain dials=%d", mptcpSocket(tcp), *probes, *plains)
 	}
-	endpoint := netip.MustParseAddrPort(listener.Addr().String())
-	for name, address := range map[string]string{
-		"ip":       endpoint.String(),
-		"hostname": net.JoinHostPort("mptcp.test", strconv.Itoa(int(endpoint.Port()))),
-	} {
-		t.Run(name, func(t *testing.T) {
-			for _, tc := range []struct {
-				name               string
-				budget, probeDelay time.Duration
-			}{
-				{"short", 200 * time.Millisecond, 0},
-				{"half-second", 500 * time.Millisecond, 0},
-				{"slow-probe", 3 * time.Second, time.Second},
-				{"long-slow-probe", 8 * time.Second, 3 * time.Second},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					dialer := NewDirectDialer(Option{
-						Mptcp: true, Multipath: new(MultipathMemory),
-						Lookup: func(context.Context, string, string) ([]netip.Addr, error) {
-							return []netip.Addr{endpoint.Addr()}, nil
-						},
-					}).(*directDialer)
-					control := dialer.multipath.ControlContext
-					dialer.multipath.ControlContext = func(ctx context.Context, network, address string, c syscall.RawConn) error {
-						timer := time.NewTimer(tc.probeDelay)
-						defer timer.Stop()
-						select {
-						case <-timer.C:
-							return control(ctx, network, address, c)
-						case <-ctx.Done():
-							return ctx.Err()
-						}
-					}
-					// As for a replacement SYN the server drops.
-					dialer.dialer.ControlContext = func(ctx context.Context, _, _ string, _ syscall.RawConn) error {
-						<-ctx.Done()
-						return ctx.Err()
-					}
-					probes, plains := countDials(dialer)
-					ctx, cancel := context.WithTimeout(t.Context(), tc.budget)
-					defer cancel()
-					start := time.Now()
-					conn, err := dialer.DialContext(ctx, "tcp", address)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer conn.Close()
-					if !mptcpSocket(conn.(*net.TCPConn)) || *probes != 1 || *plains != 1 {
-						t.Fatalf("did not keep the probe: MPTCP=%v, probes=%d, plain dials=%d", mptcpSocket(conn.(*net.TCPConn)), *probes, *plains)
-					}
-					if ctx.Err() != nil {
-						t.Fatalf("dial exhausted caller's budget after %v: %v", time.Since(start), ctx.Err())
-					}
-					deadline, _ := ctx.Deadline()
-					t.Logf("dial took %v, handshake budget remaining %v", time.Since(start), time.Until(deadline))
-					if err := conn.SetDeadline(deadline); err != nil {
-						t.Fatal(err)
-					}
-					tlsConfig := server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-					tlsConfig.ServerName = endpoint.Addr().String()
-					client := tls.Client(conn, tlsConfig)
-					defer client.Close()
-					if err := client.HandshakeContext(ctx); err != nil {
-						t.Fatalf("fallback TLS handshake: %v", err)
-					}
-					if _, err := io.WriteString(client, "GET / HTTP/1.0\r\n\r\n"); err != nil {
-						t.Fatal(err)
-					}
-					response, err := http.ReadResponse(bufio.NewReader(client), nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer response.Body.Close()
-					if body, err := io.ReadAll(response.Body); err != nil || string(body) != "ok" {
-						t.Fatalf("fallback TLS response: %q, %v", body, err)
-					}
-				})
-			}
-		})
+	raw, err := tcp.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := -1
+	_ = raw.Control(func(fd uintptr) { got, _ = unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT) })
+	if got != int(timeout.Milliseconds()) {
+		t.Fatalf("TCP_USER_TIMEOUT = %dms, want %v", got, timeout)
 	}
 }
 
@@ -400,10 +290,10 @@ func mptcpSYNs(t *testing.T) int64 {
 	return -1
 }
 
-// The server's kernel has MPTCP disabled: the first dial probes with MPTCP,
-// falls back, and returns plain TCP; later dials do not probe. A client
-// kernel without MPTCP sends no probe to replace.
-func TestMultipathMemoryReplacesFallbackFromServerWithoutMPTCP(t *testing.T) {
+// The server's kernel has MPTCP disabled: the first dial probes with MPTCP and
+// keeps the fallen-back probe; later dials use plain TCP without probing. A
+// client kernel without MPTCP makes Go dial the probe as plain TCP.
+func TestMultipathMemoryKeepsFallbackFromServerWithoutMPTCP(t *testing.T) {
 	// Sockets and sysctls belong to the namespace of this locked thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -482,10 +372,13 @@ func TestMultipathMemoryReplacesFallbackFromServerWithoutMPTCP(t *testing.T) {
 	}
 	memory := new(MultipathMemory)
 	dialer := NewDirectDialer(Option{Mptcp: true, Multipath: memory})
-	for i, probes := range []int{1, 0, 0} {
+	for i, want := range []struct {
+		protocol int
+		syns     int64
+	}{{unix.IPPROTO_MPTCP, 1}, {syscall.IPPROTO_TCP, 0}, {syscall.IPPROTO_TCP, 0}} {
 		if i == 2 {
 			// The client's kernel now refuses MPTCP sockets: Go dials the
-			// probe as plain TCP, which is kept.
+			// probe as plain TCP.
 			memory.Reset()
 			if err := os.WriteFile("/proc/sys/net/mptcp/enabled", []byte("0"), 0); err != nil {
 				t.Fatal(err)
@@ -493,8 +386,8 @@ func TestMultipathMemoryReplacesFallbackFromServerWithoutMPTCP(t *testing.T) {
 		}
 		syns := mptcpSYNs(t)
 		protocol, closed := dialServed(t, dialer, listener.Addr().String(), accepted)
-		if sent := mptcpSYNs(t) - syns; protocol != syscall.IPPROTO_TCP || sent != int64(probes) || closed != probes {
-			t.Fatalf("dial returned protocol %d after %d MPTCP SYNs and %d closed probes, want TCP after %d of each", protocol, sent, closed, probes)
+		if sent := mptcpSYNs(t) - syns; protocol != want.protocol || sent != want.syns || closed != 0 {
+			t.Fatalf("dial %d returned protocol %d after %d MPTCP SYNs and %d closed connections, want %d after %d SYNs", i, protocol, sent, closed, want.protocol, want.syns)
 		}
 	}
 }

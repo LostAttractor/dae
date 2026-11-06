@@ -42,7 +42,7 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 	resources := new(Resources)
 	pool := &resources.Paths
 	// dial reports the protocol of the dialed socket and the connections the
-	// TCP-only listener accepted for it: a probe falls back and is replaced.
+	// TCP-only listener accepted for it: a probe falls back and is kept.
 	dial := func(base netproxy.Dialer) (protocol, connections int) {
 		t.Helper()
 		conn, err := base.DialContext(t.Context(), "tcp", listener.Addr().String())
@@ -88,7 +88,7 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 	}
 	expect(unpooled, 262, 1, "entry dialer without a pool")
 	first := entry(pool)
-	expect(first, syscall.IPPROTO_TCP, 2, "probe")
+	expect(first, 262, 1, "probe")
 	// The TCP-only listener made the probe fall back, also for a woken runtime.
 	expect(first, syscall.IPPROTO_TCP, 1, "known fallback")
 	expect(entry(pool), syscall.IPPROTO_TCP, 1, "known fallback in a woken runtime")
@@ -104,5 +104,5 @@ func TestEntryMultipathMemoryOutlivesRuntimesUntilRelearn(t *testing.T) {
 	NewGroupMaterializer(compiler, resources, global)
 	expect(first, syscall.IPPROTO_TCP, 1, "rebuilt configuration")
 	pool.Relearn()
-	expect(first, syscall.IPPROTO_TCP, 2, "probe after Relearn")
+	expect(first, 262, 1, "probe after Relearn")
 }

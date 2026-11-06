@@ -16,10 +16,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
-// synRetransmitTimeout is Linux's initial SYN retransmission timeout
-// (TCP_TIMEOUT_INIT); a plain TCP redial gets room for one retransmission.
-const synRetransmitTimeout = time.Second
-
 type Option struct {
 	// Resolver is supplied by the owner; nil uses net.DefaultResolver.
 	// Socket marks apply to data sockets. DNS transport policy belongs to Resolver.
@@ -35,7 +31,8 @@ type Option struct {
 	Interface string
 	IPVersion int // 0, 4 or 6; applies to data sockets, not Resolver's DNS transport.
 	// UserTimeout bounds unacknowledged data on TCP data sockets, closing
-	// carriers of a black-holed path. Linux MPTCP sockets cannot set it.
+	// carriers of a black-holed path. Negotiated MPTCP connections cannot
+	// set it; fallen-back ones set it on their only subflow.
 	UserTimeout time.Duration
 	// TCPFastOpen defers the SYN of plain TCP data sockets to their first
 	// write once the kernel holds the server's cookie; MPTCP sockets keep a
@@ -46,14 +43,15 @@ type Option struct {
 }
 
 type directDialer struct {
-	dialer    net.Dialer  // UDP, and TCP unless memory chooses multipath
-	multipath *net.Dialer // MPTCP; set with memory
-	memory    *MultipathMemory
-	mark      int
-	iface     string
-	lookup    happyeyeballs.Lookup
-	ipVersion string
-	fastOpen  bool
+	dialer      net.Dialer  // UDP, and TCP unless memory chooses multipath
+	multipath   *net.Dialer // MPTCP; set with memory
+	memory      *MultipathMemory
+	mark        int
+	iface       string
+	lookup      happyeyeballs.Lookup
+	ipVersion   string
+	fastOpen    bool
+	userTimeout time.Duration
 }
 
 func NewDirectDialer(option Option) netproxy.Dialer {
@@ -61,7 +59,7 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup, fastOpen: option.TCPFastOpen}
+	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup, fastOpen: option.TCPFastOpen, userTimeout: option.UserTimeout}
 	if d.lookup == nil {
 		d.lookup = resolver.LookupNetIP
 	}
@@ -135,7 +133,6 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 	if !multipath {
 		return d.dialPlain(ctx, network, address)
 	}
-	start := time.Now()
 	conn, err := d.multipath.DialContext(ctx, network, address)
 	result := multipathUnknown
 	if err == nil {
@@ -145,20 +142,17 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 		}
 	}
 	d.memory.settle(table, key, result)
-	if result == multipathIncapable && mptcpSocket(conn.(*net.TCPConn)) {
-		// A fallen-back MPTCP socket stays one for life; keep it only if
-		// plain TCP cannot replace it within about the probe's handshake.
-		timeout := synRetransmitTimeout + 2*time.Since(start)
-		if deadline, ok := ctx.Deadline(); ok {
-			// Leave time for TLS or protocol handshakes on the retained probe.
-			timeout = min(timeout, time.Until(deadline)/2)
+	if result == multipathIncapable && d.userTimeout > 0 {
+		// The probe stays a single-path connection: the kernel serves TCP
+		// options of a fallen-back socket from its only subflow, which the
+		// MPTCP socket refused before connecting.
+		raw, rawErr := conn.(*net.TCPConn).SyscallConn()
+		if rawErr == nil {
+			rawErr = setsockoptUserTimeout(raw, d.userTimeout)
 		}
-		redial, cancel := context.WithTimeout(ctx, timeout)
-		plain, err := d.dialPlain(redial, network, address)
-		cancel()
-		if err == nil {
+		if rawErr != nil {
 			_ = conn.Close()
-			return plain, nil
+			return nil, rawErr
 		}
 	}
 	return conn, err

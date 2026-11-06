@@ -8,7 +8,7 @@
 
 Within a degradation/priority tier, latency policies compare the measured statistic plus `add_latency`. Conditional priority uses the measurement before offsets. Negative offsets cannot override degradation or priority; `check_tolerance` only applies within a tier.
 
-Upstream errors start failure confirmation, which probes the path once for all concurrent reports. So does a proxied TCP connection whose upstream returns nothing within the probe timeout (8 s) after the caller's first payload: a black-holed path produces no relay error, because its callers give up first. Node carriers over plain TCP also close after 30 s of unacknowledged data, longer than a failed health check, so pools replace black-holed connections; MPTCP carriers rely on keepalive.
+Upstream errors start failure confirmation, which probes the path once for all concurrent reports. So does a proxied TCP connection whose upstream returns nothing within the probe timeout (8 s) after the caller's first payload: a black-holed path produces no relay error, because its callers give up first. Node carriers over plain TCP, including MPTCP probes that fell back to it, also close after 30 s of unacknowledged data, longer than a failed health check, so pools replace black-holed connections; carriers that negotiated MPTCP rely on keepalive.
 
 A confirmed failure degrades the path. Its first successful test permits degraded fallback and starts `failure_recovery`. Probes repeat at `min(check_interval, 5s)`; an endpoint success lifts degradation. Failure or paused observation restarts an incomplete window. Shared paths reuse probes with group-specific durations. Target errors, cancellation, queue timeout and sleep neither directly penalize a path nor replace successful verification.
 
