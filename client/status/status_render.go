@@ -76,7 +76,7 @@ func tableNeedsAttention(usage api.TableUsage) bool {
 func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
 	// Present retained evidence before its kernel projection.
 	for _, usage := range usages {
-		if detail := usage.Breakdown; detail != nil {
+		if detail := usage.Breakdown; detail != nil && (verbose || tableNeedsAttention(usage)) {
 			limit := "unlimited"
 			if usage.Limit > 0 {
 				limit = fmt.Sprintf("limit: %d pairs", usage.Limit)

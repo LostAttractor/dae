@@ -63,7 +63,7 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 
 ## 容量表
 
-普通、`--verbose` 和 `--recent` 状态视图渲染同一份 `tables` 快照。`domain-registry (unlimited)` 始终显示配对数、域名数、IP 数、地址类型和 GC 明细；其余表与资源池按 `Kernel tables`、`Userspace tables` 分组，以 `NAME`、`USED`、`LIMIT`、`USAGE%`、`ON FULL` 紧凑展示，包括内核动态 hash/LRU 表和全局 UDP source、packet resource、reply socket 三个池。`--verbose` 列出全部条目；普通和 `--recent` 视图只列出需要关注的条目：用量不可用、有待重试的内核变更、有被省略的候选，或 `reject` 表使用率达到 70%，没有这类条目的分组整体省略。`domain-kernel` 的说明保留 `CANDIDATES`、`OMITTED`、`PENDING`；pending 表示等待重试的内核变更。
+普通、`--verbose` 和 `--recent` 状态视图渲染同一份 `tables` 快照。`domain-registry (unlimited)` 显示配对数、域名数、IP 数、地址类型和 GC 明细；其余表与资源池按 `Kernel tables`、`Userspace tables` 分组，以 `NAME`、`USED`、`LIMIT`、`USAGE%`、`ON FULL` 紧凑展示，包括内核动态 hash/LRU 表和全局 UDP source、packet resource、reply socket 三个池。`--verbose` 列出全部条目；普通和 `--recent` 视图只列出需要关注的条目（包括 registry）：用量不可用、有待重试的内核变更、有被省略的候选，或 `reject` 表使用率达到 70%，没有这类条目的分组整体省略。`domain-kernel` 的说明保留 `CANDIDATES`、`OMITTED`、`PENDING`；pending 表示等待重试的内核变更。
 
 每项的 `scope` 为 `kernel` 或 `userspace`，`on_full` 描述满载行为：`evict` 按 LRU 淘汰已有条目，`reject` 拒绝新增，`omit` 不把超额域名候选投影进内核，`unlimited` 无容量上限。`limit: 0` 始终表示无限容量。LRU 满载属于正常淘汰，不等于硬耗尽；只有 `reject` 的使用率应用容量告警色。非空 `error` 表示 `used` 不可用，文本显示 `unavailable` 及具体错误，不显示误导性的零或 0%；`--json` 原样保留这些字段。Web 的 **Tables** 区域使用相同的范围、满载行为和可用性字段。插件自定义报告仍单独显示在插件状态中。
 

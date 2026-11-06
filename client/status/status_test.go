@@ -119,7 +119,7 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 	Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
 		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: 161, Limit: 65536, Candidates: 163, Pending: 3},
 		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
-	}}, false)
+	}}, true)
 	output := out.String()
 	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 2; PENDING 3", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
 		if !strings.Contains(output, label) {
@@ -145,7 +145,7 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 		Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
 			{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 65536},
 			{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Breakdown: &api.TableUsageBreakdown{GC: gc}},
-		}}, false)
+		}}, true)
 		found := false
 		for _, line := range strings.Split(out.String(), "\n") {
 			found = found || strings.Join(strings.Fields(line), " ") == fmt.Sprintf("0 0 0 0 0 %d", gc)
@@ -200,8 +200,10 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 	if strings.Contains(brief, "tcp_flow_map") || strings.Contains(brief, "udp-sources") {
 		t.Fatalf("ordinary view listed healthy tables:\n%s", attention)
 	}
+	// An unlimited registry needs attention only when its usage is unavailable.
+	registry := api.TableUsage{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 8, Breakdown: &api.TableUsageBreakdown{Domains: 3, IPs: 5}}
 	var healthy strings.Builder
-	printTables(&healthy, snapshot.Tables[:1], false)
+	printTables(&healthy, []api.TableUsage{snapshot.Tables[0], registry}, false)
 	if healthy.Len() != 0 {
 		t.Fatalf("healthy tables printed a section:\n%s", healthy.String())
 	}

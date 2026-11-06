@@ -75,14 +75,14 @@ at the same position across rows. Display widths account for CJK text and ANSI c
 ## Capacity tables
 
 Ordinary, `--verbose` and `--recent` status render the same `tables` snapshot.
-`domain-registry (unlimited)` always shows its detailed pair, domain, IP,
+`domain-registry (unlimited)` shows its detailed pair, domain, IP,
 address-family and GC counts. Other tables and resource pools are grouped under
 `Kernel tables` and `Userspace tables`, with `NAME`, `USED`, `LIMIT`, `USAGE%` and
 `ON FULL` columns. These include dynamic kernel hash/LRU tables and the global
 UDP source, packet-resource and reply-socket pools. `--verbose` lists all of them.
-Ordinary and `--recent` views list only items needing attention: unavailable usage,
-pending kernel changes, omitted candidates, or `reject` usage of at least 70%; a
-group with no such item is omitted. The `domain-kernel` note keeps `CANDIDATES`,
+Ordinary and `--recent` views list only items needing attention, including the
+registry: unavailable usage, pending kernel changes, omitted candidates, or
+`reject` usage of at least 70%; a group with no such item is omitted. The `domain-kernel` note keeps `CANDIDATES`,
 `OMITTED` and `PENDING` visible; pending changes await kernel retry.
 
 Each item identifies its `scope` (`kernel` or `userspace`) and capacity behavior
