@@ -56,6 +56,8 @@ func (p *PathSpec) entryDialer(option *dialer.GlobalOption, pool *PathPool) (net
 	entry := direct.Option{
 		Resolver: resolver, Mark: int(p.effectiveMark(option)), Interface: p.Entry.Interface,
 		Mptcp: option.Mptcp, IPVersion: p.IPVersion, UserTimeout: entryUserTimeout,
+		// Node carriers are always written first, so a deferred SYN is sent.
+		TCPFastOpen: option.TCPFastOpen,
 	}
 	if pool != nil {
 		// entryResolver's DNS transport depends on exactly these inputs.

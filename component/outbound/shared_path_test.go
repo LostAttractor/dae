@@ -146,6 +146,7 @@ func TestBuildPathKeepsDifferentRuntimeConfigurationsSeparate(t *testing.T) {
 		{"chain", func(p *PathSpec, _ *dialer.GlobalOption) { p.Nodes = append(p.Nodes, p.Nodes[0]) }},
 		{"tls", func(_ *PathSpec, o *dialer.GlobalOption) { o.AllowInsecure = true }},
 		{"mptcp", func(_ *PathSpec, o *dialer.GlobalOption) { o.Mptcp = true }},
+		{"tcp fast open", func(_ *PathSpec, o *dialer.GlobalOption) { o.TCPFastOpen = true }},
 		{"bootstrap DNS", func(_ *PathSpec, o *dialer.GlobalOption) { o.DNSResolver = "127.0.0.2:53" }},
 		{"check DNS", func(_ *PathSpec, o *dialer.GlobalOption) { o.CheckDnsOptionRaw.Raw = []string{"127.0.0.2:53"} }},
 		{"check interval", func(_ *PathSpec, o *dialer.GlobalOption) { o.CheckInterval = 2 * time.Minute }},

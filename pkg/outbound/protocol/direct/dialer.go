@@ -37,6 +37,12 @@ type Option struct {
 	// UserTimeout bounds unacknowledged data on TCP data sockets, closing
 	// carriers of a black-holed path. Linux MPTCP sockets cannot set it.
 	UserTimeout time.Duration
+	// TCPFastOpen defers the SYN of plain TCP data sockets to their first
+	// write once the kernel holds the server's cookie; MPTCP sockets keep a
+	// full handshake. Only for peers the caller always writes to first: a
+	// read before any write would never send the SYN, and CloseWrite before
+	// any write resets the connection.
+	TCPFastOpen bool
 }
 
 type directDialer struct {
@@ -47,6 +53,7 @@ type directDialer struct {
 	iface     string
 	lookup    happyeyeballs.Lookup
 	ipVersion string
+	fastOpen  bool
 }
 
 func NewDirectDialer(option Option) netproxy.Dialer {
@@ -54,14 +61,29 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup}
+	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup, fastOpen: option.TCPFastOpen}
 	if d.lookup == nil {
 		d.lookup = resolver.LookupNetIP
 	}
 	if option.IPVersion != 0 {
 		d.ipVersion = strconv.Itoa(option.IPVersion)
 	}
-	d.dialer.ControlContext = func(ctx context.Context, network, _ string, c syscall.RawConn) error {
+	d.dialer.ControlContext = socketControl(option)
+	d.dialer.SetMultipathTCP(option.Mptcp && option.Multipath == nil)
+	if option.Mptcp && option.Multipath != nil {
+		multipath := d.dialer
+		multipath.SetMultipathTCP(true)
+		// Probes learn from a completed handshake, also Go's TCP fallback.
+		probe := option
+		probe.TCPFastOpen = false
+		multipath.ControlContext = socketControl(probe)
+		d.multipath, d.memory = &multipath, option.Multipath
+	}
+	return d
+}
+
+func socketControl(option Option) func(context.Context, string, string, syscall.RawConn) error {
+	return func(ctx context.Context, network, _ string, c syscall.RawConn) error {
 		// Go retries any failed MPTCP dial as TCP, even one whose ctx has
 		// ended; never start a connection for a dial that is already over.
 		if err := ctx.Err(); err != nil {
@@ -80,30 +102,38 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 				return err
 			}
 		}
-		if option.UserTimeout > 0 && strings.HasPrefix(network, "tcp") {
+		if !strings.HasPrefix(network, "tcp") {
+			return nil
+		}
+		if option.TCPFastOpen {
+			setFastOpenConnect(c)
+		}
+		if option.UserTimeout > 0 {
 			return setUserTimeout(c, option.UserTimeout)
 		}
 		return nil
 	}
-	d.dialer.SetMultipathTCP(option.Mptcp && option.Multipath == nil)
-	if option.Mptcp && option.Multipath != nil {
-		multipath := d.dialer
-		multipath.SetMultipathTCP(true)
-		d.multipath, d.memory = &multipath, option.Multipath
+}
+
+// dialPlain dials with d.dialer, the only TCP dialer that sets Fast Open.
+func (d *directDialer) dialPlain(ctx context.Context, network, address string) (net.Conn, error) {
+	conn, err := d.dialer.DialContext(ctx, network, address)
+	if err == nil && d.fastOpen {
+		conn = deferredConnect(conn.(*net.TCPConn))
 	}
-	return d
+	return conn, err
 }
 
 func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Addr, port string) (net.Conn, error) {
 	address := net.JoinHostPort(ip.String(), port)
 	number, err := strconv.ParseUint(port, 10, 16)
 	if d.memory == nil || err != nil {
-		return d.dialer.DialContext(ctx, network, address)
+		return d.dialPlain(ctx, network, address)
 	}
 	key := multipathKey{d.mark, d.iface, netip.AddrPortFrom(ip.Unmap(), uint16(number))}
 	table, multipath := d.memory.choose(key)
 	if !multipath {
-		return d.dialer.DialContext(ctx, network, address)
+		return d.dialPlain(ctx, network, address)
 	}
 	start := time.Now()
 	conn, err := d.multipath.DialContext(ctx, network, address)
@@ -124,7 +154,7 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 			timeout = min(timeout, time.Until(deadline)/2)
 		}
 		redial, cancel := context.WithTimeout(ctx, timeout)
-		plain, err := d.dialer.DialContext(redial, network, address)
+		plain, err := d.dialPlain(redial, network, address)
 		cancel()
 		if err == nil {
 			_ = conn.Close()

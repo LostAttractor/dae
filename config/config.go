@@ -51,6 +51,7 @@ type Global struct {
 	PprofPort                 uint16                 `mapstructure:"pprof_port" default:"0" reload:"services"`
 	MetricsPort               uint16                 `mapstructure:"metrics_port" default:"0" reload:"services"`
 	Mptcp                     bool                   `mapstructure:"mptcp" default:"false" reload:"plane"`
+	TCPFastOpen               bool                   `mapstructure:"tcp_fast_open" default:"false" reload:"plane"`
 	BandwidthMaxTx            string                 `mapstructure:"bandwidth_max_tx" default:"0" reload:"plane"`
 	BandwidthMaxRx            string                 `mapstructure:"bandwidth_max_rx" default:"0" reload:"plane"`
 	// TODO: skip?

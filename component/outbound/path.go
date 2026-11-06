@@ -101,6 +101,7 @@ func writeRuntimeOptions(builder *strings.Builder, spec *PathSpec, option *diale
 		option.UDPHopInterval.String(),
 		strconv.FormatUint(uint64(spec.effectiveMark(option)), 10),
 		strconv.FormatBool(option.Mptcp),
+		strconv.FormatBool(option.TCPFastOpen),
 		option.DNSResolver,
 	}
 	for _, value := range values {

@@ -155,6 +155,14 @@ global {
     # always try MPTCP. It can be used for load balancing and failover across multiple interfaces and IPs.
     mptcp: false
 
+    # TCP Fast Open for node connections over plain TCP, including DNS and UDP traffic routed over them; MPTCP
+    # connections, direct connections, UDP sockets and node address lookups never use it. Once a server has issued a
+    # cookie, later connections carry their first data in the SYN, saving a round trip. Their dial returns before the
+    # SYN, so connection failures appear on the first read or write, and dae no longer falls back from such an
+    # unreachable address to the node's other addresses. Node servers must enable TCP Fast Open; dae's host needs the
+    # client bit (1, the default) of net.ipv4.tcp_fastopen.
+    tcp_fast_open: false
+
     # The UDP port hopping interval for protocols that support it (e.g., Hysteria2 with a port range).
     #udphop_interval: 30s
 

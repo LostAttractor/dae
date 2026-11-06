@@ -77,12 +77,18 @@ type trackedSyscallPacketConn struct {
 
 func (c *trackedSyscallPacketConn) SyscallConn() (syscall.RawConn, error) { return c.raw.SyscallConn() }
 
-// NativeTCPConn unwraps ownership tracking only. Protocol adapters are never
-// unwrapped, and callers still close the original tracked connection.
+// TCPSocket is a wrapper that adds no framing to its TCP socket.
+type TCPSocket interface{ TCPSocket() *net.TCPConn }
+
+// NativeTCPConn unwraps ownership tracking and TCPSocket wrappers only.
+// Protocol adapters are never unwrapped, and callers still close the original
+// connection.
 func NativeTCPConn(conn net.Conn) *net.TCPConn {
 	switch c := conn.(type) {
 	case *net.TCPConn:
 		return c
+	case TCPSocket:
+		return c.TCPSocket()
 	case *trackedSyscallConn:
 		return NativeTCPConn(c.Conn)
 	case *trackedConn:

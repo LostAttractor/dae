@@ -18,6 +18,7 @@ type GlobalOption struct {
 	D.ExtraOption
 	SoMarkFromDae     uint32
 	Mptcp             bool
+	TCPFastOpen       bool
 	DNSResolver       string
 	CheckDnsOptionRaw CheckDnsOptionRaw
 	CheckInterval     time.Duration
@@ -29,6 +30,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
 		SoMarkFromDae:       global.SoMarkFromDae,
 		Mptcp:               global.Mptcp,
+		TCPFastOpen:         global.TCPFastOpen,
 		DNSResolver:         global.DNSResolver,
 		AllowInsecure:       global.AllowInsecure,
 		TlsImplementation:   global.TlsImplementation,

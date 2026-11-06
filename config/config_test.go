@@ -356,6 +356,7 @@ global {
 	check_interval: 45s
 	check_interval_max: 10m
 	udphop_interval: 5s
+	tcp_fast_open: true
 	metrics_port: 9090
 	pprof_port: 6060
 }
@@ -384,6 +385,9 @@ routing {
 	}
 	if g.UDPHopInterval != 5*time.Second {
 		t.Errorf("UDPHopInterval: got %v", g.UDPHopInterval)
+	}
+	if !g.TCPFastOpen {
+		t.Errorf("TCPFastOpen should be true")
 	}
 	if g.MetricsPort != 9090 {
 		t.Errorf("MetricsPort: got %v", g.MetricsPort)
