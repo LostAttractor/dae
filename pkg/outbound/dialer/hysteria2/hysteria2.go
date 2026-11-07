@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -88,22 +89,37 @@ func (s *Hysteria2) Build(option *dialer.ExtraOption, upstream dialer.Upstream) 
 	header.Feature1 = feature1
 
 	if s.PinSHA256 != "" {
-		nHash := normalizeCertHash(s.PinSHA256)
-		header.TlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			certHashes := make([]string, 0, len(rawCerts))
-			for _, cert := range rawCerts {
-				hash := sha256.Sum256(cert)
-				hashHex := hex.EncodeToString(hash[:])
-				certHashes = append(certHashes, hashHex)
-				if hashHex == nHash {
+		header.TlsConfig.VerifyPeerCertificate = pinnedCertVerifier(normalizeCertHash(s.PinSHA256))
+	}
+	return protocol.Build("hysteria2", upstream, header)
+}
+
+// pinnedCertVerifier accepts the leaf, the only certificate the handshake
+// proves possession of, or any certificate of a verified chain. Matching an
+// unverified chain entry would accept a peer that appends the pinned
+// certificate after its own.
+func pinnedCertVerifier(hash string) func([][]byte, [][]*x509.Certificate) error {
+	matches := func(der []byte) bool {
+		sum := sha256.Sum256(der)
+		return hex.EncodeToString(sum[:]) == hash
+	}
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("no peer certificate to match the pinned SHA-256")
+		}
+		if matches(rawCerts[0]) {
+			return nil
+		}
+		for _, chain := range verifiedChains {
+			for _, cert := range chain {
+				if matches(cert.Raw) {
 					return nil
 				}
 			}
-			// No match
-			return fmt.Errorf("no matching certificate found, %s not in %v", nHash, certHashes)
 		}
+		leaf := sha256.Sum256(rawCerts[0])
+		return fmt.Errorf("certificate %x does not match the pinned SHA-256 %s", leaf, hash)
 	}
-	return protocol.Build("hysteria2", upstream, header)
 }
 
 func normalizeCertHash(hash string) string {
