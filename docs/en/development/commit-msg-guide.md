@@ -75,7 +75,7 @@ Closes #123, #245, #992
 
 ## References
 
-- <https://www.conventionalcommits.org/>
+- <https://www.conventionalcommits.org>
 - <https://seesparkbox.com/foundry/semantic_commit_messages>
 - <http://karma-runner.github.io/1.0/dev/git-commit-msg.html>
 - <https://wadehuanglearning.blogspot.com/2019/05/commit-commit-commit-why-what-commit.html>

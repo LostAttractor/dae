@@ -15,11 +15,11 @@
   "dependencies": {
     "markdownlint-cli": "^0.49.1",
     "markdownlint-rule-enhanced-proper-names": "^0.0.1",
-    "markdownlint-rule-no-trailing-slash-in-links": "^0.0.1",
-    "remark": "^14.0.3",
-    "remark-validate-links": "^12.1.0",
-    "unified-engine": "^10.1.0",
-    "unist-util-visit": "^4.1.2"
+    "markdownlint-rule-no-trailing-slash-in-links": "^0.0.2",
+    "remark": "^15.0.1",
+    "remark-validate-links": "^13.1.0",
+    "unified-engine": "^11.2.2",
+    "unist-util-visit": "^5.2.0"
   },
   "remarkConfig": {
     "plugins": [
