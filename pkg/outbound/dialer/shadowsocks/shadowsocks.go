@@ -190,7 +190,10 @@ func ParseSSURL(ssurl string) (data *Shadowsocks, err error) {
 	// try to parse the ss:// link, if it fails, base64 decode first
 	if v, ok = parse(content); !ok {
 		// The link may be base64-wrapped; decode and re-parse it.
-		t := content[5:]
+		_, t, found := strings.Cut(content, "://")
+		if !found {
+			return nil, fmt.Errorf("%w: unrecognized ss address", dialer.InvalidParameterErr)
+		}
 		var l, r string
 		if ind := strings.Index(t, "#"); ind > -1 {
 			l = t[:ind]

@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -160,6 +161,21 @@ func TestParseSSURLUnescapedPluginOptions(t *testing.T) {
 		want := Sip003{Name: "simple-obfs", Opts: Sip003Opts{Obfs: "http", Host: "cdn.example"}}
 		if server.Plugin != want || server.Name != "node" || server.UDP {
 			t.Fatalf("%s: parsed %+v", link, server)
+		}
+	}
+}
+
+func TestParseSSURLBase64Forms(t *testing.T) {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte("aes-128-gcm:pw@proxy.example:443"))
+	for _, scheme := range []string{"ss://", "shadowsocks://"} {
+		parsed, err := ParseSSURL(scheme + encoded + "#node")
+		if err != nil || parsed.Cipher != "aes-128-gcm" || parsed.Password != "pw" || parsed.Port != 443 || parsed.Name != "node" {
+			t.Fatalf("%s: %+v, %v", scheme, parsed, err)
+		}
+	}
+	for _, link := range []string{"ss:", "ss:x"} {
+		if _, err := ParseSSURL(link); err == nil {
+			t.Fatalf("%q was accepted", link)
 		}
 	}
 }
