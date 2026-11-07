@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -140,6 +141,9 @@ func (u *udpHopPacketConn) recvLoop(conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			pool.PutBuffer(buf)
+			if icmpError(err) && u.ctx.Err() == nil {
+				continue
+			}
 			u.connMutex.RLock()
 			current := u.currentConn == conn
 			u.connMutex.RUnlock()
@@ -243,7 +247,18 @@ func (u *udpHopPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 	u.connMutex.RLock()
 	conn := u.currentConn
 	u.connMutex.RUnlock()
-	return conn.Write(p)
+	n, err := conn.Write(p)
+	if icmpError(err) {
+		return len(p), nil // dropped; QUIC retransmits
+	}
+	return n, err
+}
+
+// icmpError reports an ICMP error that a connected hop socket returns once,
+// for example from a hop port the server does not forward. An unconnected
+// socket would only lose the packet, so neither must end the connection.
+func icmpError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH)
 }
 func (u *udpHopPacketConn) Close() error {
 	u.closeOnce.Do(func() {

@@ -250,3 +250,48 @@ func TestCloseCancelsAndJoinsHopDial(t *testing.T) {
 		t.Fatal("Close returned before hop dial exited")
 	}
 }
+
+func TestICMPErrorFromHopPortKeepsConnection(t *testing.T) {
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.LocalAddr().(*net.UDPAddr)
+	_ = probe.Close()
+	conn, err := NewUDPHopPacketConn(context.Background(), testHopAddr(), time.Hour, func(context.Context, net.Addr) (net.Conn, error) {
+		return net.DialUDP("udp", nil, addr)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The closed port answers with ICMP port unreachable.
+	if _, err := conn.WriteTo([]byte("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := conn.WriteTo([]byte("x"), nil); err != nil {
+		t.Fatalf("write after ICMP error: %v", err)
+	}
+	server, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.Skipf("rebind %v: %v", addr, err)
+	}
+	defer server.Close()
+	if _, err := conn.WriteTo([]byte("y"), nil); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 16)
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, from, err := server.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.WriteToUDP(buf[:n], from); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, _, err := conn.ReadFrom(buf); err != nil || string(buf[:n]) != "y" {
+		t.Fatalf("read after ICMP error = %q, %v", buf[:n], err)
+	}
+}
