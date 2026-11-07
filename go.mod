@@ -7,7 +7,7 @@ require (
 	github.com/andybalholm/brotli v1.2.4
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
-	github.com/buke/quickjs-go v0.7.8-0.20260823090719-48da2085b266
+	github.com/buke/quickjs-go v0.7.8
 	github.com/cilium/ebpf v0.22.0
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851
