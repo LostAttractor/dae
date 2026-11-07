@@ -1,8 +1,27 @@
 package tls
 
 import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdh"
+	"crypto/hkdf"
+	"crypto/mlkem"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net"
 	"net/url"
 	"testing"
+
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 func testRealityURL(spider string) string {
@@ -27,5 +46,123 @@ func TestRealityRandomRangeDoesNotPanic(t *testing.T) {
 		if got := randBetween(pair[0], pair[1]); got != pair[0] {
 			t.Fatalf("unexpected fallback: %d", got)
 		}
+	}
+}
+
+// realityTestServer authenticates ClientHellos the way XTLS REALITY servers
+// do: X25519 with the standalone share, else with the X25519 half of
+// X25519MLKEM768, and AES-GCM over the hello with the session ID zeroed.
+type realityTestServer struct {
+	key     *ecdh.PrivateKey
+	shortID [8]byte
+	result  chan error
+}
+
+func (s *realityTestServer) DialContext(context.Context, string, string) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		s.result <- s.authenticate(server)
+	}()
+	return client, nil
+}
+
+func (*realityTestServer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, netproxy.UnsupportedTunnelTypeError
+}
+
+func (s *realityTestServer) authenticate(conn net.Conn) error {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return err
+	}
+	hello := make([]byte, binary.BigEndian.Uint16(header[3:]))
+	if _, err := io.ReadFull(conn, hello); err != nil {
+		return err
+	}
+	in := cryptobyte.String(hello)
+	var msgType uint8
+	var body, sessionID, suites, compression, extensions cryptobyte.String
+	var random []byte
+	if !in.ReadUint8(&msgType) || msgType != 1 || !in.ReadUint24LengthPrefixed(&body) ||
+		!body.Skip(2) || !body.ReadBytes(&random, 32) ||
+		!body.ReadUint8LengthPrefixed(&sessionID) || len(sessionID) != 32 ||
+		!body.ReadUint16LengthPrefixed(&suites) || !body.ReadUint8LengthPrefixed(&compression) ||
+		!body.ReadUint16LengthPrefixed(&extensions) {
+		return errors.New("malformed ClientHello")
+	}
+	var peer []byte
+	for !extensions.Empty() {
+		var extension uint16
+		var data, shares cryptobyte.String
+		if !extensions.ReadUint16(&extension) || !extensions.ReadUint16LengthPrefixed(&data) {
+			return errors.New("malformed extension")
+		}
+		if extension != 51 || !data.ReadUint16LengthPrefixed(&shares) { // key_share
+			continue
+		}
+		for !shares.Empty() {
+			var group uint16
+			var share cryptobyte.String
+			if !shares.ReadUint16(&group) || !shares.ReadUint16LengthPrefixed(&share) {
+				return errors.New("malformed key share")
+			}
+			switch {
+			case group == uint16(tls.X25519) && len(share) == 32:
+				peer = share
+			case group == uint16(tls.X25519MLKEM768) && len(share) == mlkem.EncapsulationKeySize768+32 && peer == nil:
+				peer = share[mlkem.EncapsulationKeySize768:]
+			}
+		}
+	}
+	peerKey, err := ecdh.X25519().NewPublicKey(peer)
+	if err != nil {
+		return err
+	}
+	shared, err := s.key.ECDH(peerKey)
+	if err != nil {
+		return err
+	}
+	authKey, err := hkdf.Key(sha256.New, shared, random[:20], "REALITY", 32)
+	if err != nil {
+		return err
+	}
+	block, _ := aes.NewCipher(authKey)
+	aead, _ := cipher.NewGCM(block)
+	aad := bytes.Clone(hello)
+	clear(aad[39:71])
+	plain, err := aead.Open(nil, random[20:], sessionID, aad)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(plain[8:], s.shortID[:]) {
+		return errors.New("short ID mismatch")
+	}
+	return nil
+}
+
+func TestRealityHelloAuthenticatesToServer(t *testing.T) {
+	for _, fingerprint := range []string{"chrome", "firefox", "safari", " Chrome_120 ", ""} {
+		t.Run(fingerprint, func(t *testing.T) {
+			key, err := ecdh.X25519().GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &realityTestServer{key: key, shortID: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, result: make(chan error, 1)}
+			x, err := NewReality("reality://reality.test:443?"+url.Values{
+				"fp":  {fingerprint},
+				"pbk": {base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())},
+				"sid": {hex.EncodeToString(server.shortID[:])},
+			}.Encode(), server)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer x.Close()
+			// The server stops after the ClientHello, so the dial itself fails.
+			_, _ = x.DialContext(t.Context(), "tcp", "reality.test:443")
+			if err := <-server.result; err != nil {
+				t.Fatalf("server rejected the ClientHello: %v", err)
+			}
+		})
 	}
 }

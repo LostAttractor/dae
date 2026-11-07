@@ -31,7 +31,6 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -41,8 +40,21 @@ var (
 	Reality_Version_z byte = 10
 )
 
-//go:linkname aesgcmPreferred github.com/refraction-networking/utls.aesgcmPreferred
-func aesgcmPreferred(ciphers []uint16) bool
+// Randomized fingerprints offer an X25519 key share in only about 40% of
+// builds; a rebuild sends nothing and costs microseconds.
+const realityHelloAttempts = 16
+
+// realityECDHEKey returns the X25519 key REALITY servers authenticate: the
+// standalone X25519 share, or the X25519 half of X25519MLKEM768 without one.
+func realityECDHEKey(state *utls.PubClientHandshakeState) *ecdh.PrivateKey {
+	if keys := state.State13.KeyShareKeys; keys != nil {
+		if keys.Ecdhe != nil && keys.Ecdhe.Curve() == ecdh.X25519() {
+			return keys.Ecdhe
+		}
+		return keys.MlkemEcdhe
+	}
+	return nil
+}
 
 type RealityUConn struct {
 	*utls.UConn
@@ -164,7 +176,7 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 				_ = c.Close()
 			}
 		}()
-		retry := 0
+		attempts := 0
 	retryHandshake:
 		uConn := &RealityUConn{lease: netproxy.DependencyOf(c)}
 		utlsConfig := &utls.Config{
@@ -190,27 +202,24 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 			hello.SessionId[3] = 0 // reserved
 			binary.BigEndian.PutUint32(hello.SessionId[4:], uint32(time.Now().Unix()))
 			copy(hello.SessionId[8:], x.shortId[:])
-			if uConn.HandshakeState.State13.EcdheKey == nil {
-				if retry > 2 {
-					return nil, errors.New("nil ecdheKey")
+			ecdheKey := realityECDHEKey(&uConn.HandshakeState)
+			if ecdheKey == nil {
+				if attempts++; attempts >= realityHelloAttempts {
+					return nil, fmt.Errorf("REALITY: fingerprint %s %s offers no TLS 1.3 X25519 key share", x.fingerprint.Client, x.fingerprint.Version)
 				}
-				retry++
-				goto retryHandshake // retry
+				goto retryHandshake
 			}
-			uConn.AuthKey, _ = uConn.HandshakeState.State13.EcdheKey.ECDH(x.publicKey)
+			uConn.AuthKey, _ = ecdheKey.ECDH(x.publicKey)
 			if uConn.AuthKey == nil {
 				return nil, errors.New("REALITY: SharedKey == nil")
 			}
 			if _, err := hkdf.New(sha256.New, uConn.AuthKey, hello.Random[:20], []byte("REALITY")).Read(uConn.AuthKey); err != nil {
 				return nil, err
 			}
-			var aead cipher.AEAD
-			if aesgcmPreferred(hello.CipherSuites) {
-				block, _ := aes.NewCipher(uConn.AuthKey)
-				aead, _ = cipher.NewGCM(block)
-			} else {
-				aead, _ = chacha20poly1305.New(uConn.AuthKey)
-			}
+			// REALITY servers open the payload with AES-GCM regardless of the
+			// offered cipher suites.
+			block, _ := aes.NewCipher(uConn.AuthKey)
+			aead, _ := cipher.NewGCM(block)
 			aead.Seal(hello.SessionId[:0], hello.Random[20:], hello.SessionId[:16], hello.Raw)
 			copy(hello.Raw[39:], hello.SessionId)
 		}
