@@ -175,6 +175,64 @@ cd dae
 docker compose up -d --build
 ```
 
+### NixOS
+
+The repository flake packages the current source with the default plugin
+selection and provides the `services.dae` NixOS module, which replaces the
+Nixpkgs module of the same name. Use a `git+https` URL so that Nix fetches the
+pinned submodules:
+
+```nix
+{
+  inputs.dae.url = "git+https://github.com/LostAttractor/dae";
+
+  outputs = { nixpkgs, dae, ... }: {
+    nixosConfigurations.HOSTNAME = nixpkgs.lib.nixosSystem {
+      modules = [
+        dae.nixosModules.default
+        {
+          services.dae = {
+            enable = true;
+            configFile = "/etc/dae/config.dae";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Set exactly one of `configFile` and `config`. `configFile` must be outside the
+Nix store and inaccessible to others. `config` text is installed as
+`/etc/dae/config.dae` but remains world-readable in the Nix store; changing it
+reloads the service. The module exports `DAE_LOCATION_ASSET` from `assets`
+(`v2ray-geoip` and `v2ray-domain-list-community` by default) or `assetsPath`,
+sets `DAE_LOCATION_CACHE` from `cachePath`, and opens TCP/UDP port 12345 through
+`openFirewall`. See [`nix/module.nix`](../../nix/module.nix) for all options.
+
+To build only the package, run `nix build git+https://github.com/LostAttractor/dae`.
+
+Build options are package parameters. `surgeRuntime` selects the `quickjs`
+(default) or `nodejs` Surge backend at compile time. `plugins` replaces the
+`plugins.cfg` selection, `pluginModules` adds the source trees of external
+plugin modules to a Go workspace, and `vendorHash` must match the resulting Go
+dependencies. `runtimeInputs` lists executables that plugins look up in `PATH`;
+the module adds them, and Node.js for the `nodejs` backend, to the service
+`PATH`:
+
+```nix
+services.dae.package = dae.packages.${pkgs.stdenv.hostPlatform.system}.dae.override {
+  surgeRuntime = "nodejs";
+  plugins = ''
+    surge:github.com/daeuniverse/dae/plugins/surge
+    example:example.com/dae-plugin-example
+  '';
+  pluginModules = [ dae-plugin-example ]; # A flake input with `flake = false`.
+  vendorHash = "sha256-..."; # Use the hash reported by a build with "".
+  runtimeInputs = [ pkgs.ffmpeg ];
+};
+```
+
 ### Build from scratch
 
 See [Build Guide](user-guide/build-by-yourself.md).

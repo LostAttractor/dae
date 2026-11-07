@@ -160,6 +160,49 @@ cd dae
 docker compose up -d --build
 ```
 
+### NixOS
+
+仓库的 flake 以默认插件选择打包当前源码，并提供 `services.dae` NixOS 模块，取代 Nixpkgs 中的同名模块。请使用 `git+https` URL，以便 Nix 拉取固定的子模块：
+
+```nix
+{
+  inputs.dae.url = "git+https://github.com/LostAttractor/dae";
+
+  outputs = { nixpkgs, dae, ... }: {
+    nixosConfigurations.HOSTNAME = nixpkgs.lib.nixosSystem {
+      modules = [
+        dae.nixosModules.default
+        {
+          services.dae = {
+            enable = true;
+            configFile = "/etc/dae/config.dae";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+`configFile` 与 `config` 必须且只能设置其一。`configFile` 须位于 Nix store 之外，且不允许其他用户访问。`config` 文本会安装为 `/etc/dae/config.dae`，但在 Nix store 中对所有用户可读；修改它会重载服务。模块根据 `assets`（默认 `v2ray-geoip` 和 `v2ray-domain-list-community`）或 `assetsPath` 设置 `DAE_LOCATION_ASSET`，根据 `cachePath` 设置 `DAE_LOCATION_CACHE`，并通过 `openFirewall` 开放 TCP/UDP 12345 端口。全部选项见 [`nix/module.nix`](../../nix/module.nix)。
+
+仅构建软件包可运行 `nix build git+https://github.com/LostAttractor/dae`。
+
+构建选项是软件包参数。`surgeRuntime` 在编译期选择 Surge 的 `quickjs`（默认）或 `nodejs` 后端。`plugins` 替换 `plugins.cfg` 的插件选择，`pluginModules` 将外部插件模块的源码加入 Go workspace，`vendorHash` 须与由此得到的 Go 依赖一致。`runtimeInputs` 列出插件运行时在 `PATH` 中查找的程序；模块会把它们，以及 `nodejs` 后端所需的 Node.js，加入服务的 `PATH`：
+
+```nix
+services.dae.package = dae.packages.${pkgs.stdenv.hostPlatform.system}.dae.override {
+  surgeRuntime = "nodejs";
+  plugins = ''
+    surge:github.com/daeuniverse/dae/plugins/surge
+    example:example.com/dae-plugin-example
+  '';
+  pluginModules = [ dae-plugin-example ]; # 设置了 `flake = false` 的 flake 输入。
+  vendorHash = "sha256-..."; # 先设为 ""，再使用构建报告的哈希。
+  runtimeInputs = [ pkgs.ffmpeg ];
+};
+```
+
 ### 手动构建
 
 见 [Build Guide](../en/user-guide/build-by-yourself.md)。

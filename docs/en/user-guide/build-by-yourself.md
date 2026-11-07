@@ -39,6 +39,33 @@ Without direnv, `nix-shell --run make` supplies the same environment. A regular
 build may link to the host's libc; it is intended for that system or an
 appropriately packaged Nix closure.
 
+`nix build` builds the flake package (`nix/package.nix`) from tracked files and
+submodules with the flake's pinned Nixpkgs; local `plugins.cfg` and `go.work`
+are not part of the source, so it uses the example plugin selection; select
+plugins with the [package parameters](../README.md#nixos). The flake tracks the
+current NixOS stable branch, `nixos-26.05`; move it to the next release branch
+after each NixOS release. The package names its Go builder, `buildGo127Module`,
+after the Makefile's minimum Go version; change both together. Nix uses the
+`pnpm_12` package from the locked Nixpkgs; it reads the same lockfile as the
+`packageManager` version selected by Corepack. A worktree with uncommitted
+changes uses its local submodule checkouts. A clean tree fetches each submodule
+commit from the URL in `.gitmodules`, so push submodule commits to any branch of
+that repository before the dae commit that references them. `nix flake check` also
+runs the NixOS module test in a KVM virtual machine.
+
+Each worktree is a separate flake source. Build one with
+`nix build /path/to/worktree`, or replace the input of a system flake with
+`--override-input dae git+file:///path/to/worktree`. The worktree's branch must
+contain `flake.nix`, and Nix ignores files that Git does not track; run
+`git add -N` for new files. Local Git inputs with uncommitted changes cannot be
+written to `flake.lock`, so Nix evaluates them unlocked and leaves the lock file
+unchanged.
+
+Go modules and pnpm packages are fetched as fixed-output derivations named
+after `go.mod` and `go.sum`, or `pnpm-lock.yaml`, and the Nixpkgs version whose
+fetchers produce them; they are refetched only when those inputs change. After such a change, run
+`nix/update-hashes.sh` to replace stale hashes in `nix/package.nix`.
+
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
 
 ## Compiler requirements and CI coverage

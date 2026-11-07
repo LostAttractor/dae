@@ -24,6 +24,10 @@ Enter the development environment with `direnv` or `nix-shell` at the repository
 
 Run `make -C web test` with Chromium installed after frontend changes to check API type consistency, TypeScript, the dev server, and frontend tests.
 
+## Nix
+
+Run `nix flake check` after changing `nix/`, `flake.nix`, `flake.lock`, the `Makefile`, or the build's tool requirements. It builds the flake package and runs the NixOS module VM test, which requires KVM. New files must be tracked by Git (`git add -N` suffices) before the flake can see them.
+
 ## Config Parser
 
 After changing `pkg/config_parser/grammar/dae_config.g4`, run `make config-parser` and commit the generated code. Run `make config-parser-check` to verify grammar and generator version consistency.
