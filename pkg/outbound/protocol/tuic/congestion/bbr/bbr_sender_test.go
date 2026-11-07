@@ -266,6 +266,10 @@ func TestBBRv3ECNAndDatagramSize(t *testing.T) {
 	if b.GetCongestionWindow() != 6000 || b.initialCongestionWindow != 32*1500 {
 		t.Fatal("MTU change did not update packet-based window limits")
 	}
+	b.SetMaxDatagramSize(1200)
+	if b.initialCongestionWindow != 32*1200 || b.GetCongestionWindow() < b.minimumWindow() {
+		t.Fatal("EMSGSIZE fallback did not shrink packet-based window limits")
+	}
 }
 
 func TestBBRv3StartupLossWhileApplicationLimited(t *testing.T) {

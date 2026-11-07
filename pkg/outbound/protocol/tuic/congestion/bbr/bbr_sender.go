@@ -1,7 +1,6 @@
 package bbr
 
 import (
-	"fmt"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -231,10 +230,10 @@ func (b *bbrSender) OnRetransmissionTimeout(retransmitted bool) {
 	}
 }
 
+// SetMaxDatagramSize may also shrink the size: quic-go falls back to 1200
+// bytes when the first Initial fails with EMSGSIZE, after a 0-RTT dial may
+// already have installed this sender.
 func (b *bbrSender) SetMaxDatagramSize(size congestion.ByteCount) {
-	if size < b.maxDatagramSize {
-		panic(fmt.Sprintf("congestion BUG: decreased max datagram size from %d to %d", b.maxDatagramSize, size))
-	}
 	// Model estimates are bytes, not packets. Only packet-based limits scale.
 	b.initialCongestionWindow = b.initialCongestionWindow / b.maxDatagramSize * size
 	b.maxCongestionWindow = b.maxCongestionWindow / b.maxDatagramSize * size
