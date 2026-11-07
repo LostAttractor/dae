@@ -132,10 +132,7 @@ func NewReality(s string, d netproxy.Dialer) (*Reality, error) {
 	if err != nil {
 		return nil, fmt.Errorf("REALITY: publicKey == nil: %w", err)
 	}
-	x.spiderX, err = url.QueryUnescape(query.Get("spx"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid REALITY spider path: %w", err)
-	}
+	x.spiderX = query.Get("spx")
 	_fingerprint := query.Get("fp")
 
 	if x.serverName == "" {

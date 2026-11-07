@@ -166,3 +166,13 @@ func TestRealityHelloAuthenticatesToServer(t *testing.T) {
 		})
 	}
 }
+
+func TestRealityKeepsDecodedSpiderPath(t *testing.T) {
+	x, err := NewReality(testRealityURL("/a+b?q=1"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/a+b?q=1"; x.spiderX != want {
+		t.Fatalf("spider path %q; want %q", x.spiderX, want)
+	}
+}
