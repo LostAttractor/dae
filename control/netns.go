@@ -323,7 +323,10 @@ func (ns *DaeNetns) setupLinkPair() (err error) {
 
 func (ns *DaeNetns) setupNetns() (err error) {
 	// ip netns a daens
-	DeleteNamedNetns(NsName)
+	// A leftover entry would only surface as "file exists" from NewNamed.
+	if staleErr := DeleteNamedNetns(NsName); staleErr != nil && !errors.Is(staleErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to remove stale netns %v: %w", NsName, staleErr)
+	}
 	ns.daeNs, err = netns.NewNamed(NsName)
 	if err != nil {
 		return fmt.Errorf("failed to create netns: %v", err)
@@ -520,8 +523,14 @@ func (ns *DaeNetns) setupIPv6Datapath() (err error) {
 
 func DeleteNamedNetns(name string) error {
 	namedPath := path.Join("/run/netns", name)
-	unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
-	return os.Remove(namedPath)
+	unmountErr := unix.Unmount(namedPath, unix.MNT_DETACH|unix.MNT_FORCE)
+	err := os.Remove(namedPath)
+	if err != nil && unmountErr != nil && !errors.Is(err, os.ErrNotExist) {
+		// The unmount errno explains why the mount point survives, e.g.
+		// EINVAL for a mount the kernel locked in a user namespace.
+		err = fmt.Errorf("unmount %v: %w; %w", namedPath, unmountErr, err)
+	}
+	return err
 }
 
 func DeleteLink(name string) error {
