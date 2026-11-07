@@ -76,34 +76,36 @@ func SetForwarding(ifname string, val string) error {
 	return setForwarding(ifname, consts.IpVersionStr_6, val)
 }
 
-func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
-	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
-		return nil
-	}
-	return fmt.Errorf("send_redirects on %v is on: %v; see docs of dae for help", ifname, path)
+// sendRedirectsConfs lists the conf nodes the kernel ORs to decide whether to
+// send ICMP redirects out of ifname, so both must be off. IPv6 has no
+// send_redirects node.
+func sendRedirectsConfs(ifname string) [2]string {
+	return [2]string{ifname, "all"}
 }
 
 func CheckSendRedirects(ifname string) error {
-	if err := checkSendRedirects(ifname, consts.IpVersionStr_4); err != nil {
-		return err
+	for _, conf := range sendRedirectsConfs(ifname) {
+		path := fmt.Sprintf("/proc/sys/net/ipv4/conf/%v/send_redirects", conf)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
+			return fmt.Errorf("send_redirects for %v is on: %v; see docs of dae for help", ifname, path)
+		}
 	}
 	return nil
 }
 
-func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
-	name := fmt.Sprintf("net.ipv%v.conf.%v.send_redirects", ipversion, ifname)
-	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
-	_, _, err := setHostSysctl(name, path, val)
-	return err
-}
-
 func SetSendRedirects(ifname string, val string) error {
-	return setSendRedirects(ifname, consts.IpVersionStr_4, val)
+	for _, conf := range sendRedirectsConfs(ifname) {
+		name := fmt.Sprintf("net.ipv4.conf.%v.send_redirects", conf)
+		path := fmt.Sprintf("/proc/sys/net/ipv4/conf/%v/send_redirects", conf)
+		if _, _, err := setHostSysctl(name, path, val); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const SysctlPrefixPath = "/proc/sys/"

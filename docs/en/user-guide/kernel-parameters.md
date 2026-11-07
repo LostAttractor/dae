@@ -21,6 +21,13 @@ EOF
 sudo sysctl --system
 ```
 
+The kernel sends redirects out of an interface when either `conf/all` or the interface's `send_redirects` is on, so also disable the `all` node:
+
+```shell
+echo "net.ipv4.conf.all.send_redirects = 0" | sudo tee /etc/sysctl.d/60-dae-send-redirects.conf
+sudo sysctl --system
+```
+
 It is also recommended to enable IPv4 and IPv6 forward to avoid weird situations:
 
 ```shell
