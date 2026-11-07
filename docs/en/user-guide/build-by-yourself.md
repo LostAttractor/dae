@@ -68,6 +68,19 @@ fetchers produce them; they are refetched only when those inputs change. After s
 
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
 
+### Git hooks
+
+`pnpm install`, which `make` also runs, installs the hooks in `.husky/` with
+[husky](https://typicode.github.io/husky) by setting `core.hooksPath`. Set
+`HUSKY=0` to skip installation. The `pre-commit` hook runs
+`nix/update-hashes.sh` for commits that change `go.mod`, `go.sum`,
+`pnpm-lock.yaml`, `flake.lock` or `nix/package.nix`, and stops the commit when
+it updates a hash. Without Nix, it prints a reminder and allows the commit.
+`post-checkout` gives a new worktree the hooks of the worktree that created it
+before its first `pnpm install`. Both hooks still run the clone's own
+`pre-commit` and `post-checkout` from `.git/hooks`; other hooks there no longer
+run once `core.hooksPath` is set.
+
 ## Compiler requirements and CI coverage
 
 The eBPF and cgo compilers have separate version and target requirements:

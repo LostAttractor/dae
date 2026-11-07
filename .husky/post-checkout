@@ -1,0 +1,6 @@
+# A new worktree lacks the generated .husky/_ until pnpm install; reuse the one running this hook.
+[ -d .husky/_ ] || cp -R "$(dirname "$0")/_" .husky/_
+
+# core.hooksPath hides the clone's own hooks; keep running them.
+hook="$(git rev-parse --path-format=absolute --git-common-dir)/hooks/post-checkout"
+[ ! -x "$hook" ] || "$hook" "$@"

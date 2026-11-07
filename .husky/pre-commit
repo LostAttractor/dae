@@ -1,0 +1,19 @@
+# core.hooksPath hides the clone's own hooks; keep running them.
+hook="$(git rev-parse --path-format=absolute --git-common-dir)/hooks/pre-commit"
+[ ! -x "$hook" ] || "$hook" "$@"
+
+# Refresh Nix dependency hashes when a commit changes their inputs.
+git diff --cached --quiet -- go.mod go.sum pnpm-lock.yaml flake.lock nix/package.nix && exit 0
+
+if ! command -v nix >/dev/null 2>&1; then
+	echo "pre-commit: Nix not found; nix/package.nix hashes may need nix/update-hashes.sh for this dependency change." >&2
+	exit 0
+fi
+
+# shortcut: checks the working tree rather than the index; partial staging of dependency files is not isolated.
+before=$(git hash-object nix/package.nix)
+nix/update-hashes.sh
+if [ "$(git hash-object nix/package.nix)" != "$before" ]; then
+	echo "pre-commit: updated stale hashes in nix/package.nix; review and stage it, then commit again." >&2
+	exit 1
+fi

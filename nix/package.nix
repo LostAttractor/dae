@@ -47,7 +47,7 @@ buildGo127Module (finalAttrs: {
       inherit (finalAttrs) pname src;
       pnpm = pnpm_12;
       fetcherVersion = 5;
-      hash = "sha256-aBVTnte7g+yuwESGiT3w3ggWoUXXiKe4d6XFa2xz6VY=";
+      hash = "sha256-M0zIwY5O4WmJPK/U8zuiGtewrcSBwYtlFi56ibCEqMI=";
     }).overrideAttrs
       (old: {
         name = depsName "pnpm-deps" [
