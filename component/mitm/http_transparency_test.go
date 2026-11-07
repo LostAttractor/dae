@@ -298,7 +298,13 @@ func TestPassthroughHTTP3RetryTrailers(t *testing.T) {
 		if attempts.Add(1) == 1 {
 			// Reject before application processing, after receiving the full
 			// upload. The MITM upstream transport must replay bytes and trailers.
-			w.(http3.HTTPStreamer).HTTPStream().CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+			// No response header is sent once the stream is taken over before one.
+			str, err := w.(http3.HTTPStreamer).HTTPStream()
+			if err != nil {
+				t.Errorf("take over stream: %v", err)
+				return
+			}
+			str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
 			return
 		}
 		io.WriteString(w, "accepted")

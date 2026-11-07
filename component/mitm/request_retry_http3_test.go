@@ -23,9 +23,8 @@ import (
 	"github.com/quic-go/qpack"
 )
 
-// Use a wire peer to reset before response headers. HTTPStreamer would flush
-// response headers before handing the stream to the test, making it too late
-// for the transport to retry H3_REQUEST_REJECTED.
+// Use a wire peer that resets each request stream before sending any response
+// frame, so the transport receives the error code on an unanswered request.
 func retryTestHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode, payload string) (net.Addr, *atomic.Int32) {
 	t.Helper()
 	return rejectingHTTP3Peer(t, cfg, code, payload, 1)
