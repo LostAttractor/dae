@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,5 +173,13 @@ func TestTicketHandshakeFlushesTargetAndPreservesReply(t *testing.T) {
 	buf := make([]byte, 5)
 	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "reply" {
 		t.Fatalf("coalesced response: %q %v", buf, err)
+	}
+}
+
+func TestTLS12TicketAuthEncodesLongHost(t *testing.T) {
+	c := newTLS12TicketAuth(false).(*tls12TicketAuth)
+	c.SetServerInfo(&ServerInfo{Host: "h", Param: strings.Repeat("a", 2048), Key: make([]byte, 16)})
+	if _, err := c.Encode([]byte("x")); err != nil {
+		t.Fatal(err)
 	}
 }
