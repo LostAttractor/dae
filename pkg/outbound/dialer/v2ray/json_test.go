@@ -86,3 +86,19 @@ func TestVMessCompactObfsHost(t *testing.T) {
 		}
 	}
 }
+
+func TestVlessExportRoundTrip(t *testing.T) {
+	for _, link := range []string{
+		"vless://id@example.com:443?type=tcp&security=reality&sni=a.example&fp=chrome&pbk=YAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123456789abcdef&spx=%2Fcrawl#r",
+		"vless://id@example.com:443?type=meek&security=tls&sni=a.example&url=https%3A%2F%2Fa.example%2Fmeek#m",
+	} {
+		got, err := ParseVlessURL(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := ParseVlessURL(got.ExportToURL())
+		if err != nil || !reflect.DeepEqual(got, restored) {
+			t.Fatalf("export round trip changed %s:\n%+v\n%+v, %v", link, got, restored, err)
+		}
+	}
+}

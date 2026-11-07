@@ -385,7 +385,7 @@ func (s *V2Ray) ExportToURL() string {
 		case "grpc":
 			common.SetValue(&query, "serviceName", s.Path)
 		case "meek":
-			common.SetValue(&query, "url", s.Host)
+			common.SetValue(&query, "url", s.Path)
 		}
 
 		if s.TLS != "none" {
@@ -393,6 +393,11 @@ func (s *V2Ray) ExportToURL() string {
 			common.SetValue(&query, "alpn", s.Alpn)
 			common.SetValue(&query, "flow", s.Flow)
 			common.SetValue(&query, "fp", s.Fingerprint)
+		}
+		if s.TLS == "reality" {
+			common.SetValue(&query, "pbk", s.PublicKey)
+			common.SetValue(&query, "sid", s.ShortId)
+			common.SetValue(&query, "spx", s.SpiderX)
 		}
 
 		U := url.URL{
