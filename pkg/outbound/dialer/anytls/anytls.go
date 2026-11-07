@@ -1,6 +1,7 @@
 package anytls
 
 import (
+	"cmp"
 	"crypto/tls"
 	"fmt"
 	"net/url"
@@ -26,12 +27,12 @@ type Anytls struct {
 func NewAnytls(link string) (dialer.Builder, *dialer.Property, error) {
 	switch {
 	case strings.HasPrefix(link, "anytls://"):
-		s, err := parseAnytlsURL(link)
+		s, name, err := parseAnytlsURL(link)
 		if err != nil {
 			return nil, nil, err
 		}
 		return s, &dialer.Property{
-			Name:     "anytls",
+			Name:     name,
 			Protocol: "anytls",
 			Address:  s.Host,
 			Link:     s.link,
@@ -41,30 +42,27 @@ func NewAnytls(link string) (dialer.Builder, *dialer.Property, error) {
 	}
 }
 
-func parseAnytlsURL(link string) (*Anytls, error) {
-	u, err := url.ParseRequestURI(link)
+// parseAnytlsURL also returns the node name carried in the link's fragment.
+func parseAnytlsURL(link string) (*Anytls, string, error) {
+	u, err := url.Parse(link)
 	if err != nil {
-		return nil, fmt.Errorf("parse AnyTLS proxy URL: %w", err.(*url.Error).Err)
+		return nil, "", fmt.Errorf("parse AnyTLS proxy URL: %w", err.(*url.Error).Err)
 	}
+	q := u.Query()
 	antls := &Anytls{
 		link:     link,
 		Auth:     u.User.Username(),
 		Host:     u.Host,
-		Sni:      u.Query().Get("sni"),
-		Insecure: u.Query().Get("insecure") == "1",
+		Sni:      cmp.Or(q.Get("sni"), u.Hostname()),
+		Insecure: q.Get("insecure") == "1",
 	}
-
-	return antls, nil
+	return antls, u.Fragment, nil
 }
 
-func (s *Anytls) Build(_ *dialer.ExtraOption, upstream dialer.Upstream) (netproxy.Layer, error) {
+func (s *Anytls) Build(option *dialer.ExtraOption, upstream dialer.Upstream) (netproxy.Layer, error) {
 	tlsConfig := &tls.Config{
 		ServerName:         s.Sni,
-		InsecureSkipVerify: s.Insecure,
-	}
-	if tlsConfig.ServerName == "" {
-		// disable the SNI
-		tlsConfig.ServerName = "127.0.0.1"
+		InsecureSkipVerify: s.Insecure || option.AllowInsecure,
 	}
 	return protocol.Build("anytls", upstream, protocol.Header{
 		ProxyAddress: s.Host,
