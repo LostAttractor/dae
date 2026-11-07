@@ -1,10 +1,12 @@
 package simpleobfs
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -192,5 +194,23 @@ func TestHTTPObfsCloseBeforeRead(t *testing.T) {
 	}
 	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("Read after Close = %v", err)
+	}
+}
+
+func TestHTTPObfsRequestToIPv6Host(t *testing.T) {
+	for port, want := range map[string]string{"80": "[2001:db8::1]", "8080": "[2001:db8::1]:8080"} {
+		client, server := net.Pipe()
+		go func() {
+			_, _ = NewHTTPObfs(client, "2001:db8::1", port, "/").Write([]byte("x"))
+			_ = client.Close()
+		}()
+		request, err := http.ReadRequest(bufio.NewReader(server))
+		_ = server.Close()
+		if err != nil {
+			t.Fatalf("port %s: %v", port, err)
+		}
+		if request.Host != want {
+			t.Fatalf("port %s: host %q; want %q", port, request.Host, want)
+		}
 	}
 }

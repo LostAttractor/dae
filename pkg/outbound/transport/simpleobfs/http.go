@@ -138,7 +138,11 @@ func (c *HTTPObfs) Write(p []byte) (int, error) {
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	request, err := http.NewRequest(http.MethodGet, "http://"+c.host+c.path, bytes.NewReader(p))
+	host := c.host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://"+host+c.path, bytes.NewReader(p))
 	if err != nil {
 		return 0, err
 	}
