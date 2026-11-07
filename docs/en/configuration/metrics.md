@@ -72,6 +72,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
 | `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
+| `unauthenticated` | `download` | juicity UDP datagram that does not authenticate; its socket is unconnected, so anyone may send to it |
 | `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
 | `reply_queue_full` | `download` | Pushed reply backlog full |
 | `reply_socket_full` | `download` | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |

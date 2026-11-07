@@ -54,6 +54,7 @@ global {
 | `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
 | `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
 | `carrier_queue_full` | `download` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
+| `unauthenticated` | `download` | juicity UDP 收到无法认证的数据报；其 socket 未 connect，任何来源都能发来 |
 | `closed_stream` | `download` | 回包所属的关联已被 dae 关闭或正在关闭。smux 为已被 dae 关闭的流收到的数据不计：会话已无法判断该流是否承载数据报 |
 | `reply_queue_full` | `download` | 推送回包的积压队列已满 |
 | `reply_socket_full` | `download` | 发往客户端的回包 socket 发送缓冲区已满：丢弃回包而不等待 |

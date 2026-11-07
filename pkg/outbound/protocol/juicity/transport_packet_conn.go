@@ -90,16 +90,21 @@ func (c *TransportPacketConn) Read(b []byte) (n int, err error) {
 func (c *TransportPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	buf := pool.GetBuffer(65535 + CipherConf.SaltLen + CipherConf.TagLen)
 	defer pool.PutBuffer(buf)
-	n, _, err = c.PacketConn.ReadFrom(buf)
-	if err != nil {
-		return 0, nil, c.wrap(err)
+	for {
+		n, _, err = c.PacketConn.ReadFrom(buf)
+		if err != nil {
+			return 0, nil, c.wrap(err)
+		}
+		if n, err = DecryptUDP(buf[CipherConf.SaltLen:], c.key, buf[:n], ciphers.JuicityReusedInfo); err == nil {
+			return copy(p, buf[CipherConf.SaltLen:CipherConf.SaltLen+n]), c.target, nil
+		}
+		// The socket is unconnected, so anyone may send to it; only an
+		// authenticated datagram belongs to the association.
+		dropUnauthenticated.Add(1)
 	}
-	n, err = DecryptUDP(buf[CipherConf.SaltLen:], c.key, buf[:n], ciphers.JuicityReusedInfo)
-	if err != nil {
-		return 0, nil, err
-	}
-	return copy(p, buf[CipherConf.SaltLen:CipherConf.SaltLen+n]), c.target, nil
 }
+
+var dropUnauthenticated = netproxy.NewDrop(netproxy.DropDownload, "unauthenticated")
 
 func (c *TransportPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return c.Write(p)

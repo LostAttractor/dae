@@ -230,3 +230,33 @@ func TestUnderlayUDPChecksCarrierBeforeEncryption(t *testing.T) {
 		t.Fatalf("TryWriteTo = %v", err)
 	}
 }
+
+func TestUnderlayUDPSkipsUnauthenticatedDatagrams(t *testing.T) {
+	raw, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stranger.Close()
+	key := &shadowsocks.Key{CipherConf: CipherConf, MasterKey: bytes.Repeat([]byte{7}, CipherConf.KeyLen)}
+	client := &TransportPacketConn{PacketConn: raw, proxyAddr: stranger.LocalAddr().(*net.UDPAddr), target: netproxy.NewAddr("udp", "127.0.0.1:0"), key: key}
+	defer client.Close()
+	salt := make([]byte, CipherConf.SaltLen)
+	wire, err := EncryptUDPFromPool(key, []byte("reply"), salt, ciphers.JuicityReusedInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, datagram := range [][]byte{[]byte("noise"), bytes.Repeat([]byte{1}, 64), wire} {
+		if _, err := stranger.WriteTo(datagram, raw.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 64)
+	if n, _, err := client.ReadFrom(buf); err != nil || string(buf[:n]) != "reply" {
+		t.Fatalf("ReadFrom = %q, %v", buf[:n], err)
+	}
+}
