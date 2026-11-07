@@ -10,8 +10,8 @@
   installShellFiles,
   writeText,
   version,
-  # Surge JavaScript backend: quickjs, or nodejs, which needs Node.js at runtime.
-  surgeRuntime ? "quickjs",
+  # Surge JavaScript backend: nodejs, which runs `node` from PATH, or quickjs.
+  surgeRuntime ? "nodejs",
   # plugins.cfg content; null selects plugins.cfg.example.
   plugins ? null,
   # Source trees of the external plugin modules named in `plugins`.

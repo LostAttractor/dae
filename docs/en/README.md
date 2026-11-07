@@ -212,8 +212,9 @@ sets `DAE_LOCATION_CACHE` from `cachePath`, and opens TCP/UDP port 12345 through
 
 To build only the package, run `nix build git+https://github.com/LostAttractor/dae`.
 
-Build options are package parameters. `surgeRuntime` selects the `quickjs`
-(default) or `nodejs` Surge backend at compile time. `plugins` replaces the
+Build options are package parameters. `surgeRuntime` selects the Surge backend
+at compile time: `nodejs` (default) runs scripts in Node.js processes, and
+`quickjs` embeds QuickJS-NG. `plugins` replaces the
 `plugins.cfg` selection, `pluginModules` adds the source trees of external
 plugin modules to a Go workspace, and `vendorHash` must match the resulting Go
 dependencies. `runtimeInputs` lists executables that plugins look up in `PATH`;
@@ -222,7 +223,6 @@ the module adds them, and Node.js for the `nodejs` backend, to the service
 
 ```nix
 services.dae.package = dae.packages.${pkgs.stdenv.hostPlatform.system}.dae.override {
-  surgeRuntime = "nodejs";
   plugins = ''
     surge:github.com/daeuniverse/dae/plugins/surge
     example:example.com/dae-plugin-example

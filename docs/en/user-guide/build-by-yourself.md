@@ -41,8 +41,10 @@ appropriately packaged Nix closure.
 
 `nix build` builds the flake package (`nix/package.nix`) from tracked files and
 submodules with the flake's pinned Nixpkgs; local `plugins.cfg` and `go.work`
-are not part of the source, so it uses the example plugin selection; select
-plugins with the [package parameters](../README.md#nixos). The flake tracks the
+are not part of the source, so it uses the example plugin selection. Unlike
+`make`, it defaults to the Node.js Surge backend; the NixOS module puts Node.js
+on the service `PATH`. Select plugins and the backend with the
+[package parameters](../README.md#nixos). The flake tracks the
 current NixOS stable branch, `nixos-26.05`; move it to the next release branch
 after each NixOS release. The package names its Go builder, `buildGo127Module`,
 after the Makefile's minimum Go version; change both together. Nix uses the

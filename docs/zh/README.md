@@ -188,11 +188,10 @@ docker compose up -d --build
 
 仅构建软件包可运行 `nix build git+https://github.com/LostAttractor/dae`。
 
-构建选项是软件包参数。`surgeRuntime` 在编译期选择 Surge 的 `quickjs`（默认）或 `nodejs` 后端。`plugins` 替换 `plugins.cfg` 的插件选择，`pluginModules` 将外部插件模块的源码加入 Go workspace，`vendorHash` 须与由此得到的 Go 依赖一致。`runtimeInputs` 列出插件运行时在 `PATH` 中查找的程序；模块会把它们，以及 `nodejs` 后端所需的 Node.js，加入服务的 `PATH`：
+构建选项是软件包参数。`surgeRuntime` 在编译期选择 Surge 后端：`nodejs`（默认）在 Node.js 进程中运行脚本，`quickjs` 内嵌 QuickJS-NG。`plugins` 替换 `plugins.cfg` 的插件选择，`pluginModules` 将外部插件模块的源码加入 Go workspace，`vendorHash` 须与由此得到的 Go 依赖一致。`runtimeInputs` 列出插件运行时在 `PATH` 中查找的程序；模块会把它们，以及 `nodejs` 后端所需的 Node.js，加入服务的 `PATH`：
 
 ```nix
 services.dae.package = dae.packages.${pkgs.stdenv.hostPlatform.system}.dae.override {
-  surgeRuntime = "nodejs";
   plugins = ''
     surge:github.com/daeuniverse/dae/plugins/surge
     example:example.com/dae-plugin-example
