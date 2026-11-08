@@ -77,8 +77,10 @@ var (
 	dropUploadMemory   = netproxy.DropUploadMemory
 	dropDownloadMemory = netproxy.DropDownloadMemory
 	// The packet's deadline passed before it was sent.
-	dropExpired           = netproxy.NewDrop(netproxy.DropUpload, "expired")
-	dropSetupCapacity     = netproxy.NewDrop(netproxy.DropUpload, "setup_capacity")
+	dropExpired       = netproxy.NewDrop(netproxy.DropUpload, "expired")
+	dropSetupCapacity = netproxy.NewDrop(netproxy.DropUpload, "setup_capacity")
+	// Opening the association failed; counts the datagrams its setup buffered.
+	dropSetupFailed       = netproxy.NewDrop(netproxy.DropUpload, "setup_failed")
 	dropSlowWriteCapacity = netproxy.NewDrop(netproxy.DropUpload, "slow_write_capacity")
 	dropEndpointLimit     = netproxy.NewDrop(netproxy.DropUpload, "endpoint_limit")
 	// The packet resource budget or the source's socket limit is full.

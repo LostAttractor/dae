@@ -59,6 +59,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `packet_memory_limit` | both | Shared datagram memory (8 MiB) exhausted |
 | `expired` | `upload` | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
 | `setup_capacity` | `upload` | Shared slow-operation capacity exhausted while initializing an association or opening a destination socket |
+| `setup_failed` | `upload` | Opening an association failed (routing, sniffing, MITM or the outbound dial), counting every datagram buffered for its sniffing; also datagrams left unsent when replaying them fails |
 | `slow_write_capacity` | `upload` | Shared slow-operation capacity exhausted before a blocking UDP write |
 | `endpoint_limit` | `upload` | UDP source endpoint limit reached |
 | `packet_resource_limit` | `upload` | No UDP association or socket could be opened: the process-wide packet resource limit or a source's socket limit is reached |

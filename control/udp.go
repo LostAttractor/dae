@@ -347,6 +347,20 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	stopRoute := watchAbort(nil, nil, ue.routeLease, cancelRoute)
 	defer stopRoute()
 
+	// A failed setup discards the packets buffered for sniffing and the
+	// current one; execute does not see them.
+	discard := func(drop *netproxy.Drop) {
+		n := len(pending.packets)
+		if dst != ue.firstDst {
+			n++
+		}
+		drop.Add(uint64(n))
+	}
+	failed := func(err error) error {
+		discard(dropSetupFailed)
+		return err
+	}
+
 	// Only the first destination participates in sniffing. A different
 	// destination completes initialization with the information already known.
 	var domain string
@@ -360,7 +374,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			pending.observedAt = time.Time{}
 			ue.activity.observe(dst.Addr(), domain, observedAt)
 			p.removeInBackgroundLocked(src, ue)
-			return err
+			return failed(err)
 		}
 		if pending.sniffer.NeedMore() {
 			// Wait for the sniffed name, which selects the evidence the
@@ -387,15 +401,6 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 	} else {
 		option, err = c.RouteDialOption(ctx, param)
 	}
-	// A failed setup discards the packets buffered for sniffing and the
-	// current one; execute does not see them.
-	discard := func(drop *netproxy.Drop) {
-		n := len(pending.packets)
-		if dst != ue.firstDst {
-			n++
-		}
-		drop.Add(uint64(n))
-	}
 	expired := func() bool {
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return false
@@ -416,7 +421,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 		if _, blocked := errors.AsType[*routeBlocked](err); blocked || expired() {
 			return nil
 		}
-		return err
+		return failed(err)
 	}
 	var conn net.PacketConn
 	ue.mitm = intercepted != nil
@@ -436,7 +441,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 				discard(dropResourceLimit)
 				return nil
 			}
-			return err
+			return failed(err)
 		}
 	} else {
 		path, fallback := option.trafficAttribution()
@@ -472,7 +477,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			if expired() || !recordDataPlaneError(ue.dialer, path, err) {
 				return nil
 			}
-			return fmt.Errorf("open UDP association via outbound %q node %q: %w", path.Outbound, ue.dialer.Name, err)
+			return failed(fmt.Errorf("open UDP association via outbound %q node %q: %w", path.Outbound, ue.dialer.Name, err))
 		}
 	}
 	var socketKey netip.AddrPort
@@ -481,7 +486,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 		if err != nil {
 			closeInBackground(conn)
 			p.removeInBackgroundLocked(src, ue)
-			return err
+			return failed(err)
 		}
 		ue.packetDialer = option.dialerForConnection()
 		if c.routingMatcher != nil {
@@ -550,6 +555,10 @@ func (c *ControlPlane) replayUDP(ctx context.Context, slot *udpWriteSlot, ue *Ud
 		if err != nil && ctx.Err() == nil && !deadline.IsZero() && !time.Now().Before(deadline) {
 			dropExpired.Add(1)
 			err = nil
+		}
+		if err != nil && ctx.Err() == nil {
+			// The association failed; the rest of the replay is never sent.
+			dropSetupFailed.Add(uint64(len(pending.packets) - i - 1))
 		}
 		if err != nil || ue.IsClosed() {
 			return err

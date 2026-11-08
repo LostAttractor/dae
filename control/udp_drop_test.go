@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -84,6 +85,35 @@ func TestUDPSetupBeyondPacketResourcesIsCounted(t *testing.T) {
 	work.execute(nil, []byte("datagram"))
 	require.EqualValues(t, 1, dropResourceLimit.Load()-limited)
 	require.EqualValues(t, 1, countedDrops()-all)
+}
+
+// A setup whose dial fails counts the datagram it buffered as setup_failed,
+// once; execute does not count the error again.
+func TestUDPSetupFailureIsCounted(t *testing.T) {
+	core := newTestUDPCore(t)
+	option := new(dialer.GlobalOption)
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: failingPacketDialer{}}), option, &dialer.Property{Name: "refused"}, false, "refused")
+	g := outbound.NewDialerGroup(option, "refused", outbound.GroupKindSingleAlwaysAlive,
+		[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{})
+	t.Cleanup(func() { _ = g.Close() })
+	endpoints := new(UdpEndpointPool)
+	t.Cleanup(endpoints.closeAll)
+	tasks := newUdpTaskPool(func(udpPacketWork, *udpWriteSlot, []byte) {})
+	t.Cleanup(tasks.close)
+	c := &ControlPlane{ctx: t.Context(), core: core, deviceRoutes: newTestDeviceRoutes(t), udpTaskPool: tasks, udpEndpoints: endpoints,
+		outbounds: []*outbound.DialerGroup{nil, nil, g}}
+	work := udpPacketWork{plane: c, src: netip.MustParseAddrPort("192.0.2.2:30002"), dst: netip.MustParseAddrPort("192.0.2.3:5000"),
+		routingResult: &routingResult{Outbound: 2, Mac: [6]byte{2, 0, 0, 0, 0, 10}}, deadline: time.Now().Add(time.Second)}
+	failed, all := dropSetupFailed.Load(), countedDrops()
+	work.execute(nil, []byte("datagram"))
+	require.EqualValues(t, 1, dropSetupFailed.Load()-failed)
+	require.EqualValues(t, 1, countedDrops()-all)
+}
+
+type failingPacketDialer struct{ netproxy.Dialer }
+
+func (failingPacketDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, syscall.ECONNREFUSED
 }
 
 // A packet to a destination that needs a socket of its own, beyond the

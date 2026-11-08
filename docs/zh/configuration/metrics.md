@@ -41,6 +41,7 @@ global {
 | `packet_memory_limit` | 两者 | 共享数据报内存（8 MiB）已满 |
 | `expired` | `upload` | 截止前未能发出，包括排队、建立、嗅探超时和阻塞写入；配置换代取消的数据报不计 |
 | `setup_capacity` | `upload` | 初始化关联或创建目的地 socket 时，共享慢操作额度已满 |
+| `setup_failed` | `upload` | 建立关联失败（路由、嗅探、MITM 或出站拨号），计入为嗅探缓存的全部数据报；回放这些数据报失败时未发出的部分也计入 |
 | `slow_write_capacity` | `upload` | 阻塞 UDP 写入前，共享慢操作额度已满 |
 | `endpoint_limit` | `upload` | UDP 源端点数已满 |
 | `packet_resource_limit` | `upload` | 无法打开 UDP 关联或 socket：进程级数据包资源数或单个源的 socket 数已满 |
