@@ -87,16 +87,17 @@ type domainLogExact struct {
 // mutation appending its new pairs, the owner's worker and Close. Its holder
 // owns disk. Lock order: io, then DomainRegistry.mu.
 type domainLog struct {
-	io      sync.Mutex
-	enabled bool // writing starts after activation
-	rebuild bool // the files do not describe memory; the next write compacts
-	next    uint32
-	window  uint32    // id of the open renewal window; pairs keep their last listing
-	due     time.Time // when the open window closes; moves with the files on reload
-	lo, hi  int64     // final deadlines in [lo, hi] are listed and recover hi
-	renewed []*domainPair
-	fresh   []domainLogEntry
-	disk    domainDisk
+	io       sync.Mutex
+	enabled  bool // writing starts after activation
+	disabled bool // the files could not be read; this run leaves them untouched
+	rebuild  bool // the files do not describe memory; the next write compacts
+	next     uint32
+	window   uint32    // id of the open renewal window; pairs keep their last listing
+	due      time.Time // when the open window closes; moves with the files on reload
+	lo, hi   int64     // final deadlines in [lo, hi] are listed and recover hi
+	renewed  []*domainPair
+	fresh    []domainLogEntry
+	disk     domainDisk
 }
 
 type domainDisk struct {
@@ -166,7 +167,7 @@ func (g *DomainRegistry) EnablePersistence(dir string) {
 	if g.persist == nil {
 		g.persist = newDomainLog(dir, time.Now(), g.window)
 	}
-	g.persist.enabled = true
+	g.persist.enabled = !g.persist.disabled
 	g.mu.Unlock()
 	g.wakePersistence()
 }
@@ -762,51 +763,68 @@ func (rec *domainRecovery) apply(payload []byte) bool {
 
 // recoverDomainEvidence reads the baseline, adopting a complete temporary one
 // left by an interrupted compaction, and replays its journal. Missing files
-// yield nil without error.
-func recoverDomainEvidence(dir string) (*domainRecovery, error) {
+// yield nil without error. A file that exists but cannot be read, or a failed
+// adoption, sets unreadable: the files may hold evidence a rebuild would lose.
+func recoverDomainEvidence(dir string) (rec *domainRecovery, unreadable bool, err error) {
+	failed := func(err error) bool { return err != nil && !errors.Is(err, os.ErrNotExist) }
 	basePath := filepath.Join(dir, domainBaseFile)
 	data, err := os.ReadFile(basePath)
-	var rec *domainRecovery
+	if failed(err) {
+		return nil, true, err
+	}
 	if err == nil {
 		rec, err = decodeDomainBase(data)
 	}
 	if err != nil {
 		temporary, tmpErr := os.ReadFile(basePath + domainTempSuffix)
+		if failed(tmpErr) {
+			return nil, true, tmpErr
+		}
 		if tmpErr == nil {
 			rec, tmpErr = decodeDomainBase(temporary)
 		}
-		if tmpErr == nil {
-			tmpErr = renameSynced(basePath+domainTempSuffix, basePath)
-		}
 		if tmpErr != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
+				return nil, false, nil
 			}
-			return nil, err
+			return nil, false, err
+		}
+		if err := renameSynced(basePath+domainTempSuffix, basePath); err != nil {
+			return nil, true, err
 		}
 	}
-	if journal, err := os.ReadFile(filepath.Join(dir, domainJournalFile)); err == nil {
+	journal, err := os.ReadFile(filepath.Join(dir, domainJournalFile))
+	if failed(err) {
+		return nil, true, err
+	}
+	if err == nil {
 		rec.replay(journal)
 	}
-	return rec, nil
+	return rec, false, nil
 }
 
 // Restore loads the baseline and journal in dir and validates them before
 // publishing anything. Like reload adoption it rebuilds complete shared-IP
 // states with current rules; expired pairs are collected without extending
-// their deadlines. The registry then owns the files, even missing or unusable
-// ones, which its first write after activation replaces by compacting.
+// their deadlines. The registry then owns the files, even missing or corrupt
+// ones, which its first write after activation replaces by compacting. Files
+// that cannot be read may still be intact: this run then restores and writes
+// nothing.
 // The startup owner calls only on a fresh registry before publication, while
 // holding the control-plane lifecycle lock that excludes concurrent shutdown.
 func (g *DomainRegistry) Restore(dir string, matchBitmap func(string) []uint32, now time.Time) error {
 	// Earlier versions wrote a gzip JSON snapshot; it is discarded, not imported.
 	_ = os.Remove(filepath.Join(dir, "domain-registry.json.gz"))
-	rec, err := recoverDomainEvidence(dir)
+	rec, unreadable, err := recoverDomainEvidence(dir)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now = g.clock(now)
 	l := newDomainLog(dir, now, g.window)
 	g.persist = l
+	if unreadable {
+		l.disabled = true
+		return fmt.Errorf("%w; not writing the domain registry until restart", err)
+	}
 	if rec == nil {
 		return err
 	}

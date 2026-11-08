@@ -364,8 +364,8 @@ an empty journal. The baseline is written to `domain-registry.base.tmp`, synced,
 renamed and its directory synced, then the new journal is published the same
 way. Interrupted at any step, the directory holds the old baseline and journal,
 the new baseline with an ignored old journal, or the new pair. If the published
-baseline is unreadable but a complete temporary baseline exists, startup adopts
-the temporary one.
+baseline is missing or invalid but a complete temporary baseline exists, startup
+adopts the temporary one.
 
 Renewal frames are written at the valid journal tail, not back into baseline
 records selected by ordinal. Ordinals are replay-time memory indexes, not disk
@@ -388,8 +388,11 @@ and checksum checks remain. Cold restore loads the records before interface
 attachment, collects expired ones and recomputes current-rule bitmaps. Evidence
 is written only after activation; before it, startup at most publishes an
 adopted temporary baseline. If the journal is missing or of another epoch, the
-first write after activation rewrites the baseline. On reload the new
-configuration takes over the in-memory evidence and both files.
+first write after activation rewrites the baseline. If a file exists but cannot
+be read, for example because of an I/O or permission error, it may still be
+intact: startup restores no evidence, logs a warning and leaves the files
+untouched until the next start. On reload the new configuration takes over the
+in-memory evidence and both files.
 
 Write failures are logged and switch to rewriting the baseline, retried when
 each renewal window ends and on clean close. They do not prevent safe retirement or in-memory registry adoption

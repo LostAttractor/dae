@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
 	"os"
@@ -691,6 +692,68 @@ func TestDomainRegistryRejectedForkKeepsWindow(t *testing.T) {
 	requireDiskEvidence(t, diskEvidence(restoreTestRegistry(t, dir, time.Hour, now)), map[string]int64{
 		"a.example. 192.0.2.1": now.Add(2*time.Minute + 2*time.Hour).UnixNano(),
 	})
+}
+
+// A file that exists but cannot be read may be intact, so the run restores
+// nothing and writes no file, also after a reload. A directory stands in for a
+// file failing with an I/O error.
+func TestDomainRegistryUnreadableFilesStayUntouched(t *testing.T) {
+	now := time.Now()
+	scenario := t.TempDir()
+	journalScenario(t, scenario, now)
+	files := func(dir string) map[string]string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := make(map[string]string)
+		for _, entry := range entries {
+			data, _ := os.ReadFile(filepath.Join(dir, entry.Name()))
+			files[entry.Name()] = string(data)
+		}
+		return files
+	}
+	for _, unreadable := range []string{domainBaseFile, domainJournalFile, domainBaseFile + domainTempSuffix} {
+		t.Run(unreadable, func(t *testing.T) {
+			dir := copyDomainStore(t, scenario)
+			_ = os.Remove(filepath.Join(dir, unreadable))
+			if unreadable == domainBaseFile+domainTempSuffix {
+				// Only a missing or corrupt baseline consults the temporary one.
+				if err := os.Remove(filepath.Join(dir, domainBaseFile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(filepath.Join(dir, unreadable), 0700); err != nil {
+				t.Fatal(err)
+			}
+			before := files(dir)
+			g, _ := newTestRegistry(16, time.Hour)
+			if err := g.Restore(dir, func(string) []uint32 { return testBitmap() }, now); err == nil || g.Size() != 0 {
+				t.Fatalf("restored %d pairs from unreadable files: %v", g.Size(), err)
+			}
+			ip := netip.MustParseAddr("192.0.2.9")
+			g.EnablePersistence(dir)
+			g.Upsert("a.example.", ip, testBitmap(), 60, now)
+			g.writeNew(now)
+			g.writeRenewals(now.Add(domainRenewInterval))
+			next, _ := newTestRegistry(16, time.Hour)
+			if err := next.ForkFrom(g, func(string) []uint32 { return testBitmap() }, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Close(); err != nil {
+				t.Fatal(err)
+			}
+			next.EnablePersistence(dir)
+			next.Upsert("b.example.", ip, testBitmap(), 60, now)
+			next.writeNew(now)
+			if err := next.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if after := files(dir); !maps.Equal(after, before) {
+				t.Fatalf("files changed from %d to %d entries", len(before), len(after))
+			}
+		})
+	}
 }
 
 func TestDomainRegistryDiscardsLegacySnapshot(t *testing.T) {

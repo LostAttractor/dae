@@ -81,7 +81,7 @@ func TestDomainRegistryHotCompactionSparsePairs(t *testing.T) {
 	if l.rebuild || l.next != 50000 || len(hot) != 100 {
 		t.Fatalf("rebuild=%v pairs=%d hot=%d", l.rebuild, l.next, len(hot))
 	}
-	recovered, err := recoverDomainEvidence(dir)
+	recovered, _, err := recoverDomainEvidence(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
