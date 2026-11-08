@@ -187,7 +187,7 @@ dae registry dump | jq -r '.records[] | [.domain, .ip, .retain_until] | @tsv'
 - `breakdown.gc` 是累计按时间回收的配对数，跨 reload 延续，冷启动重新统计。查询状态只统计当前保留的记录，不触发 GC 或续期。
 - `domain-kernel`：`used` 是驻留 IP 数，`limit` 是容量，`candidates` 是具有非零域名规则 bitmap 的候选 IP 数；`candidates - used` 是因容量未驻留的 IP 数。Registry 的 IP 数还包含无需入表的零 bitmap 地址，因此不等于候选数。
 
-CLI 在 `domain-registry (unlimited)` 中保留 `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` 明细；`domain-kernel` 归入紧凑的 `Kernel tables`，显示 `USED`、`LIMIT`、`USAGE%`、`ON FULL`（`omit`），并在说明中保留 `CANDIDATES`、`OMITTED`、`PENDING`。Pending 表示等待重试的内核投影变更。非空表 `error` 表示使用量和遗漏量不可用，不是零；普通和 `--recent` 视图复用这些统计。
+CLI 在 `domain-registry (unlimited)` 中显示 `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` 明细；`domain-kernel` 归入紧凑的 `Kernel tables`，显示 `USED`、`LIMIT`、`USAGE%`、`ON FULL`（`omit`），并在说明中保留 `CANDIDATES`、`OMITTED`、`PENDING`。`--verbose` 始终列出二者；普通和 `--recent` 视图只在需要关注时列出：registry 在用量不可用时，`domain-kernel` 还包括有待重试的变更或被省略的候选。Pending 表示等待重试的内核投影变更。非空表 `error` 表示使用量和遗漏量不可用，不是零；普通和 `--recent` 视图复用这些统计。
 
 启动日志列出窗口及观察范围。容量不足时限频输出候选/驻留/容量摘要；无法对未观察到的 direct 连接逐条报告续期遗漏。
 
