@@ -217,14 +217,14 @@ func TestUDPIngressAndCarrierShareMemoryBudget(t *testing.T) {
 	defer packet.release()
 	s := new(fq.Scheduler)
 	defer s.Clear()
-	if !s.Force(new(fq.Flow), time.Now(), make([]byte, 1024)) {
+	if s.AllocateDatagram(new(fq.Flow), time.Now(), 1024, true) == nil {
 		t.Fatal("carrier admission failed")
 	}
-	if s.Force(new(fq.Flow), time.Now(), make([]byte, 1)) {
+	if s.AllocateDatagram(new(fq.Flow), time.Now(), 1, true) != nil {
 		t.Fatal("carrier ignored ingress allocation")
 	}
 	packet.release()
-	if !s.Offer(new(fq.Flow), time.Now(), make([]byte, 1024)) {
+	if s.AllocateDatagram(new(fq.Flow), time.Now(), 1024, false) == nil {
 		t.Fatal("ingress release did not return carrier capacity")
 	}
 	s.Clear()

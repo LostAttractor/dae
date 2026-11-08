@@ -163,40 +163,17 @@ func (s *Scheduler) Push(f *Flow, frame []byte) {
 	s.enqueue(f, entry{frame: frame, kind: stream})
 }
 
-// Offer queues a datagram of f that arrived at now and never waits. The
-// datagram is one buffer, even if the protocol frames it several times, so
-// that it is sent or dropped whole. The flow and the carrier then make
-// room from their oldest datagrams if they exceed their limits. It reports
-// false, having dropped and released the frame, only if the datagram memory
-// cannot hold it even after evicting the scheduler's droppable datagrams; it
-// evicts none when evicting all of them could not make room.
-func (s *Scheduler) Offer(f *Flow, now time.Time, frame []byte) bool {
-	memory, ok := s.reserveDatagram(cap(frame))
-	if !ok {
-		s.release(frame)
-		return false
-	}
-	s.queueDatagram(f, entry{frame: frame, at: now, kind: datagram, memory: memory})
-	return true
-}
-
-// Force protects an admitted request from queue eviction and CoDel. Admission
-// still respects the shared memory limit; rejection releases frame.
-func (s *Scheduler) Force(f *Flow, now time.Time, frame []byte) bool {
-	memory, ok := s.reserveDatagram(cap(frame))
-	if !ok {
-		s.release(frame)
-		return false
-	}
-	f.forced += len(frame)
-	s.queueDatagram(f, entry{frame: frame, at: now, kind: forced, memory: memory})
-	return true
-}
-
 // AllocateDatagram reserves memory before getting and queueing a pooled
-// buffer. The caller fills it while still holding the scheduler's lock,
-// before any further operation on the scheduler. Nil means memory admission
-// failed, without allocating a copy of the borrowed datagram.
+// buffer for a datagram of f that arrived at now; it never waits. The
+// caller fills it while still holding the scheduler's lock, before any
+// further operation on the scheduler. The datagram is one buffer, even if
+// the protocol frames it several times, so that it is sent or dropped whole.
+// The flow and the carrier then make room from their oldest datagrams if
+// they exceed their limits. A forced datagram, an admitted request, is
+// protected from that eviction and CoDel but not from the memory limit. Nil
+// means memory admission failed even after evicting the scheduler's
+// droppable datagrams, without allocating a copy of the borrowed datagram;
+// none are evicted when evicting all of them could not make room.
 func (s *Scheduler) AllocateDatagram(f *Flow, now time.Time, size int, force bool) []byte {
 	memory, ok := s.reserveDatagram(pool.BufferCapacity(size))
 	if !ok {
