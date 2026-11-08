@@ -405,79 +405,11 @@ func pruneTimerDirectory(directory string, needed map[ebpf.MapID]bool) error {
 	return nil
 }
 
-func (r *Runtime) removePinnedMaps() error {
-	if r.kernelLinks.pinPath == "" {
-		return nil
-	}
-	spec, err := parsedBPFSpec()
-	if err != nil {
-		return err
-	}
-	root := filepath.Dir(r.kernelLinks.pinPath)
-	var cleanupErr error
-	owned := make(map[string]bool)
-	for _, mapSpec := range spec.Maps {
-		if mapSpec.Pinning != ebpf.PinByName && mapSpec.Name != "device_routes_map" {
-			continue
-		}
-		owned[mapSpec.Name] = true
-		if mapSpec.Name != "fallback_sequence_map" {
-			cleanupErr = errors.Join(cleanupErr, removePinnedMap(filepath.Join(root, mapSpec.Name)))
-		}
-	}
-	return errors.Join(cleanupErr, removeRetiredMapPins(root, owned))
-}
-
-// removeRetiredMapPins removes maps an earlier version pinned in dae's
-// directory and this one no longer pins, which would otherwise fail every
-// normal stop. Directories, links and other files stay for
-// finishPinnedCleanup to report.
-func removeRetiredMapPins(root string, owned map[string]bool) error {
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var cleanupErr error
-	for _, entry := range entries {
-		if entry.IsDir() || owned[entry.Name()] {
-			continue
-		}
-		path := filepath.Join(root, entry.Name())
-		m, err := ebpf.LoadPinnedMap(path, nil)
-		if err != nil {
-			continue
-		}
-		if err := errors.Join(m.Close(), os.Remove(path)); err != nil {
-			cleanupErr = errors.Join(cleanupErr, err)
-			continue
-		}
-		log.WithField("map", entry.Name()).Info("Removed a map pin this version no longer uses")
-	}
-	return cleanupErr
-}
-
-func removePinnedMap(path string) error {
-	m, err := ebpf.LoadPinnedMap(path, nil)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err := m.Close(); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-// Reset token identities only after every old grant and attachment is gone.
-func (r *Runtime) finishPinnedCleanup() error {
+// removePins removes dae's pinned state once its links are gone: every map,
+// this version's or an earlier one's, and the runtime timer pins. The
+// fallback sequence goes last, so a failed removal never pairs surviving
+// grants with reused tokens.
+func (r *Runtime) removePins() error {
 	if r.kernelLinks.pinPath == "" {
 		return nil
 	}
@@ -493,11 +425,14 @@ func (r *Runtime) finishPinnedCleanup() error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() != "fallback_sequence_map" {
-			return fmt.Errorf("kernel pin %s remains after cleanup; retaining fallback sequence", entry.Name())
+		if entry.Name() == "fallback_sequence_map" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			return fmt.Errorf("remove kernel pin %s; retaining fallback sequence: %w", entry.Name(), err)
 		}
 	}
-	if err := removePinnedMap(filepath.Join(root, "fallback_sequence_map")); err != nil {
+	if err := os.Remove(filepath.Join(root, "fallback_sequence_map")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return os.Remove(root)

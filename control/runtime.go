@@ -425,11 +425,7 @@ func (r *Runtime) Close() error {
 			// Keep the timer pins the retained programs still reference.
 			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false))
 		}
-		linksErr := r.kernelLinks.Close(retain)
-		r.closeErr = errors.Join(r.closeErr, linksErr)
-		if linksErr == nil && !retain {
-			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false), r.removePinnedMaps())
-		}
+		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain))
 		r.tcpMonitor.close()
 		for _, m := range r.shared {
 			r.closeErr = errors.Join(r.closeErr, m.Close())
@@ -441,7 +437,7 @@ func (r *Runtime) Close() error {
 			CloseSysctlManager()
 		}
 		if r.closeErr == nil && !retain {
-			r.closeErr = r.finishPinnedCleanup()
+			r.closeErr = r.removePins()
 		}
 	})
 	return r.closeErr
