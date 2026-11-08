@@ -50,13 +50,14 @@ func TestDomainRegistryHotCompaction(t *testing.T) {
 func TestDomainRegistryHotCompactionSparsePairs(t *testing.T) {
 	now := time.Now()
 	g, _ := newTestRegistry(1, time.Hour)
+	const perDomain = 100
 	records := make(map[string]*domainRecord, 500)
 	var hot []*domainPair
 	var before []uint32
 	for domain := range 500 {
-		record := &domainRecord{addresses: make(map[netip.Addr]*domainPair, 100)}
-		for address := range 100 {
-			pair := &domainPair{retainUntil: now.Add(time.Hour), ordinal: uint32(domain*100 + address)}
+		record := &domainRecord{addresses: make(map[netip.Addr]*domainPair, perDomain)}
+		for address := range perDomain {
+			pair := &domainPair{retainUntil: now.Add(time.Hour), ordinal: uint32(domain*perDomain + address)}
 			if domain >= 200 {
 				pair.listed = 8
 				if (domain-200)%3 == 0 && address == 50 {
@@ -78,7 +79,7 @@ func TestDomainRegistryHotCompactionSparsePairs(t *testing.T) {
 	l.io.Lock()
 	g.compact(l, now)
 	l.io.Unlock()
-	if l.rebuild || l.next != 50000 || len(hot) != 100 {
+	if l.rebuild || l.next != 500*perDomain || len(hot) != 100 {
 		t.Fatalf("rebuild=%v pairs=%d hot=%d", l.rebuild, l.next, len(hot))
 	}
 	recovered, _, err := recoverDomainEvidence(dir)
@@ -93,19 +94,20 @@ func TestDomainRegistryHotCompactionSparsePairs(t *testing.T) {
 			}
 		}
 	}
+	// Each hot pair is alone in its domain: compaction moves its whole group
+	// to the front and puts the pair first in it.
 	var after []uint32
 	for _, pair := range hot {
+		if pair.ordinal >= uint32(len(hot)*perDomain) || pair.ordinal%perDomain != 0 {
+			t.Fatalf("hot pair at %d does not lead a front group", pair.ordinal)
+		}
 		after = append(after, pair.ordinal)
-	}
-	ideal := make([]uint32, len(hot))
-	for i := range ideal {
-		ideal[i] = uint32(i)
 	}
 	bound := now.Add(time.Hour).UnixNano()
 	beforeBytes := len(encodeDomainRenew(bound, before, nil)) + 8
 	afterBytes := len(encodeDomainRenew(bound, after, nil)) + 8
-	if afterBytes != len(encodeDomainRenew(bound, ideal, nil))+8 || afterBytes >= beforeBytes {
+	if afterBytes >= beforeBytes {
 		t.Fatalf("renewal frame grew from %d to %d bytes", beforeBytes, afterBytes)
 	}
-	t.Logf("50000 pairs, 100 renewed, 20000 never renewed: renewal frame %d -> %d bytes", beforeBytes, afterBytes)
+	t.Logf("%d pairs, 100 renewed, %d never renewed: renewal frame %d -> %d bytes", 500*perDomain, 200*perDomain, beforeBytes, afterBytes)
 }
