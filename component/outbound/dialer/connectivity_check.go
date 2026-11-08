@@ -198,16 +198,7 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 		c.dispatch()
 		select {
 		case <-c.d.ctx.Done():
-			if c.cancel != nil {
-				c.cancel()
-				<-c.results
-			}
-			// Requests derive from the path's context and have ended with it.
-			for _, running := range c.selections {
-				if running != nil {
-					<-c.results
-				}
-			}
+			c.drain()
 			return
 
 		case event, ok := <-sessionEvents:
@@ -227,8 +218,24 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 				sessionEvents = c.drainSessionEvents(sessionEvents, result.seq)
 			}
 			if !c.finish(result) {
+				c.drain()
 				return
 			}
+		}
+	}
+}
+
+// drain collects the operations still running once the path's context has
+// ended, so none blocks sending its result. Selection requests derive from
+// that context and have ended with it.
+func (c *connectivityChecker) drain() {
+	if c.cancel != nil {
+		c.cancel()
+		<-c.results
+	}
+	for _, running := range c.selections {
+		if running != nil {
+			<-c.results
 		}
 	}
 }

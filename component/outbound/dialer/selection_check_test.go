@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
@@ -315,6 +316,62 @@ func TestSelectionChecksOfDifferentNetworksRunConcurrently(t *testing.T) {
 			})
 		}
 		clients.Wait()
+	})
+}
+
+// Closing a path while the run loop applies one selection result collects the
+// others still running: synctest fails on a stranded sender.
+func TestClosingPathCollectsConcurrentSelectionChecks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		d.SetCheckEnabled(false)
+		group := &blockingGroup{entered: make(chan struct{}), release: make(chan struct{})}
+		d.RegisterDialerGroup(group, DialerSelectionPolicy{}.WithDefaults())
+		var probes atomic.Int32
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
+			probes.Add(1)
+			if network.L4Proto == consts.L4ProtoStr_TCP && network.IpVersion == consts.IpVersionStr_4 {
+				time.Sleep(10 * time.Millisecond)
+				return nil
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		start := make(chan struct{})
+		close(start)
+		var worker, clients sync.WaitGroup
+		worker.Go(func() { checker.run(start) })
+		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6, common.NetworkUDP4} {
+			clients.Go(func() {
+				if release, err := d.Check(context.Background(), network, time.Minute); err == nil {
+					release()
+				}
+			})
+		}
+		synctest.Wait()
+		if started := probes.Load(); started != 3 {
+			t.Fatalf("%d selection checks running, want 3", started)
+		}
+		// The TCP4 result notifies the group from inside finish.
+		<-group.entered
+		d.cancel()
+		close(group.release)
+		clients.Wait()
+		worker.Wait()
+		_ = d.Close()
+	})
+}
+
+// blockingGroup holds its first notification until release.
+type blockingGroup struct {
+	once             sync.Once
+	entered, release chan struct{}
+}
+
+func (g *blockingGroup) DialerChanged(*Dialer, SelectionForceMask) {
+	g.once.Do(func() {
+		close(g.entered)
+		<-g.release
 	})
 }
 
