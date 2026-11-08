@@ -165,7 +165,7 @@ func (t *clientImpl) sendAuthentication(ctx context.Context, conn *quic.Conn, st
 func (t *clientImpl) handleUniStream(conn *quic.Conn) error {
 	for {
 		stream, err := conn.AcceptUniStream(conn.Context())
-		if afterRejection(conn, t.authReady, err) {
+		if errors.Is(err, quic.Err0RTTRejected) && waitAuthentication(conn.Context(), conn, t.authReady) == nil {
 			continue
 		}
 		if err != nil {
@@ -303,9 +303,11 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 		// the stream, right after it.
 		early := !handshakeComplete(quicConn)
 		quicStream, err := quicConn.OpenStream()
-		if afterRejection(quicConn, t.authReady, err) {
-			early = false
-			quicStream, err = quicConn.OpenStream()
+		if errors.Is(err, quic.Err0RTTRejected) {
+			if err = waitAuthentication(ctx, quicConn, t.authReady); err == nil {
+				early = false
+				quicStream, err = quicConn.OpenStream()
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -329,7 +331,7 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 			return common.WrapQUICError(err, lease.Resource(), lease, op, t.failConnection)
 		}
 		return newConnectConn(newEarlyStream(quicStream.Context(), quicConn, tracked, func() (trackedStream, error) {
-			if err := waitAuthentication(quicConn, t.authReady); err != nil {
+			if err := waitAuthentication(quicConn.Context(), quicConn, t.authReady); err != nil {
 				return nil, wrap(err, netproxy.OpOpenStream)
 			}
 			stream, err := quicConn.OpenStream()
@@ -549,19 +551,17 @@ func handshakeComplete(conn *quic.Conn) bool {
 	}
 }
 
-// afterRejection reports whether err refused a stream because the server
-// rejected 0-RTT, once the connection accepts streams again. A refused open
-// sent nothing.
-func afterRejection(conn *quic.Conn, ready <-chan struct{}, err error) bool {
-	return errors.Is(err, quic.Err0RTTRejected) && waitAuthentication(conn, ready) == nil
-}
-
-func waitAuthentication(conn *quic.Conn, ready <-chan struct{}) error {
+// waitAuthentication returns once a connection that refused a stream because
+// the server rejected 0-RTT accepts streams again. A refused open sent
+// nothing, so it can be retried.
+func waitAuthentication(ctx context.Context, conn *quic.Conn, ready <-chan struct{}) error {
 	select {
 	case <-ready:
 		return nil
 	case <-conn.Context().Done():
 		return context.Cause(conn.Context())
+	case <-ctx.Done():
+		return context.Cause(ctx)
 	}
 }
 

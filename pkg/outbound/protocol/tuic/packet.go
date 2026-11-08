@@ -1,6 +1,7 @@
 package tuic
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -68,6 +69,7 @@ type quicStreamPacketConn struct {
 	writeMu       sync.Mutex
 	stateMu       sync.Mutex
 	writeDeadline time.Time
+	authDeadline  *protocol.Deadline
 	sendStream    *quic.SendStream
 }
 
@@ -135,6 +137,9 @@ func (q *quicStreamPacketConn) SetWriteDeadline(t time.Time) error {
 		return net.ErrClosed
 	}
 	q.writeDeadline = t
+	if q.authDeadline != nil {
+		q.authDeadline.Set(t)
+	}
 	if q.sendStream != nil {
 		return q.sendStream.SetWriteDeadline(t)
 	}
@@ -241,8 +246,10 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 	}
 	if q.udpRelayMode == common.QUIC {
 		stream, openErr := q.openUniStream()
-		if afterRejection(q.quicConn, q.authReady, openErr) {
-			stream, openErr = q.openUniStream()
+		if errors.Is(openErr, quic.Err0RTTRejected) {
+			if openErr = q.waitAuthentication(); openErr == nil {
+				stream, openErr = q.openUniStream()
+			}
 		}
 		if openErr != nil {
 			return 0, openErr
@@ -284,6 +291,32 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 		return 0, err
 	}
 	return len(p), nil
+}
+
+func (q *quicStreamPacketConn) waitAuthentication() error {
+	timeout := protocol.MakeDeadline()
+	q.stateMu.Lock()
+	q.authDeadline = &timeout
+	timeout.Set(q.writeDeadline)
+	q.stateMu.Unlock()
+	defer func() {
+		q.stateMu.Lock()
+		q.authDeadline = nil
+		timeout.Set(time.Time{})
+		q.stateMu.Unlock()
+	}()
+	select {
+	case <-q.authReady:
+		return nil
+	case <-q.quicConn.Context().Done():
+		return context.Cause(q.quicConn.Context())
+	case <-q.lease.Done():
+		return q.lease.Cause()
+	case <-q.incomingPackets.done:
+		return net.ErrClosed
+	case <-timeout.Wait():
+		return os.ErrDeadlineExceeded
+	}
 }
 
 func (q *quicStreamPacketConn) DependencyLease() *netproxy.Lease { return q.lease }

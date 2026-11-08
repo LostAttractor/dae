@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -13,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/internal/testutil"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
 	"github.com/daeuniverse/quic-go"
 )
 
@@ -412,7 +415,7 @@ func TestReduceRttRejectionWindowAdmitsDials(t *testing.T) {
 	steps := make(chan struct{})
 	release := sync.OnceFunc(func() { close(steps) })
 	parent := &heldPacketParent{wait: steps, release: release}
-	d := newReduceRttDialer(t, parent, listener.Addr().String(), cache, 0)
+	d := newReduceRttDialer(t, parent, listener.Addr().String(), cache, protocol.Flags_Tuic_UdpRelayModeQuic)
 	t.Cleanup(release)
 	if err := d.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -445,6 +448,46 @@ func TestReduceRttRejectionWindowAdmitsDials(t *testing.T) {
 	if _, err := member.quicConn.OpenStream(); !errors.Is(err, quic.Err0RTTRejected) {
 		t.Fatalf("stream during rejection: %v", err)
 	}
+	// The wait for the handshake ends with the dial context or write deadline.
+	bounded := make(chan error, 2)
+	go func() {
+		short, stop := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer stop()
+		conn, err := d.DialContext(short, "tcp", "example.test:443")
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("dial past its context: %w", err)
+		} else {
+			err = nil
+		}
+		bounded <- err
+	}()
+	go func() {
+		udp, err := d.ListenPacket(ctx, "127.0.0.1:53")
+		if err == nil {
+			defer udp.Close()
+			_ = udp.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
+			_, err = udp.WriteTo([]byte("x"), netproxy.NewAddr("udp", "127.0.0.1:53"))
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			err = fmt.Errorf("write past its deadline: %w", err)
+		} else {
+			err = nil
+		}
+		bounded <- err
+	}()
+	for range 2 {
+		select {
+		case err := <-bounded:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("wait for the handshake ignored the caller's bound")
+		}
+	}
 	result := make(chan error, 1)
 	go func() {
 		conn, err := d.DialContext(ctx, "tcp", "example.test:443")
@@ -473,6 +516,51 @@ func TestReduceRttRejectionWindowAdmitsDials(t *testing.T) {
 	readAuthentication(t, ctx, acceptPeer(t, ctx, listener))
 	if snapshot := d.Snapshot(); snapshot.RecoveryRequired || snapshot.State != netproxy.SessionConnected {
 		t.Fatalf("rejection changed readiness: %+v", snapshot)
+	}
+}
+
+func TestRejectedPacketWaitHonorsDeadlineUpdatesAndClose(t *testing.T) {
+	for _, closing := range []bool{false, true} {
+		t.Run(fmt.Sprint("close=", closing), func(t *testing.T) {
+			pair := testutil.NewQUICPair(t)
+			opened := make(chan struct{}, 1)
+			q := &quicStreamPacketConn{
+				quicConn: pair.Client, lease: netproxy.NewLease(netproxy.NewResourceRef()),
+				authReady: make(chan struct{}), incomingPackets: newPacketQueue(),
+				udpRelayMode: common.QUIC, readDeadline: protocol.MakeDeadline(),
+				openUniStream: func() (*quic.SendStream, error) {
+					select {
+					case opened <- struct{}{}:
+					default:
+					}
+					return nil, quic.Err0RTTRejected
+				},
+			}
+			t.Cleanup(func() { q.shutdown(net.ErrClosed) })
+			_ = q.SetWriteDeadline(time.Now().Add(time.Hour))
+			done := make(chan error, 1)
+			go func() { _, err := q.WriteTo([]byte("x"), netproxy.NewAddr("udp", "127.0.0.1:53")); done <- err }()
+			select {
+			case <-opened:
+			case <-time.After(time.Second):
+				t.Fatal("stream open did not start")
+			}
+			want := os.ErrDeadlineExceeded
+			if closing {
+				want = net.ErrClosed
+				_ = q.Close()
+			} else {
+				_ = q.SetWriteDeadline(time.Now().Add(-time.Second))
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, want) {
+					t.Fatalf("write = %v, want %v", err, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("authentication wait ignored deadline update or close")
+			}
+		})
 	}
 }
 
