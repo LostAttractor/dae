@@ -108,21 +108,41 @@ func TestDatagramAdmissionReclaimsEnoughCapacity(t *testing.T) {
 	}
 }
 
+// An admission that evicting every droppable datagram could not make room
+// for evicts none: the datagram exceeds the budget, or other owners hold
+// the rest of it.
 func TestImpossibleAdmissionKeepsQueuedDatagrams(t *testing.T) {
-	limit := netproxy.DatagramMemory.UseLimit(1024)
-	defer limit.Close()
-	s := new(Scheduler)
-	defer s.Clear()
-	flow := new(Flow)
-	if !s.Offer(flow, epoch, make([]byte, 1024)) {
-		t.Fatal("small datagram rejected")
-	}
-	before := netproxy.DropUploadMemory.Load()
-	if s.AllocateDatagram(new(Flow), epoch, 2048, false) != nil {
-		t.Fatal("admitted a datagram larger than the budget")
-	}
-	if dropped := netproxy.DropUploadMemory.Load() - before; dropped != 1 || flow.queue.Len() != 1 {
-		t.Fatalf("impossible admission evicted queued data: drops=%d queued=%d", dropped, flow.queue.Len())
+	for _, tc := range []struct {
+		name               string
+		limit, size, other int64
+	}{
+		{"over budget", 16 << 10, 32 << 10, 0},
+		{"held by others", 64 << 10, 32 << 10, 48 << 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limit := netproxy.DatagramMemory.UseLimit(tc.limit)
+			defer limit.Close()
+			held, err := netproxy.DatagramMemory.Reserve(tc.other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			s := new(Scheduler)
+			defer s.Clear()
+			flow := new(Flow)
+			for range 16 {
+				if !s.Offer(flow, epoch, make([]byte, 1024)) {
+					t.Fatal("small datagram rejected")
+				}
+			}
+			dropped := drops(netproxy.DropUploadMemory)
+			if s.AllocateDatagram(new(Flow), epoch, int(tc.size), false) != nil {
+				t.Fatal("admitted a datagram beyond the reclaimable budget")
+			}
+			if n := dropped(); n != 1 || flow.queue.Len() != 16 {
+				t.Fatalf("impossible admission evicted queued data: drops=%d queued=%d", n, flow.queue.Len())
+			}
+		})
 	}
 }
 

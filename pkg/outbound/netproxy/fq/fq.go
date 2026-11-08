@@ -139,6 +139,7 @@ type Scheduler struct {
 	new, old          FIFO[*Flow]
 	entries           int
 	datagrams         int
+	reclaimable       int         // datagram memory held by queued datagrams that may be dropped
 	inflight          []heldFrame // complete buffers borrowed by the outstanding batch
 	partial           heldFrame   // a started frame must finish before any other frame
 	offset            int
@@ -171,7 +172,8 @@ func (s *Scheduler) Push(f *Flow, frame []byte) {
 // that it is sent or dropped whole. The flow and the carrier then make
 // room from their oldest datagrams if they exceed their limits. It reports
 // false, having dropped and released the frame, only if the datagram memory
-// cannot hold it even after the fattest flow made room.
+// cannot hold it even after evicting the scheduler's droppable datagrams; it
+// evicts none when evicting all of them could not make room.
 func (s *Scheduler) Offer(f *Flow, now time.Time, frame []byte) bool {
 	memory, ok := s.reserveDatagram(cap(frame))
 	if !ok {
@@ -219,11 +221,10 @@ func (s *Scheduler) reserveDatagram(size int) (membuffer.Reservation, bool) {
 		if memory, err := netproxy.DatagramMemory.Reserve(int64(size)); err == nil {
 			return memory, true
 		}
-		if int64(size) > netproxy.DatagramMemory.Status().Limit {
-			break
-		}
+		// Evict only while dropping every droppable datagram could make room.
+		status := netproxy.DatagramMemory.Status()
 		g := s.fattest(nil, 0)
-		if g == nil {
+		if g == nil || status.Limit-status.Used+int64(s.reclaimable) < int64(size) {
 			break
 		}
 		s.dropOldest(g, false, netproxy.DropUploadMemory)
@@ -235,6 +236,9 @@ func (s *Scheduler) reserveDatagram(size int) (membuffer.Reservation, bool) {
 func (s *Scheduler) queueDatagram(f *Flow, e entry) {
 	f.datagrams += len(e.frame)
 	s.datagrams += len(e.frame)
+	if e.kind == datagram {
+		s.reclaimable += cap(e.frame)
+	}
 	s.enqueue(f, e)
 	// The new datagram stays: a flow that queued nothing always gets one in.
 	keep, keepTail := 0, e.kind == datagram
@@ -326,6 +330,8 @@ func (s *Scheduler) unqueue(f *Flow, e entry) {
 	s.datagrams -= len(e.frame)
 	if e.kind == forced {
 		f.forced -= len(e.frame)
+	} else {
+		s.reclaimable -= cap(e.frame)
 	}
 }
 
