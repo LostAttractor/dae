@@ -295,11 +295,12 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 			r.mu.Unlock()
 		}()
 	}
-	if err := r.pruneUDPTimerPins(true); err != nil {
-		return fmt.Errorf("retire unreferenced runtime timer pins: %w", err)
-	}
 	if err := r.setExited(routingabi.DAEMON_ONLINE); err != nil {
 		return fmt.Errorf("publish online datapath: %w", err)
+	}
+	// Optional cleanup: a leftover pin costs memory, not correctness.
+	if err := r.pruneUDPTimerPins(true); err != nil {
+		log.WithError(err).Warn("Retire unreferenced runtime timer pins")
 	}
 	return nil
 }

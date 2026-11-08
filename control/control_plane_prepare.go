@@ -96,7 +96,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	var previousRoutes *ebpf.Map
 	if len(runtime.shared) == 0 {
 		if err := runtime.pruneUDPTimerPins(false); err != nil {
-			return nil, fmt.Errorf("prune unreferenced runtime timer pins: %w", err)
+			log.WithError(err).Warn("Prune unreferenced runtime timer pins")
 		}
 		previousRoutes, err = loadPinnedDeviceRoutes(pinPath)
 		if err != nil {

@@ -314,7 +314,18 @@ func TestPersistentKernelLifecycle(t *testing.T) {
 	waitExited(t, oldExited, routingabi.DAEMON_OFFLINE)
 	echo("after a restart that never went online")
 
+	// An unreadable timer directory delays only its own cleanup, not a takeover.
+	unknown := filepath.Join(kernelPinPath(), "runtime_unknown")
+	if err := os.MkdirAll(filepath.Join(unknown, "udp_conn_state_map"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	replacement, input := start("restart")
+	if _, err := os.Stat(filepath.Join(unknown, "udp_conn_state_map")); err != nil {
+		t.Fatalf("timer pruning removed an unknown resource: %v", err)
+	}
+	if err := os.RemoveAll(unknown); err != nil {
+		t.Fatal(err)
+	}
 	for name, id := range timerIDs() {
 		if id == originalTimers[name] {
 			t.Fatalf("cold startup reused UDP runtime map %s", name)
@@ -843,9 +854,6 @@ func TestPersistentKernelProcess(t *testing.T) {
 	if binder.reconcileWanWith(nil, nil, netlink.LinkByIndex) {
 		t.Fatal("could not adopt the configured WAN attachment")
 	}
-	if err := r.pruneUDPTimerPins(true); err != nil {
-		t.Fatal(err)
-	}
 	// This observation pin belongs to the fixture, outside dae's owned directory.
 	statePin := filepath.Join(consts.BpfPinRoot, "test_exited")
 	if err := os.Remove(statePin); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -856,6 +864,10 @@ func TestPersistentKernelProcess(t *testing.T) {
 	}
 	if err := r.setExited(routingabi.DAEMON_ONLINE); err != nil {
 		t.Fatal(err)
+	}
+	// As Publish: pruning is optional cleanup after going online.
+	if err := r.pruneUDPTimerPins(true); err != nil {
+		t.Log(err)
 	}
 	order := &offlineOrderSocket{exited: bpf.ExitedMap}
 	r.listener = &Listener{tcpListener: order, packetConn: order}

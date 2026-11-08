@@ -361,40 +361,46 @@ func (r *Runtime) pruneUDPTimerPins(keepCurrent bool) error {
 	if err != nil {
 		return err
 	}
+	var pruneErr error
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "runtime_") {
 			continue
 		}
-		directory := filepath.Join(root, entry.Name())
-		retained := false
-		for _, name := range udpTimerMapNames {
-			path := filepath.Join(directory, name)
-			m, err := ebpf.LoadPinnedMap(path, nil)
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			info, err := m.Info()
-			if err = errors.Join(err, m.Close()); err != nil {
-				return err
-			}
-			id, ok := info.ID()
-			if !ok {
-				return errors.New("pinned timer map ID is unavailable")
-			}
-			if needed[id] {
-				retained = true
-			} else if err := os.Remove(path); err != nil {
-				return err
-			}
+		// One unreadable directory keeps only itself.
+		if err := pruneTimerDirectory(filepath.Join(root, entry.Name()), needed); err != nil {
+			pruneErr = errors.Join(pruneErr, err)
 		}
-		if !retained {
-			if err := os.Remove(directory); err != nil {
-				return err
-			}
+	}
+	return pruneErr
+}
+
+func pruneTimerDirectory(directory string, needed map[ebpf.MapID]bool) error {
+	retained := false
+	for _, name := range udpTimerMapNames {
+		path := filepath.Join(directory, name)
+		m, err := ebpf.LoadPinnedMap(path, nil)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
 		}
+		if err != nil {
+			return err
+		}
+		info, err := m.Info()
+		if err = errors.Join(err, m.Close()); err != nil {
+			return err
+		}
+		id, ok := info.ID()
+		if !ok {
+			return errors.New("pinned timer map ID is unavailable")
+		}
+		if needed[id] {
+			retained = true
+		} else if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	if !retained {
+		return os.Remove(directory)
 	}
 	return nil
 }
