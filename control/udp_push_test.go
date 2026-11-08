@@ -248,7 +248,7 @@ func TestUDPPushDestinationFiltersReplies(t *testing.T) {
 	filtered := dropDownloadFiltered.Load()
 	inner := &pushingPacketConn{testPacketConn: newTestPacketConn(false)}
 	original, target := netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("192.0.2.1:443")
-	conn := &destinationPacketConn{PacketConn: inner, original: original, target: target}
+	conn := newDestinationConn(inner, original, target)
 	var got []netip.AddrPort
 	if !conn.SetPacketHandler(func(_ []byte, from netip.AddrPort) { got = append(got, from) }, func(error) {}) {
 		t.Fatal("destination socket cannot push")

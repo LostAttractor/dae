@@ -135,7 +135,7 @@ func newUDPRoundTripTargets(t testing.TB, flows, size, targets int) *udpRoundTri
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn := &destinationPacketConn{PacketConn: upstream, original: destination, target: echo.LocalAddr().(*net.UDPAddr).AddrPort()}
+		conn := newDestinationConn(upstream, destination, echo.LocalAddr().(*net.UDPAddr).AddrPort())
 		replySender := &udpReplySender{pool: replies, to: source}
 		endpoint := &UdpEndpoint{conn: conn, firstDst: destination, domain: "bench.test.", activity: registry.activity,
 			NatTimeout: time.Hour, lease: netproxy.NewLease(netproxy.NewResourceRef()),

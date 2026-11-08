@@ -22,10 +22,12 @@ import (
 type destinationPacketConn struct {
 	net.PacketConn
 	original, target netip.AddrPort
+	// Built once: per-datagram conversions allocate.
+	originalAddr, targetAddr *net.UDPAddr
 }
 
 func (c *destinationPacketConn) WriteTo(data []byte, _ net.Addr) (int, error) {
-	return c.PacketConn.WriteTo(data, net.UDPAddrFromAddrPort(c.target))
+	return c.PacketConn.WriteTo(data, c.targetAddr)
 }
 
 func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
@@ -39,7 +41,7 @@ func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 			return 0, nil, err
 		}
 		if common.ConvergeAddrPort(address) == c.target {
-			return n, net.UDPAddrFromAddrPort(c.original), nil
+			return n, c.originalAddr, nil
 		}
 		dropDownloadFiltered.Add(1)
 	}
@@ -62,8 +64,13 @@ func (c *destinationPacketConn) DependencyLease() *netproxy.Lease {
 	return netproxy.DependencyOf(c.PacketConn)
 }
 
+func newDestinationConn(conn net.PacketConn, original, target netip.AddrPort) *destinationPacketConn {
+	return &destinationPacketConn{PacketConn: conn, original: original, target: target,
+		originalAddr: net.UDPAddrFromAddrPort(original), targetAddr: net.UDPAddrFromAddrPort(target)}
+}
+
 func newDestinationPacketConn(conn net.PacketConn, original, target netip.AddrPort) net.PacketConn {
-	c := &destinationPacketConn{PacketConn: conn, original: original, target: target}
+	c := newDestinationConn(conn, original, target)
 	if writer, ok := netproxy.PacketConnAs[netproxy.NonBlockingWriter](conn); ok {
 		return &nonBlockingDestinationPacketConn{c, writer}
 	}
@@ -78,7 +85,7 @@ type nonBlockingDestinationPacketConn struct {
 }
 
 func (c *nonBlockingDestinationPacketConn) TryWriteTo(data []byte, _ net.Addr) (int, error) {
-	return c.writer.TryWriteTo(data, net.UDPAddrFromAddrPort(c.target))
+	return c.writer.TryWriteTo(data, c.targetAddr)
 }
 
 // Rewritten destinations need separate sockets to distinguish replies when

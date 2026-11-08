@@ -42,7 +42,7 @@ func TestUDPDomainReplyReturnsError(t *testing.T) {
 			target := netip.MustParseAddrPort("192.0.2.2:443")
 			var err error
 			if mode == "destination" {
-				conn := &destinationPacketConn{PacketConn: packet, target: target, original: target}
+				conn := newDestinationConn(packet, target, target)
 				_, _, err = conn.ReadFrom(make([]byte, 100))
 			} else {
 				endpoint := &UdpEndpoint{conn: packet, NatTimeout: time.Minute, replies: UdpHandler(func([]byte, netip.AddrPort) error {

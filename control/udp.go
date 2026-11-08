@@ -255,8 +255,9 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 		return context.DeadlineExceeded
 	}
 	ue, exists := p.Get(src)
-	if !deadline.IsZero() && (!exists || ue.conn == nil || ue.mitm) {
-		// Setup and MITM may wait on non-socket work.
+	if !deadline.IsZero() && (!exists || ue.conn == nil) {
+		// Setup may wait on non-socket work; established writes carry the
+		// packet's deadline themselves.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
