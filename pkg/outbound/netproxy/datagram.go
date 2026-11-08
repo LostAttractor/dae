@@ -78,6 +78,49 @@ func TryWrite(conn net.Conn, b []byte) (int, error) {
 // conn TryWrite cannot use.
 func WriteDatagram(conn net.Conn, b []byte) (int, error) {
 	n, err := TryWrite(conn, b)
+	return finishDatagramWrite(conn, b, n, err)
+}
+
+// DatagramWriter borrows a connected carrier, caching its raw socket once
+// instead of allocating a SyscallConn wrapper for every encrypted datagram.
+// It never owns or closes conn, and never bypasses protocol wrappers.
+type DatagramWriter struct {
+	conn   net.Conn
+	socket *UDPSocket
+}
+
+func NewDatagramWriter(conn net.Conn) DatagramWriter {
+	w := DatagramWriter{conn: conn}
+	for current := conn; ; {
+		switch c := current.(type) {
+		case *trackedSyscallConn:
+			current = c.Conn
+		case *trackedConn:
+			current = c.Conn
+		case *net.UDPConn:
+			w.socket = NewUDPSocket(c)
+			return w
+		default:
+			return w
+		}
+	}
+}
+
+// TryWrite has the same drop and fallback semantics as TryWrite on the carrier.
+func (w *DatagramWriter) TryWrite(b []byte) (int, error) {
+	if w.socket != nil {
+		return w.socket.TryWriteTo(b, nil)
+	}
+	return TryWrite(w.conn, b)
+}
+
+// Write reports dropped datagrams as written, as WriteDatagram does.
+func (w *DatagramWriter) Write(b []byte) (int, error) {
+	n, err := w.TryWrite(b)
+	return finishDatagramWrite(w.conn, b, n, err)
+}
+
+func finishDatagramWrite(conn net.Conn, b []byte, n int, err error) (int, error) {
 	switch {
 	case errors.Is(err, errors.ErrUnsupported):
 		return conn.Write(b)

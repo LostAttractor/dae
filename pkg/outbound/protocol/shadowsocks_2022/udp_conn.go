@@ -25,6 +25,7 @@ import (
 
 type UdpConn struct {
 	net.Conn
+	writer                                 netproxy.DatagramWriter
 	sessionID                              [8]byte
 	packetID                               uint64
 	exhausted                              bool
@@ -74,7 +75,7 @@ func (s *serverSession) accept(packetID uint64) bool {
 }
 
 func NewUdpConn(conn net.Conn, conf *ciphers.CipherConf2022, encrypt, decrypt cipher.Block, pskList [][]byte, uPSK []byte) *UdpConn {
-	c := &UdpConn{Conn: conn, cipherConf: conf, blockCipherEncrypt: encrypt, blockCipherDecrypt: decrypt, pskList: pskList, uPSK: uPSK}
+	c := &UdpConn{Conn: conn, writer: netproxy.NewDatagramWriter(conn), cipherConf: conf, blockCipherEncrypt: encrypt, blockCipherDecrypt: decrypt, pskList: pskList, uPSK: uPSK}
 	rand.Read(c.sessionID[:])
 	return c
 }
@@ -97,7 +98,7 @@ func (c *UdpConn) writeIdentityHeader(buf *bytes.Buffer, separate []byte) error 
 // WriteTo reports a datagram dropped beneath as written, as a
 // netproxy.NonBlockingWriter does.
 func (c *UdpConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
-	return c.writeTo(payload, addr, netproxy.WriteDatagram)
+	return c.writeTo(payload, addr, c.writer.Write)
 }
 
 // TryWriteTo sends the encrypted datagram without waiting; see
@@ -106,10 +107,10 @@ func (c *UdpConn) TryWriteTo(payload []byte, addr net.Addr) (int, error) {
 	if !c.CanTryWrite() {
 		return 0, errors.ErrUnsupported
 	}
-	return c.writeTo(payload, addr, netproxy.TryWrite)
+	return c.writeTo(payload, addr, c.writer.TryWrite)
 }
 
-func (c *UdpConn) writeTo(payload []byte, addr net.Addr, send func(net.Conn, []byte) (int, error)) (int, error) {
+func (c *UdpConn) writeTo(payload []byte, addr net.Addr, send func([]byte) (int, error)) (int, error) {
 	if addr == nil {
 		return 0, fmt.Errorf("nil packet destination")
 	}
@@ -157,7 +158,7 @@ func (c *UdpConn) writeTo(payload []byte, addr net.Addr, send func(net.Conn, []b
 	}
 	buf.Grow(message.Len() + c.cipherWrite.Overhead())
 	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), separate[4:], message.Bytes(), nil))
-	n, err := send(c.Conn, buf.Bytes())
+	n, err := send(buf.Bytes())
 	if n == buf.Len() {
 		return len(payload), err
 	}

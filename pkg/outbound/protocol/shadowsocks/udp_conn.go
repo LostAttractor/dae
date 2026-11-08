@@ -15,6 +15,7 @@ import (
 
 type UdpConn struct {
 	net.Conn
+	writer netproxy.DatagramWriter
 
 	cipherConf *ciphers.CipherConf
 	masterKey  []byte
@@ -24,6 +25,7 @@ type UdpConn struct {
 func NewUdpConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg SaltGenerator) *UdpConn {
 	return &UdpConn{
 		Conn:       conn,
+		writer:     netproxy.NewDatagramWriter(conn),
 		cipherConf: conf,
 		masterKey:  masterKey,
 		sg:         sg,
@@ -33,7 +35,7 @@ func NewUdpConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg Sa
 // WriteTo reports a datagram dropped beneath as written, as a
 // netproxy.NonBlockingWriter does.
 func (c *UdpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	return c.writeTo(b, addr, netproxy.WriteDatagram)
+	return c.writeTo(b, addr, c.writer.Write)
 }
 
 // TryWriteTo sends the encrypted datagram without waiting; see
@@ -42,10 +44,10 @@ func (c *UdpConn) TryWriteTo(b []byte, addr net.Addr) (int, error) {
 	if !c.CanTryWrite() {
 		return 0, errors.ErrUnsupported
 	}
-	return c.writeTo(b, addr, netproxy.TryWrite)
+	return c.writeTo(b, addr, c.writer.TryWrite)
 }
 
-func (c *UdpConn) writeTo(b []byte, addr net.Addr, send func(net.Conn, []byte) (int, error)) (int, error) {
+func (c *UdpConn) writeTo(b []byte, addr net.Addr, send func([]byte) (int, error)) (int, error) {
 	if addr == nil {
 		return 0, fmt.Errorf("nil packet destination")
 	}
@@ -72,7 +74,7 @@ func (c *UdpConn) writeTo(b []byte, addr net.Addr, send func(net.Conn, []byte) (
 	buf.Grow(payload.Len() + cipher.Overhead())
 	buf.Write(cipher.Seal(buf.AvailableBuffer(), ciphers.ZeroNonce[:c.cipherConf.NonceLen], payload.Bytes(), nil))
 
-	written, err := send(c.Conn, buf.Bytes())
+	written, err := send(buf.Bytes())
 	if written == buf.Len() {
 		return len(b), err
 	}

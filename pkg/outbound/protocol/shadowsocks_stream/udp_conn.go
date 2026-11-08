@@ -17,18 +17,19 @@ import (
 // UdpConn encrypts one datagram per Read/Write; its parent is connected to the proxy.
 type UdpConn struct {
 	net.Conn
+	writer netproxy.DatagramWriter
 	cipher *ciphers.StreamCipher
 }
 
 func NewUDPConn(conn net.Conn, cipher *ciphers.StreamCipher) *UdpConn {
-	return &UdpConn{Conn: conn, cipher: cipher}
+	return &UdpConn{Conn: conn, writer: netproxy.NewDatagramWriter(conn), cipher: cipher}
 }
 func (c *UdpConn) Cipher() *ciphers.StreamCipher    { return c.cipher }
 func (c *UdpConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 
 // Write reports a datagram dropped beneath as written, as a
 // netproxy.NonBlockingWriter's WriteTo does.
-func (c *UdpConn) Write(p []byte) (int, error) { return c.write(p, netproxy.WriteDatagram) }
+func (c *UdpConn) Write(p []byte) (int, error) { return c.write(p, c.writer.Write) }
 
 // TryWrite sends the encrypted datagram without waiting, as
 // netproxy.NonBlockingWriter's TryWriteTo does.
@@ -36,13 +37,13 @@ func (c *UdpConn) TryWrite(p []byte) (int, error) {
 	if !c.CanTryWrite() {
 		return 0, errors.ErrUnsupported
 	}
-	return c.write(p, netproxy.TryWrite)
+	return c.write(p, c.writer.TryWrite)
 }
 
 // CanTryWrite reports the carrier capability without bypassing this layer.
 func (c *UdpConn) CanTryWrite() bool { return netproxy.CanTryWrite(c.Conn) }
 
-func (c *UdpConn) write(p []byte, send func(net.Conn, []byte) (int, error)) (int, error) {
+func (c *UdpConn) write(p []byte, send func([]byte) (int, error)) (int, error) {
 	ivLen := c.cipher.InfoIVLen()
 	if len(p)+ivLen > 65535 {
 		return 0, fmt.Errorf("shadowsocks datagram too large: %d", len(p))
@@ -54,7 +55,7 @@ func (c *UdpConn) write(p []byte, send func(net.Conn, []byte) (int, error)) (int
 		return 0, err
 	}
 	enc.XORKeyStream(buf[ivLen:], p)
-	n, err := send(c.Conn, buf)
+	n, err := send(buf)
 	if err == nil && n != len(buf) {
 		err = io.ErrShortWrite
 	}
