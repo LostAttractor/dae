@@ -165,9 +165,13 @@ in
                 gawk
                 ethtool
               ];
+              # Every interface of every default route, with or without a gateway.
               text = ''
-                iface=$(ip route | awk '/default/ {print $5}')
-                ethtool -K "$iface" tx-checksum-ip-generic off
+                ip route show default |
+                  awk '{ for (i = 1; i < NF; i++) if ($i == "dev" && !seen[$(i + 1)]++) print $(i + 1) }' |
+                  while read -r iface; do
+                    ethtool -K "$iface" tx-checksum-ip-generic off
+                  done
               '';
             }
           )
