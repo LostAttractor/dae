@@ -294,8 +294,10 @@ func (t *clientImpl) DialContext(ctx context.Context, metadata *protocol.Metadat
 		defer func() {
 			t.deferQuicConn(err)
 		}()
-		command := bytes.NewBuffer([]byte{Ver5, ConnectType})
-		if err := addressFromMetadata(metadata).appendTo(command); err != nil {
+		address := addressFromMetadata(metadata)
+		command := bytes.NewBuffer(make([]byte, 0, 2+address.BytesLen()))
+		command.Write([]byte{Ver5, ConnectType})
+		if err := address.appendTo(command); err != nil {
 			return nil, err
 		}
 

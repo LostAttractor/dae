@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	mathrand "math/rand/v2"
 
-	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/quic-go/quicvarint"
 )
 
@@ -27,16 +27,26 @@ const (
 // Padding length (QUIC varint)
 // Padding (bytes)
 
+func TCPRequest(addr string) []byte {
+	padding := tcpRequestPadding.Min + mathrand.IntN(tcpRequestPadding.Max-tcpRequestPadding.Min)
+	size := quicvarint.Len(FrameTypeTCPRequest) + quicvarint.Len(uint64(len(addr))) + len(addr) + quicvarint.Len(uint64(padding)) + padding
+	buf := make([]byte, 0, size)
+	buf = quicvarint.Append(buf, FrameTypeTCPRequest)
+	buf = quicvarint.Append(buf, uint64(len(addr)))
+	buf = append(buf, addr...)
+	buf = quicvarint.Append(buf, uint64(padding))
+	for range padding {
+		buf = append(buf, paddingChars[mathrand.IntN(len(paddingChars))])
+	}
+	return buf
+}
+
 func WriteTCPRequest(w io.Writer, addr string) error {
-	buf := pool.GetBytesBuffer()
-	defer pool.PutBytesBuffer(buf)
-	padding := tcpRequestPadding.String()
-	buf.Write(quicvarint.Append(nil, FrameTypeTCPRequest))
-	buf.Write(quicvarint.Append(nil, uint64(len(addr))))
-	buf.WriteString(addr)
-	buf.Write(quicvarint.Append(nil, uint64(len(padding))))
-	buf.WriteString(padding)
-	_, err := buf.WriteTo(w)
+	buf := TCPRequest(addr)
+	n, err := w.Write(buf)
+	if err == nil && n != len(buf) {
+		err = io.ErrShortWrite
+	}
 	return err
 }
 

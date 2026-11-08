@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -188,9 +187,7 @@ func (c *Client) DialContext(ctx context.Context, network, address string) (conn
 	if c.config.FastOpen {
 		// The request goes with the first Write and its response is parsed
 		// on the first Read.
-		var request bytes.Buffer
-		_ = protocol.WriteTCPRequest(&request, address)
-		return newFastOpenConn(stream, request.Bytes()), nil
+		return newFastOpenConn(stream, protocol.TCPRequest(address)), nil
 	}
 	err = P.Handshake(ctx, stream, func() error {
 		var exchangeErr error
