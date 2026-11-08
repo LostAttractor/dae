@@ -27,7 +27,7 @@ func newTCPCopyPair(r *tcpRelay, traffic *stats.Connection) *tcpCopyPair {
 		leases:    [4]*netproxy.Lease{netproxy.DependencyOf(r.rConn), r.policyLease, r.routeLease, r.ownerLease},
 	}
 	if !r.direct && r.dialer != nil {
-		p.progress.unanswered = func() { r.dialer.ReportDataPlaneError(errUpstreamUnanswered) }
+		p.progress.unanswered = r.dialer.ConfirmUnanswered
 	}
 	if r.direct {
 		var counters [2]func() (uint64, error)

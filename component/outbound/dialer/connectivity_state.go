@@ -192,16 +192,9 @@ func (d *pathRuntime) reportDataPlaneFailure(failure netproxy.Failure) {
 		d.mu.Unlock()
 		return
 	}
-	startedConfirmation := false
-	session := d.sessionSnapshot()
-	if d.checksConnectivity && d.health.phase == healthHealthy && d.healthyLocked(session) {
-		d.health.phase = healthConfirming
-		d.failures.reportedAt = time.Now()
-		d.failures.generation++
+	startedConfirmation := d.startConfirmationLocked()
+	if startedConfirmation {
 		d.failures.last = failureSnapshot(failure, d.failures.generation)
-		d.statusRevision++
-		d.checks.pending |= checkRequestDataPlane
-		startedConfirmation = true
 	}
 	d.mu.Unlock()
 	d.recordConnectionFailure()
@@ -209,6 +202,20 @@ func (d *pathRuntime) reportDataPlaneFailure(failure netproxy.Failure) {
 		d.notifyGroups(SelectionForceNone)
 		d.signalConnectivityCheck()
 	}
+}
+
+// startConfirmationLocked requests a probe to confirm a failure reported on a
+// healthy path. Reports during the confirmation join it.
+func (d *pathRuntime) startConfirmationLocked() bool {
+	if !d.checksConnectivity || d.health.phase != healthHealthy || !d.healthyLocked(d.sessionSnapshot()) {
+		return false
+	}
+	d.health.phase = healthConfirming
+	d.failures.reportedAt = time.Now()
+	d.failures.generation++
+	d.statusRevision++
+	d.checks.pending |= checkRequestDataPlane
+	return true
 }
 
 func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
@@ -464,6 +471,9 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 		return failureReportedAt
 	}
 	if d.health.phase != healthConfirming || result.generation >= d.failures.generation {
+		if d.health.phase == healthConfirming {
+			d.failures.unansweredUntil = time.Now().Add(d.CheckInterval)
+		}
 		d.recordRecoverySuccessLocked()
 		d.markHealthyLocked()
 		d.failures.reportedAt = time.Time{}

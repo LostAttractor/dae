@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -70,7 +71,7 @@ func TestReportDataPlaneErrorConfirmsUpstreamFailures(t *testing.T) {
 		{"unknown", netproxy.Failure{}, errors.New("upstream failed"), true},
 		{"stream", netproxy.Failure{}, &quic.StreamError{Remote: true, ErrorCode: 42}, true},
 		{"io timeout", netproxy.Failure{Layer: netproxy.LayerQUIC}, os.ErrDeadlineExceeded, true},
-		{"unanswered stream", netproxy.Failure{Scope: netproxy.ScopeStream, Phase: netproxy.OpRead, Reason: netproxy.ReasonDeadline, Code: "unanswered"}, errors.New("upstream sent no response"), true},
+		{"stream read deadline", netproxy.Failure{Scope: netproxy.ScopeStream, Phase: netproxy.OpRead, Reason: netproxy.ReasonDeadline}, os.ErrDeadlineExceeded, true},
 		{"fast open timeout", netproxy.Failure{Origin: netproxy.OriginLocalProtocol}, context.DeadlineExceeded, true},
 		{"caller", netproxy.Failure{Origin: netproxy.OriginCaller}, context.DeadlineExceeded, false},
 		{"target", netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginTarget}, errors.New("target refused"), false},
@@ -158,6 +159,79 @@ func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An unanswered payload is a suspicion, not a failure: it records none, many
+// suspicions share one probe, and a path that passed the probe ignores them
+// for a check interval, until it fails.
+func TestUnansweredSuspicionConfirmsWithoutRecordingFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{d.StatsKey(): {Name: d.Name}}, nil)
+		t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+		registry := prometheus.NewRegistry()
+		registry.MustRegister(stats.DefaultStore)
+		prepareRecoveryDialer(d)
+		var probes atomic.Int32
+		var offline atomic.Bool
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+			probes.Add(1)
+			if offline.Load() {
+				return context.DeadlineExceeded
+			}
+			return nil
+		})
+		defer checker.stopRetries()
+		// probe runs the requested checks and counts their probes.
+		probe := func() int32 {
+			before := probes.Load()
+			for d.connectivityCheckRequested() {
+				checker.dispatch()
+				checker.finish(<-checker.results)
+			}
+			return probes.Load() - before
+		}
+		for range 8 {
+			d.ConfirmUnanswered()
+		}
+		if got := probe(); got != 1 || !d.RuntimeStatus().Healthy {
+			t.Fatalf("suspicions took %d probes, want 1", got)
+		}
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, family := range families {
+			if family.GetName() == "dae_relay_failures_total" && len(family.Metric) != 0 {
+				t.Fatalf("a suspicion was counted as a relay failure: %v", family.Metric)
+			}
+		}
+		if node := stats.DefaultStore.GetNode(d.StatsKey()); !node.LastConnFailAt.IsZero() || d.RuntimeStatus().Failure != nil {
+			t.Fatalf("a suspicion was recorded as a connection failure: %+v", node)
+		}
+		d.ConfirmUnanswered()
+		if got := probe(); got != 0 {
+			t.Fatalf("a confirmed path probed %d times within its backoff", got)
+		}
+		time.Sleep(d.CheckInterval)
+		d.ConfirmUnanswered()
+		if got := probe(); got != 1 {
+			t.Fatalf("suspicions after the backoff took %d probes, want 1", got)
+		}
+		offline.Store(true)
+		d.RequestManualCheck()
+		probe()
+		offline.Store(false)
+		d.RequestManualCheck()
+		probe()
+		if !d.RuntimeStatus().Healthy {
+			t.Fatal("the path did not recover")
+		}
+		d.ConfirmUnanswered()
+		if got := probe(); got != 1 {
+			t.Fatalf("a failure did not end the backoff: %d probes", got)
+		}
+	})
 }
 
 func TestFatalTimeoutOwnerStateIsNotMaskedOrRetriedByOldRelays(t *testing.T) {

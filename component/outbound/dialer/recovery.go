@@ -20,6 +20,7 @@ type pathFailures struct {
 	downSince          time.Time // Confirmation of the unresolved failure; zero while usable.
 	recoverySince      time.Time
 	recoveryVerifiedAt time.Time
+	unansweredUntil    time.Time // Unanswered payloads start no confirmation before then.
 }
 
 // recoveryProgress contains only worker-owned facts. Session ownership and
@@ -166,6 +167,20 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 	}
 	if confirmation != nil {
 		d.reportDataPlaneFailure(*confirmation)
+	}
+}
+
+// ConfirmUnanswered asks for a probe because a proxied payload went
+// unanswered. Silent targets do that too, so it records no failure, and a
+// path that passed a confirmation ignores it for a check interval: such
+// probes never outpace the path's regular checks.
+func (d *Dialer) ConfirmUnanswered() {
+	d.mu.Lock()
+	started := d.ctx.Err() == nil && !time.Now().Before(d.failures.unansweredUntil) && d.startConfirmationLocked()
+	d.mu.Unlock()
+	if started {
+		d.notifyGroups(SelectionForceNone)
+		d.signalConnectivityCheck()
 	}
 }
 

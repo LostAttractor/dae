@@ -88,6 +88,7 @@ func (d *pathRuntime) confirmFailureLocked() {
 	if d.failures.downSince.IsZero() {
 		d.failures.downSince = time.Now()
 	}
+	d.failures.unansweredUntil = time.Time{}
 	d.resetRecoveryObservationLocked()
 	for member := range d.members {
 		if member.group != nil {
