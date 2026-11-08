@@ -249,6 +249,8 @@ func TestUnderlayUDPSkipsUnauthenticatedDatagrams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer pool.PutBuffer(wire)
+	before := dropUnauthenticated.Load()
 	for _, datagram := range [][]byte{[]byte("noise"), bytes.Repeat([]byte{1}, 64), wire} {
 		if _, err := stranger.WriteTo(datagram, raw.LocalAddr()); err != nil {
 			t.Fatal(err)
@@ -258,5 +260,8 @@ func TestUnderlayUDPSkipsUnauthenticatedDatagrams(t *testing.T) {
 	buf := make([]byte, 64)
 	if n, _, err := client.ReadFrom(buf); err != nil || string(buf[:n]) != "reply" {
 		t.Fatalf("ReadFrom = %q, %v", buf[:n], err)
+	}
+	if got := dropUnauthenticated.Load() - before; got != 2 {
+		t.Fatalf("unauthenticated drops = %d, want 2", got)
 	}
 }
