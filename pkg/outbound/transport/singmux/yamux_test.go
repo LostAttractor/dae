@@ -720,9 +720,8 @@ func TestYamuxPoolAvoidsSaturatedSessions(t *testing.T) {
 			go delayLink(link, conn, 50*time.Millisecond)
 			return client
 		}
-		// Room for a second TCP session besides the spare and the positions
-		// kept for the datagram lanes.
-		mux := &Mux{Dialer: parent, Protocol: ProtocolYAMux, MaxConnections: 5}
+		// Room for a second TCP session besides the spare.
+		mux := &Mux{Dialer: parent, Protocol: ProtocolYAMux, MaxConnections: 3}
 		t.Cleanup(func() { _ = mux.Close() })
 		ctx := t.Context()
 		if err := mux.Connect(ctx); err != nil {

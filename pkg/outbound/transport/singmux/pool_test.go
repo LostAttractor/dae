@@ -178,10 +178,10 @@ func closeAll(conns []net.Conn) {
 }
 
 // A lane's first stream takes the spare session and the pool asks for a new
-// spare; a lane grows at the stream threshold only into positions left after
-// one for each lane without a session.
+// spare; a lane grows at the stream threshold. With no other lane seen, TCP
+// spreads over every position but the spare.
 func TestPoolExpandsAtStreamThreshold(t *testing.T) {
-	h := newPoolHarness(t, 6, nil)
+	h := newPoolHarness(t, DefaultMaxConnections, nil)
 	ctx := t.Context()
 	h.open(ctx)
 	if !h.dialer.Snapshot().RecoveryRequired {
@@ -205,16 +205,40 @@ func TestPoolExpandsAtStreamThreshold(t *testing.T) {
 		h.open(ctx)
 		h.replenish()
 	}
-	// Two positions stay free for the lanes without a session.
 	loads, lanes := h.loads(), h.lanes()
-	if h.dials() != 4 || len(loads) != 4 || lanes[1] != laneSpare || loads[1] != 0 {
-		t.Fatalf("pool ignored its reservations: dials=%d loads=%v lanes=%v", h.dials(), loads, lanes)
+	if h.dials() != DefaultMaxConnections || len(loads) != DefaultMaxConnections || lanes[1] != laneSpare || loads[1] != 0 {
+		t.Fatalf("TCP did not grow around the spare: dials=%d loads=%v lanes=%v", h.dials(), loads, lanes)
 	}
 	for i, load := range loads {
 		if i != 1 && load < expandStreams {
 			t.Fatalf("streams were not distributed: %v", loads)
 		}
 	}
+}
+
+// A lane that opened a user stream within idleTimeout keeps a position for
+// its return; once it has been gone for idleTimeout, a loaded lane takes it.
+func TestPoolReservesForRecentLanes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newPoolHarness(t, DefaultMaxConnections, nil)
+		ctx := t.Context()
+		_ = h.openUDP(ctx, false).Close()
+		h.replenish()
+		synctest.Wait() // the game's session drains back to a spare
+		for range 4 * expandStreams {
+			h.open(ctx)
+			h.replenish()
+		}
+		if lanes := h.lanes(); !slices.Equal(lanes, []lane{laneStream, laneSpare, laneStream}) {
+			t.Fatalf("lanes=%v, want TCP to grow beside the spare and keep a position for the game", lanes)
+		}
+		time.Sleep(idleTimeout)
+		h.open(ctx)
+		h.replenish()
+		if lanes := h.lanes(); !slices.Equal(lanes, []lane{laneStream, laneSpare, laneStream, laneStream}) {
+			t.Fatalf("a lane gone for idleTimeout kept its position: lanes=%v", lanes)
+		}
+	})
 }
 
 // Each lane gets a session of its own, so that a game shares a carrier

@@ -96,6 +96,7 @@ type sessionPool struct {
 	mu        sync.Mutex
 	idle      *time.Timer
 	idleAt    time.Time
+	opened    [laneCount]time.Time // when each lane last opened a user stream
 	watchers  sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
@@ -399,9 +400,9 @@ func (p *sessionPool) Connect(ctx context.Context) error {
 // A user stream goes to the least loaded session of its lane. A lane without
 // one takes the spare; without a spare it falls back to another lane's
 // session and asks for a session of its own. A user stream that finds no
-// spare left asks for one. A
-// lane whose sessions are all loaded grows only into positions left after
-// one for each lane without a session and one for a missing spare.
+// spare left asks for one. A lane whose sessions are all loaded grows only
+// into positions left after one for each recent lane without a session and
+// one for a missing spare.
 // Connectivity checks use interactive sessions, else a spare, else any, and
 // change no lane.
 func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]struct{}, user bool, want lane) (*sessionSlot, *netproxy.SingleSessionHandle[*sessionResource], error) {
@@ -420,6 +421,7 @@ func (p *sessionPool) reserve(ctx context.Context, excluded map[*sessionSlot]str
 	placement := placeOwn
 	order := [laneCount]lane{laneInteractive, laneSpare, laneBulk, laneStream}
 	if user {
+		p.opened[want] = time.Now()
 		order = [laneCount]lane{want, laneSpare}
 		copy(order[2:], fallbacks[want])
 	}
@@ -537,7 +539,9 @@ func (p *sessionPool) hasSpareLocked() bool {
 }
 
 // reservedLocked counts the positions a loaded lane leaves free: one for each
-// lane without a session, and one for the spare if there is none.
+// lane without a session that opened a user stream within idleTimeout, as
+// long as an idle extra session is kept, and one for the spare if there is
+// none. Other lanes take the spare when they appear.
 func (p *sessionPool) reservedLocked() int {
 	var present [laneCount]bool
 	for _, slot := range p.slots {
@@ -547,7 +551,7 @@ func (p *sessionPool) reservedLocked() int {
 	}
 	reserved := 0
 	for l := laneInteractive; l < laneCount; l++ {
-		if !present[l] {
+		if !present[l] && time.Since(p.opened[l]) < idleTimeout {
 			reserved++
 		}
 	}
