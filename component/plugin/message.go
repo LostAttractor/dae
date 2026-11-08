@@ -122,11 +122,14 @@ func (r *Response) TakeHTTP() (*http.Response, Delivery, error) {
 		} else if wire.StatusCode < 200 || wire.StatusCode == http.StatusNoContent {
 			wire.ContentLength = 0
 			wire.Header.Del("Content-Length")
-		} else if wire.ContentLength < 0 {
-			wire.Header.Del("Content-Length")
-		} else if wire.StatusCode != http.StatusNotModified || len(wire.Header.Values("Content-Length")) != 0 {
-			// HEAD and 304 can describe the corresponding representation's length.
-			wire.Header.Set("Content-Length", strconv.FormatInt(wire.ContentLength, 10))
+		} else if wire.StatusCode != http.StatusNotModified {
+			// HEAD describes the corresponding representation's length. A 304 keeps
+			// its header as is: HTTP/1 transports report ContentLength 0 for it.
+			if wire.ContentLength < 0 {
+				wire.Header.Del("Content-Length")
+			} else {
+				wire.Header.Set("Content-Length", strconv.FormatInt(wire.ContentLength, 10))
+			}
 		}
 	} else {
 		wire.Body = &responseTrailerBody{ReadCloser: wire.Body, head: r.Head, wire: wire}

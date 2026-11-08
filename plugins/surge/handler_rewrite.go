@@ -452,6 +452,9 @@ func responseFromResult(request *http.Request, result *Result) (*http.Response, 
 	}
 	if status != http.StatusNotModified || response.ContentLength < 0 {
 		header.Del("Content-Length")
+	} else if len(header.Values("Content-Length")) != 0 {
+		// An explicit body replaces the declared representation length.
+		header.Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
 	}
 	if result.Trailers != nil {
 		response.Trailer, err = resultTrailers(result.Trailers)

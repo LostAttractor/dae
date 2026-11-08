@@ -334,10 +334,11 @@ passing the request to the next layer.
   The latter closes forbidden bodies without reading them and removes trailers
   and transfer framing for HEAD, 204, 205, 304 and non-upgrade informational responses.
   HEAD emits a known representation length from `Head.ContentLength`, subject to
-  status-specific rules. 304 may retain an explicit Content-Length normalized
-  from that field but does not synthesize one. 205 uses Content-Length: 0; 204 and
-  informational responses have no Content-Length. A 101 response retains its
-  duplex body. This normalization happens after all plugin edits.
+  status-specific rules. 304 keeps its Content-Length header unchanged, since
+  HTTP/1 transports report `Head.ContentLength` 0 for it, and never synthesizes
+  one. 205 uses Content-Length: 0; 204 and informational responses have no
+  Content-Length. A 101 response retains its duplex body. This normalization
+  happens after all plugin edits.
   Plugins must not export and rewrap messages to bypass body operations. After
   forwarding, body installation and changes to committed metadata are forbidden,
   but reading the request Head and stopping observations remain allowed.

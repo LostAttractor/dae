@@ -3,6 +3,7 @@
 package plugin
 
 import (
+	"bufio"
 	"io"
 	"log"
 	"net/http"
@@ -28,12 +29,12 @@ func TestResponseTakeHTTPDiscardsForbiddenBody(t *testing.T) {
 		{"head-no-content", http.MethodHead, http.StatusNoContent, 7, 0},
 		{"head-reset-content", http.MethodHead, http.StatusResetContent, 7, 0},
 		{"head-reset-content-unknown", http.MethodHead, http.StatusResetContent, -1, 0},
-		{"head-not-modified", http.MethodHead, http.StatusNotModified, 7, 7},
+		{"head-not-modified", http.MethodHead, http.StatusNotModified, 999, 999},
 		{"no-content", http.MethodGet, http.StatusNoContent, 7, 0},
 		{"reset-content", http.MethodGet, http.StatusResetContent, 7, 0},
 		{"reset-content-unknown", http.MethodGet, http.StatusResetContent, -1, 0},
 		{"reset-content-empty", http.MethodGet, http.StatusResetContent, 0, 0},
-		{"not-modified", http.MethodGet, http.StatusNotModified, 7, 7},
+		{"not-modified", http.MethodGet, http.StatusNotModified, 0, 0},
 		{"not-modified-unknown", http.MethodGet, http.StatusNotModified, -1, -1},
 		{"informational", http.MethodGet, http.StatusEarlyHints, 7, 0},
 		{"no-request", "", http.StatusNoContent, 7, 0},
@@ -66,7 +67,9 @@ func TestResponseTakeHTTPDiscardsForbiddenBody(t *testing.T) {
 				t.Fatal("bodyless response retained trailers or transfer framing", wire)
 			}
 			wantHeader := ""
-			if tt.want >= 0 && tt.status >= 200 && tt.status != http.StatusNoContent {
+			if tt.status == http.StatusNotModified {
+				wantHeader = "999"
+			} else if tt.want >= 0 && tt.status >= 200 && tt.status != http.StatusNoContent {
 				wantHeader = strconv.FormatInt(tt.want, 10)
 			}
 			if wire.ContentLength != tt.want || wire.Header.Get("Content-Length") != wantHeader {
@@ -82,6 +85,27 @@ func TestResponseTakeHTTPDiscardsForbiddenBody(t *testing.T) {
 			}
 			if _, _, err := response.TakeHTTP(); err == nil {
 				t.Fatal("body ownership transferred more than once")
+			}
+		})
+	}
+}
+
+func TestResponseTakeHTTPKeepsTransported304Length(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			wire := "HTTP/1.1 304 Not Modified\r\nContent-Length: 1234\r\nEtag: \"v\"\r\n\r\n"
+			raw, err := http.ReadResponse(bufio.NewReader(strings.NewReader(wire)), httptest.NewRequest(method, "https://example.com/", nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			length := raw.ContentLength
+			response, _, err := NewResponse(raw, nil).TakeHTTP()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if got := response.Header.Values("Content-Length"); len(got) != 1 || got[0] != "1234" {
+				t.Fatalf("transport length=%d, forwarded Content-Length=%q", length, got)
 			}
 		})
 	}
