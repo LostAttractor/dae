@@ -76,7 +76,6 @@ type Flow struct {
 	// length of the queued datagrams, forced the length of those among
 	// them that must not be dropped.
 	stream, datagrams, forced int
-	inflight                  int // stream buffer capacity still held by the writer
 	writable                  chan struct{}
 	codel                     codel
 }
@@ -100,12 +99,9 @@ func (f *Flow) Writable() <-chan struct{} {
 // already queues stream frames and n would take them past StreamLimit.
 func (f *Flow) Full(n int) bool { return f.stream > 0 && f.stream+n > StreamLimit }
 
-// Available is the remaining queued stream capacity; the one carrier batch
-// is accounted separately until ReleaseBatch.
+// Available is the remaining queued stream capacity; frames taken into the
+// carrier batch no longer count against it.
 func (f *Flow) Available() int { return max(0, StreamLimit-f.stream) }
-
-// Buffered includes queued and in-flight stream buffer capacity.
-func (f *Flow) Buffered() int { return f.stream + f.inflight }
 
 // WakeWriter passes space on to another writer of the flow after a write
 // used only part of what a dequeue made available.
@@ -351,9 +347,7 @@ func (s *Scheduler) ReleaseBatch() {
 }
 
 func (s *Scheduler) releaseHeld(h heldFrame) {
-	if h.kind == stream {
-		h.flow.inflight -= cap(h.frame)
-	} else {
+	if h.kind != stream {
 		h.memory.Close()
 	}
 	s.release(h.frame)
@@ -461,12 +455,8 @@ func (s *Scheduler) dequeue(f *Flow, now time.Time) (entry, bool) {
 	}
 	e := f.queue.Pop()
 	s.unqueue(f, e)
-	if e.kind == stream {
-		f.inflight += cap(e.frame)
-	} else {
-		if s.Delay != nil {
-			s.Delay.Observe(now.Sub(e.at))
-		}
+	if e.kind != stream && s.Delay != nil {
+		s.Delay.Observe(now.Sub(e.at))
 	}
 	return e, true
 }

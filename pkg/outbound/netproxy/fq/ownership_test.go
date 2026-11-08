@@ -13,17 +13,17 @@ func TestPartialForcedFrameKeepsOwnershipAndOrder(t *testing.T) {
 	s := &Scheduler{Release: func([]byte) { released++ }}
 	defer s.Clear()
 	bulk, sparse := new(Flow), new(Flow)
-	forced := make([]byte, 3000, 4096)
+	forced := make([]byte, 3000)
 	for i := range forced {
 		forced[i] = byte(i)
 	}
-	s.Force(bulk, epoch, forced)
+	admit(s, bulk, epoch, forced, true)
 	var wire []byte
 	for _, part := range s.Take(epoch, 1000, nil) {
 		wire = append(wire, part...)
 	}
 	s.ReleaseBatch()
-	if released != 0 || netproxy.DatagramMemory.Status().Used-used != int64(cap(forced)) {
+	if released != 0 || netproxy.DatagramMemory.Status().Used-used != 4096 {
 		t.Fatal("partial forced frame lost its capacity reservation")
 	}
 	last := bytes.Repeat([]byte{0x5a}, 16)
@@ -48,7 +48,7 @@ func TestClearKeepsBorrowedPartialCapacity(t *testing.T) {
 			used := netproxy.DatagramMemory.Status().Used
 			released := 0
 			s := &Scheduler{Release: func([]byte) { released++ }}
-			s.Force(new(Flow), epoch, make([]byte, 3000, 4096))
+			admit(s, new(Flow), epoch, make([]byte, 3000), true)
 			s.Take(epoch, 1000, nil)
 			if !borrowing {
 				s.ReleaseBatch()
@@ -65,24 +65,26 @@ func TestClearKeepsBorrowedPartialCapacity(t *testing.T) {
 	}
 }
 
-func TestStreamCapacityIncludesInFlight(t *testing.T) {
-	s := new(Scheduler)
+// A stream frame stays the writer's until the batch that completes it is
+// released, also after only part of it was taken.
+func TestBorrowedStreamFrameIsReleasedWithItsBatch(t *testing.T) {
+	released := 0
+	s := &Scheduler{Release: func([]byte) { released++ }}
 	f := new(Flow)
 	s.Push(f, make([]byte, 3000, 4096))
 	s.Take(epoch, 1000, nil)
 	s.ReleaseBatch()
-	if f.Buffered() != 4096 {
-		t.Fatalf("partial capacity=%d", f.Buffered())
+	if released != 0 {
+		t.Fatal("partly sent frame was released")
 	}
 	s.Take(epoch, 2000, nil)
-	if f.Buffered() != 4096 {
-		t.Fatal("completed but still borrowed frame became free")
+	if released != 0 {
+		t.Fatal("completed but still borrowed frame was released")
 	}
 	s.ReleaseBatch()
-	if f.Buffered() != 0 {
-		t.Fatal("completed frame kept its capacity")
+	if released != 1 {
+		t.Fatal("completed frame was not released")
 	}
-	s.Clear()
 }
 
 func TestDatagramAdmissionReclaimsEnoughCapacity(t *testing.T) {
@@ -92,7 +94,7 @@ func TestDatagramAdmissionReclaimsEnoughCapacity(t *testing.T) {
 	defer s.Clear()
 	flow := new(Flow)
 	for range 4 {
-		if !s.Offer(flow, epoch, make([]byte, 1024)) {
+		if !admit(s, flow, epoch, make([]byte, 1024), false) {
 			t.Fatal("small datagram rejected")
 		}
 	}
@@ -131,7 +133,7 @@ func TestImpossibleAdmissionKeepsQueuedDatagrams(t *testing.T) {
 			defer s.Clear()
 			flow := new(Flow)
 			for range 16 {
-				if !s.Offer(flow, epoch, make([]byte, 1024)) {
+				if !admit(s, flow, epoch, make([]byte, 1024), false) {
 					t.Fatal("small datagram rejected")
 				}
 			}
@@ -158,18 +160,18 @@ func TestForcedAdmissionDoesNotExceedSharedBudget(t *testing.T) {
 	s := &Scheduler{Release: func([]byte) { released++ }}
 	defer s.Clear()
 	flow := new(Flow)
-	if s.Force(flow, epoch, make([]byte, 8)) || s.Queued() || released != 1 {
+	if admit(s, flow, epoch, make([]byte, 8), true) || s.Queued() || released != 0 {
 		t.Fatal("request bypassed admission or retained rejected memory")
 	}
 	if used := netproxy.DatagramMemory.Status().Used; used != 64 {
 		t.Fatalf("used=%d, want 64", used)
 	}
 	held.Close()
-	if !s.Force(flow, epoch, make([]byte, 8)) {
+	if !admit(s, flow, epoch, make([]byte, 8), true) {
 		t.Fatal("request failed after capacity returned")
 	}
 	s.Clear()
-	if used := netproxy.DatagramMemory.Status().Used; used != 0 || released != 2 {
+	if used := netproxy.DatagramMemory.Status().Used; used != 0 || released != 1 {
 		t.Fatalf("used=%d released=%d", used, released)
 	}
 }

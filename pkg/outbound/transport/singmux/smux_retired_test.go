@@ -3,7 +3,6 @@ package singmux
 import (
 	"bytes"
 	"errors"
-	"github.com/daeuniverse/dae/pkg/outbound/netproxy/fq"
 	"net"
 	"testing"
 	"testing/synctest"
@@ -36,13 +35,15 @@ func TestSmuxRetiredAdmissionAndDelivery(t *testing.T) {
 			t.Fatalf("unbounded replacement of closed streams: %v", err)
 		}
 		s.mu.Lock()
-		retired, owned, capacity := s.retired, len(s.streams), 0
+		retired, owned, overfull := s.retired, len(s.streams), 0
 		for _, st := range s.streams {
-			capacity += st.flow.Buffered()
+			if st.flow.Full(0) {
+				overfull++
+			}
 		}
 		s.mu.Unlock()
-		if retired != smuxRetiredLimit || owned != retired || capacity > retired*(fq.StreamLimit+smuxHeaderSize)+smuxMaxFrame {
-			t.Fatalf("retired=%d owners=%d capacity=%d", retired, owned, capacity)
+		if retired != smuxRetiredLimit || owned != retired || overfull != 0 {
+			t.Fatalf("retired=%d owners=%d over StreamLimit=%d", retired, owned, overfull)
 		}
 		frames := readFrames(remote)
 		data := make(map[uint32][]byte)

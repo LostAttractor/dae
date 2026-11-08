@@ -745,9 +745,11 @@ func TestSmuxLargeDatagramRespectsBatchLimit(t *testing.T) {
 	s := &smuxSession{conn: &monitoredConn{Conn: carrier}}
 	data := bytes.Repeat([]byte("payload"), 10000)
 	s.fq.Release = putFrame
-	if !s.fq.Force(new(fq.Flow), time.Now(), data) {
+	frame := s.fq.AllocateDatagram(new(fq.Flow), time.Now(), len(data), true)
+	if frame == nil {
 		t.Fatal("datagram admission failed")
 	}
+	copy(frame, data)
 	defer s.fq.Clear()
 	for s.fq.Queued() {
 		batch := s.fq.Take(time.Now(), smuxWriteBatch, nil)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
 var epoch = time.Unix(1_000_000, 0)
@@ -17,6 +18,13 @@ func frame(flow byte, seq uint32, size int) []byte {
 	b[0] = flow
 	binary.BigEndian.PutUint32(b[1:], seq)
 	return b
+}
+
+// admit queues a copy of b through AllocateDatagram, as its users do.
+func admit(s *Scheduler, f *Flow, now time.Time, b []byte, force bool) bool {
+	frame := s.AllocateDatagram(f, now, len(b), force)
+	copy(frame, b)
+	return frame != nil
 }
 
 func flowOf(b []byte) byte  { return b[0] }
@@ -74,7 +82,7 @@ func TestSparseFlowGoesFirst(t *testing.T) {
 		c.s.Push(bulk, frame('b', uint32(i), 16<<10))
 	}
 	c.take(16 << 10)
-	c.s.Offer(sparse, c.now, frame('s', 0, 100))
+	admit(c.s, sparse, c.now, frame('s', 0, 100), false)
 	batch := c.take((16 << 10) + 100)
 	if len(batch) != 2 || flowOf(batch[0]) != 's' || flowOf(batch[1]) != 'b' {
 		t.Fatalf("batch after a sparse datagram: %d frames, first of flow %c", len(batch), flowOf(batch[0]))
@@ -90,7 +98,7 @@ func TestDRRSharesBytes(t *testing.T) {
 	for range 2000 {
 		for datagrams.datagrams < 32<<10 {
 			seq++
-			c.s.Offer(datagrams, c.now, frame('d', seq, 1514))
+			admit(c.s, datagrams, c.now, frame('d', seq, 1514), false)
 		}
 		for !streams.Full(16 << 10) {
 			c.s.Push(streams, frame('s', 0, 16<<10))
@@ -115,7 +123,7 @@ func TestCoDelControlLaw(t *testing.T) {
 	var seq uint32
 	offer := func() {
 		seq++
-		c.s.Offer(f, c.now, frame('d', seq, 1000))
+		admit(c.s, f, c.now, frame('d', seq, 1000), false)
 	}
 	// A standing queue of 30 ms: one datagram arrives per one sent.
 	for range 30 {
@@ -173,7 +181,7 @@ func TestCoDelIntermittentLargeDatagrams(t *testing.T) {
 	dropped := drops(dropCoDel)
 	for i := range 20 {
 		c.now = epoch.Add(time.Duration(i) * 50 * time.Millisecond)
-		if !c.s.Offer(f, c.now, frame('d', uint32(i), 8<<10)) {
+		if !admit(c.s, f, c.now, frame('d', uint32(i), 8<<10), false) {
 			t.Fatal("datagram refused")
 		}
 		c.now = c.now.Add(10 * time.Millisecond)
@@ -194,7 +202,7 @@ func TestCoDelEmptyFlowKeepsDropMemory(t *testing.T) {
 		t.Run(map[bool]string{false: "send", true: "evict"}[evict], func(t *testing.T) {
 			c := newCarrier(t, 1e6)
 			f := new(Flow)
-			c.s.Offer(f, c.now, frame('d', 0, 8<<10))
+			admit(c.s, f, c.now, frame('d', 0, 8<<10), false)
 			f.codel = codel{dropping: true, count: 8, lastCount: 3,
 				firstAbove: epoch.Add(-Interval), dropNext: epoch.Add(Interval)}
 			if evict {
@@ -235,7 +243,7 @@ func TestCoDelSparesFairShare(t *testing.T) {
 			interval := time.Duration(17 * Quantum / (tc.share * rate) * float64(time.Second))
 			next := epoch
 			var seq uint32
-			c.s.Offer(game, next, frame('g', seq, Quantum))
+			admit(c.s, game, next, frame('g', seq, Quantum), false)
 			for c.now.Sub(epoch) < 10*time.Second {
 				for _, f := range bulk {
 					for !f.Full(16 << 10) {
@@ -244,7 +252,7 @@ func TestCoDelSparesFairShare(t *testing.T) {
 				}
 				for !next.After(c.now) {
 					seq++
-					c.s.Offer(game, next, frame('g', seq, Quantum))
+					admit(c.s, game, next, frame('g', seq, Quantum), false)
 					next = next.Add(interval)
 				}
 				c.take(8 << 10)
@@ -267,7 +275,7 @@ func TestBurstIsNotDropped(t *testing.T) {
 	burst := new(Flow)
 	dropped := drops(dropCoDel)
 	for i := range 128 {
-		c.s.Offer(burst, c.now, frame('u', uint32(i), 400))
+		admit(c.s, burst, c.now, frame('u', uint32(i), 400), false)
 	}
 	for c.now.Sub(epoch) < time.Second {
 		for _, f := range bulk {
@@ -299,7 +307,7 @@ func TestLimitsDropOldestOfFattest(t *testing.T) {
 			n = 70
 		}
 		for seq := range n {
-			if !s.Offer(flows[i], epoch, frame(byte('a'+i), uint32(seq), 1000)) {
+			if !admit(s, flows[i], epoch, frame(byte('a'+i), uint32(seq), 1000), false) {
 				t.Fatal("datagram refused")
 			}
 		}
@@ -318,7 +326,7 @@ func TestLimitsDropOldestOfFattest(t *testing.T) {
 	}
 	empty := new(Flow)
 	before := carrierFull()
-	if !s.Offer(empty, epoch, frame('z', 0, 1000)) || empty.queue.Len() != 1 || carrierFull() != before+1 {
+	if !admit(s, empty, epoch, frame('z', 0, 1000), false) || empty.queue.Len() != 1 || carrierFull() != before+1 {
 		t.Fatal("a flow that queued nothing did not get its datagram in")
 	}
 	if released != int(flowFull()+carrierFull()) {
@@ -336,19 +344,19 @@ func TestForcedDatagramIsNeverDropped(t *testing.T) {
 	c := newCarrier(t, 1e5)
 	f := new(Flow)
 	c.s.Push(f, frame('f', 0, 8)) // as smux's SYN
-	c.s.Force(f, c.now, frame('f', 1, 1000))
+	admit(c.s, f, c.now, frame('f', 1, 1000), true)
 	for seq := uint32(2); seq < 100; seq++ {
-		c.s.Offer(f, c.now, frame('f', seq, 1000))
+		admit(c.s, f, c.now, frame('f', seq, 1000), false)
 	}
 	others := make([]*Flow, 4)
 	for i := range others {
 		others[i] = new(Flow)
 		for seq := range 64 {
-			c.s.Offer(others[i], c.now, frame(byte('a'+i), uint32(seq), 1000))
+			admit(c.s, others[i], c.now, frame(byte('a'+i), uint32(seq), 1000), false)
 		}
 	}
 	limit := netproxy.DatagramMemory.UseLimit(1)
-	if c.s.Offer(f, c.now, frame('f', 100, 1000)) {
+	if admit(c.s, f, c.now, frame('f', 100, 1000), false) {
 		t.Fatal("a datagram got memory beyond the limit")
 	}
 	limit.Close()
@@ -421,8 +429,8 @@ func TestDatagramMemory(t *testing.T) {
 	used := netproxy.DatagramMemory.Status().Used
 	c := newCarrier(t, 5e6)
 	f := new(Flow)
-	c.s.Offer(f, c.now, make([]byte, 1000, 1024))
-	c.s.Force(f, c.now, make([]byte, 1000, 2048))
+	admit(c.s, f, c.now, make([]byte, 1000), false)
+	admit(c.s, f, c.now, make([]byte, 2000), true)
 	if n := netproxy.DatagramMemory.Status().Used - used; n != 1024+2048 {
 		t.Fatalf("%d bytes of datagram memory held, want %d", n, 1024+2048)
 	}
@@ -432,14 +440,16 @@ func TestDatagramMemory(t *testing.T) {
 	}
 }
 
-// Queueing a datagram does not allocate once the queues have grown.
-func TestOfferDoesNotAllocate(t *testing.T) {
+// Queueing a datagram does not allocate once the queues have grown and
+// released buffers return to the pool.
+func TestDatagramQueueingDoesNotAllocate(t *testing.T) {
 	s := newCarrier(t, 1).s
+	s.Release = pool.PutBuffer
 	f := new(Flow)
 	b := make([]byte, 1200)
 	batch := make([][]byte, 0, 16)
 	if allocs := testing.AllocsPerRun(200, func() {
-		s.Offer(f, epoch, b)
+		admit(s, f, epoch, b, false)
 		batch = s.Take(epoch, len(b), batch[:0])
 		s.ReleaseBatch()
 	}); allocs > 0 {
@@ -453,9 +463,9 @@ func TestBatchHoldsDatagramMemoryUntilWritten(t *testing.T) {
 	used := netproxy.DatagramMemory.Status().Used
 	s := new(Scheduler)
 	f := new(Flow)
-	s.Force(f, epoch, make([]byte, 1000, 2048))
-	s.Offer(f, epoch, make([]byte, 1000, 1024))
-	s.Take(epoch, 1000, nil)
+	admit(s, f, epoch, make([]byte, 2000), true)
+	admit(s, f, epoch, make([]byte, 1000), false)
+	s.Take(epoch, 2000, nil)
 	s.Clear()
 	if n := netproxy.DatagramMemory.Status().Used - used; n != 2048 {
 		t.Fatalf("in-flight datagram owns %d bytes, want 2048", n)

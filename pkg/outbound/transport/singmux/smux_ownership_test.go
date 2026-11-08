@@ -120,12 +120,12 @@ func TestSmuxBatchUsesAvailablePoolCapacity(t *testing.T) {
 	}
 	batch := s.fq.Take(time.Now(), 128<<10, nil)
 	defer s.fq.ReleaseBatch()
-	wire := 0
+	wire, charged := 0, 0
 	for _, frame := range batch {
-		wire += len(frame)
+		wire, charged = wire+len(frame), charged+cap(frame)
 	}
-	if wire != fq.StreamLimit || st.flow.Buffered() != fq.StreamLimit || n < 30<<10 {
-		t.Fatalf("wire=%d charged=%d next payload=%d", wire, st.flow.Buffered(), n)
+	if wire != fq.StreamLimit || charged != fq.StreamLimit || n < 30<<10 {
+		t.Fatalf("wire=%d charged=%d next payload=%d", wire, charged, n)
 	}
 	if err := s.write(batch); err != nil {
 		t.Fatal(err)

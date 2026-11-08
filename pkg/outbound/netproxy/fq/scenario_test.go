@@ -29,7 +29,7 @@ func TestDatagramQueueScenarios(t *testing.T) {
 			var offered, sent uint32
 			var waits []time.Duration
 			offer := func(at time.Time, size int) {
-				if !c.s.Offer(flow, at, frame('d', offered, size)) {
+				if !admit(c.s, flow, at, frame('d', offered, size), false) {
 					t.Fatal("unexpected memory rejection")
 				}
 				offered++
