@@ -11,7 +11,7 @@ import { cardTitle, codeBlock, framed, groupLabel } from "./ui.ts";
 export const frame = "mx-auto w-full max-w-[1384px]";
 const gutter = "px-4 md:px-7";
 // Native controllers set each result's text and data-tone.
-const result = `verification-result ${KUMO_BADGE_BASE_STYLES} bg-kumo-fill text-kumo-subtle data-[tone=pending]:bg-kumo-info-tint data-[tone=pending]:text-kumo-info data-[tone=success]:bg-kumo-success-tint data-[tone=success]:text-kumo-success data-[tone=warning]:bg-kumo-warning-tint data-[tone=warning]:text-kumo-warning data-[tone=error]:bg-kumo-danger-tint data-[tone=error]:text-kumo-danger`;
+const result = `verification-result ${KUMO_BADGE_BASE_STYLES} bg-kumo-fill text-kumo-subtle data-[tone=pending]:bg-kumo-info-tint data-[tone=pending]:text-kumo-info data-[tone=success]:bg-kumo-success-tint data-[tone=success]:text-kumo-success data-[tone=warning]:bg-kumo-warning-tint data-[tone=warning]:text-kumo-default data-[tone=error]:bg-kumo-danger-tint data-[tone=error]:text-kumo-danger`;
 
 export function mountShell(container: HTMLElement) {
   createView(container)(<Shell />);

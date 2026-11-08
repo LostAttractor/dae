@@ -46,7 +46,7 @@ const policyStates = {
 function PolicyBadge({ step }: { step: ExplainStep }) {
   if (!step.policy) return null;
   const state = policyStates[step.policy_match || "unknown"];
-  return <span className="trace-policy" title={state.description}><Badge variant={state.variant}>{`Policy: ${step.policy} · ${state.label}`}</Badge></span>;
+  return <span className="trace-policy min-w-0 max-w-full" title={state.description}><Badge className={`max-w-full whitespace-normal ${state.variant === "warning" ? "text-kumo-default" : ""}`} variant={state.variant}>{`Policy: ${step.policy} · ${state.label}`}</Badge></span>;
 }
 
 function PolicyIndicator({ step }: { step: ExplainStep }) {
@@ -59,11 +59,17 @@ function PolicyIndicator({ step }: { step: ExplainStep }) {
 
 // Collapsed rules keep a one-line expression; expanding wraps it in place.
 export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
-  return <div className="trace-steps divide-y divide-kumo-hairline">{steps.map((step, index) => <Collapsible.Root className="trace-step" key={`${step.id || step.expression}:${index}`}>
+  return <div className="trace-steps divide-y divide-kumo-hairline">{steps.map((step, index) => <TraceStep key={`${step.id || step.expression}:${index}`} step={step} />)}</div>;
+}
+
+function TraceStep({ step }: { step: ExplainStep }) {
+  const [open, setOpen] = useState(false);
+  const warning = ["conditional", "unknown"].includes(step.status);
+  return <Collapsible.Root className="trace-step" open={open} onOpenChange={setOpen}>
     <Collapsible.Trigger className="disclosure-trigger group grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2 py-2.5 text-left text-kumo-default">
       <span className="trace-step-label grid items-baseline gap-2 sm:grid-cols-[auto_minmax(0,1fr)]">
         <span className="trace-step-badges flex flex-wrap items-center gap-1.5 justify-self-start">
-          <Badge variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "secondary"}>{statusText(step)}</Badge>
+          <Badge className={warning ? "text-kumo-default" : undefined} variant={step.status === "error" ? "error" : warning ? "warning" : "secondary"}>{statusText(step)}</Badge>
           <PolicyIndicator step={step} />
         </span>
         <span className="trace-expression -my-0.5 min-w-0 truncate py-0.5 font-mono text-sm group-data-[panel-open]:overflow-visible group-data-[panel-open]:whitespace-pre-wrap group-data-[panel-open]:[text-overflow:clip]">{step.expression}</span>
@@ -71,29 +77,32 @@ export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
       <CaretDownIcon className="text-kumo-subtle group-data-[panel-open]:rotate-180" size={12} weight="bold" aria-hidden />
     </Collapsible.Trigger>
     <Collapsible.Panel keepMounted className={`trace-step-content mb-3.5 grid gap-2 pt-1.5 ${nested}`}>
-      {(step.section === "rules" || step.policy) && <div className="trace-step-meta flex flex-wrap items-center gap-1.5">
-        {step.section === "rules" && <Badge variant="secondary">Rules</Badge>}
-        <PolicyBadge step={step} />
-      </div>}
-      <p>{reasonText(step.reason)}</p>
-      {step.policy && <p className={note}>{policyStates[step.policy_match || "unknown"].description}</p>}
-      <p className={note}>Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
-      <p className={code}>{step.expression}</p>
-      {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0}</p>}
-      {!!step.targets?.length && <p>Targets: {step.targets.join(", ")}</p>}
-      {(step.sources || []).map((source, index) => <p key={index} className={code}>{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
-      {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition mt-1 grid gap-1.5 border-t border-kumo-hairline pt-3">
-        <strong className="font-semibold">{condition.expression}{condition.reason !== "membership_change" && `: ${words(condition.match)}`}</strong>
-        <p className={note}>{condition.reason === "membership_change" ? reasonText(condition.reason) : `${words(condition.status)} · ${reasonText(condition.reason)}`}</p>
-        <p className={code}>{condition.reason === "membership_change"
-          ? `Before: ${condition.actual || "—"}\nAfter: ${condition.expected || "—"}`
-          : `Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
-      </div>)}
+      {open && <>
+        {(step.section === "rules" || step.policy) && <div className="trace-step-meta flex flex-wrap items-center gap-1.5">
+          {step.section === "rules" && <Badge variant="secondary">Rules</Badge>}
+          <PolicyBadge step={step} />
+        </div>}
+        <p>{reasonText(step.reason)}</p>
+        {step.policy && <p className={note}>{policyStates[step.policy_match || "unknown"].description}</p>}
+        <p className={note}>Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
+        <p className={code}>{step.expression}</p>
+        {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0}</p>}
+        {!!step.targets?.length && <p>Targets: {step.targets.join(", ")}</p>}
+        {(step.sources || []).map((source, index) => <p key={index} className={code}>{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
+        {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition mt-1 grid gap-1.5 border-t border-kumo-hairline pt-3">
+          <strong className="font-semibold">{condition.expression}{condition.reason !== "membership_change" && `: ${words(condition.match)}`}</strong>
+          <p className={note}>{condition.reason === "membership_change" ? reasonText(condition.reason) : `${words(condition.status)} · ${reasonText(condition.reason)}`}</p>
+          <p className={code}>{condition.reason === "membership_change"
+            ? `Before: ${condition.actual || "—"}\nAfter: ${condition.expected || "—"}`
+            : `Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
+        </div>)}
+      </>}
     </Collapsible.Panel>
-  </Collapsible.Root>)}</div>;
+  </Collapsible.Root>;
 }
 
 function RuleTrace({ steps }: { steps: ExplainStep[] }) {
+  const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const filters: Record<string, [string, (step: ExplainStep) => boolean]> = {
     all: ["All rules", () => true],
@@ -102,13 +111,15 @@ function RuleTrace({ steps }: { steps: ExplainStep[] }) {
     uncertain: ["Uncertain", step => ["conditional", "unknown"].includes(step.status)],
     inactive: ["Inactive / not reached", step => ["inactive", "not_reached"].includes(step.status)],
   };
-  const filtered = steps.filter(filters[filter][1]);
-  return <Disclosure className={`${section} trace-rule-list`} title="Rule trace" meta={`${steps.length} rule${steps.length === 1 ? "" : "s"}`}>
-    <div className="trace-filter max-w-sm">
-      <Select label="Show" className="w-full" value={filter} onValueChange={value => setFilter(String(value))}
-        items={Object.fromEntries(Object.entries(filters).map(([key, [label, match]]) => [key, `${label} (${steps.filter(match).length})`]))} />
-    </div>
-    <div><TraceSteps steps={filtered} />{!filtered.length && <p className={note}>No rules in this category.</p>}</div>
+  const filtered = open ? steps.filter(filters[filter][1]) : [];
+  return <Disclosure className={`${section} trace-rule-list`} title="Rule trace" meta={`${steps.length} rule${steps.length === 1 ? "" : "s"}`} isOpen={open} onOpenChange={setOpen}>
+    {open && <>
+      <div className="trace-filter max-w-sm">
+        <Select label="Show" className="w-full" value={filter} onValueChange={value => setFilter(String(value))}
+          items={Object.fromEntries(Object.entries(filters).map(([key, [label, match]]) => [key, `${label} (${steps.filter(match).length})`]))} />
+      </div>
+      <div><TraceSteps steps={filtered} />{!filtered.length && <p className={note}>No rules in this category.</p>}</div>
+    </>}
   </Disclosure>;
 }
 
@@ -213,7 +224,7 @@ function TraceResult({ title, result, kind, context, onEdit, onUseIP }: TraceAct
       <p className={note}>{group.policy || "builtin"} · {group.network}{group.random ? " · random selection at connection time" : ""}</p>
       <ul className={rows}>{group.nodes.map((node, index) => <li key={index} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <strong className="font-medium">{node.name}</strong>{node.selected && <Badge variant="info">Selected</Badge>}
-        <span className="text-kumo-subtle">{words(node.reason)}{node.selection ? ` · priority ${node.selection.priority} · score ${node.selection.score}` : ""}</span>
+        <span className="text-kumo-subtle">{words(node.reason)}{node.selection ? ` · priority ${node.selection.priority} · adjusted score ${node.selection.score / 1e6} ms` : ""}</span>
       </li>)}</ul>
     </Disclosure>)}
     {result.domains?.length > 0 && <Disclosure className={section} title="Cached domain records" meta={`${result.domains.length} records`}>

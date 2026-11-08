@@ -79,6 +79,23 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 	}
 }
 
+func TestStatusUsesServerUptime(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 120)
+	snapshot := &api.StatusSnapshot{StartedAt: time.Now().Add(time.Hour), Uptime: 2*time.Hour + 3*time.Minute}
+	for _, recent := range []bool{false, true} {
+		var out strings.Builder
+		if recent {
+			PrintRecent(&out, snapshot)
+		} else {
+			Print(&out, snapshot, false)
+		}
+		if !strings.Contains(out.String(), "up "+formatUptime(snapshot.Uptime)) {
+			t.Fatalf("recent=%v: status ignored server uptime with a skewed client clock:\n%s", recent, out.String())
+		}
+	}
+}
+
 func TestTableUsageRow(t *testing.T) {
 	withoutStatusColors(t)
 	for _, test := range []struct {

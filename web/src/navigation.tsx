@@ -1,5 +1,4 @@
 import type { Page, Route, SettingSection } from "./types.ts";
-import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { byId } from "./dom.ts";
 import { createView } from "./react-view.ts";
 
@@ -22,11 +21,13 @@ export function createNavigation(onChange: (page: Page, section?: SettingSection
     if (page === "setting") settingRoute = route;
     byId("app").querySelector<HTMLElement>(".shell")!.dataset.view = page;
     for (const panel of document.querySelectorAll<HTMLElement>("[data-page]")) panel.hidden = panel.dataset.page !== page;
-    // Page links render as segmented tabs; the container's click handler navigates.
-    render(<Tabs className="page-nav" variant="segmented" value={page} tabs={[
-      { value: "overview", label: "Overview", nativeButton: false, render: <a href="#overview" /> },
-      { value: "setting", label: "Setting", nativeButton: false, render: <a href={`#${settingRoute}`} /> },
-    ]} />);
+    // Ordinary navigation links use Kumo's segmented surface, not tab-panel semantics.
+    render(<ul className="page-nav flex h-9 rounded-lg bg-kumo-recessed p-0.5 font-medium ring ring-kumo-hairline/70">
+      {([["overview", "Overview", "overview"], ["setting", "Setting", settingRoute]] as const).map(([key, label, target]) => <li key={key} className="flex">
+        <a href={`#${target}`} aria-current={page === key ? "page" : undefined}
+          className={`flex items-center rounded-md px-2.5 text-base text-kumo-default no-underline outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-brand ${page === key ? "bg-kumo-base shadow-sm ring ring-kumo-line" : "hover:bg-kumo-tint"}`}>{label}</a>
+      </li>)}
+    </ul>);
     document.title = `Network Panel · ${title}`;
     onChange(page, section);
     if (changed && focus) {

@@ -506,7 +506,7 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 	fmt.Fprintf(out,
 		"Daemon:      %s up %s (since %s)",
 		snapshot.Version,
-		formatUptime(time.Since(snapshot.StartedAt)),
+		formatUptime(snapshot.Uptime),
 		snapshot.StartedAt.Local().Format("2006-01-02 15:04:05"),
 	)
 	if !snapshot.LastReloadAt.IsZero() {

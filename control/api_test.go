@@ -440,6 +440,17 @@ func TestManagedMITMRequiresMITMAuthority(t *testing.T) {
 					plane.mitmHost = controlTestHost(t, &controlTestPlugin{}, authority)
 				}
 				handler := plane.apiHandler("test", testClientIngress, nil, &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()})
+				deviceResponse := apiTestRequest(handler, "GET", "/api/devices/02:00:00:00:00:0a", "", "test-secret")
+				if deviceResponse.Code != http.StatusOK {
+					t.Fatalf("managed device: %d %s", deviceResponse.Code, deviceResponse.Body.String())
+				}
+				var device api.ManagedDevice
+				if err := json.Unmarshal(deviceResponse.Body.Bytes(), &device); err != nil {
+					t.Fatal(err)
+				}
+				if device.MITMAvailable != (mode == "MITM enabled") || !strings.Contains(deviceResponse.Body.String(), `"mitm_available":`) {
+					t.Fatalf("managed MITM availability differs from write capability: %s", deviceResponse.Body.String())
+				}
 				withFingerprint := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					r.Header.Set("X-Dae-MITM", authority.Fingerprint())
 					handler.ServeHTTP(w, r)
@@ -448,6 +459,9 @@ func TestManagedMITMRequiresMITMAuthority(t *testing.T) {
 				if mode == "MITM enabled" {
 					if response.Code != http.StatusOK {
 						t.Fatalf("MITM write: %d %s", response.Code, response.Body.String())
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &device); err != nil || !device.MITMAvailable {
+						t.Fatalf("MITM write omitted availability: %s (%v)", response.Body.String(), err)
 					}
 					enabled, exists := store.MITM(mac)
 					if exists != (change.want != nil) || change.want != nil && enabled != *change.want {

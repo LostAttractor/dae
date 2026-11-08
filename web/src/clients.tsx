@@ -10,7 +10,8 @@ import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { CaretDownIcon } from "@phosphor-icons/react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createRef, useEffect, useImperativeHandle, useLayoutEffect, useState, type Ref } from "react";
+import { errorMessage } from "./api.ts";
 import { createView } from "./react-view.ts";
 import { StatusBanner } from "./notice.tsx";
 import { type MITMChoice, MITMChoiceRow, mitmChoice } from "./mitm.tsx";
@@ -74,8 +75,8 @@ function ClientSetRow({ set, contextKey, actions, allowed }: { set: ClientSetSta
   </div>;
 }
 
-function ClientSets({ device, actions, allowed }: { device: DeviceState; actions: ClientActions; allowed: boolean }) {
-  const contextKey = JSON.stringify([device.mac, device.source_ip, device.sets]);
+function ClientSets({ device, generation, actions, allowed }: { device: DeviceState; generation: number; actions: ClientActions; allowed: boolean }) {
+  const contextKey = JSON.stringify([generation, device.mac, device.source_ip, device.sets]);
   if (!device.sets.length) return <Empty size="sm" title="No routing options" />;
   return <div className="client-options grid grid-cols-[minmax(0,1fr)_max-content_max-content_2.25rem] gap-x-3">{device.sets.map(set =>
     <ClientSetRow key={set.name} set={set} contextKey={contextKey} actions={actions} allowed={allowed} />
@@ -84,10 +85,11 @@ function ClientSets({ device, actions, allowed }: { device: DeviceState; actions
 
 export function createClientSets(container: HTMLElement, actions: ClientActions) {
   const render = createView(container);
-  let allowed = false, device: DeviceState | null = null;
-  const update = () => { if (device) render(<ClientSets key={`${device.mac}/${device.source_ip}/${allowed}`} device={device} actions={actions} allowed={allowed} />); };
+  let allowed = false, device: DeviceState | null = null, generation = 0;
+  const update = () => { if (device) render(<ClientSets key={`${device.mac}/${device.source_ip}/${allowed}`} device={device} generation={generation} actions={actions} allowed={allowed} />); };
   return {
     setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; update(); } },
+    setGeneration: (next: number) => { if (generation !== next) { generation = next; update(); } },
     show: (next: DeviceState) => { device = next; update(); },
     unavailable: (text: string, tone: "error" | "warning" = "error") => { device = null; render(<StatusBanner tone={tone} title={text} />); },
   };
@@ -96,46 +98,59 @@ export function createClientSets(container: HTMLElement, actions: ClientActions)
 // After a lookup, another device's settings use the same rows and controls as this
 // device's: a switch per routing rule and the HTTPS module choice. Its router default
 // depends on the source IP the device connects from, which this page cannot see.
-function ManagedClients({ allowed, request }: { allowed: boolean; request: APIRequest }) {
+interface ManagedActions { refresh: () => Promise<void> }
+
+function ManagedClients({ allowed, request, ref }: { allowed: boolean; request: APIRequest; ref: Ref<ManagedActions> }) {
   const lookup = useRequest<ManagedDevice>();
-  // The shown device stays in place while a change saves and reloads it.
+  // Keep the previous settings only while loading; failed reads must not leave stale controls usable.
   const [device, setDevice] = useState<ManagedDevice | null>(null);
-  const focus = useRef("");
   useLayoutEffect(() => {
     if (!allowed) { lookup.reset(); setDevice(null); }
   }, [allowed, lookup.reset]);
   useEffect(() => { if (lookup.value) setDevice(lookup.value); }, [lookup.value]);
-  useEffect(() => {
-    if (focus.current && !lookup.pending) document.getElementById(focus.current)?.focus({ preventScroll: true });
-  }, [device, lookup.pending]);
+  useImperativeHandle(ref, () => ({ async refresh() {
+    if (!allowed) return;
+    if (lookup.pending) throw new Error("A device action is still in progress. Refresh again after it finishes.");
+    if (!device) return;
+    const error = await load(device.mac);
+    if (error) throw new Error(error);
+  } }));
 
-  async function load(mac: string, change?: (base: string) => Promise<unknown>) {
-    const operation = lookup.start();
+  async function load(mac: string, change?: (base: string) => Promise<ManagedDevice | null>, focusTarget = document.activeElement) {
+    const operation = lookup.start(focusTarget);
+    let saved = false;
     try {
       const base = `/api/devices/${encodeURIComponent(mac)}`;
-      if (change) await change(base);
-      if (operation.current()) operation.resolve(await request<ManagedDevice>(base));
-    } catch (error) { operation.reject(error); }
+      const result = change ? await change(base) : null;
+      saved = Boolean(change);
+      if (operation.current()) operation.resolve(result ?? await request<ManagedDevice>(base));
+    } catch (error) {
+      if (!operation.current()) return;
+      setDevice(null);
+      const message = saved ? `Changes were saved, but the updated settings could not be loaded. Show settings again. ${errorMessage(error)}` : errorMessage(error);
+      operation.reject(message);
+      return message;
+    }
   }
   function show(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!allowed || lookup.pending) return;
-    focus.current = "";
     setDevice(null);
     load(formValue(new FormData(event.currentTarget), "mac").trim());
   }
   function toggle(set: ClientSetState, id: string) {
     if (!device || lookup.pending) return;
-    focus.current = id;
-    load(device.mac, () => request(`/api/clients/${encodeURIComponent(set.name)}/members/${encodeURIComponent(device.mac)}`, set.joined ? "DELETE" : "PUT"));
+    load(device.mac, async () => {
+      await request(`/api/clients/${encodeURIComponent(set.name)}/members/${encodeURIComponent(device.mac)}`, set.joined ? "DELETE" : "PUT");
+      return null;
+    }, document.getElementById(id));
   }
   function choose(next: MITMChoice) {
-    if (!device || lookup.pending || next === mitmChoice(device.mitm_override)) return;
-    focus.current = "managed-mitm-choice";
+    if (!device?.mitm_available || lookup.pending || next === mitmChoice(device.mitm_override)) return;
     load(device.mac, async (base) => {
       const certificate = await request<CertificateMetadata>("/api/certificate");
-      await request(`${base}/mitm`, next === "default" ? "DELETE" : "PUT", next === "default" ? undefined : { enabled: next === "on" }, { "X-Dae-MITM": certificate.fingerprint });
-    });
+      return request<ManagedDevice>(`${base}/mitm`, next === "default" ? "DELETE" : "PUT", next === "default" ? undefined : { enabled: next === "on" }, { "X-Dae-MITM": certificate.fingerprint });
+    }, document.getElementById("managed-mitm-choice"));
   }
 
   return <LayerCard id="managed-clients" render={<section aria-labelledby="managed-clients-title" />} className="setting-section" hidden={!allowed}>
@@ -154,7 +169,7 @@ function ManagedClients({ allowed, request }: { allowed: boolean; request: APIRe
       </form>
       <div id="managed-client-result" className="empty:hidden" aria-live="polite" aria-busy={lookup.pending}>
         {lookup.pending && !device && <p className="mt-5">Loading device settings…</p>}
-        {lookup.error && <StatusBanner tone="error" title="Device action failed" description={lookup.error} />}
+        {lookup.error && <StatusBanner tone="error" title="Device settings unavailable" description={lookup.error} />}
         {device && <fieldset className="managed-device-settings min-w-0" disabled={lookup.pending}>
           <legend className="sr-only">Settings for {device.mac}</legend>
           <section className="mt-5 border-t border-kumo-hairline pt-5" aria-labelledby="managed-routing-title">
@@ -170,13 +185,13 @@ function ManagedClients({ allowed, request }: { allowed: boolean; request: APIRe
             })}</div> : <Empty size="sm" title="No routing options" />}
           </section>
           {/* The routing rows' 44px touch targets already leave space below the last row. */}
-          <section className="mt-2 border-t border-kumo-hairline pt-5" aria-labelledby="managed-https-title">
+          {device.mitm_available ? <section className="mt-2 border-t border-kumo-hairline pt-5" aria-labelledby="managed-https-title">
             <h3 id="managed-https-title" className={groupLabel}>HTTPS Modules</h3>
             <StatusBanner tone="warning" title="Install and trust the CA certificate on that device first"
               description="Otherwise its HTTPS connections fail while HTTPS modules are on." />
             <div className="mt-3"><MITMChoiceRow id="managed-mitm-choice" value={mitmChoice(device.mitm_override)} defaultLabel="Router default" onChange={choose} /></div>
             <p className="mt-2 text-sm text-kumo-subtle">Its router default depends on the source IP the device connects from.</p>
-          </section>
+          </section> : <p className={`mt-3 ${note}`}>HTTPS modules are not enabled on this router.</p>}
         </fieldset>}
       </div>
     </LayerCard.Primary>
@@ -186,9 +201,11 @@ function ManagedClients({ allowed, request }: { allowed: boolean; request: APIRe
 export function createManagedClients(container: HTMLElement, request: APIRequest) {
   const render = createView(container);
   let allowed = false;
-  const update = () => render(<ManagedClients allowed={allowed} request={request} />);
+  const actions = createRef<ManagedActions>();
+  const update = () => render(<ManagedClients allowed={allowed} request={request} ref={actions} />);
   update();
   return {
     setAccess: (next: boolean) => { if (next !== allowed) { allowed = next; update(); } },
+    refresh: () => actions.current?.refresh(),
   };
 }

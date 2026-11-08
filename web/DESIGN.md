@@ -101,12 +101,13 @@ Spacing follows Tailwind's 4px scale.
 ## Controls
 
 - Kumo components: `Button` and `LinkButton` for actions, `Input`, `InputArea`
-  and `InputGroup` for text, `Select` for choices, `Switch` for memberships, `Tabs`
-  for views (segmented for pages, underline for scopes and the narrow Setting
-  navigation), `Popover` for menus, `Badge` for short states, `Banner` for
+  and `InputGroup` for text, `Select` for choices, `Switch` for memberships, underline
+  `Tabs` for scopes and the narrow Setting navigation, `Popover` for menus, `Badge`
+  for short states, `Banner` for
   unavailable sections and errors, `Empty` for unconfigured sections, `Collapsible`
-  for disclosures and `Toast` for action feedback. The wide Setting navigation
-  copies the item styles of Kumo's sidebar menu, because the `Sidebar` module
+  for disclosures and `Toast` for action feedback. Primary page links use Kumo's
+  segmented styling with native link semantics and `aria-current="page"`.
+  The wide Setting navigation copies the item styles of Kumo's sidebar menu, because the `Sidebar` module
   costs about 40 KB; weigh a component's bundle size against what the page uses.
 - The node picker is a `Popover` with search, but its trigger matches `Select`:
   control surface and an up-down caret.

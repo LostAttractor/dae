@@ -35,6 +35,7 @@ Omitted packet fields remain unknown. If they can affect the result, `complete` 
 - `sources` retains expressions and file positions. Merged rules list multiple origins; repeated shared fragments have distinct step IDs. Expanded conditions appear in predicate details.
 - Destination domain, TLS SNI, HTTP URL/Host and kernel domain-IP evidence remain separate. Supplying SNI cannot create a kernel domain match. Missing mappings follow ordinary routing semantics without broader capture.
 - Hostname-only targets list retained candidates and require a destination IP; they are never resolved actively. Evidence reflects current retained records and kernel residency, including records awaiting collection.
+- Cached record queries (`kind: domain`) filter by the supplied destination domain and IP together; supplying both returns only matching pairs, not other names sharing the IP or other IPs for the name. They never send DNS queries.
 - Host/DNAT analysis lists rewritten targets. Random destinations and nodes remain candidates without consuming randomness. Node explanations include availability, policy, priority and score without waiting for recovery checks.
 - The DNS router explains request rules, upstreams and response predicates. Supply `dns.answer_ips`, `dns.upstream` or `dns.rcode` for response context. Without a DNS server IP, this is DNS policy analysis; with IP/port and complete identity, kernel capture and exact cache keys can also be analyzed. Cache peeks do not update LRU, counters or TTL.
 - HTTP explanations cover declarative scope, request headers, URL rewrites, Map Local, Host and script matching. Scripts and body-dependent changes are unknown execution boundaries; plugins without explanation support are explicitly identified. Dependent downstream decisions remain unresolved.
@@ -55,7 +56,7 @@ dae client mitm disable --mac 02:00:00:00:00:10
 dae client mitm reset --mac 02:00:00:00:00:10
 ```
 
-`list/show/device --self` reads the current device. Membership, impact and MITM operations accept either `--self` or `--mac`. Only configured groups can be changed. Reset removes the MITM override; the effective default may depend on source IP. MITM commands submit the current CA fingerprint.
+`list/show/device --self` reads the current device. Membership, impact and MITM operations accept either `--self` or `--mac`. Only configured groups can be changed. Reset removes the MITM override; the effective default may depend on source IP. `ManagedDevice.mitm_available` reports whether HTTPS modules provide MITM control, independently of the saved override or public API certificate availability. MITM commands submit the current CA fingerprint.
 
 `impact` lists direct, negated and conditional membership references without saving anything. An optional target adds a same-snapshot before/after trace. Other predicates and earlier rules can still take precedence. Results include connection retention/closure behavior and ipset/nftset export names; external firewall rules are not evaluated.
 

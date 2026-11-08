@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
@@ -211,6 +212,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 		Tables:                    c.tableStatuses(),
 		Groups:                    c.groupStatuses(paths),
 	}
+	snapshot.Uptime = time.Since(snapshot.StartedAt)
 	snapshot.PluginStatus = c.MITMStatus()
 	return snapshot
 }

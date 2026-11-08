@@ -210,9 +210,10 @@ type ClientGroups struct {
 // ManagedDevice reports stored MAC settings. Effective MITM defaults require
 // an IP and are evaluated by the diagnostics endpoint instead.
 type ManagedDevice struct {
-	MAC          string           `json:"mac"`
-	Sets         []ClientSetState `json:"sets"`
-	MITMOverride *bool            `json:"mitm_override"`
+	MAC           string           `json:"mac"`
+	Sets          []ClientSetState `json:"sets"`
+	MITMAvailable bool             `json:"mitm_available"`
+	MITMOverride  *bool            `json:"mitm_override"`
 }
 
 type ClientImpactRequest struct {

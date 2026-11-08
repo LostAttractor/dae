@@ -33,7 +33,7 @@ func (c *ControlPlane) ClientGroups() api.ClientGroups {
 }
 
 func (c *ControlPlane) managedDevice(mac [6]byte) api.ManagedDevice {
-	result := api.ManagedDevice{MAC: net.HardwareAddr(mac[:]).String(), Sets: []api.ClientSetState{}}
+	result := api.ManagedDevice{MAC: net.HardwareAddr(mac[:]).String(), Sets: []api.ClientSetState{}, MITMAvailable: c.mitmAuthority() != nil}
 	for _, name := range c.clientSets() {
 		result.Sets = append(result.Sets, api.ClientSetState{Name: name, Description: c.clients[name].Description, Joined: slices.Contains(c.settings.Members(name), mac)})
 	}

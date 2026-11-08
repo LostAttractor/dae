@@ -79,7 +79,7 @@ function GroupEntry({ group }: { group: GroupStatus }) {
 }
 
 function StatusDetails({ snapshot, global, prefix }: { prefix: string } & ({ snapshot: GlobalStatus; global: true } | { snapshot: DeviceStatus; global: false })) {
-  const uptime = Math.max(0, Math.floor((Date.now() - Date.parse(snapshot.started_at)) / 60000));
+  const uptime = global ? Math.max(0, Math.floor(snapshot.uptime / 60e9)) : 0;
   return <div className="status-sections mt-4 border-b border-kumo-hairline">
     <StatusSection className="connection-details" title="Connection statistics">
       <ConnectionMetrics stats={snapshot.stats} total />
@@ -144,10 +144,9 @@ function ScopeStatus({ state, scope, visible, labelledBy }: { state: ScopeState<
   </div>;
 }
 
-function Status({ device, global, visible }: { device: ScopeState<DeviceStatus>; global: ScopeState<GlobalStatus>; visible: boolean }) {
+function Status({ device, global, hasGlobal, visible }: { device: ScopeState<DeviceStatus>; global: ScopeState<GlobalStatus>; hasGlobal: boolean; visible: boolean }) {
   const wide = useWide("(min-width: 1024px)");
   const [scope, setScope] = useState("device");
-  const hasGlobal = Boolean(global.snapshot);
   useLayoutEffect(() => { if (!hasGlobal) setScope("device"); }, [hasGlobal]);
   return <LayerCard render={<section aria-labelledby="traffic-title" />} className="status-card min-w-0">
     <LayerCard.Secondary><h2 id="traffic-title" className={cardTitle}>Status</h2></LayerCard.Secondary>
@@ -175,8 +174,8 @@ export function createStatus(overviewContainer: HTMLElement) {
   const renderOverview = createView(overviewContainer);
   let device: ScopeState<DeviceStatus> = { snapshot: null, message: "Loading traffic…" };
   let global: ScopeState<GlobalStatus> = { snapshot: null, message: "Login required to view all devices." };
-  let page: Page | undefined;
-  const updateOverview = () => renderOverview(<Status device={device} global={global} visible={page === "overview"} />);
+  let page: Page | undefined, hasGlobal = false;
+  const updateOverview = () => renderOverview(<Status device={device} global={global} hasGlobal={hasGlobal} visible={page === "overview"} />);
   const snapshotState = <T,>(snapshot: T): ScopeState<T> => ({ snapshot, updatedAt: Date.now() });
   return {
     setView: (nextPage: Page) => {
@@ -185,12 +184,18 @@ export function createStatus(overviewContainer: HTMLElement) {
     },
     setDevice: (snapshot: DeviceStatus) => { device = snapshotState(snapshot); updateOverview(); },
     setGlobal: (snapshot: GlobalStatus) => { global = snapshotState(snapshot); updateOverview(); },
-    clearGlobal: (message: string) => { global = { snapshot: null, message }; updateOverview(); },
+    allowGlobal: () => {
+      if (hasGlobal) return;
+      hasGlobal = true;
+      global = { snapshot: null, message: "Loading traffic…" };
+      updateOverview();
+    },
+    clearGlobal: (message: string) => { hasGlobal = false; global = { snapshot: null, message }; updateOverview(); },
     deviceUnavailable: (message: string) => { device = { snapshot: null, message, tone: "warning" }; updateOverview(); },
     deviceError: (message: string, clear: boolean) => {
       device = clear ? { snapshot: null, message, tone: "error" } : { ...device, error: "Device update failed · Retrying" };
       updateOverview();
     },
-    globalError: () => { global = { ...global, error: "Global update failed · Retrying" }; updateOverview(); },
+    globalError: () => { global = { ...global, message: "Global traffic is unavailable.", error: "Global update failed · Retrying" }; updateOverview(); },
   };
 }

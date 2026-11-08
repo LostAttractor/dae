@@ -266,6 +266,55 @@ func TestDiagnosticsRetainsOptimizedRuleOrigins(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsDomainFiltersIntersect(t *testing.T) {
+	c := diagnosticPlane(t, "domain(full: target.example) -> block", "")
+	ip, otherIP := netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("198.51.100.11")
+	c.core.domainRegistry.ObserveDNS([]domainObservation{
+		{name: "target.example.", ips: []netip.Addr{ip, otherIP}, bitmap: testBitmap(0), ttl: 120},
+		{name: "shared.example.", ips: []netip.Addr{ip}, bitmap: testBitmap(0), ttl: 120},
+	}, time.Now())
+	for _, test := range []struct {
+		name, kind, domain, ip string
+		want                   []string
+	}{
+		{"intersection", "domain", "TaRgEt.Example.", ip.String(), []string{"target.example./198.51.100.10"}},
+		{"mapped IP", "domain", "target.example", "::ffff:198.51.100.10", []string{"target.example./198.51.100.10"}},
+		{"domain only", "domain", "target.example", "", []string{"target.example./198.51.100.10", "target.example./198.51.100.11"}},
+		{"IP only", "domain", "", ip.String(), []string{"shared.example./198.51.100.10", "target.example./198.51.100.10"}},
+		{"missing pair", "domain", "shared.example", otherIP.String(), nil},
+		{"flow preserves union", "flow", "target.example", ip.String(), []string{"shared.example./198.51.100.10", "target.example./198.51.100.10", "target.example./198.51.100.11"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := diagnosticRequest()
+			request.Kind, request.Flow.Destination.Domain, request.Flow.Destination.IP = test.kind, test.domain, test.ip
+			response, err := c.Explain(t.Context(), request, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, evidence := range response.Current.Domains {
+				got = append(got, evidence.Domain+"/"+evidence.IP)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("domain records = %v, want %v", got, test.want)
+			}
+			if len(test.want) == 0 && len(response.Current.Notes) == 0 {
+				t.Fatal("empty intersection omitted the no-evidence note")
+			}
+		})
+	}
+	request := diagnosticRequest()
+	request.Kind, request.Flow.Destination.Domain = "domain", "target.example"
+	request.Compare = &api.DiagnosticAssumptions{Bindings: []api.DiagnosticBinding{{IP: ip.String(), Domains: []string{"target.example", "assumed.example"}}}}
+	response, err := c.Explain(t.Context(), request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := response.Compared.Domains; len(records) != 1 || records[0].Domain != "target.example." || records[0].IP != ip.String() || records[0].Source != "assumption" {
+		t.Fatalf("comparison did not apply the same intersection: %+v", records)
+	}
+}
+
 func TestDiagnosticsDomainSnapshotDoesNotRefreshRetention(t *testing.T) {
 	c := diagnosticPlane(t, "domain(full: target.example) -> block", "")
 	g := c.core.domainRegistry

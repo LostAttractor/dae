@@ -27,7 +27,7 @@ const meta = "text-sm font-normal text-kumo-subtle";
 
 function Health({ node }: { node?: SelectorNode }) {
   const state = healthState(node);
-  return <><Badge className="node-health" variant={healthVariants[state]}>{healthLabels[state]}</Badge>
+  return <><Badge className={`node-health ${state === "confirming" ? "text-kumo-default" : ""}`} variant={healthVariants[state]}>{healthLabels[state]}</Badge>
     <span className={`node-latency tabular-nums empty:hidden ${meta}`}>{node?.checking ? "Testing…" : latencyLabel(node)}</span></>;
 }
 

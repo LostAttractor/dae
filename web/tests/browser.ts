@@ -140,7 +140,7 @@ function resetFixture() {
 
 // A managed device lists every routing group; the fixture has one.
 function managedDevice(mac: string) {
-  return fixture.managed?.mac === mac ? fixture.managed : { mac, sets: [{ name: "internal/work", description: "Managed group", joined: false }], mitm_override: null };
+  return fixture.managed?.mac === mac ? fixture.managed : { mac, sets: [{ name: "internal/work", description: "Managed group", joined: false }], mitm_available: Boolean(fixture.device.mitm), mitm_override: null };
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -217,7 +217,7 @@ const httpServer = createServer(async (req, res) => {
       }
       if (url.startsWith("/api/clients/") && url.includes("/members/")) {
         const [group, mac] = url.slice("/api/clients/".length).split("/members/").map(decodeURIComponent);
-        fixture.managed = { mac, sets: [{ name: group, description: "Managed group", joined: req.method === "PUT" }], mitm_override: fixture.managed?.mac === mac ? fixture.managed.mitm_override : null };
+        fixture.managed = { mac, sets: [{ name: group, description: "Managed group", joined: req.method === "PUT" }], mitm_available: Boolean(fixture.device.mitm), mitm_override: fixture.managed?.mac === mac ? fixture.managed.mitm_override : null };
         return json({ name: group, description: "Managed group", members: req.method === "PUT" ? [mac] : [] });
       }
       if (url.startsWith("/api/devices/") && url.endsWith("/mitm")) {
@@ -281,7 +281,7 @@ const httpServer = createServer(async (req, res) => {
       const override = fixture.nextGlobalRead;
       fixture.nextGlobalRead = null;
       const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
-      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins: fixture.plugins };
+      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", uptime: 600e9, stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins: fixture.plugins };
       override?.started.resolve();
       if (override?.release) await override.release.promise;
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
@@ -410,6 +410,22 @@ try {
     const middle = rect => (rect.top + rect.bottom) / 2, offset = middle(icon.getBoundingClientRect()) - middle(text.getBoundingClientRect());
     return Math.abs(offset) < 1 ? [] : [notice.className + " " + offset.toFixed(2)];
   })`);
+  const readableText = async (selector: string) => {
+    const samples = await js<[string, number][]>(`(() => {
+      const canvas = document.createElement('canvas'), context = canvas.getContext('2d');
+      const color = value => { context.clearRect(0, 0, 1, 1); context.fillStyle = value; context.fillRect(0, 0, 1, 1); return [...context.getImageData(0, 0, 1, 1).data]; };
+      const blend = (front, back) => front.slice(0, 3).map((channel, i) => channel * front[3] / 255 + back[i] * (1 - front[3] / 255));
+      const luminance = rgb => rgb.map(channel => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; }).reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+      return [...document.querySelectorAll(${JSON.stringify(selector)})].map(element => {
+        const parents = []; for (let node = element; node; node = node.parentElement) parents.unshift(node);
+        const background = parents.reduce((back, node) => blend(color(getComputedStyle(node).backgroundColor), back), [255, 255, 255]);
+        const back = luminance(background), front = luminance(blend(color(getComputedStyle(element).color), background));
+        return [element.textContent, (Math.max(front, back) + 0.05) / (Math.min(front, back) + 0.05)];
+      });
+    })()`);
+    assert.ok(samples.length, `contrast samples exist: ${selector}`);
+    for (const [label, ratio] of samples) assert.ok(ratio >= 4.5, `${label}: ${ratio.toFixed(3)}:1 text contrast`);
+  };
   // Review screenshot of one element, scrolled into view so it is painted.
   const elementShot = async (selector: string, name: string) => {
     if (!process.env.SCREENSHOT_DIR) return;
@@ -448,6 +464,198 @@ try {
   await call("Runtime.enable");
   await call("Network.enable");
   await call("Log.enable");
+
+  await test("review regression: initial access failures retry without a manual refresh", async () => {
+    fixture.nextRead = { status: 503, started: deferred() };
+    await page();
+    assert.match(await js('document.querySelector("#access-description").textContent'), /Checking/);
+    await until('document.querySelector("#access-title").textContent === "LAN Access"');
+    assert.ok(await js('document.querySelectorAll("#quick-selectors .selector-row").length > 0'));
+  });
+
+  await test("review regression: routing impact follows generation changes and rejects old replies", async () => {
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextImpact = held;
+    try {
+      await setDisclosure('.set-row[data-name="internal/work"] .set-details');
+      await held.started.promise;
+      fixture.generation = 8;
+      fixture.impactRules = [{ id: "new/1", stage: "client_impact", expression: "new generation rule", status: "referenced", match: "unknown", reason: "client_reference" }];
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await until('document.querySelector(".impact-content").textContent.includes("new generation rule")');
+      held.release.resolve();
+      await delay(100);
+      assert.match(await js('document.querySelector(".impact-content").textContent'), /new generation rule/);
+      fixture.generation = 9;
+      fixture.impactRules[0].expression = "latest generation rule";
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await until('document.querySelector(".impact-content").textContent.includes("latest generation rule")');
+      assert.equal(fixture.requests.filter(request => request.path.endsWith("/impact")).length, 3);
+    } finally { held.release.resolve(); }
+  });
+
+  await test("review regression: advanced diagnostic fields preserve the rest of the form", async () => {
+    await visit("explain");
+    await setDisclosure(".diagnostic-advanced");
+    await choose("#diagnostic-protocol", "UDP");
+    await js(`document.querySelector('#diagnostic-target').value = '203.0.113.10:443';
+      document.querySelector('#diagnostic-overrides').value = '{"flow":{"sni":"","destination":{"port":8443}},"context":{"dscp":0}}';
+      document.querySelector('#diagnostic-form').requestSubmit()`);
+    await until('document.querySelector(".trace-result") !== null');
+    assert.deepEqual(lastRequest().body.flow, { destination: { ip: "203.0.113.10", port: 8443 }, protocol: "udp", sni: "" });
+    assert.deepEqual(lastRequest().body.context, { dscp: 0 });
+    await js(`document.querySelector('#diagnostic-overrides').value = '{"flow":{"destination":null},"__proto__":{"polluted":true}}'; document.querySelector('#diagnostic-form').requestSubmit()`);
+    await until('!document.querySelector("#diagnostic-run").disabled');
+    assert.equal(lastRequest().body.flow?.destination, null, "explicit null replaces a nested value");
+    assert.equal(await js('({}).polluted'), undefined, "JSON keys cannot change object prototypes");
+    const requests = fixture.requests.length;
+    await js(`document.querySelector('#diagnostic-overrides').value = '[]'; document.querySelector('#diagnostic-form').requestSubmit()`);
+    await until('document.querySelector("#diagnostic-result").textContent.includes("Advanced request must be a JSON object")');
+    assert.equal(fixture.requests.length, requests, "invalid top-level JSON is rejected before sending");
+  });
+
+  await test("review regression: managed MITM saves use the authoritative mutation response", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca" };
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
+    await visit("devices");
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form").requestSubmit()');
+    await until('document.querySelector("#managed-mitm-choice") !== null');
+    const failedRead = { status: 503, started: deferred() };
+    fixture.nextManagedDevice = failedRead;
+    await choose("#managed-mitm-choice", "On");
+    await until('document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+    assert.equal(fixture.managed?.mitm_override, true);
+    assert.equal(fixture.nextManagedDevice, failedRead, "saving MITM does not depend on a second GET");
+    assert.equal(await js('document.querySelector("#managed-client-result .status-banner[data-tone=error]")'), null);
+    await choose("#managed-mitm-choice", "Off");
+    await until('document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+    assert.equal(fixture.managed?.mitm_override, false, "the updated selection can be reversed immediately");
+    fixture.nextManagedDevice = null;
+  });
+
+  await test("review regression: saved membership with a failed reload cannot expose stale controls", async () => {
+    await visit("devices");
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form").requestSubmit()');
+    await until('document.querySelector("#managed-set-0") !== null');
+    fixture.nextManagedDevice = { status: 503, started: deferred() };
+    await js('document.querySelector("#managed-set-0").click()');
+    await until('document.querySelector("#managed-client-result").textContent.includes("Changes were saved")');
+    assert.equal(fixture.managed?.sets[0].joined, true);
+    assert.equal(await js('document.querySelector(".managed-device-settings")'), null);
+    await js('document.querySelector("#managed-client-form").requestSubmit()');
+    await until('document.querySelector("#managed-set-0")?.getAttribute("aria-checked") === "true"');
+  });
+
+  await test("review regression: Refresh updates the displayed managed device and reports failed reads", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca" };
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
+    await visit("devices");
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form").requestSubmit()');
+    await until('document.querySelector("#managed-set-0") !== null');
+    fixture.managed = { ...managedDevice("02:00:00:00:00:99"), mitm_override: true };
+    fixture.managed.sets[0].joined = true;
+    await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#managed-set-0").getAttribute("aria-checked")'), "true");
+    assert.equal(await js('document.querySelector("#managed-mitm-choice").textContent'), "On");
+    assert.equal(await js('document.activeElement.id'), "refresh");
+    fixture.nextManagedDevice = { status: 503, started: deferred() };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.match(await js('document.querySelector("#updated").textContent'), /Refresh incomplete/);
+    assert.doesNotMatch(await js('document.querySelector("#message").textContent'), /Network state refreshed/);
+    assert.equal(await js('document.querySelector(".managed-device-settings")'), null);
+  });
+
+  await test("review regression: managed HTTPS controls follow capability rather than CA presence", async () => {
+    fixture.certificate = { name: "API-only CA", fingerprint: "test-ca" };
+    await visit("devices");
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form").requestSubmit()');
+    await until('document.querySelector("#managed-set-0") !== null');
+    assert.equal(await js('document.querySelector("#managed-mitm-choice")'), null);
+    assert.match(await js('document.querySelector("#managed-client-result").textContent'), /HTTPS modules are not enabled/);
+    fixture.l3 = true;
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#managed-mitm-choice").checkVisibility()'), true, "IP-only administrators can still manage MITM-capable devices");
+  });
+
+  await test("review regression: local async actions preserve keyboard focus without stealing it", async () => {
+    const enter = async () => {
+      await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+      await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    };
+    for (const status of [undefined, 503]) {
+      await visit("devices");
+      const managed = { started: deferred(), release: deferred(), status };
+      fixture.nextManagedDevice = managed;
+      try {
+        await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=show]").focus()');
+        await enter();
+        await managed.started.promise;
+        managed.release.resolve();
+        await until('document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+        assert.equal(await js('document.activeElement.matches("#managed-client-form button[value=show]")'), true);
+      } finally { managed.release.resolve(); }
+      await visit("explain");
+      await setDisclosure(".diagnostic-advanced");
+      for (const context of [false, true]) {
+        const held = { started: deferred(), release: deferred(), status };
+        if (context) fixture.nextContextRead = held; else fixture.nextExplanation = held;
+        const id = context ? "diagnostic-context" : "diagnostic-run";
+        try {
+          await js(`document.querySelector('#diagnostic-target').value = '198.51.100.10:443'; document.querySelector('#${id}').focus()`);
+          await enter();
+          await held.started.promise;
+          held.release.resolve();
+          await until(`!document.querySelector('#${id}').disabled`);
+          assert.equal(await js('document.activeElement.id'), id);
+        } finally { held.release.resolve(); }
+      }
+    }
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextExplanation = held;
+    try {
+      await js('document.querySelector("#diagnostic-run").focus()');
+      await enter();
+      await held.started.promise;
+      await js('document.querySelector("#diagnostic-target").focus()');
+      held.release.resolve();
+      await until('!document.querySelector("#diagnostic-run").disabled');
+      assert.equal(await js('document.activeElement.id'), "diagnostic-target", "completion must not steal focus after the user moves it");
+    } finally { held.release.resolve(); }
+  });
+
+  await test("review regression: initial global read failures remain visible to authorized users", async () => {
+    fixture.nextGlobalRead = { status: 503, started: deferred() };
+    await page();
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN Access");
+    assert.equal(await js('document.querySelector("#global-status").checkVisibility()'), true);
+    assert.match(await js('document.querySelector("#global-status").textContent'), /Global update failed/);
+    assert.doesNotMatch(await js('document.querySelector("#global-status").textContent'), /Login required/);
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 900, deviceScaleFactor: 1, mobile: true });
+    await until('document.querySelector("#global-tab") !== null');
+    assert.notEqual(await js('document.querySelector("#global-tab").getAttribute("aria-disabled")'), "true");
+    await js('document.querySelector("#global-tab").click()');
+    await until('document.querySelector("#global-status").checkVisibility()');
+    assert.match(await js('document.querySelector("#global-status").textContent'), /Global update failed/);
+    await until('!document.querySelector("#global-status").textContent.includes("Global update failed")');
+  });
+
+  await test("review regression: uptime uses router duration independently of the browser clock", async () => {
+    await setDisclosure("#global-status .connection-details");
+    await js('window.realNow = Date.now');
+    try {
+      for (const offset of [-3600000, 3600000]) {
+        await js(`Date.now = () => window.realNow() + ${offset}; document.querySelector('#refresh').click()`);
+        await ready();
+        assert.equal(await js('[...document.querySelectorAll("#global-status .status-facts > div")].find(row => row.querySelector("dt").textContent === "Uptime").querySelector("dd").textContent'), "0d 0h 10m");
+      }
+    } finally { await js('Date.now = window.realNow; delete window.realNow'); }
+  });
 
   await test("traffic chart loads only on demand and leaves controls usable while pending", async () => {
     await page("#setting/explain");
@@ -687,7 +895,7 @@ try {
     await visit("explain");
     assert.equal(await js('document.querySelector(".node-popover")'), null);
     assert.equal(await js('document.activeElement.id'), "setting-explain-tab");
-    assert.equal(await js('document.querySelector(".page-nav [aria-selected=true]").textContent'), "Setting");
+    assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Setting");
     assert.equal(await js('document.querySelector(".traffic-chart")'), null);
     await js('document.querySelector("#diagnostic-target").value = "example.com:443"');
     await visit("devices");
@@ -714,6 +922,53 @@ try {
     await page("#unknown");
     assert.equal(await js('location.hash'), "#overview");
     assert.equal(await js('document.querySelector("#sets").checkVisibility()'), true);
+  });
+
+  await test("navigation links preserve modified clicks and keyboard activation at both widths", async () => {
+    for (const width of [1280, 390]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 500 });
+      await page("#setting/devices");
+      assert.equal(await js('document.querySelector("#page-navigation [role=tab], #page-navigation [role=tablist]")'), null, "page navigation has link semantics, not orphaned tabs");
+      assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Setting");
+      assert.deepEqual(await js('[...document.querySelectorAll(".page-nav a")].map(link => link.tabIndex)'), [0, 0]);
+      for (const selector of ['#setting-selector-tab', '.page-nav a[href="#overview"]']) {
+        for (const modifiers of [2, 4]) {
+          const before = await js('({ hash: location.hash, history: history.length })');
+          // Observe application handling, then suppress browser tab creation only in the test.
+          await js('window.modifiedPrevented = null; document.addEventListener("click", event => { window.modifiedPrevented = event.defaultPrevented; event.preventDefault(); }, { once: true })');
+          const point = await js<{ x: number; y: number }>(`(() => { const link = document.querySelector(${JSON.stringify(selector)}); link.scrollIntoView({ block: 'center' }); const r = link.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+          await call("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, modifiers, ...point });
+          await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, modifiers, ...point });
+          assert.equal(await js('window.modifiedPrevented'), false, "Ctrl/Meta click retains the browser link action");
+          assert.deepEqual(await js('({ hash: location.hash, history: history.length })'), before, `modified click keeps the current route at ${width}px`);
+        }
+      }
+      await js('document.querySelector("#setting-selector-tab").click()');
+      await until('location.hash === "#setting/selector"');
+      if (width < 500) {
+        await js('document.querySelector("#setting-selector-tab").focus()');
+        await key("ArrowRight", 39);
+        await until('location.hash === "#setting/explain"');
+        await key("Home", 36);
+        await until('location.hash === "#setting/devices"');
+        await key("End", 35);
+        await until('location.hash === "#setting/explain"');
+        assert.equal(await js('document.activeElement.id'), "setting-explain-tab");
+        assert.equal(await js('document.querySelector("#setting-explain-tab").getAttribute("aria-controls")'), "setting-explain");
+      }
+      await js('document.querySelector(".page-nav a").focus()');
+      await key("Tab", 9);
+      assert.equal(await js('document.activeElement.textContent'), "Setting");
+      await js('document.querySelector(".page-nav a").focus()');
+      await key("Enter", 13);
+      await until('location.hash === "#overview"');
+      assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Overview");
+      assert.equal(await js('document.activeElement.id'), "page-title");
+      for (const theme of ["light", "dark"]) {
+        await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+        await readableText(".page-nav a");
+      }
+    }
   });
 
   await test("action notifications float, replace feedback and dismiss without moving content", async () => {
@@ -1035,7 +1290,7 @@ try {
     const feedback = async (tone: string, trust: string, mitm: string) => {
       assert.deepEqual(await js('["message", "certificate-trust-result", "certificate-mitm-result"].map(id => document.getElementById(id).dataset.tone)'), [tone, trust, mitm]);
       assert.equal(await js(`(() => {
-        const colors = { success: '--text-color-kumo-success', warning: '--text-color-kumo-warning', error: '--text-color-kumo-danger', neutral: '--text-color-kumo-subtle' };
+        const colors = { success: '--text-color-kumo-success', warning: '--text-color-kumo-default', error: '--text-color-kumo-danger', neutral: '--text-color-kumo-subtle' };
         return ['certificate-trust-result', 'certificate-mitm-result'].every(id => {
           const node = document.getElementById(id), probe = document.createElement('span');
           probe.style.color = 'var(' + colors[node.dataset.tone] + ')';
@@ -1065,6 +1320,7 @@ try {
       assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
       assert.match(await js('document.querySelector("#message").textContent'), /interception could not be verified/);
       await feedback("warning", "success", "warning");
+      await readableText("#certificate-mitm-result");
       if (process.env.SCREENSHOT_DIR) {
         await delay(250);
         const image = await call("Page.captureScreenshot");
@@ -1485,6 +1741,58 @@ try {
     } finally { held.release.resolve(); }
   });
 
+  await test("trace details mount on demand, wrap policies and label adjusted scores in milliseconds", async () => {
+    const policy = `ingress-${"long-policy-name-".repeat(12)}`;
+    fixture.selectors[0].nodes[0].health = "confirming";
+    await page();
+    for (const theme of ["light", "dark"]) {
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      await readableText("#quick-selectors .selector-row:first-child .node-health");
+    }
+    fixture.explanation = { schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z", context: [], current: {
+      decision: { complete: true, verdict: "analysis", mark: 0, must: false },
+      steps: Array.from({ length: 1000 }, (_, index) => ({ id: `rule/${index}`, stage: "kernel", section: "rules", expression: `domain(service-${index}.example.com) -> proxy`, policy, policy_match: index ? "unknown" : "match", status: "unknown", match: "unknown", reason: "missing_context",
+        sources: [{ file: "config.dae", line: index + 1, column: 1, expression: "domain(example.com)" }],
+        conditions: [{ expression: "domain(example.com)", match: "unknown", status: "unknown", reason: "missing_context", actual: "", expected: "example.com" }],
+      })),
+      domains: [], notes: [], outbounds: [{ name: "proxy", policy: "min_moving_avg", network: "tcp4", available: true, random: false,
+        nodes: [50_000_000, -12_500_000].map((score, index) => ({ name: `Node ${index}`, selected: index === 0, usable: true, reason: "selected", selection: { score, priority: 0, degraded: false, tracking: "monitoring", recovery_elapsed: 0, failure_recovery: 0 } })),
+      }],
+    } };
+    await visit("explain");
+    assert.equal(await js('document.querySelector(".diagnostic-advanced > button").getAttribute("aria-expanded")'), "false");
+    assert.deepEqual(await js('(() => { const form = new FormData(document.querySelector("#diagnostic-form")); return [form.get("sni"), form.get("overrides")]; })()'), ["", "{}"], "collapsed advanced fields still participate in FormData");
+    await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+    await until('document.querySelector(".trace-rule-list .count")?.textContent === "1000 rules"');
+    assert.equal(await js('document.querySelectorAll(".trace-step").length'), 0, "collapsed Rule trace mounts no rule rows");
+    assert.ok(await js<number>('document.querySelectorAll(".explanation *").length') < 300, "1000 collapsed rules do not create a rule wall in the DOM");
+    assert.match(await js('document.querySelector(".explanation").textContent'), /adjusted score 50 ms/);
+    assert.match(await js('document.querySelector(".explanation").textContent'), /adjusted score -12\.5 ms/);
+    await setDisclosure(".trace-rule-list");
+    assert.equal(await js('document.querySelectorAll(".trace-step").length'), 1000);
+    assert.equal(await js('document.querySelectorAll(".trace-step-content > *").length'), 0, "collapsed rule rows mount no detail content");
+    await setDisclosure(".trace-step:first-child");
+    await setDisclosure(".trace-step:nth-child(2)");
+    assert.equal(await js('document.querySelectorAll(".trace-condition").length'), 2, "only expanded rows mount conditions");
+    for (const width of [390, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 844, deviceScaleFactor: 1, mobile: width < 500 });
+      await until(`(() => { const badge = document.querySelector('.trace-step:first-child .trace-policy > *'), range = document.createRange(); range.selectNodeContents(badge); return [...range.getClientRects()].every(rect => { for (let node = badge; node; node = node.parentElement) { const style = getComputedStyle(node), bounds = node.getBoundingClientRect(); if (style.overflowX === 'hidden' && (rect.left < bounds.left - 1 || rect.right > bounds.right + 1)) return false; if (style.overflowY === 'hidden' && (rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)) return false; } return true; }); })()`);
+      assert.match(await js('document.querySelector(".trace-step:first-child .trace-policy").textContent'), / · Applies$/);
+      assert.equal(await js('document.querySelector(".trace-policy > *").scrollWidth <= document.querySelector(".trace-policy > *").clientWidth'), true, "the whole policy badge wraps within its available width");
+      for (const theme of ["light", "dark"]) {
+        await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+        await readableText(".trace-step:first-child .trace-step-badges > :first-child, .trace-step:nth-child(2) .trace-policy > *");
+      }
+    }
+    await setDisclosure(".trace-step:first-child", false);
+    assert.equal(await js('document.querySelectorAll(".trace-step:first-child .trace-step-content > *").length'), 0);
+    await setDisclosure(".trace-rule-list", false);
+    assert.equal(await js('document.querySelectorAll(".trace-step").length'), 0, "closing Rule trace releases all rule DOM");
+    await setDisclosure(".trace-rule-list");
+    assert.equal(await js('document.querySelectorAll(".trace-step").length'), 1000, "reopening restores the list");
+    assert.equal(await js('document.querySelectorAll(".trace-step-content > *").length'), 0);
+  });
+
   await test("diagnostics summarize missing context and make cached IPs actionable without a rule wall", async () => {
     fixture.explanation = {
       schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z",
@@ -1812,6 +2120,7 @@ try {
 
   await test("administrator device management uses the specified MAC", async () => {
     fixture.certificate = { name: "Test CA", fingerprint: "test-ca" };
+    fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "test-ca" };
     await visit("devices");
     await js('document.querySelector("#setting-devices-tab").click()');
     await until('document.querySelector("#managed-client-mac").checkVisibility()');

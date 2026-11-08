@@ -41,6 +41,15 @@ function parseTarget(value: string): DiagnosticFlow {
   return { destination: { ...address, port } };
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+function mergeFields(base: Record<string, unknown>, overrides: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries([...Object.entries(base), ...Object.entries(overrides).map(([key, value]) => {
+    const previous = Object.hasOwn(base, key) ? base[key] : undefined;
+    return [key, isObject(previous) && isObject(value) ? mergeFields(previous, value) : value];
+  })]);
+}
+
 interface DiagnosticActions { invalidate: () => void }
 
 function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest: Comparison | null; deviceKey: string; ref: Ref<DiagnosticActions> }) {
@@ -104,7 +113,7 @@ function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest:
     const operation = explanation.start();
     try {
       const value = formValue(form, "target").trim();
-      const payload: ExplainRequest = { kind, context: {}, flow: { destination: {}, protocol: dns || formValue(form, "protocol") === "udp" ? "udp" : "tcp" }, detail: "predicates" };
+      let payload: ExplainRequest = { kind, context: {}, flow: { destination: {}, protocol: dns || formValue(form, "protocol") === "udp" ? "udp" : "tcp" }, detail: "predicates" };
       if (kind === "outbound") payload.outbound = value;
       else if (dns) payload.dns = { name: value, type: formValue(form, "qtype") };
       else if (kind === "domain") payload.flow.destination.domain = value;
@@ -113,8 +122,8 @@ function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest:
       if (ip && !dns && kind !== "outbound") payload.flow.destination.ip = ip;
       if (sni && flow) payload.flow.sni = sni;
       const overrides: unknown = JSON.parse(formValue(form, "overrides") || "{}");
-      if (typeof overrides !== "object" || overrides === null || Array.isArray(overrides)) throw new Error("Advanced request must be a JSON object.");
-      Object.assign(payload, overrides);
+      if (!isObject(overrides)) throw new Error("Advanced request must be a JSON object.");
+      payload = mergeFields(payload, overrides) as ExplainRequest;
       if (comparison) payload.compare = { ...payload.compare, client_sets: { ...payload.compare?.client_sets, ...comparison.sets } };
       const response = await request<ExplainResponse>(scope === "self" ? "/api/device/diagnostics/explain" : "/api/diagnostics/explain", "POST", payload);
       operation.resolve({ response, kind: payload.kind, target: value });
@@ -150,7 +159,7 @@ function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest:
             items={{ self: "This device", manual: "Custom identity" }}
             onValueChange={(value) => { setScope(value === "manual" ? "manual" : "self"); explanation.reset(); }} />
         </div>
-        <p className={` ${hint}`}>{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
+        <p className={` ${hint}`}>{'JSON fields override matching request fields; other form values are kept. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
         <InputArea id="diagnostic-overrides" name="overrides" label="Advanced diagnostic request JSON" rows={6} spellCheck={false} defaultValue="{}" className="w-full resize-y font-mono text-sm" />
         <Button id="diagnostic-context" type="button" onClick={showContext} disabled={context.pending}>Show inherited context</Button>
         <pre id="diagnostic-context-view" className={`${codeBlock} whitespace-pre-line empty:hidden`}>{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>

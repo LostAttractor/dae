@@ -300,7 +300,7 @@ Status is an observational snapshot, not a transaction across all subsystems. He
 
 Network arrays always contain four entries ordered `tcp4`, `tcp6`, `udp4`, `udp6`. Node IDs are opaque identifiers, and an empty selected node ID means no currently selected node. Network support (`unknown`, `confirmed`, `unsupported`) describes capability separately from health.
 
-Timestamps use RFC 3339, with Go's zero time indicating no observation. Durations are integer nanoseconds; selector `latency_ms` uses milliseconds. Availability ratios are time-weighted values from 0 to 1; `seen=false` means no valid observation.
+Timestamps use RFC 3339, with Go's zero time indicating no observation. Durations are integer nanoseconds; selector `latency_ms` uses milliseconds. Top-level `uptime` is measured by the server from the same process statistics start as `started_at` and survives reloads. Display this duration rather than subtracting `started_at` from the client's clock. Availability ratios are time-weighted values from 0 to 1; `seen=false` means no valid observation.
 
 Traffic totals are bytes. Each traffic history contains up to 12 completed five-second byte/second averages, oldest first, with equal lengths for upload and download. Counters survive reloads and reset on process restart. JavaScript consumers needing exact 64-bit counters must account for precision above `2^53-1`.
 

@@ -190,7 +190,7 @@ Changes disable controls until the request finishes;
 the displayed state updates from the saved API response.
 Multiple memberships can be active. Changes may interrupt active
 connections, as a warning under the **Routing Rules** label states. Routing effects load only for
-expanded rules and refresh when the device context changes. Closing a rule discards
+expanded rules and refresh when the device context or configuration generation changes. Closing a rule discards
 its pending response. Expanded details separate the proposed change, referenced
 rules and explanatory notes with spacing and dividers. **Referenced** identifies
 a client-group reference, not an evaluated match or routing result. A small policy
@@ -211,10 +211,13 @@ that proposed change and focuses the target field. Inputs and results are
 preserved when switching pages.
 The **Devices** section looks up another device by MAC, then shows its settings
 with the same controls as Overview: a switch row per routing rule and the
-three-way HTTPS module choice. Its router default depends on the source IP the
-device connects from, which the page cannot see, so that choice reads **Router
-default** without a value. Each change saves for the looked-up MAC and reloads its
-settings in place, keeping focus on the changed control. Changing the MAC address
+three-way HTTPS module choice when `mitm_available` is true. A public API certificate
+does not imply that HTTPS modules are enabled. Its router default depends on the
+source IP the device connects from, which the page cannot see, so that choice reads
+**Router default** without a value. Each change saves for the looked-up MAC; HTTPS
+choices use the saved device response, while routing changes reload its settings.
+A failed reload distinguishes a completed save from a failed read and clears stale
+controls. **Refresh** also reloads the looked-up device. Changing the MAC address
 clears the previous device's result; without access, the section shows a login prompt. The diagnostics contract lives in
 `docs/api/diagnostics.json`; explanations never send target traffic or execute scripts.
 
@@ -224,6 +227,8 @@ Context reads and explanations have independent request state. Editing test inpu
 the analysis, identity scope or comparison invalidates the previous explanation;
 device-context changes clear inherited evidence and comparisons. Losing
 administrator access clears manual explanations and managed-device results.
+Advanced request JSON overrides matching fields recursively, keeping other form
+values; explicit nulls and arrays replace their corresponding values.
 
 The page header shows the visiting device's IP and MAC directly, with explicit
 labels. Device settings address this MAC. An IP-only connection shows its IP and
@@ -262,7 +267,8 @@ userspace scope, usage, capacity and full-table behavior (`evict`, `reject`,
 Unavailable usage shows its error instead of zero or 0%; domain records retain
 candidates, omissions, pending changes and registry breakdowns. Plugin-defined
 reports remain in plugin status rather than being interpreted as capacity tables. Cumulative totals, uptime and
-direct fallback counts belong to Connection statistics. Outbound groups are rows
+direct fallback counts belong to Connection statistics. Uptime uses the daemon's
+elapsed duration, independent of the browser's clock. Outbound groups are rows
 of one framed list, each with a compact name-and-count trigger; expanding a row
 reveals its metrics and a named node list. Long node lists scroll inside the group, leaving group headers and
 the other sections in the normal page flow.
@@ -354,8 +360,9 @@ Tracking is read from `SelectorState.track_all`, never changed through the API.
 User actions invalidate outstanding selector reads. Both successful and failed
 responses are checked for freshness before changing access or rendering state.
 Polling preserves candidate controls and focus, follows configuration order,
-and reports recovery after a failed refresh. A current authorization failure
-clears protected state and stops polling; it is not reported as a retryable error.
+and reports recovery after a failed refresh. Transient failures during initial
+access verification keep retrying. A current authorization failure clears protected
+state and stops administrator polling; it is not reported as a retryable error.
 Keyboard focus returns to the relevant control after an action. Requests time out after 15 seconds;
 mutations are never retried automatically.
 
@@ -369,8 +376,9 @@ The device identity and refresh controls wrap together when space is limited.
 Below 768px, navigation and refresh share a row below the title,
 followed by the device identity.
 
-Overview / Setting navigation uses Kumo's segmented `Tabs`, rendered as links so
-direct addresses, Back/Forward and keyboard selection keep working. The header
+Overview / Setting navigation uses ordinary links with Kumo's segmented styling
+and `aria-current="page"`. Direct addresses, Back/Forward, opening a new tab and
+keyboard navigation keep their native link behavior. The header
 bar's bottom border separates it from content. Both pages and all Setting
 sections share a centered workspace up to 1440px; switching pages preserves the
 workspace and navigation width. The header, content and footer align within that
@@ -427,9 +435,9 @@ names and descriptions. Optional TLS hostname and identity inputs belong in
 Advanced context. Expandable certificate, traffic, routing effects and
 diagnostic sections use Kumo's `Collapsible` with a trailing caret. Sections open
 flush with their heading and grow with their content; nested details, such as the
-destination list and response JSON, use Kumo's indented panel. Collapsed
-content stays in the document; previews and outbound node lists are created only
-while expanded. Section dividers distinguish related groups, and rules can be
+destination list and response JSON, use Kumo's indented panel. Collapsed form
+fields stay mounted so their values remain in submissions; previews, rule lists,
+rule details and outbound node lists are created only while expanded. Section dividers distinguish related groups, and rules can be
 filtered by status. Outbound metrics pair values with labels. Light/dark colors
 also apply to chart axes, series and tooltips.
 

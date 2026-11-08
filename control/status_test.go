@@ -87,6 +87,16 @@ func TestPathStatsAggregateByGroupAndNode(t *testing.T) {
 	}
 }
 
+func TestStatusSnapshotReportsServerUptime(t *testing.T) {
+	startedAt := stats.DefaultStore.StartedAt()
+	before := time.Since(startedAt)
+	snapshot := (&ControlPlane{}).StatusSnapshot("test")
+	after := time.Since(startedAt)
+	if snapshot.StartedAt != startedAt || snapshot.Uptime < before || snapshot.Uptime > after {
+		t.Fatalf("status start = %s, uptime = %s; want %s and [%s, %s]", snapshot.StartedAt, snapshot.Uptime, startedAt, before, after)
+	}
+}
+
 func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
 	domainRegistry, _ := newTestRegistry(1, time.Minute)
 	// Evidence is overdue by wall time but has not been swept: status must not

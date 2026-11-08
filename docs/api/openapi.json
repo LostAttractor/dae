@@ -1070,6 +1070,11 @@
             },
             "type": "array"
           },
+          "uptime": {
+            "description": "Server-observed elapsed time since started_at in nanoseconds, from the process statistics clock; preserved across reloads.",
+            "format": "int64",
+            "type": "integer"
+          },
           "version": {
             "type": "string"
           }
@@ -1080,6 +1085,7 @@
           "schema",
           "version",
           "started_at",
+          "uptime",
           "last_reload_at",
           "stats",
           "direct_fallback_connections",

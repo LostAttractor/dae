@@ -13,6 +13,7 @@ import (
 
 func TestStatusWireRoundTrip(t *testing.T) {
 	want := benchmarkStatus()
+	want.Uptime = time.Hour + 234*time.Nanosecond
 	want.DirectFallbackConnections = 1<<53 + 1
 	want.Groups[0].Nodes[0].InitialCheckDone = true
 	want.Groups[0].Nodes[0].Availability.LastFailureDuration = time.Second
@@ -38,7 +39,7 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":15`, `"scope":"kernel"`, `"on_full":"evict"`, `"error":"read map: permission denied"`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":15`, `"uptime":3600000000234`, `"scope":"kernel"`, `"on_full":"evict"`, `"error":"read map: permission denied"`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}
@@ -60,6 +61,9 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	}
 	if got.Groups[0].Nodes[0].InitialCheckDone {
 		t.Fatal("runtime-only initial check state leaked into API JSON")
+	}
+	if got.Uptime != want.Uptime {
+		t.Fatal("server uptime units changed after round trip")
 	}
 	if got.DirectFallbackConnections != want.DirectFallbackConnections {
 		t.Fatal("direct fallback precision changed")

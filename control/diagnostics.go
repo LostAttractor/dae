@@ -358,6 +358,11 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		result.Decision.Policy = ""
 	}
 	if request.Kind == "domain" {
+		domain := cmp.Or(request.Flow.Destination.Domain, diagnosticHostname(request))
+		result.Domains = slices.DeleteFunc(result.Domains, func(e api.DomainEvidence) bool {
+			return domain != "" && !strings.EqualFold(strings.TrimSuffix(e.Domain, "."), strings.TrimSuffix(domain, ".")) ||
+				request.Flow.Destination.IP != "" && e.IP != input.dst.Addr().String()
+		})
 		if len(result.Domains) == 0 {
 			result.Notes = append(result.Notes, "No retained evidence; no DNS query was sent.")
 		}

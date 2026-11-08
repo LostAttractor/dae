@@ -47,7 +47,16 @@ export function createSettingNavigation(container: HTMLElement, onChange: (secti
       </li>)}
     </ul> : <Tabs variant="underline" value={value} activateOnFocus onValueChange={next => { if (isSection(next) && visible.some(([key]) => key === next)) onChange(next); }}
       tabs={visible.map(([key, label]) => ({ value: key, label, nativeButton: false, className: inset,
-        render: <a id={`setting-${key}-tab`} href={`#setting/${key}`} aria-controls={`setting-${key}`} onClick={event => { if (plain(event)) event.preventDefault(); }} /> }))} />);
+        render: props => <a {...props} id={`setting-${key}-tab`} href={`#setting/${key}`} aria-controls={`setting-${key}`}
+          onPointerDown={event => {
+            // Modified pointer clicks must not activate the tab through focus either.
+            if (!plain(event)) event.preventDefault();
+            props.onPointerDown?.(event);
+          }} onClick={event => {
+            if (!plain(event)) return;
+            event.preventDefault();
+            props.onClick?.(event);
+          }} /> }))} />);
   }
   desktop.addEventListener("change", () => {
     const focused = document.activeElement && container.contains(document.activeElement) ? document.activeElement.id : null;

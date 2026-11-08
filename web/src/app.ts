@@ -21,7 +21,7 @@ const accessLabels = {
   lan: { title: "LAN Access", description: "Verified LAN ingress · No API key configured" },
   unix: { title: "Local access", description: "Authorized by local socket permissions" },
 };
-let authMode: AuthMode | null = null;
+let authMode: AuthMode | null | undefined;
 let selectorRequestVersion = 0;
 let pollingSelectors = false;
 let deviceRequestVersion = 0;
@@ -104,6 +104,7 @@ function setAccess(mode: AuthMode | null, error?: unknown) {
   clientSets.setAccess(authorized);
   settingNavigation.setAccess(authorized);
   managedClients.setAccess(authorized);
+  if (authorized) status.allowGlobal();
   byId("managed-clients-view").hidden = !authorized;
   byId("devices-locked").hidden = authorized;
   byId("devices-login-hint").textContent = denied ? errorMessage(error) : "Log in above to manage other devices.";
@@ -193,6 +194,7 @@ async function loadDevice({ background = false } = {}) {
     const connection = await request<DeviceContext>("/api/device/context");
     if (version !== deviceRequestVersion) return;
     diagnostics.setGeneration(connection.generation);
+    clientSets.setGeneration(connection.generation);
     if (!connection.device) {
       const reason = "This connection has no Ethernet MAC. Device traffic, client sets and HTTPS module preferences are unavailable.";
       status.deviceUnavailable(reason);
@@ -250,7 +252,7 @@ async function loadGlobalStatus({ background = false } = {}) {
   const version = ++globalRequestVersion;
   try {
     const snapshot = await request<GlobalStatus>("/api/status");
-    if (version !== globalRequestVersion || authMode === null) return;
+    if (version !== globalRequestVersion || authMode == null) return;
     status.setGlobal(snapshot);
     byId("daemon-version").textContent = `dae · ${snapshot.version}`;
     byId("daemon-version").hidden = !snapshot.version;
@@ -269,7 +271,7 @@ async function loadAdmin(options = {}) {
 async function refresh() {
   const results = await Promise.allSettled([
     loadDevice(),
-    loadAdmin({ allowGuest: authMode === null }),
+    loadAdmin({ allowGuest: authMode == null }).then(() => managedClients.refresh()),
     loadCertificate(),
   ]);
   const errors = results.filter((result) => result.status === "rejected");

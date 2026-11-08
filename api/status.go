@@ -16,6 +16,7 @@ type StatusSnapshot struct {
 	Schema                    int                      `json:"schema"`
 	Version                   string                   `json:"version"`
 	StartedAt                 time.Time                `json:"started_at"`
+	Uptime                    time.Duration            `json:"uptime"` // Server-observed time since StartedAt, in nanoseconds.
 	LastReloadAt              time.Time                `json:"last_reload_at"`
 	Stats                     PathStats                `json:"stats"`
 	DirectFallbackConnections int64                    `json:"direct_fallback_connections"`

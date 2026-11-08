@@ -244,6 +244,7 @@ Registry 的 `used` 是域名–IP 配对数，`breakdown.domains`、`ips`、`ip
 | 字段 | 语义 |
 | --- | --- |
 | `version`、`started_at`、`last_reload_at` | 守护进程版本、启动时间、上次完成重载时间 |
+| `uptime` | 服务端从与 `started_at` 同源的进程统计起点计算的运行时长，整数纳秒，重载不清零；展示时直接使用，不与客户端时钟相减 |
 | `stats` | 进程生命周期内连接数、流量总计，以及近期吞吐历史 |
 | `networks` | 各网络的统计，顺序固定为 `tcp4`、`tcp6`、`udp4`、`udp6` |
 | `tables` | DNS / 域名表占用；`breakdown` 区分 live、retained 和容量回收数量 |

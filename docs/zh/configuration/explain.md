@@ -35,6 +35,7 @@ dae explain route --input request.json --json
 - 原始文件位置和表达式保留在 `sources` 中；合并规则包含多个来源，共享片段的每次使用有独立步骤 ID。展开条件显示在谓词列表中。
 - 域名目标、TLS SNI、HTTP URL/Host 和内核域名—IP 映射是不同输入。提供 SNI 不会使内核 `domain()` 命中。缺少映射时按正常内核规则求值，不扩大捕获范围。
 - 仅提供域名不会主动解析；结果列出已有映射候选并要求明确目标 IP。DNS 保留时间不代表即时清理，解释使用当前仍保留、实际驻留内核的证据。
+- 缓存记录查询（`kind: domain`）按目标域名与 IP 取交集；同时提供两者时只返回匹配配对，不混入共享该 IP 的其他域名或该域名的其他 IP，也不发送 DNS 查询。
 - Host/DNAT 展示候选目标和改写后的路由；随机多目标不消耗随机数，下游保持未确定。节点分析展示当前策略、候选、可用性、优先级和评分，不等待恢复检查。
 - DNS 路由插件解释请求策略、上游和响应谓词。`dns.answer_ips`、`dns.upstream`、`dns.rcode` 可补充响应上下文。未提供 DNS 服务器 IP 时只做 DNS 策略分析；提供 IP、端口和完整身份后，还可解释内核捕获及精确缓存键。缓存查询不刷新 LRU、计数器或 TTL。
 - HTTP 插件解释声明式作用域、请求头、URL、Map Local、Host 和脚本匹配。脚本及需要正文的改写保留未知执行边界；缺少解释能力的插件也明确标记，依赖它们的下游决定保持未确定。
@@ -55,7 +56,7 @@ dae client mitm disable --mac 02:00:00:00:00:10
 dae client mitm reset --mac 02:00:00:00:00:10
 ```
 
-`client list/show/device --self` 查看当前设备；加入、退出、影响预览和 MITM 操作选择 `--self` 或 `--mac`。管理接口只修改已定义集合的 MAC 成员，不创建配置集合。MITM reset 清除覆盖值，生效默认值可能依赖源 IP。CLI 使用当前 CA 指纹提交 MITM 操作。
+`client list/show/device --self` 查看当前设备；加入、退出、影响预览和 MITM 操作选择 `--self` 或 `--mac`。管理接口只修改已定义集合的 MAC 成员，不创建配置集合。MITM reset 清除覆盖值，生效默认值可能依赖源 IP。`ManagedDevice.mitm_available` 表示 HTTPS 模块是否提供 MITM 控制能力，不依赖已保存的覆盖值或公开 API 证书是否可用。CLI 使用当前 CA 指纹提交 MITM 操作。
 
 `impact` 不修改设置，列出直接、取反及条件引用的成员关系影响；指定目标后返回同一快照的变更前后解释。前序规则和其他条件仍可能覆盖成员变化的效果。结果也说明现有连接的保留/关闭策略，以及 ipset/nftset 导出名称；外部防火墙规则不在求值范围内。
 

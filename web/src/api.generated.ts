@@ -1276,7 +1276,10 @@ export interface components {
             detail?: "rules" | "predicates";
             dns?: components["schemas"]["DiagnosticDNS"];
             flow: components["schemas"]["DiagnosticFlow"];
-            /** @enum {string} */
+            /**
+             * @description domain reads retained records without DNS queries; destination domain and IP filters are intersected when both are supplied.
+             * @enum {string}
+             */
             kind?: "flow" | "dns" | "domain" | "outbound" | "plugins";
             network?: string;
             outbound?: string;
@@ -1410,6 +1413,8 @@ export interface components {
         };
         ManagedDevice: {
             mac: string;
+            /** @description Whether HTTPS modules have a MITM authority and device MITM overrides can be edited. Independent of the current override and public API certificate availability. */
+            mitm_available: boolean;
             mitm_override: boolean | null;
             sets: components["schemas"]["ClientSetState"][];
         };
@@ -1743,6 +1748,11 @@ export interface components {
             started_at: string;
             stats: components["schemas"]["PathStats"];
             tables: components["schemas"]["TableUsage"][];
+            /**
+             * Format: int64
+             * @description Server-observed elapsed time since started_at in nanoseconds, from the process statistics clock; preserved across reloads.
+             */
+            uptime: number;
             version: string;
         };
         /** @description Shared snapshot of kernel tables and userspace resource pools, including the unbounded domain registry. A full evicting table is normal; reject means new entries cannot be admitted. */

@@ -10,7 +10,6 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -124,7 +123,7 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 	summary := []string{
 		"dae " + snapshot.Version,
 		colorize(strings.ToUpper(string(health)), color),
-		"up " + formatUptime(time.Since(snapshot.StartedAt)),
+		"up " + formatUptime(snapshot.Uptime),
 		fmt.Sprintf("%d active", snapshot.Stats.ActiveConnections),
 	}
 	writeStatusLine(out, strings.Join(summary, "  "), width)
