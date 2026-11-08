@@ -57,7 +57,15 @@ func newRoutingDomainRegistry() *DomainRegistry {
 	return g
 }
 func (g *DomainRegistry) Upsert(name string, ip netip.Addr, bitmap []uint32, ttl int, now time.Time) {
-	g.ObserveDNS([]domainObservation{{name: name, ips: []netip.Addr{ip}, bitmap: bitmap, ttl: ttl}}, now)
+	g.observeJournaled([]domainObservation{{name: name, ips: []netip.Addr{ip}, bitmap: bitmap, ttl: ttl}}, now)
+}
+
+// observeJournaled registers observations and journals their new pairs, as
+// DNS delivery does once the reply is sent.
+func (g *DomainRegistry) observeJournaled(observations []domainObservation, at time.Time) {
+	if journal := g.ObserveDNS(observations, at); journal != nil {
+		journal()
+	}
 }
 func (g *DomainRegistry) Size() int { return g.Usage().UserUsed }
 
@@ -472,7 +480,9 @@ func TestRuntimeDNSFanoutWhileOldWorkerBusy(t *testing.T) {
 	delivered := make(chan struct{})
 	go func() {
 		defer close(delivered)
-		old.observeDNS(request, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}, time.Now())
+		if journal := old.observeDNS(request, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}, time.Now()); journal != nil {
+			journal()
+		}
 	}()
 	select {
 	case <-delivered:

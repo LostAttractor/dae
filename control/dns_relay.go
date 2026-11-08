@@ -285,6 +285,7 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 			response.DNSPacket = plugin.DNSWire(wire)
 		}
 		matches := dnsResponseMatches(query, response.MessageCopy())
+		var journal func()
 		if matches {
 			now := time.Now()
 			if response.ReceivedAt.IsZero() {
@@ -294,10 +295,16 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 			// can connect to an answered address. A failed delivery keeps it:
 			// the answer is genuine, only undelivered.
 			if c.core != nil && c.routingMatcher != nil {
-				c.observeDNS(request, response, now)
+				journal = c.observeDNS(request, response, now)
 			}
 		}
-		if err := deliver(wire); err != nil {
+		err = deliver(wire)
+		// An unsynced journal write is as durable after the reply as before
+		// it, and can block on writeback.
+		if journal != nil {
+			journal()
+		}
+		if err != nil {
 			return err
 		}
 		if matches {

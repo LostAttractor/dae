@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/network"
+	"github.com/daeuniverse/dae/component/plugin"
+	dns "github.com/miekg/dns"
 )
 
 // persistTestRegistry enables persistence in dir and writes the first baseline.
@@ -145,7 +147,7 @@ func journalScenario(t *testing.T, dir string, now time.Time) *DomainRegistry {
 	g.Upsert("base.example.", a, testBitmap(), 60, now)
 	g.Upsert("late.example.", a, testBitmap(), 60, now)
 	persistTestRegistry(t, g, dir, now)
-	g.ObserveDNS([]domainObservation{{name: "new.example.", ips: []netip.Addr{b, c}, bitmap: testBitmap(), ttl: 60}}, now.Add(time.Minute))
+	g.observeJournaled([]domainObservation{{name: "new.example.", ips: []netip.Addr{b, c}, bitmap: testBitmap(), ttl: 60}}, now.Add(time.Minute))
 	g.activity.observe(a, "base.example.", now.Add(2*time.Minute))
 	// A TTL beyond the window is not rounded down to the window bound.
 	g.Upsert("new.example.", b, testBitmap(), 7200, now.Add(3*time.Minute))
@@ -272,7 +274,7 @@ func TestDomainRegistryJournalTruncation(t *testing.T) {
 	g = restoreTestRegistry(t, corrupt, time.Hour, now)
 	g.EnablePersistence(corrupt)
 	b, c := netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("2001:db8::8")
-	g.ObserveDNS([]domainObservation{{name: "new.example.", ips: []netip.Addr{b, c}, bitmap: testBitmap(), ttl: 60}}, now.Add(time.Minute))
+	g.observeJournaled([]domainObservation{{name: "new.example.", ips: []netip.Addr{b, c}, bitmap: testBitmap(), ttl: 60}}, now.Add(time.Minute))
 	want = complete[domainHeaderSize]
 	want["new.example. 192.0.2.7"] = now.Add(time.Minute + time.Hour).UnixNano()
 	want["new.example. 2001:db8::8"] = now.Add(time.Minute + time.Hour).UnixNano()
@@ -753,6 +755,61 @@ func TestDomainRegistryUnreadableFilesStayUntouched(t *testing.T) {
 				t.Fatalf("files changed from %d to %d entries", len(before), len(after))
 			}
 		})
+	}
+}
+
+// The kernel and memory have the answer before delivery, but no new frame is
+// in the journal until afterwards. Even a failed delivery journals the answer.
+func TestDomainRegistryDNSJournalsAfterDelivery(t *testing.T) {
+	for _, fanout := range []bool{false, true} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("fanout=%v fail=%v", fanout, fail), func(t *testing.T) {
+				now, dir := time.Now(), t.TempDir()
+				name, ip := "test.example.", netip.MustParseAddr("203.0.113.9")
+				g, _ := newTestRegistry(16, time.Hour)
+				defer g.Close()
+				persistTestRegistry(t, g, dir, now)
+				before := g.persist.disk.size
+				matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "domain(suffix:example) -> proxy"))
+				c := &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: g}}
+				if fanout {
+					r := NewRuntime()
+					c.core.bpf = &BPFState{Runtime: r}
+					r.planes[0], r.current = c, c
+					retired, _ := newTestRegistry(16, time.Hour)
+					defer retired.Close()
+					r.planes[1] = &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: retired}}
+				}
+				request := dnsTestRequest(t, name, 1)
+				var deliveryError error
+				if fail {
+					deliveryError = errors.New("client disconnected")
+				}
+				err := c.processDNS(t.Context(), request, routingResult{}, false, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+					m := new(dns.Msg).SetReply(request.MessageCopy())
+					m.Answer = []dns.RR{testARecord(name, ip.String())}
+					return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}, nil
+				}, func([]byte) error {
+					if !g.Verify(name, ip).Paired || !kernelCurrent(g, ip) {
+						t.Error("reply sent before its evidence reached memory and the kernel")
+					}
+					if g.persist.disk.size != before {
+						t.Error("new-pair frame appended before delivery")
+					}
+					return deliveryError
+				})
+				if !errors.Is(err, deliveryError) {
+					t.Fatalf("delivery error = %v, want %v", err, deliveryError)
+				}
+				if g.persist.disk.size <= before {
+					t.Fatal("new-pair frame was not appended after delivery")
+				}
+				restored := restoreTestRegistry(t, dir, time.Hour, now)
+				if !restored.Verify(name, ip).Paired {
+					t.Fatal("delivered evidence was not journaled")
+				}
+			})
+		}
 	}
 }
 

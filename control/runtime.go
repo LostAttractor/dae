@@ -30,28 +30,35 @@ const handoffLifetime = routingabi.HANDOFF_LIFETIME_SECONDS * time.Second
 // generation or its links. The caller can discard it and resume the old API.
 var ErrPublicationRejected = errors.New("configuration publication rejected")
 
-func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) {
+// observeDNS registers the response's evidence in every serving generation and
+// returns the journal append of its new pairs, or nil, to run after delivery.
+func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) (journal func()) {
 	if c.core.bpf == nil || c.core.bpf.Runtime == nil {
-		observeDNSRegistryAt(c.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, request, response, at)
-		return
+		return observeDNSRegistryAt(c.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, request, response, at)
 	}
 	observations := dnsEvidence(request, response, at)
 	if len(observations) == 0 {
-		return
+		return nil
 	}
 	r := c.core.bpf.Runtime
 	// A delivered observation either precedes a reload's evidence copy or
 	// reaches the new generation too: forks and plane insertion hold the
 	// write lock. Registry work stays outside r.mu, which UDP ingress and TCP
-	// admission take per packet and connection.
+	// admission take per packet and connection. The journal append needs
+	// neither lock: it rechecks file ownership, and a reload leaves pairs
+	// queued meanwhile to the successor's worker.
 	r.dnsFanout.RLock()
 	defer r.dnsFanout.RUnlock()
 	r.mu.Lock()
 	planes := slices.Collect(maps.Values(r.planes))
 	r.mu.Unlock()
+	// Only the generation that owns the files queues a journal append.
 	for _, plane := range planes {
-		plane.core.domainRegistry.observeEvidence(plane.routingMatcher.domainMatcher.MatchDomainBitmap, observations, at)
+		if appendNew := plane.core.domainRegistry.observeEvidence(plane.routingMatcher.domainMatcher.MatchDomainBitmap, observations, at); appendNew != nil {
+			journal = appendNew
+		}
 	}
+	return journal
 }
 
 // Runtime owns resources whose lifetime is independent of configuration reload.

@@ -11,22 +11,24 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) {
+func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, at time.Time) (journal func()) {
 	if registry != nil && match != nil {
-		registry.observeEvidence(match, dnsEvidence(request, response, at), at)
+		return registry.observeEvidence(match, dnsEvidence(request, response, at), at)
 	}
+	return nil
 }
 
 // observeEvidence attaches this generation's rule bitmaps to evidence parsed
-// once per response. ObserveDNS copies every bitmap it retains.
-func (g *DomainRegistry) observeEvidence(match func(string) []uint32, observations []domainObservation, at time.Time) {
+// once per response. ObserveDNS copies every bitmap it retains and returns the
+// journal append.
+func (g *DomainRegistry) observeEvidence(match func(string) []uint32, observations []domainObservation, at time.Time) (journal func()) {
 	if g == nil || len(observations) == 0 {
-		return
+		return nil
 	}
 	for i := range observations {
 		observations[i].bitmap = match(observations[i].name)
 	}
-	g.ObserveDNS(observations, at)
+	return g.ObserveDNS(observations, at)
 }
 
 // dnsEvidence validates the entire chain of one delivered response before

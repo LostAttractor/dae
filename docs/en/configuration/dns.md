@@ -336,13 +336,14 @@ The writes follow from the registry's data structure: a renewal only moves a
 deadline forward to renewal time plus the window, and pairs are deleted only by
 expiry.
 
-- **New pairs**: the change that creates pairs, for example registering one DNS
-  response, tries to append a frame with their domains, IPs and exact deadlines,
-  without per-record fdatasync. If another writer or compaction holds the write
-  lock, the pairs are queued for that writer or the background worker; the
-  creator does not wait for disk I/O. A process crash can lose queued pairs not
-  yet written, and a power loss can also lose unsynced writes. The next renewal
-  window's sync makes the preceding new-pair frames durable.
+- **New pairs**: DNS responses register evidence in memory and the kernel before
+  delivery, then try to append a frame with the new pairs' domains, IPs and exact
+  deadlines immediately after delivery, even if delivery fails. This write has
+  no per-record fdatasync and cannot delay the reply. If another writer or
+  compaction holds the write lock, the pairs are queued for that writer or the
+  background worker instead of waiting for it. A process crash can lose queued
+  pairs not yet written, and a power loss can also lose unsynced writes. The next
+  renewal window's sync makes the preceding new-pair frames durable.
 - **Renewals**: are batched in a 10-minute window. A window ends 10 minutes after
   it opened, also across reloads. Its frame lists each pair renewed during it
   once and is followed by fdatasync, which also makes earlier new-pair frames

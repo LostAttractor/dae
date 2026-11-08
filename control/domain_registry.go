@@ -88,13 +88,15 @@ type domainObservation struct {
 
 // ObserveDNS records one response as it is delivered, including replay.
 // A delayed observation retains its own timestamp; the clock prevents it from
-// reviving evidence already collected after a newer observation. New pairs
-// are journaled before it returns, outside the registry lock; during a
-// compaction they are appended right after it.
-func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Time) {
+// reviving evidence already collected after a newer observation. It returns
+// the journal append of the new pairs, or nil, for the caller to run once the
+// reply is sent. A busy journal writer takes over the queued pairs; otherwise
+// the caller writes them outside the registry lock.
+func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Time) (journal func()) {
 	if l := g.observeDNS(observations, at); l != nil {
-		g.appendNew(l)
+		return func() { g.appendNew(l) }
 	}
+	return nil
 }
 
 // observeDNS returns the log that queued new pairs, if any.

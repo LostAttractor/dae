@@ -37,8 +37,7 @@ import (
 // invalid frame, including the zeros after the last one. Payloads:
 //
 //	NEW    1, then per pair: name, address, varint exact deadline. Pairs take
-//	       the next ordinals. Written by the mutation that creates them,
-//	       without fdatasync.
+//	       the next ordinals. Appended after DNS delivery, without fdatasync.
 //	RENEW  2, varint bound, uvarint n and n ascending ordinals (delta coded),
 //	       uvarint m and m (ordinal delta, varint deadline) exact renewals.
 //	       Closes one renewal window and is followed by fdatasync, which also
