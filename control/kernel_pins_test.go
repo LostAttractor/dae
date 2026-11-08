@@ -271,6 +271,15 @@ func TestPersistentKernelLifecycle(t *testing.T) {
 
 	normal, input := start("first")
 	echo("online before normal stop")
+	// Maps earlier versions pinned and this one does not still go on stop.
+	retired, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.LRUHash, KeySize: 8, ValueSize: 20, MaxEntries: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := retired.Pin(filepath.Join(kernelPinPath(), "cookie_pid_map")); err != nil {
+		t.Fatal(err)
+	}
+	retired.Close()
 	input.Close()
 	if err := normal.Wait(); err != nil {
 		t.Fatal(err)

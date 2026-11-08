@@ -81,7 +81,8 @@ a deadline proving that every closing TCP socket has disappeared.
 ## Normal Stop and Unexpected Exit
 
 Normal shutdown drains userspace and removes dae's host attachments, pinned state,
-and internal network resources. It does not retain a second, offline daemon.
+and internal network resources, including map pins an earlier version left that
+this one no longer uses. It does not retain a second, offline daemon.
 Once cleanup completes, ordinary network routing applies; dae no longer restores
 marks or enforces routing and capture rules. Connections depending on those marks
 can need to reconnect. A later cold start has no entries; connections that kept

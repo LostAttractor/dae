@@ -57,7 +57,7 @@ and contents. `TestPinnedTCPFlowEncoding` checks direct marks and token boundari
 `TestPersistentKernelLifecycle` creates private network/mount namespaces, bpffs,
 and `/run`, and starts only its own helper processes. It verifies one real TCP
 connection across SIGKILL, a restart that never goes online, and takeover, together
-with normal-stop cleanup, identity
+with normal-stop cleanup, including map pins of earlier versions, identity
 revocation, epoch recovery, fresh UDP routing after process exit, private timer
 map replacement, and cleanup failure boundaries. Native NAT tests use disposable namespaces
 and minimal nftables rules for IPv4/IPv6 local sockets, local DNAT, and LAN

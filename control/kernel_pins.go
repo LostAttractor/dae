@@ -415,11 +415,46 @@ func (r *Runtime) removePinnedMaps() error {
 	}
 	root := filepath.Dir(r.kernelLinks.pinPath)
 	var cleanupErr error
+	owned := make(map[string]bool)
 	for _, mapSpec := range spec.Maps {
-		if mapSpec.Name == "fallback_sequence_map" || mapSpec.Pinning != ebpf.PinByName && mapSpec.Name != "device_routes_map" {
+		if mapSpec.Pinning != ebpf.PinByName && mapSpec.Name != "device_routes_map" {
 			continue
 		}
-		cleanupErr = errors.Join(cleanupErr, removePinnedMap(filepath.Join(root, mapSpec.Name)))
+		owned[mapSpec.Name] = true
+		if mapSpec.Name != "fallback_sequence_map" {
+			cleanupErr = errors.Join(cleanupErr, removePinnedMap(filepath.Join(root, mapSpec.Name)))
+		}
+	}
+	return errors.Join(cleanupErr, removeRetiredMapPins(root, owned))
+}
+
+// removeRetiredMapPins removes maps an earlier version pinned in dae's
+// directory and this one no longer pins, which would otherwise fail every
+// normal stop. Directories, links and other files stay for
+// finishPinnedCleanup to report.
+func removeRetiredMapPins(root string, owned map[string]bool) error {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var cleanupErr error
+	for _, entry := range entries {
+		if entry.IsDir() || owned[entry.Name()] {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		m, err := ebpf.LoadPinnedMap(path, nil)
+		if err != nil {
+			continue
+		}
+		if err := errors.Join(m.Close(), os.Remove(path)); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+			continue
+		}
+		log.WithField("map", entry.Name()).Info("Removed a map pin this version no longer uses")
 	}
 	return cleanupErr
 }
