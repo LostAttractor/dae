@@ -133,6 +133,36 @@ func TestAnyfromPoolFailedCreationReleasesReservation(t *testing.T) {
 	}
 }
 
+// An address a local listener holds fails fast for a while: replies do not
+// repeat socket setup for each datagram.
+func TestAnyfromPoolRemembersUnbindableAddress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newTestAnyfromPool(t, 1)
+		listen := p.listen
+		calls := 0
+		p.listen = func(addr netip.AddrPort) (*net.UDPConn, error) {
+			calls++
+			if calls == 1 {
+				return nil, &net.OpError{Op: "listen", Net: "udp", Err: syscall.EADDRINUSE}
+			}
+			return listen(addr)
+		}
+		addr := netip.MustParseAddrPort("192.0.2.1:53")
+		for range 3 {
+			if _, _, err := p.GetOrCreate(addr, time.Hour); !errors.Is(err, syscall.EADDRINUSE) {
+				t.Fatalf("unbindable address = %v", err)
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("listen called %d times within the retry delay, want 1", calls)
+		}
+		time.Sleep(anyfromRetryDelay)
+		if _, _, err := p.GetOrCreate(addr, time.Hour); err != nil || calls != 2 {
+			t.Fatalf("retry after the delay = %v after %d calls", err, calls)
+		}
+	})
+}
+
 func TestAnyfromPoolCreationFailureWakesWaiter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := newTestAnyfromPool(t, 1)

@@ -7,6 +7,8 @@ package control
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -67,10 +69,21 @@ func (a *Anyfrom) Close() error {
 type AnyfromPool struct {
 	pool     map[netip.AddrPort]*Anyfrom
 	creating map[netip.AddrPort]chan struct{}
+	failed   map[netip.AddrPort]anyfromFailure
 	mu       sync.RWMutex
 	limit    int
 	listen   func(netip.AddrPort) (*net.UDPConn, error)
 }
+
+// An address that cannot be bound, such as one a local listener holds, fails
+// fast for anyfromRetryDelay instead of repeating socket setup per reply.
+// Exhausted descriptors are global and retried at once.
+type anyfromFailure struct {
+	err   error
+	until time.Time
+}
+
+const anyfromRetryDelay = time.Second
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
@@ -86,6 +99,7 @@ func NewAnyfromPool() *AnyfromPool {
 	return &AnyfromPool{
 		pool:     make(map[netip.AddrPort]*Anyfrom, 64),
 		creating: make(map[netip.AddrPort]chan struct{}),
+		failed:   make(map[netip.AddrPort]anyfromFailure),
 		// Each reply address costs one descriptor, including in-flight creation.
 		limit:  maxUDPSources,
 		listen: listenAnyfrom,
@@ -114,6 +128,13 @@ func (p *AnyfromPool) TryGet(lAddr netip.AddrPort) *Anyfrom {
 // GetOrCreate returns a pooled UDP socket bound to lAddr. ttl is the idle time before eviction;
 // if ttl <= 0, DefaultAnyfromCacheTTL is used so entries are always pooled and closed on idle.
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
+	// Hits share the lock, so they never make TryGet on the push path fail.
+	p.mu.RLock()
+	if af := p.pool[lAddr]; af != nil && af.refreshIdleDeadline() {
+		p.mu.RUnlock()
+		return af, false, nil
+	}
+	p.mu.RUnlock()
 	p.mu.Lock()
 	for {
 		if af := p.pool[lAddr]; af != nil {
@@ -134,6 +155,13 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 		}
 		break
 	}
+	if failure, ok := p.failed[lAddr]; ok {
+		if time.Now().Before(failure.until) {
+			p.mu.Unlock()
+			return nil, true, failure.err
+		}
+		delete(p.failed, lAddr)
+	}
 	if len(p.pool)+len(p.creating) >= p.limit {
 		p.mu.Unlock()
 		dropReplySocketLimit.Add(1)
@@ -149,6 +177,16 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 	delete(p.creating, lAddr)
 	defer close(ready)
 	if err != nil {
+		if !errors.Is(err, syscall.EADDRINUSE) && !errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return nil, true, err
+		}
+		now := time.Now()
+		if len(p.failed) >= p.limit {
+			maps.DeleteFunc(p.failed, func(_ netip.AddrPort, f anyfromFailure) bool { return !now.Before(f.until) })
+		}
+		if len(p.failed) < p.limit {
+			p.failed[lAddr] = anyfromFailure{err, now.Add(anyfromRetryDelay)}
+		}
 		return nil, true, err
 	}
 
