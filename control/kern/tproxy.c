@@ -1283,18 +1283,14 @@ static __always_inline __u32 fill_socket_tuple(struct bpf_sock_tuple *tuple,
  * own flows never consult their state, since WAN egress passes dae's packets
  * first. */
 static __always_inline bool
-packet_to_local_socket(struct __sk_buff *skb, const struct tuples_key *five)
+udp_to_local_socket(struct __sk_buff *skb, const struct tuples_key *five)
 {
 	struct bpf_sock_tuple tuple = {};
 	__u32 size = fill_socket_tuple(&tuple, five, skb->protocol);
+	struct bpf_sock *sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
 	struct pid_pname *owner;
-	struct bpf_sock *sk;
 	bool local;
 
-	if (five->l4proto == IPPROTO_TCP)
-		sk = bpf_skc_lookup_tcp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
-	else
-		sk = bpf_sk_lookup_udp(skb, &tuple, size, BPF_F_CURRENT_NETNS, 0);
 	if (!sk)
 		return false;
 	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0);
@@ -2004,7 +2000,7 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 			return TCX_NEXT;
 		if (relayed && !new_udp_conn_state(&reversed_tuples_key, false))
 			return TCX_DROP;
-		if (!relayed && (!wan || packet_to_local_socket(skb, &tuples.five)))
+		if (!relayed && (!wan || udp_to_local_socket(skb, &tuples.five)))
 			note_inbound_udp(&reversed_tuples_key);
 	}
 
