@@ -14,7 +14,6 @@ import (
 	"net"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
@@ -40,20 +39,20 @@ const (
 // padded as SIP022 requires of a header without payload.
 type TCPConn struct {
 	net.Conn
-	addr                  *socks5.AddressInfo
-	cipherConf            *ciphers.CipherConf2022
-	pskList               [][]byte
-	uPSK                  []byte
-	requestSalt           []byte // Immutable after construction; shared by reader and writer.
-	cipherWrite           cipher.AEAD
-	onceRead              bool
-	onceWrite             atomic.Bool // Set under writeMutex once the header is sealed.
-	nonceWrite            []byte
-	writeErr              error
-	readMutex, writeMutex sync.Mutex
-	reader                aeadframe.Reader
-	closeOnce             sync.Once
-	closeErr              error
+	addr        *socks5.AddressInfo
+	cipherConf  *ciphers.CipherConf2022
+	pskList     [][]byte
+	uPSK        []byte
+	requestSalt []byte // Immutable after construction; shared by reader and writer.
+	cipherWrite cipher.AEAD
+	onceRead    bool
+	first       protocol.FirstWrite // the write lock
+	nonceWrite  []byte
+	writeErr    error
+	readMutex   sync.Mutex
+	reader      aeadframe.Reader
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf2022, pskList [][]byte, uPSK []byte, sg shadowsocks.SaltGenerator, addr *socks5.AddressInfo) net.Conn {
@@ -65,7 +64,7 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf2022, pskList [][]byte, u
 
 func (c *TCPConn) Read(b []byte) (int, error) {
 	if len(b) > 0 {
-		if err := c.flushHeader(); err != nil {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, err
 		}
 	}
@@ -148,9 +147,9 @@ func (c *TCPConn) writeIdentityHeader(buf *bytes.Buffer) error {
 
 // CloseWrite follows the last complete encrypted frame and leaves Read usable.
 func (c *TCPConn) CloseWrite() error {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	if err := c.flushHeaderLocked(); err != nil {
+	c.first.Lock()
+	defer c.first.Unlock()
+	if err := c.first.FlushLocked(c.flush); err != nil {
 		return err
 	}
 	if c.writeErr != nil {
@@ -174,25 +173,13 @@ func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{
 // WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
 // and writes them at once. An incomplete write is sticky, as in Write.
 func (c *TCPConn) WriteBuffers(v [][]byte) (int, error) {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	return c.writeLocked(v)
 }
 
-// flushHeader lets the server answer a client that reads before writing.
-func (c *TCPConn) flushHeader() error {
-	if c.onceWrite.Load() {
-		return nil
-	}
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	return c.flushHeaderLocked()
-}
-
-func (c *TCPConn) flushHeaderLocked() error {
-	if c.onceWrite.Load() {
-		return nil
-	}
+// flush sends the header alone. The caller holds first.
+func (c *TCPConn) flush() error {
 	_, err := c.writeLocked(nil)
 	return err
 }
@@ -205,15 +192,15 @@ func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
 	for _, b := range v {
 		total += len(b)
 	}
+	first := c.first.Pending()
 	var head []byte
-	if !c.onceWrite.Load() {
+	if first {
 		header := pool.GetBytesBuffer()
 		defer pool.PutBytesBuffer(header)
 		if v, err = c.writeHeader(header, v, total); err != nil {
-			// Any initialization failure is terminal; retrying with the same
-			// salt after encrypting a header must never restart its nonce
-			// sequence.
-			c.writeErr = err
+			// Retrying with the same salt after encrypting a header must
+			// never restart its nonce sequence.
+			c.writeErr = c.first.Done(err)
 			return 0, err
 		}
 		head = header.Bytes()
@@ -222,14 +209,20 @@ func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
 	defer pool.PutBuffer(buf)
 	out := aeadframe.Seal(append(buf[:0], head...), c.cipherWrite, c.nonceWrite, v, TCPChunkMaxLen)
 	written, err := c.Conn.Write(out)
-	if written == len(out) {
-		return total, err
-	}
-	if err == nil {
+	if written != len(out) && err == nil {
 		err = io.ErrShortWrite
 	}
-	c.writeErr = err
-	return 0, err
+	if first {
+		c.first.Done(err)
+	}
+	// After the header, a complete frame keeps later writes aligned.
+	if err != nil && (first || written != len(out)) {
+		c.writeErr = err
+	}
+	if written != len(out) {
+		return 0, err
+	}
+	return total, err
 }
 
 // writeHeader seals the request header with as much of v as fits its first
@@ -278,6 +271,5 @@ func (c *TCPConn) writeHeader(buf *bytes.Buffer, v [][]byte, total int) ([][]byt
 	common.BytesIncLittleEndian(c.nonceWrite)
 	buf.Write(c.cipherWrite.Seal(buf.AvailableBuffer(), c.nonceWrite, variable.Bytes(), nil))
 	common.BytesIncLittleEndian(c.nonceWrite)
-	c.onceWrite.Store(true)
 	return v, nil
 }

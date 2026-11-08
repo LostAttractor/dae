@@ -11,10 +11,10 @@ import (
 	mathrand "math/rand/v2"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 )
 
 const (
@@ -26,13 +26,13 @@ const maxContent = 32*1024 - 21
 
 type Conn struct {
 	net.Conn
-	overlay                   net.Conn
-	uuid                      [16]byte
-	input                     *bytes.Reader
-	rawInput                  *bytes.Buffer
-	readMu, writeMu, filterMu sync.Mutex
-	writeStarted              atomic.Bool // written under writeMu
-	readStarted               bool
+	overlay          net.Conn
+	uuid             [16]byte
+	input            *bytes.Reader
+	rawInput         *bytes.Buffer
+	readMu, filterMu sync.Mutex
+	first            protocol.FirstWrite // the UUID goes with the first record
+	readStarted      bool
 	// packet streams wait for replies to their first datagram instead of
 	// sending the request when a read comes first.
 	packet                    bool
@@ -58,11 +58,8 @@ func visionError(message string) error {
 // protocols work. Until the peer requests direct mode, reads go through the
 // overlay, and the peer cannot request it before receiving the request.
 func (c *Conn) Read(p []byte) (int, error) {
-	if len(p) > 0 && !c.packet && !c.writeStarted.Load() {
-		c.writeMu.Lock()
-		err := c.flush()
-		c.writeMu.Unlock()
-		if err != nil {
+	if len(p) > 0 && !c.packet {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, err
 		}
 	}
@@ -158,14 +155,15 @@ func (c *Conn) writeRecord(p []byte, command byte, isTLS bool) error {
 	if len(p) < 900 && isTLS {
 		padding = mathrand.IntN(500) + 900 - len(p)
 	}
+	first := c.first.Pending()
 	prefix := 5
-	if !c.writeStarted.Load() {
+	if first {
 		prefix += 16
 	}
 	data := pool.GetBuffer(prefix + len(p) + padding)
 	defer pool.PutBuffer(data)
 	offset := 0
-	if !c.writeStarted.Load() {
+	if first {
 		copy(data, c.uuid[:])
 		offset = 16
 	}
@@ -174,10 +172,13 @@ func (c *Conn) writeRecord(p []byte, command byte, isTLS bool) error {
 	binary.BigEndian.PutUint16(data[offset+3:], uint16(padding))
 	copy(data[prefix:], p)
 	rand.Read(data[prefix+len(p):])
-	if err := c.write(data); err != nil {
+	err := c.write(data)
+	if first {
+		c.first.Done(err)
+	}
+	if err != nil {
 		return err
 	}
-	c.writeStarted.Store(true)
 	if command != commandPaddingContinue {
 		c.writePadding = false
 	}
@@ -187,13 +188,13 @@ func (c *Conn) writeRecord(p []byte, command byte, isTLS bool) error {
 	return nil
 }
 func (c *Conn) Write(p []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
 	if len(p) == 0 {
-		return 0, c.flush()
+		return 0, c.first.FlushLocked(c.flush)
 	}
 	written := 0
 	for written < len(p) {
@@ -206,7 +207,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		payload := p[written : written+min(maxContent, len(p)-written)]
 		isTLS, enabled, left := c.filterTLS(payload)
 		command := commandPaddingContinue
-		if c.writeStarted.Load() {
+		if !c.first.Pending() {
 			if !isTLS {
 				command = commandPaddingEnd
 			} else if bytes.HasPrefix(payload, []byte{23, 3, 3}) || left <= 0 {
@@ -226,16 +227,13 @@ func (c *Conn) Write(p []byte) (int, error) {
 
 // flush starts the stream with an empty long-padded record, as Xray does when
 // the client has no early data, so the overlay never sends the VLESS request
-// header alone. The caller holds writeMu.
+// header alone. The caller holds first.
 func (c *Conn) flush() error {
-	if c.writeStarted.Load() {
-		return nil
-	}
 	return c.writeRecord(nil, commandPaddingContinue, true)
 }
 func (c *Conn) CloseWrite() error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if c.writeErr != nil {
 		return c.writeErr
 	}

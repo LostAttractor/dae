@@ -8,6 +8,7 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
 	"github.com/daeuniverse/quic-go"
 )
@@ -17,10 +18,7 @@ type Conn struct {
 	Metadata     *Metadata
 	lAddr, rAddr net.Addr
 
-	writeMutex sync.Mutex
-	// requestSent lets Read skip writeMutex once the request is on the stream.
-	requestSent atomic.Bool
-	requestErr  error // guarded by writeMutex
+	first protocol.FirstWrite
 
 	closeOnce sync.Once
 	wroteFIN  atomic.Bool
@@ -40,18 +38,15 @@ func (c *Conn) wrap(err error, op netproxy.Operation) error {
 // the first payload.
 func (c *Conn) Write(b []byte) (n int, err error) {
 	defer func() { err = c.wrap(err, netproxy.OpWrite) }()
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	if c.requestSent.Load() {
-		return c.Stream.Write(b)
-	}
-	return c.writeRequest(b)
+	c.first.Lock()
+	defer c.first.Unlock()
+	return c.writeLocked(b)
 }
 
-// writeRequest writes the request followed by b. The caller holds writeMutex.
-func (c *Conn) writeRequest(b []byte) (int, error) {
-	if c.requestErr != nil {
-		return 0, c.requestErr
+// writeLocked writes any pending request followed by b. The caller holds first.
+func (c *Conn) writeLocked(b []byte) (int, error) {
+	if !c.first.Pending() {
+		return c.first.Write(c.Stream, nil, b)
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
@@ -61,31 +56,17 @@ func (c *Conn) writeRequest(b []byte) (int, error) {
 	case "udp":
 		buf.WriteByte(3)
 	default:
-		return 0, fmt.Errorf("invalid Juicity network: %s", c.Metadata.Network)
+		return 0, c.first.Done(fmt.Errorf("invalid Juicity network: %s", c.Metadata.Network))
 	}
 	if err := c.Metadata.appendTo(buf); err != nil {
-		return 0, err
+		return 0, c.first.Done(err)
 	}
-	headerLen := buf.Len()
-	buf.Write(b)
-	written, err := c.Stream.Write(buf.Bytes())
-	if written < headerLen {
-		// The stream may hold part of the request, so it cannot be resent.
-		c.requestErr = fmt.Errorf("write request: %w", err)
-		return 0, c.requestErr
-	}
-	c.requestSent.Store(true)
-	return written - headerLen, err
+	return c.first.Write(c.Stream, buf.Bytes(), b)
 }
 
-// sendRequest sends a pending request alone, for a peer that speaks first.
-func (c *Conn) sendRequest() error {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	if c.requestSent.Load() {
-		return nil
-	}
-	_, err := c.writeRequest(nil)
+// flush sends a pending request alone, for a peer that speaks first.
+func (c *Conn) flush() error {
+	_, err := c.writeLocked(nil)
 	return err
 }
 
@@ -93,8 +74,8 @@ func (c *Conn) sendRequest() error {
 // streams leave it to the first datagram: replies follow one, and their
 // readers start before the first write.
 func (c *Conn) Read(b []byte) (int, error) {
-	if len(b) > 0 && c.Metadata.Network == "tcp" && !c.requestSent.Load() {
-		if err := c.sendRequest(); err != nil {
+	if len(b) > 0 && c.Metadata.Network == "tcp" {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, c.wrap(err, netproxy.OpWrite)
 		}
 	}
@@ -113,12 +94,10 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) CloseWrite() error {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	if !c.requestSent.Load() {
-		if _, err := c.writeRequest(nil); err != nil {
-			return c.wrap(err, netproxy.OpWrite)
-		}
+	c.first.Lock()
+	defer c.first.Unlock()
+	if err := c.first.FlushLocked(c.flush); err != nil {
+		return c.wrap(err, netproxy.OpWrite)
 	}
 
 	// As documented by the quic-go library, this doesn't actually close the entire stream.

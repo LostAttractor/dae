@@ -198,6 +198,40 @@ func TestFirstWriteCarriesHeader(t *testing.T) {
 	}
 }
 
+func TestHeaderWithZeroLengthIV(t *testing.T) {
+	for _, method := range []string{"none", "rc4"} {
+		t.Run(method, func(t *testing.T) {
+			local, peer := net.Pipe()
+			defer local.Close()
+			defer peer.Close()
+			cipher, err := ciphers.NewStreamCipher(method, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := NewTCPConn(local, cipher)
+			conn.header = []byte{1, 127, 0, 0, 1, 0, 80}
+			_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+			done := make(chan error, 1)
+			go func() { _, err := conn.Write([]byte("hello")); done <- err }()
+			wire := make([]byte, len(conn.header)+5)
+			if _, err := io.ReadFull(peer, wire); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("header resent without an IV: %v", err)
+			}
+			server, _ := ciphers.NewStreamCipher(method, "secret")
+			if err := server.InitDecrypt(nil); err != nil {
+				t.Fatal(err)
+			}
+			server.Decrypt(wire, wire)
+			if !bytes.Equal(wire, append(bytes.Clone(conn.header), "hello"...)) {
+				t.Fatalf("request=%x", wire)
+			}
+		})
+	}
+}
+
 func TestReadBeforeWriteSendsHeader(t *testing.T) {
 	server := cipherForTest(t)
 	iv, err := server.InitEncrypt()
@@ -241,9 +275,9 @@ func TestDialRejectsInvalidDependency(t *testing.T) {
 	}
 }
 
-// A peer may reply after the first chunk before reading more, so a concurrent
-// Read must wait for the header's carrier write only.
-func TestReadDuringFirstWriteWaitsForHeaderOnly(t *testing.T) {
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
 	local, peer := net.Pipe()
 	defer peer.Close()
 	dialer, err := NewDialer(&oneConnDialer{conn: local}, protocol.Header{Cipher: "aes-128-cfb", Password: "secret", ProxyAddress: "proxy:1"})
@@ -255,20 +289,15 @@ func TestReadDuringFirstWriteWaitsForHeaderOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	go conn.Write(make([]byte, 64<<10))
-	first := make([]byte, 16+7+32<<10) // IV, IPv4 address header, first chunk
-	if _, err := io.ReadFull(peer, first[:1]); err != nil {
+	if _, err := io.ReadFull(peer, make([]byte, 1<<10)); err != nil {
 		t.Fatal(err)
 	}
-	// The first Write now holds the write lock inside its first carrier write.
 	read := make(chan string, 1)
 	go func() {
 		got := make([]byte, 2)
 		_, _ = io.ReadFull(conn, got)
 		read <- string(got)
 	}()
-	if _, err := io.ReadFull(peer, first[1:]); err != nil {
-		t.Fatal(err)
-	}
 	server := cipherForTest(t)
 	iv, err := server.InitEncrypt()
 	if err != nil {
@@ -276,9 +305,9 @@ func TestReadDuringFirstWriteWaitsForHeaderOnly(t *testing.T) {
 	}
 	reply := append(bytes.Clone(iv), "ok"...)
 	server.Encrypt(reply[16:], reply[16:])
-	_ = peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := peer.Write(reply); err != nil {
-		t.Fatalf("Read waited for the rest of the first Write: %v", err)
+		t.Fatalf("Read waited for the first Write: %v", err)
 	}
 	if got := <-read; got != "ok" {
 		t.Fatalf("Read=%q", got)

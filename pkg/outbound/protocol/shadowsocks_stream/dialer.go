@@ -45,7 +45,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		}
 		// The first Write carries the address header; see TcpConn.
 		conn.header = header.Bytes()
-		conn.headerDone = make(chan struct{})
 		return conn, nil
 	case "udp":
 		if _, err := socks5.AddressFromString(address); err != nil {

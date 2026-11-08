@@ -100,6 +100,37 @@ func TestUDPReadLeavesHeaderToFirstWrite(t *testing.T) {
 	}
 }
 
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	conn := dialCarrier(t, "tcp", local)
+	defer conn.Close()
+	payload := bytes.Repeat([]byte{'x'}, 64<<10)
+	go conn.Write(payload)
+	got := make([]byte, 1<<10)
+	if _, err := io.ReadFull(peer, got); err != nil || !bytes.HasPrefix(got, requestHeader(commandConnect)) {
+		t.Fatalf("peer read %q, %v", got, err)
+	}
+	read := make(chan error, 1)
+	go func() {
+		reply := make([]byte, 5)
+		_, err := io.ReadFull(conn, reply)
+		if err == nil && string(reply) != "reply" {
+			err = errors.New("wrong reply " + string(reply))
+		}
+		read <- err
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Write([]byte("reply")); err != nil {
+		t.Fatalf("Read waited for the first Write: %v", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+}
+
 type halfCloseConn struct {
 	*memoryConn
 	writesAtCloseWrite int

@@ -142,7 +142,7 @@ func TestTCPConnWriteRejectsShortUnderlayWrite(t *testing.T) {
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
 	}
-	conn.onceWrite.Store(true)
+	conn.first.Done(nil)
 
 	if n, err := conn.Write([]byte("payload")); n != 0 || !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Write() = %d, %v; want 0, %v", n, err, io.ErrShortWrite)
@@ -171,7 +171,7 @@ func TestTCPConnWriteKeepsAlignedStreamUsableAfterFullWriteError(t *testing.T) {
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
 	}
-	conn.onceWrite.Store(true)
+	conn.first.Done(nil)
 	payload := []byte("payload")
 
 	if n, err := conn.Write(payload); n != len(payload) || !errors.Is(err, writeErr) {
@@ -203,8 +203,8 @@ func TestTCPConnWriteRejectsInvalidAddressBeforeWriting(t *testing.T) {
 	if underlay.writes != 0 {
 		t.Fatalf("underlay writes = %d, want 0", underlay.writes)
 	}
-	if conn.onceWrite.Load() {
-		t.Fatal("failed address encoding marked the first write complete")
+	if conn.first.Err() == nil {
+		t.Fatal("failed address encoding not kept")
 	}
 }
 
@@ -223,7 +223,7 @@ func TestTCPConnWriteBuffersSealsWholeChunks(t *testing.T) {
 		cipherWrite: aead,
 		nonceWrite:  make([]byte, aead.NonceSize()),
 	}
-	conn.onceWrite.Store(true)
+	conn.first.Done(nil)
 	// An 8-byte frame header, then payload crossing a chunk boundary.
 	v := [][]byte{[]byte("header.."), bytes.Repeat([]byte("x"), TCPChunkMaxLen), nil, []byte("tail")}
 	var payload []byte
@@ -446,6 +446,34 @@ func TestTCPConnCloseWriteSendsRequestFirst(t *testing.T) {
 	}
 }
 
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestTCPConnReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	key, response := responseStream(t, "aes-128-gcm", []byte("reply"), 1)
+	local, peer := net.Pipe()
+	defer peer.Close()
+	target, _ := socks5.AddressFromString("example.com:443")
+	conn := NewTCPConn(local, ciphers.AeadCiphersConf["aes-128-gcm"], key, RandomSaltGenerator(16), target)
+	defer conn.Close()
+	go conn.Write(make([]byte, 64<<10))
+	if _, err := io.ReadFull(peer, make([]byte, 1<<10)); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 5)
+		n, _ := io.ReadFull(conn, reply)
+		read <- string(reply[:n])
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Write(response); err != nil {
+		t.Fatalf("Read waited for the first Write: %v", err)
+	}
+	if got := <-read; got != "reply" {
+		t.Fatalf("reply=%q", got)
+	}
+}
+
 func TestTCPConnFailedRequestIsSticky(t *testing.T) {
 	raw := new(shortWriteConn)
 	target, _ := socks5.AddressFromString("example.com:443")
@@ -458,6 +486,28 @@ func TestTCPConnFailedRequestIsSticky(t *testing.T) {
 	}
 	if err := conn.CloseWrite(); !errors.Is(err, io.ErrShortWrite) || raw.writes != 1 {
 		t.Fatalf("CloseWrite() = %v after %d writes", err, raw.writes)
+	}
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("second Read() = %v", err)
+	}
+}
+
+func TestTCPConnFullFirstWriteErrorIsSticky(t *testing.T) {
+	want := errors.New("carrier failed after consuming the request")
+	raw := &fullWriteErrorConn{err: want}
+	target, _ := socks5.AddressFromString("example.com:443")
+	c := NewTCPConn(raw, ciphers.AeadCiphersConf["aes-128-gcm"], make([]byte, 16), RandomSaltGenerator(16), target).(*TCPConn)
+	if n, err := c.WriteBuffers([][]byte{[]byte("one"), []byte("two")}); n != 6 || err != want {
+		t.Fatalf("first WriteBuffers = %d, %v", n, err)
+	}
+	if _, err := c.Write([]byte("retry")); err != want {
+		t.Fatalf("second Write = %v", err)
+	}
+	if _, err := c.Read(make([]byte, 1)); err != want {
+		t.Fatalf("Read = %v", err)
+	}
+	if err := c.CloseWrite(); err != want || raw.writes != 1 {
+		t.Fatalf("CloseWrite = %v after %d writes", err, raw.writes)
 	}
 }
 

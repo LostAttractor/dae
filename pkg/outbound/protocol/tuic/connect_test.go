@@ -24,6 +24,7 @@ type fakeStream struct {
 	writes   [][]byte
 	finAfter int // writes sent before CloseWrite, -1 without CloseWrite
 	fail     error
+	short    bool
 }
 
 func (s *fakeStream) Write(b []byte) (int, error) {
@@ -31,6 +32,9 @@ func (s *fakeStream) Write(b []byte) (int, error) {
 		return 0, s.fail
 	}
 	s.writes = append(s.writes, bytes.Clone(b))
+	if s.short {
+		return len(b) - 1, nil
+	}
 	return len(b), nil
 }
 func (s *fakeStream) Read(p []byte) (int, error)       { return s.reply.Read(p) }
@@ -101,6 +105,62 @@ func TestConnectCommandRidesFirstWrite(t *testing.T) {
 	_, readErr := c.Read(reply)
 	if writeErr != fail || readErr != fail || c.CloseWrite() != fail || len(s.writes) != 0 || s.finAfter != -1 {
 		t.Fatalf("failure not sticky: write=%v read=%v writes=%q", writeErr, readErr, s.writes)
+	}
+}
+
+func TestConnectShortFirstWriteIsSticky(t *testing.T) {
+	s := &fakeStream{short: true, reply: strings.NewReader("pong"), finAfter: -1}
+	c := newConnectConn(s, []byte{Ver5, ConnectType})
+	if n, err := c.Write([]byte("hello")); n != 4 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("first Write = %d, %v", n, err)
+	}
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Read = %v", err)
+	}
+	if _, err := c.Write([]byte("again")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("second Write = %v", err)
+	}
+	if err := c.CloseWrite(); !errors.Is(err, io.ErrShortWrite) || len(s.writes) != 1 || s.finAfter != -1 {
+		t.Fatalf("CloseWrite = %v, writes=%d FIN after=%d", err, len(s.writes), s.finAfter)
+	}
+}
+
+// heldStream blocks writes, as flow control does, until hold is closed.
+type heldStream struct {
+	fakeStream
+	hold, started chan struct{}
+}
+
+func (s *heldStream) Write(b []byte) (int, error) {
+	close(s.started)
+	<-s.hold
+	return s.fakeStream.Write(b)
+}
+
+// A peer may reply before it reads all of the first Write.
+func TestConnectReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	s := &heldStream{reply: strings.NewReader("pong"), hold: make(chan struct{}), started: make(chan struct{})}
+	defer close(s.hold)
+	c := newConnectConn(s, []byte{Ver5, ConnectType})
+	go c.Write([]byte("hello"))
+	select {
+	case <-s.started:
+	case <-time.After(time.Second):
+		t.Fatal("first Write did not start")
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 4)
+		n, _ := io.ReadFull(c, reply)
+		read <- string(reply[:n])
+	}()
+	select {
+	case got := <-read:
+		if got != "pong" {
+			t.Fatalf("reply=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read waited for the first Write")
 	}
 }
 

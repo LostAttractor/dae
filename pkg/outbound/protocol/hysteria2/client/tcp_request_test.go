@@ -175,6 +175,70 @@ func TestFastOpenReadOrCloseWriteSendsRequestAlone(t *testing.T) {
 	}
 }
 
+func TestFastOpenReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	c, server := fastOpenClient(t, nil)
+	conn, err := c.DialContext(t.Context(), "tcp", "example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	go conn.Write(make([]byte, 8<<20))
+	peer := acceptTCPRequest(t, server)
+	if _, err := io.ReadFull(peer, make([]byte, 1<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Write([]byte{0, 0, 0, 'p', 'o', 'n', 'g'}); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 4)
+		n, _ := io.ReadFull(conn, reply)
+		read <- string(reply[:n])
+	}()
+	select {
+	case got := <-read:
+		if got != "pong" {
+			t.Fatalf("reply=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read waited for the first Write")
+	}
+}
+
+func TestFastOpenRequestRejectionStaysTerminal(t *testing.T) {
+	c, server := fastOpenClient(t, nil)
+	conn, err := c.DialContext(t.Context(), "tcp", "example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	written := make(chan error, 1)
+	go func() { _, err := conn.Write(make([]byte, 8<<20)); written <- err }()
+	peer := acceptTCPRequest(t, server)
+	if err := writeTargetRejection(peer, "refused"); err != nil {
+		t.Fatal(err)
+	}
+	_, first := conn.Read(make([]byte, 1))
+	if _, ok := errors.AsType[*TargetDialError](first); !ok {
+		t.Fatalf("Read = %v, want target rejection", first)
+	}
+	select {
+	case err := <-written:
+		if err != first {
+			t.Fatalf("Write = %v, want %v", err, first)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("target rejection left the request write blocked")
+	}
+	if _, again := conn.Read(make([]byte, 1)); again != first {
+		t.Fatalf("second Read = %v, want %v", again, first)
+	}
+	if err := netproxy.CloseWrite(conn); err != first {
+		t.Fatalf("CloseWrite = %v, want %v", err, first)
+	}
+}
+
 func TestFastOpenFailedRequestSticks(t *testing.T) {
 	c, _ := fastOpenClient(t, nil)
 	conn, err := c.DialContext(t.Context(), "tcp", "example.test:443")

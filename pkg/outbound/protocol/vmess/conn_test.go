@@ -237,6 +237,37 @@ func TestShortWriteIsStickyIncludingHeader(t *testing.T) {
 	}
 }
 
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	addr, _ := socks5.AddressFromString("example.com:443")
+	c, err := newConn(local, request{address: addr, network: "tcp", cipher: CipherAES128GCM}, wireKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	request, _ := parseRequest(t, c.header)
+	go c.Write(make([]byte, 64<<10))
+	if _, err := io.ReadFull(peer, make([]byte, 1<<10)); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 5)
+		n, _ := io.ReadFull(c, reply)
+		read <- string(reply[:n])
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Write(responseWire(t, request, []byte("reply"))); err != nil {
+		t.Fatalf("Read waited for the first Write: %v", err)
+	}
+	if got := <-read; got != "reply" {
+		t.Fatalf("reply=%q", got)
+	}
+}
+
 type pipeDialer struct{ conn net.Conn }
 
 func (d pipeDialer) DialContext(context.Context, string, string) (net.Conn, error) {

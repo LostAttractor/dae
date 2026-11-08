@@ -270,8 +270,8 @@ func TestReduceRttRejectionResendsRequest(t *testing.T) {
 	// Read while the first write holds the command lock, so the read waits
 	// on the early stream.
 	conn := client.(*connectConn)
-	for conn.mu.TryLock() {
-		conn.mu.Unlock()
+	for conn.first.TryLock() {
+		conn.first.Unlock()
 		time.Sleep(time.Millisecond)
 	}
 	read := make(chan error, 1)

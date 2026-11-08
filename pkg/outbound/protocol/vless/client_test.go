@@ -129,6 +129,36 @@ func TestFailedRequestHeaderIsSticky(t *testing.T) {
 		t.Fatalf("CloseWrite=%v, carrier writes=%d halves=%d", err, raw.writes, raw.halves)
 	}
 }
+
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	c, err := clientDialer(t, local, "").DialContext(t.Context(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	go c.Write(make([]byte, 64<<10))
+	got := make([]byte, 1<<10)
+	if _, err := io.ReadFull(peer, got); err != nil || !bytes.HasPrefix(got, request(nil, 1, exampleTarget...)) {
+		t.Fatalf("peer read %x, %v", got, err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 2)
+		n, _ := io.ReadFull(c, reply)
+		read <- string(reply[:n])
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Write([]byte{0, 0, 'o', 'k'}); err != nil {
+		t.Fatalf("Read waited for the first Write: %v", err)
+	}
+	if got := <-read; got != "ok" {
+		t.Fatalf("reply=%q", got)
+	}
+}
 func TestUDPTruncationConsumesOneDatagram(t *testing.T) {
 	raw := &testConn{input: bytes.NewReader([]byte{0, 0, 0, 3, 'a', 'b', 'c', 0, 2, 'd', 'e'})}
 	c, err := clientDialer(t, raw, "").(*Dialer).openPacket(context.Background(), "[2001:db8::1]:53")
@@ -221,6 +251,7 @@ type tlsCarrier struct {
 	*gotls.Conn
 	writes atomic.Int32
 	fail   error
+	hold   chan struct{} // blocks writes until closed
 }
 
 func (c *tlsCarrier) TLSConn() net.Conn { return c.Conn }
@@ -228,6 +259,9 @@ func (c *tlsCarrier) Write(p []byte) (int, error) {
 	c.writes.Add(1)
 	if c.fail != nil {
 		return 0, c.fail
+	}
+	if c.hold != nil {
+		<-c.hold
 	}
 	return c.Conn.Write(p)
 }
@@ -324,6 +358,36 @@ func TestVisionCoalescesRequestHeaderWithFirstRecord(t *testing.T) {
 				t.Fatalf("reply=%q", got)
 			}
 		}
+	}
+}
+func TestVisionReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	carrier, server := tlsPair(t)
+	carrier.hold = make(chan struct{})
+	defer close(carrier.hold)
+	c := dialVision(t, carrier)
+	go c.Write([]byte("hello"))
+	for deadline := time.Now().Add(2 * time.Second); carrier.writes.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("first record not written")
+		}
+	}
+	key, _ := Password2Key(testUUID)
+	if _, err := server.Write(append(append([]byte{0, 0}, key...), 1, 0, 2, 0, 0, 'o', 'k')); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		p := make([]byte, 2)
+		n, _ := io.ReadFull(c, p)
+		read <- string(p[:n])
+	}()
+	select {
+	case got := <-read:
+		if got != "ok" {
+			t.Fatalf("reply=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read waited for the first Write")
 	}
 }
 func TestVisionCloseWriteFirstCoalescesPaddingEnd(t *testing.T) {

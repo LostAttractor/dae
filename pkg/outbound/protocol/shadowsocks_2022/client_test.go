@@ -376,6 +376,9 @@ func TestClientTCPIncompleteWriteAndInitFailureAreSticky(t *testing.T) {
 	if _, err := c.Write([]byte("again")); !errors.Is(err, io.ErrShortWrite) || raw.writes != 1 {
 		t.Fatal("partial request flushed by Read was retried")
 	}
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("second Read = %v", err)
+	}
 }
 
 func udpResponse(t *testing.T, c *UdpConn, server [8]byte, packetID uint64, client [8]byte, seconds uint64) []byte {
@@ -599,6 +602,33 @@ func TestClientTCPReadAndCloseWriteSendRequestFirst(t *testing.T) {
 		if raw.writes != 1 || addr.Hostname != "example.com" || padding < 1 || padding > MaxPaddingLength || len(payload) != 0 {
 			t.Fatalf("request %v padding=%d %q in %d writes", addr, padding, payload, raw.writes)
 		}
+	}
+}
+
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestClientTCPReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	local, peer := net.Pipe()
+	defer peer.Close()
+	c := newClientForTest(t, local, key)
+	defer c.Close()
+	go c.Write(make([]byte, 64<<10))
+	if _, err := io.ReadFull(peer, make([]byte, 1<<10)); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 5)
+		n, _ := io.ReadFull(c, reply)
+		read <- string(reply[:n])
+	}()
+	_ = peer.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Write(responseFrame(t, key, c.requestSalt, []byte("reply"), uint64(time.Now().Unix()))); err != nil {
+		t.Fatalf("Read waited for the first Write: %v", err)
+	}
+	if got := <-read; got != "reply" {
+		t.Fatalf("reply=%q", got)
 	}
 }
 

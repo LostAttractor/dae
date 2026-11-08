@@ -135,12 +135,14 @@ func (c *Client) dialConn(stream *utils.QStream, addr string) (net.Conn, error) 
 	if !ok {
 		return nil, targetDialError(stream, msg)
 	}
-	return &tcpConn{
+	conn := &tcpConn{
 		Orig:             stream,
 		PseudoLocalAddr:  stream.LocalAddr(),
 		PseudoRemoteAddr: stream.RemoteAddr(),
 		Established:      true,
-	}, nil
+	}
+	conn.first.Done(nil)
+	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context, _ string) (net.PacketConn, error) {

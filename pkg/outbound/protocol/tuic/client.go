@@ -10,11 +10,9 @@ import (
 	"net"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
 	"github.com/daeuniverse/quic-go"
@@ -360,64 +358,31 @@ type trackedStream interface {
 // the 0-RTT data.
 type connectConn struct {
 	trackedStream
-	pending atomic.Bool
-	mu      sync.Mutex // orders the command before any payload or FIN
+	first   protocol.FirstWrite
 	command []byte
-	err     error // sticky command write failure
 }
 
 func newConnectConn(stream trackedStream, command []byte) *connectConn {
-	c := &connectConn{trackedStream: stream, command: command}
-	c.pending.Store(true)
-	return c
-}
-
-// writeCommandLocked writes the pending command followed by b and reports
-// the bytes of b written.
-func (c *connectConn) writeCommandLocked(b []byte) (int, error) {
-	if c.err != nil {
-		return 0, c.err
-	}
-	if !c.pending.Load() {
-		if len(b) == 0 {
-			return 0, nil
-		}
-		return c.trackedStream.Write(b)
-	}
-	buf := pool.GetBuffer(len(c.command) + len(b))
-	defer pool.PutBuffer(buf)
-	copy(buf[copy(buf, c.command):], b)
-	n, err := c.trackedStream.Write(buf)
-	if early, ok := c.trackedStream.(*earlyStream); ok {
-		if err = early.settle(buf, err); err != nil {
-			n = 0
-		}
-	}
-	if err != nil {
-		c.err = err
-		return max(n-len(c.command), 0), err
-	}
-	c.command = nil
-	c.pending.Store(false)
-	return len(b), nil
+	return &connectConn{trackedStream: stream, command: command}
 }
 
 func (c *connectConn) Write(b []byte) (int, error) {
-	if !c.pending.Load() {
-		return c.trackedStream.Write(b)
+	if c.first.Pending() {
+		c.first.Lock()
+		defer c.first.Unlock()
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.writeCommandLocked(b)
+	return c.first.Write(c.trackedStream, c.command, b)
+}
+
+// flush sends the command alone. The caller holds first.
+func (c *connectConn) flush() error {
+	_, err := c.first.Write(c.trackedStream, c.command, nil)
+	return err
 }
 
 func (c *connectConn) Read(p []byte) (int, error) {
-	// Whoever holds mu while the command is pending is sending it; a reader
-	// that waited could stall behind a write blocked on flow control.
-	if len(p) > 0 && c.pending.Load() && c.mu.TryLock() {
-		_, err := c.writeCommandLocked(nil)
-		c.mu.Unlock()
-		if err != nil {
+	if len(p) > 0 {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, err
 		}
 	}
@@ -425,13 +390,11 @@ func (c *connectConn) Read(p []byte) (int, error) {
 }
 
 func (c *connectConn) CloseWrite() error {
-	if c.pending.Load() {
-		c.mu.Lock()
-		_, err := c.writeCommandLocked(nil)
-		c.mu.Unlock()
-		if err != nil {
-			return err
-		}
+	c.first.Lock()
+	err := c.first.FlushLocked(c.flush)
+	c.first.Unlock()
+	if err != nil {
+		return err
 	}
 	return c.trackedStream.CloseWrite()
 }
@@ -530,8 +493,21 @@ func (s *earlyStream) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *earlyStream) Write(b []byte) (int, error) { return s.stream().Write(b) }
-func (s *earlyStream) CloseWrite() error           { return s.stream().CloseWrite() }
+// Write settles the first write, which carries the command.
+func (s *earlyStream) Write(b []byte) (int, error) {
+	select {
+	case <-s.settled:
+		return s.stream().Write(b)
+	default:
+	}
+	_, err := s.stream().Write(b)
+	if err = s.settle(b, err); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (s *earlyStream) CloseWrite() error { return s.stream().CloseWrite() }
 
 func (s *earlyStream) Close() error {
 	s.mu.Lock()

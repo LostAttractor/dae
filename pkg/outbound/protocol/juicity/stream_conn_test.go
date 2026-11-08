@@ -103,7 +103,7 @@ func TestDialDefersRequestToFirstWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if conn.(*Conn).requestSent.Load() {
+	if !conn.(*Conn).first.Pending() {
 		t.Fatal("DialContext wrote the request")
 	}
 	// More than quic-go buffers into one frame, so a request written on its
@@ -152,6 +152,34 @@ func TestReadBeforeWriteSendsRequest(t *testing.T) {
 	}
 	if rest, err := io.ReadAll(remote); err != nil || string(rest) != "reply" {
 		t.Fatalf("after request %q, %v", rest, err)
+	}
+}
+
+// A peer may reply after part of the first Write and read on only once the
+// client has read that reply.
+func TestReadDoesNotWaitForBlockedFirstWrite(t *testing.T) {
+	conn, server := newPendingConn(t)
+	go conn.Write(make([]byte, 8<<20)) // beyond the stream's flow-control window
+	remote := acceptStream(t, server)
+	if _, err := io.ReadFull(remote, make([]byte, 1<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Write([]byte("reply")); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan string, 1)
+	go func() {
+		reply := make([]byte, 5)
+		n, _ := io.ReadFull(conn, reply)
+		read <- string(reply[:n])
+	}()
+	select {
+	case got := <-read:
+		if got != "reply" {
+			t.Fatalf("reply=%q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read waited for the first Write")
 	}
 }
 
@@ -207,7 +235,7 @@ func TestUDPReadLeavesRequestToFirstDatagram(t *testing.T) {
 	conn := &PacketConn{Conn: newConn(stream, &Metadata{Metadata: metadata, Network: "udp"})}
 	t.Cleanup(func() { _ = conn.Close() })
 	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
-	if _, _, err := conn.ReadFrom(make([]byte, 8)); !errors.Is(err, os.ErrDeadlineExceeded) || conn.requestSent.Load() {
-		t.Fatalf("ReadFrom = %v, request sent = %v", err, conn.requestSent.Load())
+	if _, _, err := conn.ReadFrom(make([]byte, 8)); !errors.Is(err, os.ErrDeadlineExceeded) || !conn.first.Pending() {
+		t.Fatalf("ReadFrom = %v, request sent = %v", err, !conn.first.Pending())
 	}
 }

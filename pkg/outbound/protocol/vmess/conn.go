@@ -10,10 +10,10 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 )
 
 const MaxChunkSize = 1 << 14
@@ -23,9 +23,9 @@ const MaxChunkSize = 1 << 14
 // (Write, WriteTo or CloseWrite); a stream Read that comes first sends it alone.
 type Conn struct {
 	net.Conn
-	readMu, writeMu         sync.Mutex
-	header                  []byte      // pending request header (pooled), guarded by writeMu
-	sent                    atomic.Bool // header reached the carrier
+	readMu                  sync.Mutex
+	first                   protocol.FirstWrite
+	header                  []byte // pending request header (pooled), guarded by first
 	reader                  *bufio.Reader
 	writeCipher, readCipher cipher.AEAD
 	writeSize, readSize     *ShakeSizeParser
@@ -101,17 +101,16 @@ func (c *Conn) writeChunk(p []byte) error {
 }
 
 // writeCarrier writes data, which begins with the pending request header
-// until a write carries it. The header is never retried: a failed attempt
-// leaves the stream unusable, so its error stays sticky.
+// until a write carries it.
 func (c *Conn) writeCarrier(data []byte) error {
 	n, err := c.Conn.Write(data)
 	if err == nil && n != len(data) {
 		err = io.ErrShortWrite
 	}
-	if c.header != nil {
+	if c.first.Pending() {
 		pool.PutBuffer(c.header)
 		c.header = nil
-		c.sent.Store(err == nil)
+		c.first.Done(err)
 	}
 	if err != nil {
 		c.writeErr = err
@@ -119,31 +118,16 @@ func (c *Conn) writeCarrier(data []byte) error {
 	return err
 }
 
-// flushLocked sends the pending request header alone.
-func (c *Conn) flushLocked() error {
-	if c.writeErr != nil || c.sent.Load() {
-		return c.writeErr
-	}
-	return c.writeCarrier(c.header)
-}
-
-// flush runs before every read: the server replies only after the request header.
-func (c *Conn) flush() error {
-	if c.sent.Load() {
-		return nil
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return c.flushLocked()
-}
+// flush sends the pending request header alone.
+func (c *Conn) flush() error { return c.writeCarrier(c.header) }
 func (c *Conn) Write(p []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
 	if len(p) == 0 {
-		return 0, c.flushLocked()
+		return 0, c.first.FlushLocked(c.flush)
 	}
 	written := 0
 	size := MaxChunkSize - 2 - c.writeCipher.Overhead() - int(c.writeSize.MaxPaddingLen())
@@ -157,8 +141,8 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return written, nil
 }
 func (c *Conn) CloseWrite() error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if c.writeErr != nil {
 		return c.writeErr
 	}
@@ -265,7 +249,8 @@ func (c *Conn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := c.flush(); err != nil {
+	// The server replies only after the request header.
+	if err := c.first.Flush(c.flush); err != nil {
 		return 0, err
 	}
 	c.readMu.Lock()

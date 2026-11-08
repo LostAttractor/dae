@@ -10,6 +10,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 )
 
 // TcpConn encrypts one Shadowsocks stream. A conn returned by
@@ -18,15 +19,14 @@ import (
 // before any Write sends the header alone first.
 type TcpConn struct {
 	net.Conn
-	cipher                *ciphers.StreamCipher
-	readMu, writeMu       sync.Mutex
-	readIV                []byte
-	readIVUsed            int
-	readReady, writeReady bool
-	readErr, writeErr     error
-	header                []byte        // guarded by writeMu; nil once headerDone is closed
-	headerDone            chan struct{} // nil unless DialContext deferred a header
-	headerErr             error         // set before headerDone is closed
+	cipher            *ciphers.StreamCipher
+	readMu            sync.Mutex
+	first             protocol.FirstWrite // the IV and any header go with the first write
+	readIV            []byte
+	readIVUsed        int
+	readReady         bool
+	readErr, writeErr error
+	header            []byte // nil unless DialContext deferred a header
 }
 
 func NewTCPConn(conn net.Conn, cipher *ciphers.StreamCipher) *TcpConn {
@@ -36,9 +36,8 @@ func (c *TcpConn) Cipher() *ciphers.StreamCipher    { return c.cipher }
 func (c *TcpConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
 
 func (c *TcpConn) Read(p []byte) (int, error) {
-	// Send the header before taking readMu so a blocked Read never holds writeMu.
-	if len(p) > 0 && c.headerDone != nil {
-		if err := c.sendHeader(); err != nil {
+	if len(p) > 0 && c.header != nil {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, err
 		}
 	}
@@ -70,53 +69,37 @@ func (c *TcpConn) Read(p []byte) (int, error) {
 }
 
 func (c *TcpConn) Write(p []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	return c.write(p)
 }
 
-// sendHeader lets server-first peers reply before the caller writes. A writer
-// holding writeMu carries the header in its first carrier write, so Read waits
-// for that write only: waiting for the whole Write can deadlock against a peer
-// that replies before it reads more.
-func (c *TcpConn) sendHeader() error {
-	select {
-	case <-c.headerDone:
-		return c.headerErr
-	default:
-	}
-	if c.writeMu.TryLock() {
-		if c.header != nil {
-			_, _ = c.write(nil)
-		}
-		c.writeMu.Unlock()
-	}
-	<-c.headerDone
-	return c.headerErr
-}
-
-func (c *TcpConn) finishHeader(err error) {
-	c.header, c.headerErr = nil, err
-	close(c.headerDone)
+// flush lets server-first peers reply before the caller writes.
+func (c *TcpConn) flush() error {
+	_, err := c.write(nil)
+	return err
 }
 
 func (c *TcpConn) write(p []byte) (int, error) {
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
-	header := c.header
+	var header []byte
+	if c.first.Pending() {
+		header = c.header
+	}
 	if len(p) == 0 && header == nil {
 		return 0, nil
 	}
 	iv, err := c.cipher.InitEncrypt()
 	if err != nil {
 		c.writeErr = err
-		if header != nil {
-			c.finishHeader(err)
+		if c.first.Pending() {
+			c.first.Done(err)
 		}
 		return 0, err
 	}
-	if !c.writeReady {
+	if c.first.Pending() {
 		if inner, ok := c.Conn.(interface{ SetCipher(*ciphers.StreamCipher) }); ok {
 			inner.SetCipher(c.cipher)
 		}
@@ -129,7 +112,7 @@ func (c *TcpConn) write(p []byte) (int, error) {
 	for len(header) > 0 || written < len(p) {
 		size := min(len(p)-written, 32<<10)
 		ivSize := 0
-		if !c.writeReady {
+		if c.first.Pending() {
 			ivSize = len(iv)
 		}
 		headEnd := ivSize + len(header)
@@ -143,10 +126,9 @@ func (c *TcpConn) write(p []byte) (int, error) {
 		if err == nil && n != len(buf) {
 			err = io.ErrShortWrite
 		}
-		c.writeReady = true
-		if header != nil {
+		if c.first.Pending() {
 			header = nil
-			c.finishHeader(err)
+			c.first.Done(err)
 		}
 		if err != nil {
 			c.writeErr = err
@@ -158,8 +140,8 @@ func (c *TcpConn) write(p []byte) (int, error) {
 }
 
 func (c *TcpConn) CloseWrite() error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if c.writeErr != nil {
 		return c.writeErr
 	}

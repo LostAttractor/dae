@@ -15,8 +15,8 @@ type PacketConn struct {
 }
 
 func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	if !c.packetAddr && len(p) == 0 {
 		return 0, fmt.Errorf("empty VMess UDP payload is reserved for the end marker")
 	}

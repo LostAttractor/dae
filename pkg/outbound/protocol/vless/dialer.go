@@ -113,8 +113,7 @@ func (d *Dialer) open(ctx context.Context, network, address string) (net.Conn, e
 		return nil, lease.Cause()
 	}
 	// The request travels with the caller's first write; see Conn.
-	conn := &Conn{Conn: parent, request: bytes.Clone(header.Bytes())}
-	conn.readFlush.Store(network == "tcp")
+	conn := &Conn{Conn: parent, request: bytes.Clone(header.Bytes()), readFlush: network == "tcp" && d.flow != XRV}
 	if d.flow != XRV {
 		return conn, nil
 	}

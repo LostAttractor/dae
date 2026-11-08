@@ -7,11 +7,11 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 
 	"github.com/daeuniverse/dae/pkg/outbound/ciphers"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/internal/aeadframe"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 )
@@ -32,12 +32,11 @@ type TCPConn struct {
 
 	cipherWrite cipher.AEAD
 	onceRead    bool
-	onceWrite   atomic.Bool // Set under writeMutex once the header is sealed.
+	first       protocol.FirstWrite // the write lock
 	nonceWrite  []byte
-	writeErr    error // Sticky after an incomplete ciphertext write.
+	writeErr    error // Sticky after an incomplete ciphertext write or a failed header.
 
-	readMutex  sync.Mutex
-	writeMutex sync.Mutex
+	readMutex sync.Mutex
 
 	reader aeadframe.Reader
 }
@@ -66,7 +65,7 @@ func NewTCPConn(conn net.Conn, conf *ciphers.CipherConf, masterKey []byte, sg Sa
 // protocol owns the request and decides when to send it.
 func (c *TCPConn) Read(b []byte) (int, error) {
 	if len(b) > 0 && c.addr != nil {
-		if err := c.flushHeader(); err != nil {
+		if err := c.first.Flush(c.flush); err != nil {
 			return 0, err
 		}
 	}
@@ -98,9 +97,9 @@ func (c *TCPConn) Close() error {
 
 // CloseWrite follows the last complete encrypted frame and leaves Read usable.
 func (c *TCPConn) CloseWrite() error {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	if err := c.flushHeaderLocked(); err != nil {
+	c.first.Lock()
+	defer c.first.Unlock()
+	if err := c.first.FlushLocked(c.flush); err != nil {
 		return err
 	}
 	if c.writeErr != nil {
@@ -124,30 +123,18 @@ func (c *TCPConn) Write(b []byte) (int, error) { return c.WriteBuffers([][]byte{
 // WriteBuffers seals the concatenation of v in chunks cut by aeadframe.Seal
 // and writes them at once. An incomplete write is sticky, as in Write.
 func (c *TCPConn) WriteBuffers(v [][]byte) (int, error) {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
+	c.first.Lock()
+	defer c.first.Unlock()
 	return c.writeLocked(v)
 }
 
-// flushHeader lets the server answer a client that reads before writing.
-func (c *TCPConn) flushHeader() error {
-	if c.onceWrite.Load() {
-		return nil
-	}
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	return c.flushHeaderLocked()
-}
-
-func (c *TCPConn) flushHeaderLocked() error {
-	if c.onceWrite.Load() {
-		return nil
-	}
+// flush sends the header alone. The caller holds first.
+func (c *TCPConn) flush() error {
 	_, err := c.writeLocked(nil)
 	return err
 }
 
-func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
+func (c *TCPConn) writeLocked(v [][]byte) (int, error) {
 	if c.writeErr != nil {
 		return 0, c.writeErr
 	}
@@ -155,41 +142,44 @@ func (c *TCPConn) writeLocked(v [][]byte) (n int, err error) {
 	for _, b := range v {
 		total += len(b)
 	}
+	first := c.first.Pending()
 	var salt []byte
 	payload := v
-	if !c.onceWrite.Load() {
-		defer func() {
-			if err != nil && !c.onceWrite.Load() {
-				c.writeErr = err
-			}
-		}()
+	if first {
 		// The salt precedes the first chunk, which carries the address.
 		salt = c.sg.Get()
 		defer pool.PutBuffer(salt)
-		c.cipherWrite, err = CreateCipher(c.masterKey, salt, c.cipherConf)
-		if err != nil {
-			return 0, fmt.Errorf("fail to initiate cipher: %w", err)
-		}
-		if c.addr != nil {
+		var err error
+		if c.cipherWrite, err = CreateCipher(c.masterKey, salt, c.cipherConf); err != nil {
+			err = fmt.Errorf("fail to initiate cipher: %w", err)
+		} else if c.addr != nil {
 			address := pool.GetBytesBuffer()
 			defer pool.PutBytesBuffer(address)
-			if err = socks5.WriteAddrInfo(c.addr, address); err != nil {
-				return 0, err
+			if err = socks5.WriteAddrInfo(c.addr, address); err == nil {
+				payload = append([][]byte{address.Bytes()}, v...)
 			}
-			payload = append([][]byte{address.Bytes()}, v...)
 		}
-		c.onceWrite.Store(true)
+		if err != nil {
+			c.writeErr = c.first.Done(err)
+			return 0, err
+		}
 	}
 	buf := pool.GetBuffer(len(salt) + aeadframe.SealedSize(c.cipherWrite, payload, TCPChunkMaxLen))
 	defer pool.PutBuffer(buf)
 	out := aeadframe.Seal(append(buf[:0], salt...), c.cipherWrite, c.nonceWrite, payload, TCPChunkMaxLen)
 	written, err := c.Conn.Write(out)
-	if written == len(out) {
-		return total, err
-	}
-	if err == nil {
+	if written != len(out) && err == nil {
 		err = io.ErrShortWrite
 	}
-	c.writeErr = err
-	return 0, err
+	if first {
+		c.first.Done(err)
+	}
+	// After the header, a complete frame keeps later writes aligned.
+	if err != nil && (first || written != len(out)) {
+		c.writeErr = err
+	}
+	if written != len(out) {
+		return 0, err
+	}
+	return total, err
 }

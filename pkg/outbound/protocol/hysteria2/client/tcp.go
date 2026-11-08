@@ -5,11 +5,10 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
-	"github.com/daeuniverse/dae/pkg/outbound/pool"
+	P "github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/internal/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/internal/utils"
 )
@@ -19,13 +18,12 @@ type tcpConn struct {
 	PseudoLocalAddr  net.Addr
 	PseudoRemoteAddr net.Addr
 
-	requestPending        atomic.Bool
-	writeMu               sync.Mutex // orders the pending request before any payload or FIN
+	first                 P.FirstWrite
 	request               []byte
 	readMu                sync.Mutex // one reader owns the response header
 	mu                    sync.Mutex // state and deadline updates, never blocking I/O
 	Established           bool
-	responseErr           error // terminal: failed request write or response
+	responseErr           error // terminal: failed response
 	readDeadline          time.Time
 	responseDeadline      time.Time
 	responseReading       bool
@@ -52,48 +50,13 @@ func (c *tcpConn) DependencyLease() *netproxy.Lease { return c.Orig.DependencyLe
 // as its payload, so a lone request never precedes it. A Read or CloseWrite
 // before any Write sends the request alone; Close never sends it.
 func newFastOpenConn(stream *utils.QStream, request []byte) *tcpConn {
-	c := &tcpConn{Orig: stream, PseudoLocalAddr: stream.LocalAddr(), PseudoRemoteAddr: stream.RemoteAddr(), request: request}
-	c.requestPending.Store(true)
-	return c
+	return &tcpConn{Orig: stream, PseudoLocalAddr: stream.LocalAddr(), PseudoRemoteAddr: stream.RemoteAddr(), request: request}
 }
 
-// writeRequestLocked writes the pending request followed by b and reports
-// the bytes of b written.
-func (c *tcpConn) writeRequestLocked(b []byte) (int, error) {
-	if !c.requestPending.Load() {
-		if len(b) == 0 {
-			return 0, nil
-		}
-		return c.Orig.Write(b)
-	}
-	c.mu.Lock()
-	err := c.responseErr
-	c.mu.Unlock()
-	if err != nil {
-		return 0, err
-	}
-	buf := pool.GetBuffer(len(c.request) + len(b))
-	defer pool.PutBuffer(buf)
-	copy(buf[copy(buf, c.request):], b)
-	n, err := c.Orig.Write(buf)
-	if err != nil {
-		c.mu.Lock()
-		if c.responseErr == nil {
-			c.responseErr = err
-		}
-		err = c.responseErr
-		c.mu.Unlock()
-		return max(n-len(c.request), 0), err
-	}
-	c.request = nil
-	c.requestPending.Store(false)
-	return len(b), nil
-}
-
-func (c *tcpConn) writeRequest(b []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return c.writeRequestLocked(b)
+// flush sends the pending request alone. The caller holds first.
+func (c *tcpConn) flush() error {
+	_, err := c.first.Write(c.Orig, c.request, nil)
+	return err
 }
 
 func responseError(stream *utils.QStream, err error) error {
@@ -116,19 +79,11 @@ func responseError(stream *utils.QStream, err error) error {
 }
 
 func (c *tcpConn) Read(b []byte) (n int, err error) {
-	if c.requestPending.Load() {
-		if len(b) == 0 {
-			return 0, nil // no response before the request
-		}
-		// Whoever holds writeMu while the request is pending is sending it; a
-		// reader that waited could stall behind a write blocked on flow control.
-		if c.writeMu.TryLock() {
-			_, err = c.writeRequestLocked(nil)
-			c.writeMu.Unlock()
-			if err != nil {
-				return 0, err
-			}
-		}
+	if c.first.Pending() && len(b) == 0 {
+		return 0, nil // no response before the request
+	}
+	if err := c.first.Flush(c.flush); err != nil {
+		return 0, c.writeError(err)
 	}
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
@@ -219,11 +174,18 @@ func (c *tcpConn) Write(b []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	if c.requestPending.Load() {
-		n, err = c.writeRequest(b)
+	if c.first.Pending() {
+		c.first.Lock()
+		n, err = c.first.Write(c.Orig, c.request, b)
+		c.first.Unlock()
 	} else {
-		n, err = c.Orig.Write(b)
+		n, err = c.first.Write(c.Orig, nil, b)
 	}
+	return n, c.writeError(err)
+}
+
+// Keep the response failure that aborted a concurrent request write.
+func (c *tcpConn) writeError(err error) error {
 	if err != nil {
 		c.mu.Lock()
 		if c.responseErr != nil {
@@ -231,7 +193,7 @@ func (c *tcpConn) Write(b []byte) (n int, err error) {
 		}
 		c.mu.Unlock()
 	}
-	return n, err
+	return err
 }
 
 func (c *tcpConn) Close() error {
@@ -242,10 +204,11 @@ func (c *tcpConn) Close() error {
 
 // CloseWrite sends a QUIC FIN while leaving the receive side open.
 func (c *tcpConn) CloseWrite() error {
-	if c.requestPending.Load() {
-		if _, err := c.writeRequest(nil); err != nil {
-			return err
-		}
+	c.first.Lock()
+	err := c.first.FlushLocked(c.flush)
+	c.first.Unlock()
+	if err != nil {
+		return c.writeError(err)
 	}
 	return c.Orig.CloseWrite()
 }
