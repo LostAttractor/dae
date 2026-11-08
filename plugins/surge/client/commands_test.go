@@ -36,7 +36,10 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer report-secret" {
 			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: instances, BufferMemory: memory})
+		// Encode durations as the API server does.
+		if err := json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: instances, BufferMemory: memory}, jsonv1.FormatDurationAsNano(true)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	for _, test := range []struct {
