@@ -362,8 +362,10 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.blockedBy = blocked
 		c.stopRetries()
 	}
+	// A mode the protocol rejected leaves the path serving, but not for it.
 	if err == nil && (c.d.failures.generation != result.generation ||
-		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
+		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot()) ||
+		!c.d.servesLocked(flight.network)) {
 		err = ErrCheckSuperseded
 	}
 	flight.err = err

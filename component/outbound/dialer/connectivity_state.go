@@ -519,15 +519,22 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult, before path
 // new representative does not bypass failure_recovery. A failed path recovers
 // through whichever supported mode answers first in canonical order. Without
 // the usable path's representative, a result changes only reachability.
+// A rejection settles capability, not health: when the protocol rejects a
+// relearned representative, the next supported mode represents the path.
 func (d *pathRuntime) applyHealthCheckLocked(result checkResult, before pathView) appliedCheck {
 	previousHealthy := d.health.phase.usable()
-	answering := d.representativeLocked()
+	previous, failing := d.representativeLocked(), d.health.failing
 	d.applyReachabilityLocked(result)
+	answering := representative(d.health.networks, failing)
 	if !previousHealthy {
 		answering = d.representativeLocked()
 	}
 	canonical := resultProbe(result, answering)
 	if previousHealthy && canonical == nil {
+		if answering != previous {
+			// The new representative has not answered yet: prove it at once.
+			d.checks.pending |= checkRequestVerification
+		}
 		// Keep the representative observation's timestamp and latency.
 		force := d.takePendingForceLocked()
 		success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())

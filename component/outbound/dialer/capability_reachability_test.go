@@ -428,6 +428,50 @@ func TestRelearnSettlesCapabilitiesWithoutLeavingService(t *testing.T) {
 	}
 }
 
+// A reload keeps a path in service when the protocol rejects its
+// representative: the mode becomes unsupported, and the next supported mode
+// represents the path and is probed at once. A check of the rejected mode
+// still fails, so no group selects the path for it.
+func TestRelearnRejectedRepresentativeKeepsPathInService(t *testing.T) {
+	for _, kind := range []checkKind{checkHealth, checkSelection} {
+		t.Run(checkKindName[kind], func(t *testing.T) {
+			d := newTestDialer(t, testTransport{})
+			d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
+				{network: common.NetworkTCP6}, {network: common.NetworkTCP4},
+				{network: common.NetworkUDP6}, {network: common.NetworkUDP4},
+			}})
+			d.RelearnCapabilities()
+			checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
+				if network.Index() == common.NetworkTCP6 {
+					return netproxy.UnsupportedTunnelTypeError
+				}
+				return nil
+			})
+			defer checker.stopRetries()
+			d.beginConnectivityCheck(checkHealth) // The worker consumes the reload's request.
+			rejected := probeResult{network: common.NetworkTCP6, err: netproxy.UnsupportedTunnelTypeError}
+			if kind == checkHealth {
+				d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{rejected}})
+			} else if flight := finishSelection(checker, common.NetworkTCP6, rejected); flight.err == nil {
+				t.Fatal("a check of the rejected mode succeeded")
+			}
+			if !d.RuntimeStatus().Healthy || !d.Usable(common.NetworkTCP4.NetworkType()) || d.Usable(common.NetworkTCP6.NetworkType()) {
+				t.Fatalf("the rejection took the path out of service: %v", d.networkStates())
+			}
+			if !d.connectivityCheckRequested() {
+				t.Fatal("the new representative was not probed at once")
+			}
+			result := checker.performAttempt(t.Context(), d.beginConnectivityCheck(checkHealth))
+			if len(result.probes) != 1 || result.probes[0].network != common.NetworkTCP4 {
+				t.Fatalf("the next check did not probe the new representative: %+v", result.probes)
+			}
+			if applied, _ := d.applyCheck(result); !applied.success || !d.Alive(common.NetworkTCP4.NetworkType()) {
+				t.Fatalf("the new representative did not prove the path: %+v", applied)
+			}
+		})
+	}
+}
+
 // A sweep that stops a relearned mode serving publishes it at once, whether
 // the protocol rejects the mode or it stops answering: groups must not keep
 // routing the mode to the path until its next health check.
