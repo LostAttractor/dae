@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"sync"
@@ -27,10 +28,26 @@ func ablationPayload(size int, random bool) []byte {
 	return p
 }
 
+// ablationText is JSON-like, so it compresses like typical API responses.
+func ablationText(size int) []byte {
+	rng := rand.New(rand.NewPCG(1, 2))
+	var p []byte
+	for i := 0; len(p) < size; i++ {
+		p = fmt.Appendf(p, `{"id":%d,"name":"item-%x","score":%.3f,"tags":["alpha","beta"],"active":%t},`, i, rng.Uint32(), rng.Float64(), rng.IntN(2) == 0)
+	}
+	return p[:size]
+}
+
 func BenchmarkCodecHTTP(b *testing.B) {
-	for _, random := range []bool{false, true} {
-		name := map[bool]string{false: "repeated", true: "random"}[random]
-		plain := ablationPayload(64<<10, random)
+	for _, payload := range []struct {
+		name  string
+		plain []byte
+	}{
+		{"repeated", ablationPayload(64<<10, false)},
+		{"random", ablationPayload(64<<10, true)},
+		{"text", ablationText(256 << 10)},
+	} {
+		name, plain := payload.name, payload.plain
 		wire := httpFixture(b, plain, "gzip")
 		for _, snapshot := range []bool{false, true} {
 			b.Run(name+map[bool]string{false: "/reader", true: "/view"}[snapshot], func(b *testing.B) {

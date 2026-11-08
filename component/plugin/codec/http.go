@@ -3,6 +3,7 @@
 package codec
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
@@ -102,7 +103,7 @@ func (c *Codec) decodeBytes(raw []byte, encoding string, limit int64) (*membuffe
 	if err != nil {
 		return nil, err
 	}
-	r := c.httpReader(io.NopCloser(bytes.NewReader(raw)), layers, int64(len(raw)), limit)
+	r := c.httpReader(httpMemorySource{bytes.NewReader(raw)}, layers, int64(len(raw)), limit)
 	defer r.Close()
 	view, err := membuffer.Read(r, limit, c.budget)
 	if err != nil {
@@ -111,6 +112,11 @@ func (c *Codec) decodeBytes(raw []byte, encoding string, limit int64) (*membuffe
 	}
 	return view, nil
 }
+
+// httpMemorySource is bounded by its length and readable byte-wise at no cost.
+type httpMemorySource struct{ *bytes.Reader }
+
+func (httpMemorySource) Close() error { return nil }
 
 func (c *Codec) HTTPReader(source io.ReadCloser, encoding string) (io.ReadCloser, error) {
 	if err := c.ctx.Err(); err != nil {
@@ -214,7 +220,12 @@ func (r *httpReader) reserve(size int64) error {
 
 func (r *httpReader) initialize() error {
 	r.stop = context.AfterFunc(r.codec.ctx, func() { _ = r.Close() })
-	input := r.bounded(r.source, r.wireLimit)
+	var input io.Reader
+	if source, ok := r.source.(httpMemorySource); ok {
+		input = source.Reader
+	} else {
+		input = r.bounded(r.source, r.wireLimit)
+	}
 	for i := len(r.layers) - 1; i >= 0; i-- {
 		var decoder io.Reader
 		var closer io.Closer
@@ -226,43 +237,46 @@ func (r *httpReader) initialize() error {
 			if err := r.reserve(httpFlateWorkspace); err != nil {
 				return err
 			}
-			gz, err := gzip.NewReader(input)
+			compressed := httpByteInput(input)
+			gz, err := gzip.NewReader(compressed)
 			if err != nil {
 				if err == io.EOF {
 					err = io.ErrUnexpectedEOF
 				}
 				return err
 			}
-			decoder, closer = gz, gz
+			decoder, closer, input = gz, gz, compressed
 		case "deflate":
 			if err := r.reserve(httpFlateWorkspace); err != nil {
 				return err
 			}
-			header := &httpDeflateHeader{input: input}
+			compressed := httpByteInput(input)
+			header := &httpDeflateHeader{input: compressed}
 			z, err := zlib.NewReader(header)
 			if err != nil {
 				if sourceErr := r.failure(); sourceErr != nil {
 					return sourceErr
 				}
-				z = flate.NewReader(&httpByteReader{Reader: io.MultiReader(bytes.NewReader(header.bytes[:header.n]), input)})
+				z = flate.NewReader(io.MultiReader(bytes.NewReader(header.bytes[:header.n]), compressed))
 			}
-			decoder, closer = z, z
+			decoder, closer, input = z, z, compressed
 		case "br":
-			first, err := input.ReadByte()
-			if err != nil {
+			first := make([]byte, 1)
+			if _, err := io.ReadFull(input, first); err != nil {
 				if err == io.EOF {
 					err = io.ErrUnexpectedEOF
 				}
 				return err
 			}
-			size, err := httpBrotliWorkspace(first)
+			size, err := httpBrotliWorkspace(first[0])
 			if err != nil {
 				return err
 			}
 			if err := r.reserve(size); err != nil {
 				return err
 			}
-			decoder = brotli.NewReader(io.MultiReader(bytes.NewReader([]byte{first}), input))
+			// Brotli buffers its input itself.
+			decoder = brotli.NewReader(io.MultiReader(bytes.NewReader(first), input))
 		}
 		if closer != nil {
 			r.closers = append(r.closers, closer)
@@ -317,7 +331,6 @@ type httpBoundedReader struct {
 	reader    io.Reader
 	remaining int64
 	err       error
-	byte      [1]byte
 }
 
 func (r *httpBoundedReader) Read(p []byte) (int, error) {
@@ -343,27 +356,17 @@ func (r *httpBoundedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *httpBoundedReader) ReadByte() (byte, error) {
-	return httpReadByte(r, r.byte[:])
-}
-
-type httpByteReader struct {
-	io.Reader
-	byte [1]byte
-}
-
-func (r *httpByteReader) ReadByte() (byte, error) { return httpReadByte(r, r.byte[:]) }
-
-func httpReadByte(r io.Reader, b []byte) (byte, error) {
-	n, err := io.ReadFull(r, b)
-	if n == 1 {
-		return b[0], nil
+// Flate decoders read byte-wise from an io.ByteReader; buffering above a bound
+// lets it and its context check see chunks instead of single bytes.
+func httpByteInput(input io.Reader) flate.Reader {
+	if reader, ok := input.(flate.Reader); ok {
+		return reader
 	}
-	return 0, err
+	return bufio.NewReader(input)
 }
 
 type httpDeflateHeader struct {
-	input *httpBoundedReader
+	input flate.Reader
 	bytes [6]byte
 	n     int
 }

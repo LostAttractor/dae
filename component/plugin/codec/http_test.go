@@ -547,6 +547,29 @@ func TestHTTPReaderIdleCancellation(t *testing.T) {
 	})
 }
 
+func TestHTTPReaderReadsSourceInChunks(t *testing.T) {
+	plain := ablationText(64 << 10)
+	for _, layers := range [][]string{{"gzip"}, {"deflate"}, {"raw"}, {"deflate", "gzip"}} {
+		t.Run(strings.Join(layers, "+"), func(t *testing.T) {
+			raw := httpFixture(t, plain, layers...)
+			c, _ := httpTestCodec(t, t.Context(), 64<<20, Limits{Wire: 1 << 20, Decoded: 1 << 20})
+			source := &httpSpySource{Reader: bytes.NewReader(raw)}
+			r, err := c.HTTPReader(source, strings.ReplaceAll(strings.Join(layers, ","), "raw", "deflate"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(r)
+			_ = r.Close()
+			if err != nil || !bytes.Equal(got, plain) {
+				t.Fatalf("decoded %d bytes: %v", len(got), err)
+			}
+			if reads := source.reads.Load(); int(reads) > len(raw)/1024+4 {
+				t.Fatalf("%d source reads for %d compressed bytes", reads, len(raw))
+			}
+		})
+	}
+}
+
 func TestHTTPReaderTrailingWireBound(t *testing.T) {
 	for _, encoding := range []string{"deflate", "br"} {
 		t.Run(encoding, func(t *testing.T) {
