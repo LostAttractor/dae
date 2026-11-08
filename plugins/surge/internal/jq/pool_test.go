@@ -348,13 +348,13 @@ func TestPoolFinalCleanupFailureReplacement(t *testing.T) {
 	}()
 	select {
 	case err := <-acquired:
-		if !errors.Is(err, ErrUnavailable) {
-			t.Fatalf("Acquire admitted a closing pool: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("final release held the shared lock while closing a worker")
+		t.Fatalf("Acquire did not wait for the closing pool: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 	resumeClose()
+	if err := <-acquired; !errors.Is(err, ErrUnavailable) || !errors.Is(err, processgroup.ErrCleanup) {
+		t.Fatalf("Acquire after a failed final cleanup: %v", err)
+	}
 	closeErr := <-released
 	if !errors.Is(closeErr, processgroup.ErrCleanup) || pool.group.Deleted() {
 		t.Fatalf("final deletion did not retain the failed root: %v", closeErr)
@@ -380,6 +380,62 @@ func TestPoolFinalCleanupFailureReplacement(t *testing.T) {
 		t.Fatal("old release changed its cached error or released the new pool")
 	}
 	if err := replacement.Validate(t.Context(), "."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An Acquire during the last release's close waits for it, then gets a new
+// pool, so concurrent Surge preparation does not fail.
+func TestPoolAcquireWaitsForFinalClose(t *testing.T) {
+	pool, release, err := Acquire()
+	if err != nil {
+		t.Fatalf("jq cgroup unavailable: %v", err)
+	}
+	if err := pool.Validate(t.Context(), "."); err != nil {
+		t.Fatal(err)
+	}
+	closing, resume := make(chan struct{}), make(chan struct{})
+	closeWorker := pool.idle[0].Close
+	pool.idle[0].Close = sync.OnceValue(func() error {
+		close(closing)
+		<-resume
+		return closeWorker()
+	})
+	released := make(chan error, 1)
+	go func() { released <- release() }()
+	<-closing
+	type acquisition struct {
+		pool    *Pool
+		release func() error
+		err     error
+	}
+	acquired := make(chan acquisition, 1)
+	go func() {
+		pool, release, err := Acquire()
+		acquired <- acquisition{pool, release, err}
+	}()
+	select {
+	case got := <-acquired:
+		t.Fatalf("Acquire did not wait for the closing pool: %v", got.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(resume)
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
+	got := <-acquired
+	if got.err != nil {
+		t.Fatalf("Acquire after a final close: %v", got.err)
+	}
+	defer func() {
+		if err := got.release(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if got.pool == pool || !pool.group.Deleted() {
+		t.Fatal("Acquire reused the closed pool")
+	}
+	if err := got.pool.Validate(t.Context(), "."); err != nil {
 		t.Fatal(err)
 	}
 }

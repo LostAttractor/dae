@@ -30,6 +30,7 @@ type Pool struct {
 	idle       []*worker
 	jobs       sync.WaitGroup
 	sequence   atomic.Uint64
+	closed     chan struct{} // closed once the last release finishes close
 }
 
 var shared struct {
@@ -42,7 +43,15 @@ func Acquire() (*Pool, func() error, error) {
 	shared.Lock()
 	defer shared.Unlock()
 	// A retained pool with no references exists only to finish cleanup.
-	if shared.pool != nil && shared.references == 0 {
+	for shared.pool != nil && shared.references == 0 {
+		if closed := shared.pool.closed; closed != nil && !isClosed(closed) {
+			// Wait for the last release to finish closing it, which keeps
+			// workers within one pool's memory, instead of failing.
+			shared.Unlock()
+			<-closed
+			shared.Lock()
+			continue
+		}
 		if !shared.pool.group.Deleted() {
 			return nil, nil, errors.Join(ErrUnavailable, shared.pool.group.Check(), shared.pool.group.CleanupError())
 		}
@@ -62,7 +71,7 @@ func Acquire() (*Pool, func() error, error) {
 			return nil, nil, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16)}
+		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16), closed: make(chan struct{})}
 	}
 	pool := shared.pool
 	if err := pool.group.Check(); err != nil {
@@ -80,9 +89,19 @@ func Acquire() (*Pool, func() error, error) {
 		pool.cancel()
 		pool.mu.Unlock()
 		shared.Unlock()
+		defer close(pool.closed)
 		return pool.close()
 	})
 	return pool, release, nil
+}
+
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Pool) close() error {
