@@ -107,9 +107,15 @@ func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchB
 	g.byName = records
 }
 
+// domainActivityParked owns an activity queue while a reload candidate builds
+// its projection. Events wait in the queue for the next owner, and flushing
+// this closed registry is a no-op, so I/O never waits for the rebuild.
+var domainActivityParked = &DomainRegistry{closed: true}
+
 // ForkFrom publishes an independent projection without stopping old request
 // handlers. Runtime serializes DNS delivery with this snapshot and fans later
 // observations out to every serving generation using its own domain matcher.
+// The old registry is locked only while its evidence is copied.
 func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) (err error) {
 	// Join the old writer before the successor takes over its files.
 	old.stopWorker()
@@ -128,9 +134,7 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 		defer l.io.Unlock()
 	}
 	old.mu.Lock()
-	defer old.mu.Unlock()
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	reconsider := old.drainActivity()
 	old.syncProjection(old.gc(old.evaluatedAt), reconsider, old.evaluatedAt)
 	// The successor journals every change from here on, including handoff
@@ -138,6 +142,7 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	// lists the copies of the pairs it listed.
 	g.persist, old.persist = l, nil
 	g.gcCount = old.gcCount
+	g.clock(old.evaluatedAt)
 	var listed []*domainPair
 	records := make(map[string]*domainRecord, len(old.byName))
 	for name, r := range old.byName {
@@ -155,9 +160,15 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	if l != nil {
 		previous, l.renewed = l.renewed, listed
 	}
-	g.installRecords(records, matchBitmap)
-	g.clock(old.evaluatedAt)
+	// Park the queue: the old registry consumes nothing after this copy, so
+	// the candidate, or the old owner on rejection, receives all of it.
 	a := old.activity
+	a.lock()
+	owner := a.registry
+	a.registry = domainActivityParked
+	a.unlock()
+	old.mu.Unlock()
+	g.installRecords(records, matchBitmap)
 	// Copy queued activity into the candidate without consuming it. On a map
 	// failure the old owner must still be able to process the complete queue.
 	a.lock()
@@ -167,15 +178,22 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 		}
 		maps.Copy(g.activityBatch[i], pending)
 	}
+	a.unlock()
 	g.applyActivity()
 	now = g.clock(now)
 	g.gc(now)
-	a.unlock()
 	if err := g.rebuildProjection(now); err != nil {
+		g.persist = nil
+		g.mu.Unlock()
+		old.mu.Lock()
 		if l != nil {
 			l.renewed = previous
 		}
-		old.persist, g.persist = l, nil
+		old.persist = l
+		a.lock()
+		a.registry = owner
+		a.unlock()
+		old.mu.Unlock()
 		old.wakePersistence()
 		return err
 	}
@@ -183,6 +201,7 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	g.activity = a
 	a.registry = g
 	a.unlock()
+	g.mu.Unlock()
 	g.wakePersistence()
 	return nil
 }

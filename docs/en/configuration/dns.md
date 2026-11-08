@@ -252,7 +252,10 @@ beyond the next one-second check.
 Surviving connections use a shared activity handle redirected when a new
 configuration is published. Reload joins the old background worker and any
 journal write in progress, applies its pending activity, and copies evidence
-into an independent kernel projection.
+into an independent kernel projection. Only the copy locks the old Registry:
+while the new projection is written, the old configuration keeps verifying
+sniffed domains, and activity waits in the queue for the new configuration, or
+for the old one if the reload is rejected.
 Activity after the handoff uses the new window; pending events are applied
 before GC. Delivered DNS observations reach both configurations while the old
 one drains, using each configuration's own rules. Reload preserves existing

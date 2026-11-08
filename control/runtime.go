@@ -313,6 +313,11 @@ func (r *Runtime) forkGeneration(c *ControlPlane) (*ControlPlane, error) {
 	r.mu.Lock()
 	old := r.current
 	r.mu.Unlock()
+	if old != nil {
+		// DNS delivery waits for the fanout lock, so join the old worker
+		// first: its current job can be an fdatasync or a compaction.
+		old.core.domainRegistry.stopWorker()
+	}
 	r.dnsFanout.Lock()
 	defer r.dnsFanout.Unlock()
 	if old != nil {

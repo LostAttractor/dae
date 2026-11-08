@@ -4,10 +4,12 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
 	"net/netip"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -15,6 +17,8 @@ import (
 	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
+	dns "github.com/miekg/dns"
 )
 
 type fakeKernelDomainMaps struct {
@@ -430,6 +434,113 @@ func TestDomainRegistryForkAndActivityHandoff(t *testing.T) {
 		t.Fatal("surviving connection still targets old registry")
 	}
 	checkInvariants(t, next, fake)
+}
+
+// A reload joins the old registry's worker before it blocks DNS delivery, so a
+// slow job on that worker does not hold up replies, whose evidence the
+// successor still receives.
+func TestRuntimeDNSFanoutWhileOldWorkerBusy(t *testing.T) {
+	dir := t.TempDir() // removed after the registries close
+	r := NewRuntime()
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "domain(suffix:example) -> proxy"))
+	plane := func(generation uint32) *ControlPlane {
+		g, _ := newTestRegistry(16, time.Hour)
+		t.Cleanup(func() { _ = g.Close() })
+		return &ControlPlane{core: &controlPlaneCore{bpf: &BPFState{Runtime: r}, domainRegistry: g}, routingMatcher: matcher, routingGeneration: generation}
+	}
+	old, next := plane(1), plane(2)
+	r.current, r.planes[1] = old, old
+	g := old.core.domainRegistry
+	persistTestRegistry(t, g, dir, time.Now())
+	// The worker's pending job waits for the journal lock, like a slow write.
+	l := g.persist
+	l.io.Lock()
+	g.Start()
+	for len(g.persistWake) != 0 {
+		runtime.Gosched()
+	}
+	forked := make(chan error, 1)
+	go func() {
+		_, err := r.forkGeneration(next)
+		forked <- err
+	}()
+	<-g.stopCh
+	name, ip := "a.example.", netip.MustParseAddr("192.0.2.1")
+	request := dnsTestRequest(t, name, 1)
+	m := new(dns.Msg).SetReply(request.MessageCopy())
+	m.Answer = []dns.RR{testARecord(name, ip.String())}
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		old.observeDNS(request, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}, time.Now())
+	}()
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		l.io.Unlock()
+		t.Fatal("DNS delivery waited for the old registry's worker")
+	}
+	l.io.Unlock()
+	if err := <-forked; err != nil {
+		t.Fatal(err)
+	}
+	if !next.core.domainRegistry.Verify(name, ip).Paired {
+		t.Fatal("the successor missed evidence delivered while the reload waited")
+	}
+}
+
+// While the candidate builds its projection, the old registry still serves
+// verification and activity, and the activity reaches whichever registry owns
+// the queue afterwards.
+func TestDomainRegistryForkReleasesOldDuringProjection(t *testing.T) {
+	for _, admit := range []bool{true, false} {
+		t.Run(fmt.Sprint("admit=", admit), func(t *testing.T) {
+			now := time.Now()
+			name, ip := "a.example.", netip.MustParseAddr("192.0.2.1")
+			old, _ := newTestRegistry(4, time.Minute)
+			old.Upsert(name, ip, testBitmap(0), 60, now)
+			entered, release := make(chan struct{}, 1), make(chan struct{})
+			fake := newFakeKernelDomainMaps()
+			next := newDomainRegistry(4, time.Minute, func(ip netip.Addr, bump, routing []uint32) error {
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				<-release
+				if !admit {
+					return errors.New("injected")
+				}
+				return fake.update(ip, bump, routing)
+			}, fake.remove)
+			forked := make(chan error, 1)
+			go func() { forked <- next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now) }()
+			<-entered
+			served := make(chan struct{})
+			go func() {
+				defer close(served)
+				old.Verify(name, ip)
+				old.activity.observe(ip, name, now.Add(30*time.Second))
+			}()
+			select {
+			case <-served:
+			case <-time.After(2 * time.Second):
+				close(release)
+				t.Fatal("the old registry waited for the candidate's projection")
+			}
+			close(release)
+			if err := <-forked; (err == nil) != admit {
+				t.Fatalf("fork error = %v", err)
+			}
+			owner := old
+			if admit {
+				owner = next
+			}
+			owner.flushActivity()
+			if !owner.retention(name, ip).Equal(now.Add(90 * time.Second)) {
+				t.Fatal("activity observed during the projection was lost")
+			}
+		})
+	}
 }
 
 func TestDomainRegistryConcurrent(t *testing.T) {
