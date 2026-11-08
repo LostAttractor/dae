@@ -33,12 +33,6 @@ type udpReplies interface {
 	trySend(data []byte, from netip.AddrPort) error
 }
 
-// UdpHandler sends replies that may block.
-type UdpHandler func(data []byte, from netip.AddrPort) error
-
-func (h UdpHandler) send(data []byte, from netip.AddrPort) error { return h(data, from) }
-func (UdpHandler) trySend([]byte, netip.AddrPort) error          { return errReplyWouldBlock }
-
 const (
 	maxUDPSources               = 4096
 	maxUDPPacketResources       = 2048
@@ -362,15 +356,6 @@ func (p *UdpEndpointPool) packetBudget() *netproxy.PacketBudget {
 		}
 	})
 	return p.resources
-}
-
-type UdpEndpointOptions struct {
-	PacketConn net.PacketConn
-	Handler    UdpHandler
-	NatTimeout time.Duration
-
-	Dialer *dialer.Dialer
-	Path   stats.Path
 }
 
 // deliverMITM admits only the established first-destination bridge during

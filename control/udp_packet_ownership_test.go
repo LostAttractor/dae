@@ -40,7 +40,7 @@ func TestUDPOwnershipHandoffAtMemoryLimit(t *testing.T) {
 	endpoint.setupOwner.Store(owner)
 	endpoints.add(src, endpoint)
 	current := &ControlPlane{udpEndpoints: endpoints}
-	if err := current.handleUDPPacket(t.Context(), nil, &packet, src, dst, nil); err != nil {
+	if err := current.handleUDPPacket(t.Context(), new(udpWriteSlot), &packet, src, dst, nil); err != nil {
 		t.Fatal(err)
 	}
 	if packet.data != nil || packet.owned {

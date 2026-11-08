@@ -30,10 +30,10 @@ func TestUDPExpiryIsCountedButCancellationIsNot(t *testing.T) {
 	t.Cleanup(p.close)
 	work := udpPacketWork{plane: &ControlPlane{ctx: ctx, udpTaskPool: p}, deadline: time.Now()}
 	expired := dropExpired.Load()
-	work.execute(nil, nil)
+	work.executeData(nil, nil)
 	require.EqualValues(t, 1, dropExpired.Load()-expired)
 	cancel()
-	work.execute(nil, nil)
+	work.executeData(nil, nil)
 	require.EqualValues(t, 1, dropExpired.Load()-expired, "a canceled packet was counted as expired")
 }
 
@@ -55,7 +55,7 @@ func TestUDPSetupPastDeadlineIsCountedExpired(t *testing.T) {
 	work := udpPacketWork{plane: c, src: netip.MustParseAddrPort("192.0.2.2:30000"), dst: netip.MustParseAddrPort("192.0.2.3:5000"),
 		routingResult: &routingResult{Outbound: 2, Mac: [6]byte{2, 0, 0, 0, 0, 10}}, deadline: time.Now().Add(200 * time.Millisecond)}
 	expired, all := dropExpired.Load(), countedDrops()
-	work.execute(nil, []byte("datagram"))
+	work.executeData(nil, []byte("datagram"))
 	require.EqualValues(t, 1, dropExpired.Load()-expired)
 	require.EqualValues(t, 1, countedDrops()-all)
 }
@@ -82,7 +82,7 @@ func TestUDPSetupBeyondPacketResourcesIsCounted(t *testing.T) {
 	work := udpPacketWork{plane: c, src: netip.MustParseAddrPort("192.0.2.2:30001"), dst: netip.MustParseAddrPort("192.0.2.3:5000"),
 		routingResult: &routingResult{Outbound: 2, Mac: [6]byte{2, 0, 0, 0, 0, 10}}, deadline: time.Now().Add(time.Second)}
 	limited, all := dropResourceLimit.Load(), countedDrops()
-	work.execute(nil, []byte("datagram"))
+	work.executeData(nil, []byte("datagram"))
 	require.EqualValues(t, 1, dropResourceLimit.Load()-limited)
 	require.EqualValues(t, 1, countedDrops()-all)
 }
@@ -105,7 +105,7 @@ func TestUDPSetupFailureIsCounted(t *testing.T) {
 	work := udpPacketWork{plane: c, src: netip.MustParseAddrPort("192.0.2.2:30002"), dst: netip.MustParseAddrPort("192.0.2.3:5000"),
 		routingResult: &routingResult{Outbound: 2, Mac: [6]byte{2, 0, 0, 0, 0, 10}}, deadline: time.Now().Add(time.Second)}
 	failed, all := dropSetupFailed.Load(), countedDrops()
-	work.execute(nil, []byte("datagram"))
+	work.executeData(nil, []byte("datagram"))
 	require.EqualValues(t, 1, dropSetupFailed.Load()-failed)
 	require.EqualValues(t, 1, countedDrops()-all)
 }

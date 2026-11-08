@@ -92,11 +92,6 @@ func sendPktWithMark(data []byte, from, to netip.AddrPort, mark uint32) (err err
 	return err
 }
 
-func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.Addr) (n int, err error) {
-	deadline, _ := ctx.Deadline()
-	return writePacketUntil(ctx, deadline, nil, conn, data, dst)
-}
-
 // writePacketUntil bounds a write with the socket's own deadline and leaves no
 // deadline behind. Cancellation reaches the write only through a worker slot,
 // so a packet arms no timer or context. Only transports without deadline
@@ -175,7 +170,8 @@ type udpPacketWork struct {
 
 // A packet whose deadline passes before it is handled, or while its handling
 // fails, is counted as expired; one its retired generation cancels is not.
-func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
+// The pool passes the owned packet in w.packet.
+func (w udpPacketWork) execute(slot *udpWriteSlot, _ []byte) {
 	c := w.plane
 	ctx := c.udpTaskPool.ctx
 	if c.ctx.Err() != nil || ctx.Err() != nil {
@@ -185,11 +181,7 @@ func (w udpPacketWork) execute(slot *udpWriteSlot, data []byte) {
 		dropExpired.Add(1)
 		return
 	}
-	packet := w.packet
-	if packet == nil {
-		packet = &udpPacket{data: data, deadline: w.deadline}
-	}
-	err := c.handleUDPPacket(ctx, slot, packet, w.src, w.dst, w.routingResult)
+	err := c.handleUDPPacket(ctx, slot, w.packet, w.src, w.dst, w.routingResult)
 	if err == nil || c.ctx.Err() != nil || ctx.Err() != nil {
 		return
 	}
@@ -213,24 +205,11 @@ func (c *ControlPlane) enqueueUDPPacketUntil(data []byte, src, dst netip.AddrPor
 	})
 }
 
-// handlePkt serializes the complete source lifetime, including sniffing and
-// setup. An endpoint's first routing result never changes while it is in the pool.
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
-	deadline, _ := ctx.Deadline()
-	return c.handlePktUntil(ctx, deadline, nil, data, src, dst, routingResult)
-}
-
-// ctx is the generation's work context; slot is the pool worker's write slot.
-func (c *ControlPlane) handlePktUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, data []byte, src, dst netip.AddrPort, routingResult *routingResult) error {
-	packet := udpPacket{data: data, deadline: deadline}
-	return c.handleUDPPacket(ctx, slot, &packet, src, dst, routingResult)
-}
-
+// handleUDPPacket serializes the complete source lifetime, including sniffing
+// and setup. An endpoint's first routing result never changes while it is in
+// the pool. ctx is the generation's work context; slot is the pool worker's.
 func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, packet *udpPacket, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	data, deadline := packet.data, packet.deadline
-	if slot == nil {
-		slot = new(udpWriteSlot)
-	}
 	if slot.slow != &c.udpSlowWork {
 		slot.slow = &c.udpSlowWork
 	}
@@ -574,16 +553,6 @@ func (c *ControlPlane) replayUDP(ctx context.Context, slot *udpWriteSlot, ue *Ud
 		}
 	}
 	return nil
-}
-
-func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
-	deadline, _ := ctx.Deadline()
-	return c.writeUDPUntil(ctx, deadline, nil, ue, src, dst, data)
-}
-
-func (c *ControlPlane) writeUDPUntil(ctx context.Context, deadline time.Time, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
-	packet := udpPacket{data: data, deadline: deadline}
-	return c.writeUDPPacket(ctx, slot, ue, src, dst, &packet)
 }
 
 func (c *ControlPlane) writeUDPPacket(ctx context.Context, slot *udpWriteSlot, ue *UdpEndpoint, src, dst netip.AddrPort, packet *udpPacket) error {
