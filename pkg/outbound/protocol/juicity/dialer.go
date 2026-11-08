@@ -50,7 +50,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 		reservedStreamsCapability = 5
 	}
 	return &Dialer{
-		clientRing: newClientRing(func(capabilityCallback func(streamType quic.StreamType, n int64)) *clientImpl {
+		clientRing: newClientRing(func(credit *common.StreamCredit) *clientImpl {
 			ctx, cancel := context.WithCancel(context.Background())
 			return &clientImpl{
 				ClientOption: &ClientOption{
@@ -64,7 +64,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 						DisablePathMTUDiscovery:        false,
 						EnableDatagrams:                false,
 						HandshakeIdleTimeout:           8 * time.Second,
-						CapabilityCallback:             capabilityCallback,
+						CapabilityCallback:             credit.Report,
 					},
 					Uuid:                 id,
 					Password:             header.Password,

@@ -782,3 +782,50 @@ func TestReduceRttEarlyStreamReservationStillApplies(t *testing.T) {
 		})
 	}
 }
+
+// A server that rejects 0-RTT may grant fewer streams than the ticket's
+// server did. The credit restarts with quic-go's limits; otherwise closing
+// waits netproxy.CloseLinger for credit the new server never granted.
+func TestReduceRttRejectionRestartsStreamCredit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+	serverTLS := recoveryTLS(t)
+	accepting, err := quic.ListenAddrEarly("127.0.0.1:0", serverTLS, &quic.Config{EnableDatagrams: true, Allow0RTT: true, MaxIncomingStreams: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = accepting.Close() })
+	rejecting, err := quic.ListenAddr("127.0.0.1:0", serverTLS, &quic.Config{EnableDatagrams: true, MaxIncomingStreams: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rejecting.Close() })
+	cache := newTicketCache()
+	issuer := newReduceRttDialer(t, loopbackPacketParent{}, accepting.Addr().String(), cache, 0)
+	if err := issuer.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	acceptPeer(t, ctx, accepting)
+	cache.wait(t, ctx)
+
+	d := newReduceRttDialer(t, loopbackPacketParent{}, rejecting.Addr().String(), cache, 0)
+	if err := d.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	member := ringMember(t, ctx, d)
+	server := acceptPeer(t, ctx, rejecting)
+	readAuthentication(t, ctx, server)
+	if member.quicConn.ConnectionState().Used0RTT {
+		t.Fatal("0-RTT accepted")
+	}
+	if current, highest := member.credit.Credit(quic.StreamTypeBidi); current != 20 || highest != 20 {
+		t.Fatalf("bidirectional credit = %d/%d, want the new server's 20/20", current, highest)
+	}
+	start := time.Now()
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited > netproxy.CloseLinger/2 {
+		t.Fatalf("close waited %v for the ticket's stream credit", waited)
+	}
+}

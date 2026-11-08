@@ -45,7 +45,7 @@ func (c *ringTestClient) Close() error {
 
 func TestClientRingCloseStopsAndClosesClients(t *testing.T) {
 	client := new(ringTestClient)
-	ring := NewClientRing(func(func(quic.StreamType, int64)) *ringTestClient { return client }, 0)
+	ring := NewClientRing(func(*StreamCredit) *ringTestClient { return client }, 0)
 	ring.current = ring.insertAfterCurrent(&clientRingNode[*ringTestClient]{cli: client})
 
 	if err := ring.Close(); err != nil {
@@ -71,7 +71,7 @@ func TestClientRingRejectsAllocationAfterMemberTermination(t *testing.T) {
 		closeRing bool
 	}{{"failed member", false}, {"closed ring", true}} {
 		t.Run(scenario.name, func(t *testing.T) {
-			ring := NewClientRing(func(func(quic.StreamType, int64)) *ringTestClient { return new(ringTestClient) }, 0)
+			ring := NewClientRing(func(*StreamCredit) *ringTestClient { return new(ringTestClient) }, 0)
 			defer ring.Close()
 			client := new(ringTestClient)
 			ring.insertAfterCurrent(&clientRingNode[*ringTestClient]{cli: client})
@@ -100,7 +100,7 @@ func TestClientRingRejectsAllocationAfterMemberTermination(t *testing.T) {
 }
 func TestCapacityDoesNotEstablishConnectionOnDataPlane(t *testing.T) {
 	created := 0
-	r := NewClientRing(func(func(quic.StreamType, int64)) *ringTestClient { created++; return new(ringTestClient) }, 0)
+	r := NewClientRing(func(*StreamCredit) *ringTestClient { created++; return new(ringTestClient) }, 0)
 	defer r.Close()
 	err := r.tryNext(func(*clientRingNode[*ringTestClient]) error { t.Fatal("empty pool allocated a new member"); return nil })
 	if !IsCapacityError(err) || created != 0 || !r.Snapshot().RecoveryRequired {
@@ -111,8 +111,8 @@ func TestCapacityDoesNotEstablishConnectionOnDataPlane(t *testing.T) {
 func TestClientRingUsesOnlyBidirectionalCapacity(t *testing.T) {
 	client := new(ringTestClient)
 	var report func(quic.StreamType, int64)
-	ring := NewClientRing(func(callback func(quic.StreamType, int64)) *ringTestClient {
-		report = callback
+	ring := NewClientRing(func(credit *StreamCredit) *ringTestClient {
+		report = credit.Report
 		return client
 	}, 0)
 	defer ring.Close()
@@ -140,7 +140,7 @@ func TestClientRingUsesOnlyBidirectionalCapacity(t *testing.T) {
 	}
 }
 func TestReplenishmentKeepsHealthyMemberAvailable(t *testing.T) {
-	r := NewClientRing(func(func(quic.StreamType, int64)) *ringTestClient { return new(ringTestClient) }, 0)
+	r := NewClientRing(func(*StreamCredit) *ringTestClient { return new(ringTestClient) }, 0)
 	defer r.Close()
 	member := &clientRingNode[*ringTestClient]{cli: new(ringTestClient)}
 	r.current = r.insertAfterCurrent(member)
@@ -191,7 +191,7 @@ func TestReplenishmentKeepsHealthyMemberAvailable(t *testing.T) {
 	}
 }
 func TestClientRingCloseCancelsInFlightAllocation(t *testing.T) {
-	r := NewClientRing(func(func(quic.StreamType, int64)) *ringTestClient { return new(ringTestClient) }, 0)
+	r := NewClientRing(func(*StreamCredit) *ringTestClient { return new(ringTestClient) }, 0)
 	node := &clientRingNode[*ringTestClient]{cli: new(ringTestClient)}
 	r.current = r.insertAfterCurrent(node)
 	r.state.Ready(node.cli.resource)

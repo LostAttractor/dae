@@ -17,7 +17,11 @@ import (
 type StreamCredit struct {
 	mu               sync.Mutex
 	highest, current [2]int64 // by quic.StreamType
-	changed          chan struct{}
+	// sinceZero is the most credit granted since a type last reported zero,
+	// which quic-go does when it restarts its limits after a 0-RTT rejection.
+	sinceZero [2]int64
+	restarted bool
+	changed   chan struct{}
 }
 
 // Report is a quic.Config.CapabilityCallback; it never blocks.
@@ -26,6 +30,29 @@ func (c *StreamCredit) Report(streamType quic.StreamType, available int64) {
 	defer c.mu.Unlock()
 	c.current[streamType] = available
 	c.highest[streamType] = max(c.highest[streamType], available)
+	c.sinceZero[streamType] = max(c.sinceZero[streamType], available)
+	if available == 0 {
+		c.sinceZero[streamType] = 0
+	}
+	c.notify()
+}
+
+// Rejected0RTT follows quic-go restarting both stream limits from zero once
+// the peer rejected 0-RTT: the restored grant from the session ticket no
+// longer applies, and the peer's new grant may be lower. It must run before
+// the new limits are used up; only the first call has an effect.
+func (c *StreamCredit) Rejected0RTT() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.restarted {
+		return
+	}
+	c.restarted = true
+	c.highest = c.sinceZero
+	c.notify()
+}
+
+func (c *StreamCredit) notify() {
 	if c.changed != nil {
 		close(c.changed)
 		c.changed = nil

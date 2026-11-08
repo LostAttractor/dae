@@ -30,7 +30,7 @@ type ClientRing[C RingMember] struct {
 	cancel    context.CancelFunc
 	ring      *list.List
 	current   *list.Element
-	newClient func(capabilityCallback func(streamType quic.StreamType, n int64)) C
+	newClient func(credit *StreamCredit) C
 	reserved  int64
 	closed    bool
 	state     *netproxy.PoolState
@@ -47,7 +47,8 @@ type clientRingNode[C RingMember] struct {
 // NewClientRing admits a new reserving stream only while a member's
 // bidirectional credit exceeds reserved, or half of what the peer granted if
 // that is less: a peer granting no more than reserved still gets streams.
-func NewClientRing[C RingMember](newClient func(capabilityCallback func(streamType quic.StreamType, n int64)) C, reserved int64) *ClientRing[C] {
+// newClient reports the member's stream credit to credit.
+func NewClientRing[C RingMember](newClient func(credit *StreamCredit) C, reserved int64) *ClientRing[C] {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClientRing[C]{
 		ctx: ctx, cancel: cancel,
@@ -239,7 +240,7 @@ func (r *ClientRing[C]) Connect(ctx context.Context, dialer netproxy.Dialer, dia
 			return nil
 		}
 		node := &clientRingNode[C]{}
-		node.cli = r.newClient(node.credit.Report)
+		node.cli = r.newClient(&node.credit)
 		elem := r.insertAfterCurrent(node)
 		r.current = elem
 		r.state.BeginConnect()

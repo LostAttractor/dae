@@ -6,14 +6,13 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/common"
-	"github.com/daeuniverse/quic-go"
 )
 
 type clientRing struct {
 	*common.ClientRing[*clientImpl]
 }
 
-func newClientRing(newClient func(func(quic.StreamType, int64)) *clientImpl, reserved int64) *clientRing {
+func newClientRing(newClient func(*common.StreamCredit) *clientImpl, reserved int64) *clientRing {
 	return &clientRing{common.NewClientRing(newClient, reserved)}
 }
 

@@ -34,7 +34,8 @@ type ClientOption struct {
 
 type clientImpl struct {
 	*ClientOption
-	udp bool
+	udp    bool
+	credit *common.StreamCredit
 
 	underConn net.PacketConn
 	transport *quic.Transport
@@ -79,6 +80,7 @@ func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, di
 			var err error
 			authStream, err = conn.OpenUniStream()
 			if errors.Is(err, quic.Err0RTTRejected) {
+				t.credit.Rejected0RTT()
 				if _, err = conn.NextConnection(ctx); err == nil {
 					authStream, err = conn.OpenUniStream()
 				}
@@ -141,6 +143,7 @@ func (t *clientImpl) sendAuthentication(ctx context.Context, conn *quic.Conn, st
 	t.uniMutex.Lock()
 	_, err := conn.NextConnection(ctx)
 	if err == nil && errors.Is(context.Cause(stream.Context()), quic.Err0RTTRejected) {
+		t.credit.Rejected0RTT()
 		stream, err = conn.OpenUniStream()
 	}
 	t.uniMutex.Unlock()

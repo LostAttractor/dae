@@ -50,7 +50,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 		tlsConfig.ClientSessionCache = tls.NewLRUClientSessionCache(8)
 	}
 	return &Dialer{
-		clientRing: newClientRing(func(capabilityCallback func(streamType quic.StreamType, n int64)) *clientImpl {
+		clientRing: newClientRing(func(credit *common.StreamCredit) *clientImpl {
 			return &clientImpl{
 				ClientOption: &ClientOption{
 					TlsConfig: tlsConfig,
@@ -63,7 +63,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 						DisablePathMTUDiscovery:        false,
 						EnableDatagrams:                true,
 						HandshakeIdleTimeout:           8 * time.Second,
-						CapabilityCallback:             capabilityCallback,
+						CapabilityCallback:             credit.Report,
 					},
 					Uuid:                  id,
 					Password:              header.Password,
@@ -73,7 +73,8 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 					CWND:                  10,
 					MaxUdpRelayPacketSize: maxDatagramFrameSize,
 				},
-				udp: true,
+				udp:    true,
+				credit: credit,
 			}
 		}, 10),
 		proxyAddress: header.ProxyAddress,
