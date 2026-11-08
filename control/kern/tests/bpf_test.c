@@ -95,7 +95,7 @@ static __always_inline void test_own_socket(struct __sk_buff *skb,
 		sk = bpf_sk_fullsock(sk);
 	if (!sk)
 		return;
-	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, BPF_SK_STORAGE_GET_F_CREATE);
+	owner = bpf_sk_storage_get(&socket_owner_map, sk, 0, BPF_SK_STORAGE_GET_F_CREATE);
 	if (owner)
 		*owner = *value;
 }

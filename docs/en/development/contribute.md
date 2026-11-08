@@ -35,7 +35,7 @@ including matched build conditions and loss-aware latency interpretation.
 ## Pinned kernel state
 
 Persistent state includes `tcp_flow_map` (LRU hash, 40-byte key and 24-byte value)
-and its atomic gate array (4-byte key, 8-byte value). `cookie_pid_map` uses socket-local storage with a 4-byte
+and its atomic gate array (4-byte key, 8-byte value). `socket_owner_map` uses socket-local storage with a 4-byte
 key and 20-byte value; `daemon_identity_map` and `fallback_sequence_map` each use
 a 4-byte key and 8-byte value.
 The device-policy outer/inner maps retain device epochs. Restart reuses compatible

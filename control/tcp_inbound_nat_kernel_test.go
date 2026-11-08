@@ -205,7 +205,7 @@ func testTCPInboundNativeNAT(t *testing.T, nft string, ipv6 bool, mode string) {
 			err := raw.Control(func(fd uintptr) {
 				result = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, 0x100)
 				if result == nil {
-					result = collection.Maps["cookie_pid_map"].Update(uint32(fd), bpfPidPname{Pid: owner}, ebpf.UpdateAny)
+					result = collection.Maps["socket_owner_map"].Update(uint32(fd), bpfPidPname{Pid: owner}, ebpf.UpdateAny)
 				}
 			})
 			return errors.Join(err, result)

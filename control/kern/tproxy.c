@@ -427,15 +427,14 @@ struct pid_pname {
 
 /* Owner of a local socket, living and dying with the socket itself, kernel
  * sockets such as MPTCP subflows included. The pin keeps other processes'
- * owners across a restart; it keeps the name of the cookie-keyed LRU it
- * replaced, so loading drops that incompatible pin. */
+ * owners across a restart. */
 struct {
 	__uint(type, BPF_MAP_TYPE_SK_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, int);
 	__type(value, struct pid_pname);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-} cookie_pid_map SEC(".maps");
+} socket_owner_map SEC(".maps");
 
 struct udp_conn_state {
 	/* Coarse monotonic second of the latest packet in either direction. The
@@ -1293,7 +1292,7 @@ udp_to_local_socket(struct __sk_buff *skb, const struct tuples_key *five)
 
 	if (!sk)
 		return false;
-	owner = bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0);
+	owner = bpf_sk_storage_get(&socket_owner_map, sk, 0, 0);
 	local = !owner || !daemon_pid_registered(owner->pid);
 	bpf_sk_release(sk);
 	return local;
@@ -1357,7 +1356,7 @@ static __always_inline struct pid_pname *socket_owner(struct __sk_buff *skb)
 
 	if (sk)
 		sk = bpf_sk_fullsock(sk);
-	return sk ? bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0) : NULL;
+	return sk ? bpf_sk_storage_get(&socket_owner_map, sk, 0, 0) : NULL;
 }
 
 /* LAN packets and forwarded packets carry no local socket, hence no owner. */
@@ -2279,7 +2278,7 @@ int tproxy_wan_cg_sock_create(struct bpf_sock *sk)
 	struct pid_pname owner = {};
 
 	current_owner(&owner);
-	bpf_sk_storage_get(&cookie_pid_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
+	bpf_sk_storage_get(&socket_owner_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
 	return 1;
 }
 
@@ -2292,19 +2291,19 @@ static __always_inline void own_socket(struct bpf_sock_addr *ctx)
 	struct pid_pname *connection = NULL;
 	struct pid_pname owner = {};
 
-	if (bpf_sk_storage_get(&cookie_pid_map, sk, 0, 0))
+	if (bpf_sk_storage_get(&socket_owner_map, sk, 0, 0))
 		return;
 	if (bpf_core_type_exists(struct mptcp_sock)) {
 		struct mptcp_sock *msk = bpf_skc_to_mptcp_sock(sk);
 
 		if (msk)
-			connection = bpf_sk_storage_get(&cookie_pid_map, msk, 0, 0);
+			connection = bpf_sk_storage_get(&socket_owner_map, msk, 0, 0);
 	}
 	if (connection)
 		owner = *connection;
 	else
 		current_owner(&owner);
-	bpf_sk_storage_get(&cookie_pid_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
+	bpf_sk_storage_get(&socket_owner_map, sk, &owner, BPF_SK_STORAGE_GET_F_CREATE);
 }
 
 SEC("cgroup/connect4")

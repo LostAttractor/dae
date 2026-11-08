@@ -169,7 +169,7 @@ func TestUDPInboundStateNeedsLocalSocket(t *testing.T) {
 			}
 			var updateErr error
 			if err := raw.Control(func(fd uintptr) {
-				updateErr = obj.CookiePidMap.Update(int32(fd), bpftestPidPname{Pid: uint32(os.Getpid())}, ebpf.UpdateAny)
+				updateErr = obj.SocketOwnerMap.Update(int32(fd), bpftestPidPname{Pid: uint32(os.Getpid())}, ebpf.UpdateAny)
 			}); err != nil || updateErr != nil {
 				t.Fatal(err, updateErr)
 			}

@@ -21,7 +21,7 @@ Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` �
 
 ## 固定内核状态
 
-跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`cookie_pid_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。daemon 重启按表比较元数据，复用兼容的 pin；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
+跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`socket_owner_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。daemon 重启按表比较元数据，复用兼容的 pin；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
 
 固定表的字节布局及含义是显式契约。TCP 连接属性的 `route_epoch`、`mark`、`fallback`、`syn_seq` 分别位于偏移 0、8、12、16，偏移 20 是显式填充。fallback 为 0 表示不受代次撤销约束，1 始终无效，其余值为唯一的组代次令牌；持久发行序号不回卷、不重用。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时元数据比较不能识别相同大小的语义变化；`TestPinnedMapABI` 与固定字节夹具独立于生成类型检查布局。容量不匹配只替换对应表。
 

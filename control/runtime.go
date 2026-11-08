@@ -150,7 +150,7 @@ func (r *Runtime) waitForRetirement(ctx context.Context) error {
 
 func (r *Runtime) retainMaps(b *bpfObjects) error {
 	for name, m := range map[string]*ebpf.Map{
-		"cookie_pid_map":        b.CookiePidMap,
+		"socket_owner_map":        b.SocketOwnerMap,
 		"daemon_identity_map":   b.DaemonIdentityMap,
 		"device_routes_map":     b.DeviceRoutesMap,
 		"exited_map":            b.ExitedMap,
