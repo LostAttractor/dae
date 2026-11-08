@@ -573,6 +573,53 @@ func TestSmuxReceive(t *testing.T) {
 	}
 }
 
+// A FIN ends both directions: the server drops later data, so the writer
+// learns of it, including one already waiting for queue space.
+func TestSmuxWriteFailsAfterPeerFIN(t *testing.T) {
+	local, remote := net.Pipe()
+	carrier := newGatedConn(local)
+	s := newTestSmuxSession(carrier)
+	defer s.Close()
+	server := smuxtest.Server(remote)
+	defer server.Close()
+	st, err := s.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-carrier.entered
+	if _, err := st.Write(make([]byte, fqStreamBytes)); err != nil {
+		t.Fatal(err)
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, err := st.Write([]byte{1})
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		t.Fatalf("write to a full queue did not wait: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := server.WriteFrame(smuxVersion, smuxCmdFIN, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-written:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("waiting write after FIN = %v, want io.EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FIN did not wake the waiting writer")
+	}
+	if n, err := st.Write([]byte{1}); n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("write after FIN = %d, %v; want io.EOF", n, err)
+	}
+	if err := st.(*smuxStream).writeDatagram(nil, nil, []byte{1}); !errors.Is(err, io.EOF) {
+		t.Fatalf("datagram after FIN = %v, want io.EOF", err)
+	}
+	close(carrier.gate)
+}
+
 // Unread data holds the session-wide receive buffer: the session stops
 // reading the carrier until the stream is read or closed.
 func TestSmuxReceiveBufferIsSharedBySession(t *testing.T) {

@@ -156,6 +156,7 @@ func (s *smuxSession) OpenStream(ctx context.Context) (net.Conn, error) {
 		session:       s,
 		id:            uint32(s.nextID),
 		done:          make(chan struct{}),
+		fin:           make(chan struct{}),
 		readable:      make(chan struct{}, 1),
 		readDeadline:  protocol.MakeDeadline(),
 		writeDeadline: protocol.MakeDeadline(),
@@ -431,11 +432,14 @@ func (s *smuxSession) write(batch [][]byte) error {
 
 // smuxStream is a client stream. Write queues frames, waiting only while the
 // stream's queue is full; Read drains buffered frames and then reports the
-// peer's FIN as io.EOF. A dead session fails both with its cause.
+// peer's FIN as io.EOF. A FIN ends both directions, so Write then fails with
+// io.EOF: the server drops data for a stream it closed. A dead session fails
+// both with its cause.
 type smuxStream struct {
 	session *smuxSession
 	id      uint32
 	done    chan struct{} // closed by Close
+	fin     chan struct{} // closed by the peer's FIN
 
 	// Send state, guarded by session.mu.
 	flow   fq.Flow
@@ -499,6 +503,8 @@ func (st *smuxStream) writeFrame(b []byte) (int, error) {
 			return 0, s.err
 		}
 		select {
+		case <-st.fin:
+			return 0, io.EOF
 		case <-st.writeDeadline.Wait():
 			return 0, os.ErrDeadlineExceeded
 		default:
@@ -531,6 +537,7 @@ func (st *smuxStream) writeFrame(b []byte) (int, error) {
 		select {
 		case <-writable:
 		case <-st.done:
+		case <-st.fin:
 		case <-s.die:
 		case <-st.writeDeadline.Wait():
 		}
@@ -552,6 +559,11 @@ func (st *smuxStream) writeDatagram(request, prefix, payload []byte) error {
 		return s.err
 	case s.closing:
 		return io.ErrClosedPipe
+	}
+	select {
+	case <-st.fin:
+		return io.EOF
+	default:
 	}
 	size := len(request) + len(prefix) + len(payload)
 	frames := (size + smuxMaxFrame - 1) / smuxMaxFrame
@@ -599,6 +611,9 @@ func (st *smuxStream) deliver(data []byte) bool {
 
 func (st *smuxStream) finish() {
 	st.rmu.Lock()
+	if !st.finished {
+		close(st.fin)
+	}
 	st.finished = true
 	st.endPushLocked(io.EOF)
 	st.unlockReceive()
