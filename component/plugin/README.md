@@ -353,7 +353,7 @@ allocations and interpreter heaps are not included.
 | --- | --- | --- |
 | `Observe(limit, complete)` | No read-ahead; bounded observation during consumption. Exceeding the limit, budget exhaustion or an incomplete read only suppresses the callback | Preserves bytes, original n/error, length and policy |
 | `Snapshot(limit)` | Reads eagerly; lends an immutable `membuffer.View` on success, restores the prefix, tail and actual error on failure | Replaces only the read backing, not the representation |
-| `Replace(view)` | Acquires an independent reference before closing the old body; the caller still closes the view | Updates framing, clears invalid representation fields and restores default delivery |
+| `Replace(view)` | Acquires an independent reference before closing the old body; the caller still closes the view. Returns an error and leaves the message unchanged for 101 and 206 responses | Updates framing, clears invalid representation fields and restores default delivery |
 | `Transform(install)` | Installation must not read/close input or start background work; failure leaves the original message unchanged, success transfers input ownership to the output | Unknown length, metadata cleanup and default delivery |
 
 Observe completes when a positive Content-Length has been read in full; nonpositive
@@ -373,10 +373,11 @@ Close/observation stop, body installation and eager reads must be serialized.
 A reader returned by Transform must unblock, close its input and release its own
 resources on Close. Actual protocol work runs during consumption, not before
 Handler returns. Delivered bytes cannot be rolled back; protocol plugins own
-authentication and failure replay for uncommitted units. A 101 upgrade preserves
-read/write and half-close capabilities and cannot accept ordinary body transforms;
-Observe installs no observer or callback for it, and its returned stop does not
-affect the connection.
+authentication and failure replay for uncommitted units. A new representation is
+complete, so Replace and Transform reject a 206 response, which carries a range,
+and a 101 upgrade, which preserves read/write and half-close capabilities.
+Observe installs no observer or callback for an upgrade, and its returned stop
+does not affect the connection.
 
 `Response.SetDelivery(plugin.DeliveryStreaming)` asks the host to flush promptly,
 regardless of length. Transparent Observe/Snapshot operations preserve the policy;

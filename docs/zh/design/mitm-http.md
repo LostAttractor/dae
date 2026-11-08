@@ -170,6 +170,7 @@ TCP 连接或 QUIC 握手成功后，连接由实际所属池保存，共享拨�
 
 Observe 随实际消费推进，不预读、不阻塞早响应。Snapshot 主动有界缓冲，失败恢复原字节和读取错误。
 Replace 与 Transform 创建新表示，自动清除失效 metadata 并恢复默认交付；透明观察和快照不改变表示。
+新表示是完整的，因此 206 部分响应和 101 升级连接拒绝 Replace 与 Transform 并保持原消息。
 流式交付属于最终 Response，插件安装变换后声明 `DeliveryStreaming`；宿主不靠未知长度猜测插件的交付意图。
 这允许 cold 流保持 Content-Length/ETag，同时不等待小响应缓冲填满。外层完整替换不会继承内层的流式策略。
 

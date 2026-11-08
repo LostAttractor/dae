@@ -97,11 +97,14 @@ func (b *Body) Snapshot(limit int64) (*membuffer.View, error) {
 	return view, err
 }
 
-func (b *Body) Replace(view *membuffer.View) {
+func (b *Body) Replace(view *membuffer.View) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.editable(); err != nil {
 		panic(err)
+	}
+	if err := b.replaceable(); err != nil {
+		return err
 	}
 	next := view.Open()
 	if b.reader != nil {
@@ -109,6 +112,7 @@ func (b *Body) Replace(view *membuffer.View) {
 	}
 	b.reader = ownBody(next)
 	b.replaceMetadata(int64(len(view.Bytes())))
+	return nil
 }
 
 func (b *Body) Transform(install func(io.ReadCloser) (io.ReadCloser, error)) error {
@@ -117,8 +121,8 @@ func (b *Body) Transform(install func(io.ReadCloser) (io.ReadCloser, error)) err
 	if err := b.editable(); err != nil {
 		return err
 	}
-	if b.response != nil && b.response.Head.StatusCode == http.StatusSwitchingProtocols {
-		return errors.New("plugin: cannot transform an upgraded connection")
+	if err := b.replaceable(); err != nil {
+		return err
 	}
 	source := b.reader
 	if source == nil {
@@ -148,6 +152,20 @@ func (b *Body) Close() error {
 	b.mu.Unlock()
 	if reader != nil {
 		return reader.Close()
+	}
+	return nil
+}
+
+// A replaced body is a complete representation, not an upgraded stream or a range.
+func (b *Body) replaceable() error {
+	if b.response == nil {
+		return nil
+	}
+	switch b.response.Head.StatusCode {
+	case http.StatusSwitchingProtocols:
+		return errors.New("plugin: cannot replace the body of an upgraded connection")
+	case http.StatusPartialContent:
+		return errors.New("plugin: cannot replace the body of a partial response")
 	}
 	return nil
 }

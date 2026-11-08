@@ -17,13 +17,13 @@ import (
 
 func (e *Engine) rewriteResponseBody(response *plugin.Response) error {
 	r := response.Head
-	if r.Request == nil || r.Request.URL == nil || !responseHasBody(r.Request.Method, r.StatusCode) {
+	if r.Request == nil || r.Request.URL == nil || !responseBodyReplaceable(r.Request.Method, r.StatusCode) {
 		return nil
 	}
 	body, err := e.rewriteBody("http-response", r.Request, response.Body(), r.Header, r.ContentLength, nil)
 	defer body.Close()
 	if body != nil {
-		response.Body().Replace(body)
+		return response.Body().Replace(body)
 	}
 	return err
 }
@@ -33,7 +33,7 @@ func (e *Engine) rewriteRequestBody(exchange *plugin.Exchange) error {
 	body, err := e.rewriteBody("http-request", r, exchange.Request.Body(), r.Header, r.ContentLength, exchange.SetReadDeadline)
 	defer body.Close()
 	if body != nil {
-		exchange.Request.Body().Replace(body)
+		return exchange.Request.Body().Replace(body)
 	}
 	return err
 }

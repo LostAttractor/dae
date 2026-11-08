@@ -4,9 +4,11 @@ package plugin
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,6 +26,47 @@ func (b *countedBody) Read(p []byte) (int, error) {
 	return n, err
 }
 func (b *countedBody) Close() error { b.closes++; return nil }
+
+func TestBodyRejectsReplacingPartialOrUpgradedResponse(t *testing.T) {
+	for _, status := range []int{http.StatusPartialContent, http.StatusSwitchingProtocols} {
+		for _, transform := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d/transform=%t", status, transform), func(t *testing.T) {
+				budget := membuffer.NewBudget(4096)
+				original := &countedBody{Reader: strings.NewReader("partial")}
+				header := http.Header{"Content-Range": {"bytes 0-6/5000"}, "Content-Length": {"7"}, "Etag": {`"original"`}}
+				r := NewResponse(&http.Response{StatusCode: status, Header: header.Clone(), Body: original, ContentLength: 7}, budget)
+				defer r.Close()
+				r.SetDelivery(DeliveryStreaming)
+				var err error
+				if transform {
+					err = r.Body().Transform(func(io.ReadCloser) (io.ReadCloser, error) {
+						t.Error("transform was installed")
+						return nil, nil
+					})
+				} else {
+					view, copyErr := membuffer.Copy([]byte("replacement"), budget)
+					if copyErr != nil {
+						t.Fatal(copyErr)
+					}
+					err = r.Body().Replace(view)
+					view.Close()
+				}
+				if err == nil {
+					t.Fatal("body was replaced")
+				}
+				wire, delivery, err := r.TakeHTTP()
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := io.ReadAll(wire.Body)
+				_ = wire.Body.Close()
+				if err != nil || string(data) != "partial" || original.closes != 1 || delivery != DeliveryStreaming || wire.ContentLength != 7 || !reflect.DeepEqual(wire.Header, header) {
+					t.Fatalf("body=%q err=%v closes=%d delivery=%v length=%d header=%v", data, err, original.closes, delivery, wire.ContentLength, wire.Header)
+				}
+			})
+		}
+	}
+}
 
 func TestBodySnapshotReplay(t *testing.T) {
 	for _, data := range []string{"", "12345678", "1234567890123456"} {

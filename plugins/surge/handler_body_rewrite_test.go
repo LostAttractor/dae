@@ -291,6 +291,25 @@ func TestProxyBodyRewriteSkipsBodylessResponses(t *testing.T) {
 	}
 }
 
+func TestProxyBodyRewriteKeepsPartialContent(t *testing.T) {
+	raw := []byte(`{"keep":true}`)
+	response := bodyRewriteResponse(raw, "")
+	response.StatusCode = http.StatusPartialContent
+	response.Header.Set("Content-Range", "bytes 0-12/5000")
+	e := bodyRewriteEngine(t, 64, ".keep=false")
+	controlledResponse := plugin.NewResponse(response, e.options.BodyMemory)
+	t.Cleanup(func() { _ = controlledResponse.Close() })
+	if err := e.rewriteResponseBody(controlledResponse); err != nil {
+		t.Fatal(err)
+	}
+	response = takeTestResponse(t, controlledResponse)
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || !bytes.Equal(body, raw) || response.Header.Get("Content-Length") != "13" || response.Header.Get("Content-Range") != "bytes 0-12/5000" {
+		t.Fatalf("partial response was rewritten: body=%q header=%v err=%v", body, response.Header, err)
+	}
+}
+
 func TestProxyBodyRewriteDeadlinePreservesBodyAndReleasesSlot(t *testing.T) {
 	e := bodyRewriteEngine(t, 1024, "def forever: forever; forever")
 	e.options.ScriptTimeout = 20 * time.Millisecond

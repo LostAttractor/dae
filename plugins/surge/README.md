@@ -114,6 +114,9 @@ compression workspaces. `decodeBodyView` consumes the input View and releases it
 on failure; the caller closes the View returned on success. Unsupported or corrupt
 encodings skip body-dependent scripts and replay the original representation.
 Oversized request bodies still fail with 413, and request cancellation propagates.
+A 206 response carries only a range of the representation, which shared
+`Body.Replace` rejects: Body Rewrite skips it and requires-body scripts receive no
+body, so the range passes through unchanged.
 
 Valid bodyless responses may carry encoding headers. Surge treats empty input as
 identity; this compatibility policy is not part of the shared codec. Originally

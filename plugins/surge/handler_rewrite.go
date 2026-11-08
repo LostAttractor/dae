@@ -176,7 +176,9 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *plugin.Res
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && canReplaceBody && result.Body != nil {
-		exchange.Request.Body().Replace(result.Body)
+		if err := exchange.Request.Body().Replace(result.Body); err != nil {
+			return nil, err
+		}
 		execution.outcome = "success"
 	}
 	return nil, nil
@@ -212,8 +214,9 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 	}
 	message := &Message{Status: r.StatusCode, Headers: r.Header}
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
+	editBody := s.RequiresBody && responseBodyReplaceable(r.Request.Method, r.StatusCode)
 	var raw *membuffer.View
-	if s.RequiresBody && hasBody {
+	if editBody {
 		raw, err = e.snapshotHTTPBody(r.Request.Context(), response.Body(), e.scriptBodyLimit(s), nil)
 		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
@@ -281,8 +284,10 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 		r.Trailer = trailers
 		execution.outcome = "success"
 	}
-	if s.RequiresBody && hasBody && result.Body != nil {
-		response.Body().Replace(result.Body)
+	if editBody && result.Body != nil {
+		if err := response.Body().Replace(result.Body); err != nil {
+			return err
+		}
 		execution.outcome = "success"
 	}
 	if hasBody && !responseHasBody(r.Request.Method, r.StatusCode) {
@@ -295,6 +300,11 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 
 func responseHasBody(method string, status int) bool {
 	return method != http.MethodHead && status >= 200 && status != http.StatusNoContent && status != http.StatusResetContent && status != http.StatusNotModified
+}
+
+// A range of the representation passes through; plugin.Body rejects replacing it.
+func responseBodyReplaceable(method string, status int) bool {
+	return responseHasBody(method, status) && status != http.StatusPartialContent
 }
 
 // URL rewrites stop at the first match, including an in-place URL change.

@@ -213,6 +213,7 @@ func TestHTTPMessageBodyOwnershipAndDelivery(t *testing.T) {
 		{"headers-only", http.MethodGet, `$done({});`, "original", 200, false, plugin.DeliveryStreaming},
 		{"snapshot", http.MethodGet, `$done({});`, "original", 200, true, plugin.DeliveryStreaming},
 		{"replacement", http.MethodGet, `$done({body:"rewritten"});`, "rewritten", 200, true, plugin.DeliveryDefault},
+		{"partial", http.MethodGet, `$done({body:"rewritten"});`, "original", 206, true, plugin.DeliveryStreaming},
 		{"head", http.MethodHead, `$done({});`, "", 200, true, plugin.DeliveryStreaming},
 		{"not-modified", http.MethodGet, `$done({});`, "", 304, true, plugin.DeliveryStreaming},
 		{"status-removes-body", http.MethodGet, `$done({status:204});`, "", 200, false, plugin.DeliveryStreaming},

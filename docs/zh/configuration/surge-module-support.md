@@ -45,6 +45,7 @@
 | --- | --- |
 | 正文失败 | 请求脚本超限 413；响应正文在读取或解压后超限则跳过脚本，回放完整原响应。完整缓冲后解压耗尽脚本预算时跳过处理、回放原文；原请求取消或正文读取失败仍返回错误。脚本生成的替换正文超限仍拒绝；响应未 requires-body 时返回 body 会中止连接。Body Rewrite 请求读取/解压超限返回 413，响应超限回放原正文；单条表达式失败保留前一步正文，读取失败除外 |
 | 请求正文 | chunked / Expect: 100-continue 请求不应用脚本返回的 body，仍允许头字段修改；空正文不暴露 body 属性 |
+| 部分响应 | 206 响应只含表示的一个范围，原样转发正文：Body Rewrite 跳过，requires-body 脚本不获得正文且返回的 body 不生效，仍允许头字段修改 |
 | 异常与 `$done` | 普通 JS 异常/超时保留进入脚本阶段的内容，不回滚之前重写；正文读取或非法结果可失败。重复 `$done` 忽略；未调用时等待脚本超时，即使没有待处理任务 |
 | headers | 默认字符串值对象，重复 Cookie 值用分号合并，其它重复值用逗号合并。full-header-mode 使用 `{field,value}[]`，返回头可用对象或数组；保留 Set-Cookie 等重复值及同名字段顺序。Go HTTP 栈不保留原始大小写及不同字段之间的线上顺序 |
 | 元数据 | `$script` 包含每次执行独立的 sessionID，startTime 为 Unix 秒；console 日志带 module/script/session_id。`$environment` 提供 Linux 系统、进程 locale、硬件型号（不可用时为架构）及 dae 构建信息；surge-version/surge-build 为空字符串。显式空 argument 仍注入 `$argument`；cron/generic 手动执行的 `$trigger` 为 `http-api`（包括 CLI 调用），定时执行不注入 |
