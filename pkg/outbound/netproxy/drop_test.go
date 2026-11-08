@@ -43,12 +43,20 @@ func TestDropRegistersEachPairOnce(t *testing.T) {
 	NewDrop(DropReceiveFull.Direction(), DropReceiveFull.Reason())
 }
 
-// quic-go's DATAGRAM drops reach the shared counters.
+// quic-go's DATAGRAM drops reach the shared counters, one per reason.
 func TestQUICDatagramDropsAreCounted(t *testing.T) {
-	received, tooLarge := DropReceiveFull.Load(), dropTooLarge.Load()
-	quic.DatagramDropped(false)
-	quic.DatagramDropped(true)
-	if DropReceiveFull.Load()-received != 1 || dropTooLarge.Load()-tooLarge != 1 {
-		t.Fatalf("counted %d received and %d too large, want 1 each", DropReceiveFull.Load()-received, dropTooLarge.Load()-tooLarge)
+	for _, tc := range []struct {
+		reason quic.DatagramDropReason
+		drop   *Drop
+	}{
+		{quic.DatagramDropReceiveQueueFull, DropReceiveFull},
+		{quic.DatagramDropTooLarge, dropTooLarge},
+		{quic.DatagramDropClosed, dropCarrierClosed},
+	} {
+		before := tc.drop.Load()
+		QUICDatagramDropped(tc.reason, 1200)
+		if n := tc.drop.Load() - before; n != 1 {
+			t.Fatalf("reason %d counted %d %s/%s drops, want 1", tc.reason, n, tc.drop.Direction(), tc.drop.Reason())
+		}
 	}
 }

@@ -83,6 +83,7 @@ func (c *Config) verifyAndFill() error {
 	}
 	c.QUICConfig.DisablePathMTUDiscovery = c.QUICConfig.DisablePathMTUDiscovery || pmtud.DisablePathMTUDiscovery
 	c.QUICConfig.EnableDatagrams = true
+	c.QUICConfig.DatagramDropped = netproxy.QUICDatagramDropped
 
 	c.filled = true
 	return nil

@@ -89,14 +89,20 @@ var (
 	DropClosedStream = NewQuietDrop(DropDownload, "closed_stream")
 	// A queued datagram exceeds what the transport can ever send.
 	dropTooLarge = NewDrop(DropUpload, "too_large")
+	// A datagram was still queued when its QUIC connection closed.
+	dropCarrierClosed = NewQuietDrop(DropUpload, "carrier_closed")
 )
 
-func init() {
-	quic.DatagramDropped = func(sending bool) {
-		if sending {
-			dropTooLarge.Add(1)
-		} else {
-			DropReceiveFull.Add(1)
-		}
+// QUICDatagramDropped counts the DATAGRAM frames a QUIC connection discards.
+// It is the quic.Config.DatagramDropped of every connection that enables
+// DATAGRAM.
+func QUICDatagramDropped(reason quic.DatagramDropReason, _ int) {
+	switch reason {
+	case quic.DatagramDropTooLarge:
+		dropTooLarge.Add(1)
+	case quic.DatagramDropReceiveQueueFull:
+		DropReceiveFull.Add(1)
+	case quic.DatagramDropClosed:
+		dropCarrierClosed.Add(1)
 	}
 }

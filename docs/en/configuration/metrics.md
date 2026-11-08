@@ -47,8 +47,9 @@ no `dae_plugin_` prefix. It is counted by the layer that drops a datagram, for
 the process lifetime; reload does not reset it. Every combination is exported
 as 0 before its first drop. `direction` is `upload` (LAN to internet) or
 `download`. Callers told of a drop do not count it again. Each combination
-logs at most one warning a minute, except `route_missing`, `filtered` and
-`closed_stream`, which occur in normal operation and are only counted.
+logs at most one warning a minute, except `route_missing`, `filtered`,
+`closed_stream` and `carrier_closed`, which occur in normal operation and are
+only counted.
 
 | `reason` | `direction` | Meaning |
 | --- | --- | --- |
@@ -71,6 +72,7 @@ logs at most one warning a minute, except `route_missing`, `filtered` and
 | `codel` | `upload` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond its rate- and active-flow-based delay estimate |
 | `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
 | `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
+| `carrier_closed` | `upload` | QUIC datagram still queued when its TUIC or Hysteria2 connection closed |
 | `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
 | `unauthenticated` | `download` | juicity UDP datagram that does not authenticate; its socket is unconnected, so anyone may send to it |

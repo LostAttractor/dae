@@ -30,7 +30,7 @@ global {
 ## UDP 丢包
 
 `dae_udp_packet_drops_total{direction,reason}` 是核心指标，名称不带 `dae_plugin_` 前缀。它由丢弃数据报的那一层计数，按进程生命周期累计，重载不清零；全部组合在首次丢包前即以 0 导出。
-`direction` 为 `upload`（LAN 到外网）或 `download`。被告知丢包的调用方不重复计数。每个组合每分钟最多输出一条 Warn 日志；`route_missing`、`filtered`、`closed_stream` 属于正常运行中的丢弃，只计数不输出日志。
+`direction` 为 `upload`（LAN 到外网）或 `download`。被告知丢包的调用方不重复计数。每个组合每分钟最多输出一条 Warn 日志；`route_missing`、`filtered`、`closed_stream`、`carrier_closed` 属于正常运行中的丢弃，只计数不输出日志。
 
 | `reason` | `direction` | 含义 |
 | --- | --- | --- |
@@ -53,6 +53,7 @@ global {
 | `codel` | `upload` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过基于速率和活跃流数估计的保护阈值 |
 | `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
 | `too_large` | `upload` | QUIC 数据报超过可发送的包大小 |
+| `carrier_closed` | `upload` | TUIC 或 Hysteria2 连接关闭时仍在队列中的 QUIC 数据报 |
 | `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
 | `carrier_queue_full` | `download` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
 | `unauthenticated` | `download` | juicity UDP 收到无法认证的数据报；其 socket 未 connect，任何来源都能发来 |

@@ -25,3 +25,15 @@ func TestBandwidthConfigurationBounds(t *testing.T) {
 		}
 	}
 }
+
+// Hysteria2 enables DATAGRAM, so its connections count the datagrams they discard.
+func TestConfigCountsDatagramDrops(t *testing.T) {
+	client, err := NewClient(&Config{NextDialer: authTestDialer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if client.config.QUICConfig.DatagramDropped == nil {
+		t.Fatal("Hysteria2 connections do not report discarded datagrams")
+	}
+}

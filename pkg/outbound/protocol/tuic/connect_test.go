@@ -252,3 +252,35 @@ func TestReconnectResumesTLSWithoutEarlyData(t *testing.T) {
 		member.failConnection(errors.New("reconnect"))
 	}
 }
+
+// TUIC enables DATAGRAM, so its connections count the datagrams they discard.
+func TestDialerCountsDatagramDrops(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	listener, err := quic.ListenAddr("127.0.0.1:0", recoveryTLS(t), &quic.Config{EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	d, err := NewDialer(loopbackPacketParent{}, protocol.Header{ProxyAddress: listener.Addr().String(), User: "00000000-0000-0000-0000-000000000000", Password: "test", Feature1: "bbr", TlsConfig: &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"tuic-test"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	server, err := listener.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.CloseWithError(0, "")
+	if err := d.clientRing.Allocate(ctx, false, func(_ context.Context, client *clientImpl) error {
+		if client.QuicConfig.DatagramDropped == nil {
+			t.Error("TUIC connections do not report discarded datagrams")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
