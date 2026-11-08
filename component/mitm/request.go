@@ -23,7 +23,7 @@ func (h *Host) roundTrip(transport http.RoundTripper, r *http.Request) (*http.Re
 	r = h.traceUpstream(r)
 	started := time.Now()
 	response, err := transport.RoundTrip(r)
-	h.httpStages.WithLabelValues("upstream").Observe(time.Since(started).Seconds())
+	h.httpStages.upstream.Observe(time.Since(started).Seconds())
 	if response != nil && h.options.Logger.Logger.IsLevelEnabled(log.TraceLevel) {
 		h.requestLogger(r).WithFields(log.Fields{
 			"event": "mitm_upstream_response", "host": r.URL.Hostname(),

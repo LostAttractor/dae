@@ -69,6 +69,9 @@ func (h *Host) observeRequest(w http.ResponseWriter, r *http.Request, scheme str
 }
 
 func (o *requestObservation) event(event string) {
+	if !o.logger.Logger.IsLevelEnabled(log.TraceLevel) {
+		return
+	}
 	o.logger.WithFields(log.Fields{"event": event, "elapsed_ms": float64(time.Since(o.started)) / float64(time.Millisecond)}).Trace("MITM HTTP stage")
 }
 

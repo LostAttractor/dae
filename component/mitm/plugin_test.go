@@ -48,7 +48,7 @@ func (p *testPlugin) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler 
 func response(body string) *http.Response {
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
-func testHost(t *testing.T, options Options, instances ...Instance) *Host {
+func testHost(t testing.TB, options Options, instances ...Instance) *Host {
 	t.Helper()
 	h, err := New(options, instances...)
 	if err != nil {

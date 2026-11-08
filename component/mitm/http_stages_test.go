@@ -4,6 +4,7 @@ package mitm
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,5 +96,28 @@ func TestHTTPStageMetricsAndFirstEvents(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func BenchmarkHTTPHandler(b *testing.B) {
+	for _, level := range []log.Level{log.InfoLevel, log.DebugLevel} {
+		b.Run(level.String(), func(b *testing.B) {
+			logger := log.New()
+			logger.SetLevel(level)
+			logger.SetOutput(io.Discard)
+			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler { return next }}
+			h := testHost(b, Options{Authority: &localca.Authority{}, Logger: log.NewEntry(logger)}, Instance{ID: "test", Plugin: p})
+			handler := h.handlerForFlow("http", plugin.Flow{Host: "example.com", Port: 80}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+			}), nil)
+			b.ReportAllocs()
+			for b.Loop() {
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "http://example.com/", nil))
+				if w.Code != http.StatusOK {
+					b.Fatal(w.Code)
+				}
+			}
+		})
 	}
 }
