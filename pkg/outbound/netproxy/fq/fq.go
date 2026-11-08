@@ -37,11 +37,21 @@ const (
 	rateTime = 50 * time.Millisecond
 )
 
-var (
-	dropCoDel            = netproxy.NewDrop(netproxy.DropUpload, "codel")
-	dropFlowQueueFull    = netproxy.DropFlowQueueFull
-	dropCarrierQueueFull = netproxy.DropCarrierQueueFull
-)
+// Drops count the datagrams schedulers discard, under their user's
+// transport label.
+type Drops struct {
+	FlowQueueFull, CarrierQueueFull, CoDel, Memory *netproxy.Drop
+}
+
+// NewDrops registers the counters of a transport's schedulers.
+func NewDrops(transport string) Drops {
+	return Drops{
+		FlowQueueFull:    netproxy.NewDrop(transport, netproxy.DropUpload, "flow_queue_full"),
+		CarrierQueueFull: netproxy.NewDrop(transport, netproxy.DropUpload, "carrier_queue_full"),
+		CoDel:            netproxy.NewDrop(transport, netproxy.DropUpload, "codel"),
+		Memory:           netproxy.NewDrop(transport, netproxy.DropUpload, "packet_memory_limit"),
+	}
+}
 
 type kind uint8
 
@@ -131,6 +141,8 @@ type Scheduler struct {
 	Release func([]byte)
 	// Delay, if set, observes how long each datagram sent had waited.
 	Delay *netproxy.QueueDelay
+	// Drops, if set, counts the datagrams it discards.
+	Drops Drops
 
 	new, old          FIFO[*Flow]
 	entries           int
@@ -200,9 +212,9 @@ func (s *Scheduler) reserveDatagram(size int) (membuffer.Reservation, bool) {
 		if g == nil || status.Limit-status.Used+int64(s.reclaimable) < int64(size) {
 			break
 		}
-		s.dropOldest(g, false, netproxy.DropUploadMemory)
+		s.dropOldest(g, false, s.Drops.Memory)
 	}
-	netproxy.DropUploadMemory.Add(1)
+	s.Drops.Memory.Add(1)
 	return membuffer.Reservation{}, false
 }
 
@@ -219,14 +231,14 @@ func (s *Scheduler) queueDatagram(f *Flow, e entry) {
 		keep = len(e.frame)
 	}
 	for f.datagrams > FlowDatagramLimit && f.datagrams-f.forced > keep {
-		s.dropOldest(f, keepTail, dropFlowQueueFull)
+		s.dropOldest(f, keepTail, s.Drops.FlowQueueFull)
 	}
 	for s.datagrams > CarrierDatagramLimit {
 		g := s.fattest(f, keep)
 		if g == nil {
 			break
 		}
-		s.dropOldest(g, keepTail && g == f, dropCarrierQueueFull)
+		s.dropOldest(g, keepTail && g == f, s.Drops.CarrierQueueFull)
 	}
 }
 
@@ -468,7 +480,7 @@ func (s *Scheduler) overTarget(f *Flow, now time.Time) bool {
 
 func (s *Scheduler) dropHead(f *Flow) {
 	s.free(f, f.queue.Pop())
-	dropCoDel.Add(1)
+	s.Drops.CoDel.Add(1)
 }
 
 // controlLaw schedules the next drop interval/√count after t.

@@ -14,6 +14,8 @@ import (
 	quic "github.com/daeuniverse/quic-go"
 )
 
+var quicAdmissionDrops = netproxy.NewDrop("quic-admission-test", netproxy.DropUpload, "carrier_queue_full")
+
 type quicAdmissionPacketConn struct {
 	net.PacketConn
 	conn *quic.Conn
@@ -22,7 +24,7 @@ type quicAdmissionPacketConn struct {
 func (c *quicAdmissionPacketConn) TryWriteTo(b []byte, _ net.Addr) (int, error) {
 	if err := c.conn.TrySendDatagram(b); err != nil {
 		if errors.Is(err, quic.ErrDatagramQueueFull) {
-			netproxy.DropCarrierQueueFull.Add(1)
+			quicAdmissionDrops.Add(1)
 			return 0, netproxy.ErrPacketDropped
 		}
 		return 0, err
@@ -50,7 +52,7 @@ func TestUDPQUICQueueDoesNotBlockOtherSources(t *testing.T) {
 	t.Cleanup(pair.ReleaseWrites)
 	plane := &ControlPlane{ctx: t.Context(), udpTaskPool: tasks, udpEndpoints: endpoints}
 	payload := make([]byte, 1000)
-	dropped := netproxy.DropCarrierQueueFull.Load()
+	dropped := quicAdmissionDrops.Load()
 	err := pair.WhileStalled(t, func() error {
 		full := false
 		for range 256 {
@@ -81,7 +83,7 @@ func TestUDPQUICQueueDoesNotBlockOtherSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if netproxy.DropCarrierQueueFull.Load() == dropped {
+	if quicAdmissionDrops.Load() == dropped {
 		t.Fatal("test did not exercise full-carrier drops")
 	}
 }

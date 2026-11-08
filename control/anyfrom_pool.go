@@ -87,7 +87,7 @@ const anyfromRetryDelay = time.Second
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
-var dropReplySocketLimit = netproxy.NewDrop(netproxy.DropDownload, "reply_socket_limit")
+var dropReplySocketLimit = netproxy.NewDrop("", netproxy.DropDownload, "reply_socket_limit")
 
 var anyfromSoMark atomic.Uint32
 

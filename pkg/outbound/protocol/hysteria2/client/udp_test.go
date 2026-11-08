@@ -109,11 +109,11 @@ func TestUDPConnExpiresIncompletePacket(t *testing.T) {
 // A fragment beyond the full reassembly table is dropped and counted.
 func TestUDPConnLimitsIncompletePackets(t *testing.T) {
 	u := new(udpConn)
-	dropped := netproxy.DropReceiveFull.Load()
+	dropped := datagramDrops.ReceiveFull.Load()
 	for i := 0; i < udpMessageChanSize+100; i++ {
 		u.feedDefrag(&protocol.UDPMessage{PacketID: uint16(i), FragCount: 2, Addr: "127.0.0.1:53", Data: []byte("pending")})
 	}
-	if len(u.defraggers) != udpMessageChanSize || netproxy.DropReceiveFull.Load()-dropped != 100 {
-		t.Fatalf("pending packets=%d, %d drops counted", len(u.defraggers), netproxy.DropReceiveFull.Load()-dropped)
+	if len(u.defraggers) != udpMessageChanSize || datagramDrops.ReceiveFull.Load()-dropped != 100 {
+		t.Fatalf("pending packets=%d, %d drops counted", len(u.defraggers), datagramDrops.ReceiveFull.Load()-dropped)
 	}
 }

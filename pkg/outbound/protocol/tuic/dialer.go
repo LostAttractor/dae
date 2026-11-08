@@ -62,7 +62,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 						KeepAlivePeriod:                3 * time.Second,
 						DisablePathMTUDiscovery:        false,
 						EnableDatagrams:                true,
-						DatagramDropped:                netproxy.QUICDatagramDropped,
+						DatagramDropped:                datagramDrops.QUICDatagramDropped,
 						HandshakeIdleTimeout:           8 * time.Second,
 						CapabilityCallback:             credit.Report,
 					},

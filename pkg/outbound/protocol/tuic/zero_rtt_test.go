@@ -654,13 +654,13 @@ func TestReduceRttReservesAuthenticationCredit(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = udp.Close() })
 			addr := netproxy.NewAddr("udp", "127.0.0.1:53")
-			before := netproxy.DropCarrierQueueFull.Load()
+			before := datagramDrops.CarrierQueueFull.Load()
 			for i := range 110 {
 				if n, err := udp.WriteTo([]byte{1}, addr); n != 1 || err != nil {
 					t.Errorf("early packet %d: %d, %v", i, n, err)
 				}
 			}
-			if dropped := netproxy.DropCarrierQueueFull.Load() - before; dropped != 11 {
+			if dropped := datagramDrops.CarrierQueueFull.Load() - before; dropped != 11 {
 				t.Errorf("dropped %d packets, want 11 with one reserved stream", dropped)
 			}
 			if handshakeComplete(member.quicConn) {

@@ -42,44 +42,46 @@ service.
 
 ## UDP packet drops
 
-`dae_udp_packet_drops_total{direction,reason}` is a core metric; its name has
+`dae_udp_packet_drops_total{transport,direction,reason}` is a core metric; its name has
 no `dae_plugin_` prefix. It is counted by the layer that drops a datagram, for
 the process lifetime; reload does not reset it. Every combination is exported
 as 0 before its first drop. `direction` is `upload` (LAN to internet) or
-`download`. Callers told of a drop do not count it again. Each combination
+`download`. `transport` names the outbound transport whose own queue or
+protocol dropped the datagram: `smux`, `tuic`, `hysteria2` or `juicity`. It is
+empty, marked — below, for drops in dae's own UDP datapath and local sockets. Callers told of a drop do not count it again. Each combination
 logs at most one warning a minute, except `route_missing`, `filtered`,
 `closed_stream` and `carrier_closed`, which occur in normal operation and are
 only counted.
 
-| `reason` | `direction` | Meaning |
-| --- | --- | --- |
-| `socket_overflow` | `upload` | The tproxy UDP socket's receive queue overflowed; reported with the next queued datagram |
-| `truncated` | `upload` | Truncated datagram |
-| `route_missing` | `upload` | The kernel routing record is gone, or the endpoint was removed while the datagram queued |
-| `source_queue_full`, `task_limit`, `source_limit` | `upload` | Per-source queue, global task or backlogged source limit reached |
-| `packet_memory_limit` | both | Shared datagram memory (8 MiB) exhausted |
-| `expired` | `upload` | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
-| `setup_capacity` | `upload` | Shared slow-operation capacity exhausted while initializing an association or opening a destination socket |
-| `setup_failed` | `upload` | Opening an association failed (routing, sniffing, MITM or the outbound dial), counting every datagram buffered for its sniffing; also datagrams left unsent when replaying them fails |
-| `slow_write_capacity` | `upload` | Shared slow-operation capacity exhausted before a blocking UDP write |
-| `endpoint_limit` | `upload` | UDP source endpoint limit reached |
-| `packet_resource_limit` | `upload` | No UDP association or socket could be opened: the process-wide packet resource limit or a source's socket limit is reached |
-| `dns_admission` | `upload` | Concurrent DNS query limit reached |
-| `mitm_bridge_full` | both | MITM HTTP/3 bridge queue full |
-| `filtered` | both | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
-| `flow_queue_full` | `upload` | A smux stream queued more than 64 KiB of datagrams; its oldest droppable datagram is evicted |
-| `carrier_queue_full` | `upload` | A smux session exceeded 256 KiB of datagrams and evicted the oldest droppable datagram of its fattest stream, or a QUIC DATAGRAM send queue was full |
-| `codel` | `upload` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond its rate- and active-flow-based delay estimate |
-| `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
-| `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in, or needing more fragments than the QUIC send queue holds |
-| `carrier_closed` | `upload` | QUIC datagram still queued when its TUIC or Hysteria2 connection closed |
-| `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
-| `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
-| `unauthenticated` | `download` | juicity UDP datagram that does not authenticate; its socket is unconnected, so anyone may send to it |
-| `closed_stream` | `download` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
-| `reply_queue_full` | `download` | Pushed reply backlog full |
-| `reply_socket_full` | `download` | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |
-| `reply_send_failed` | `download` | Sending a reply to the client failed, for example its reply socket could not be created; the association goes on |
+| `reason` | `direction` | `transport` | Meaning |
+| --- | --- | --- | --- |
+| `socket_overflow` | `upload` | — | The tproxy UDP socket's receive queue overflowed; reported with the next queued datagram |
+| `truncated` | `upload` | — | Truncated datagram |
+| `route_missing` | `upload` | — | The kernel routing record is gone, or the endpoint was removed while the datagram queued |
+| `source_queue_full`, `task_limit`, `source_limit` | `upload` | — | Per-source queue, global task or backlogged source limit reached |
+| `packet_memory_limit` | both | —, `smux` (`upload`) | Shared datagram memory (8 MiB) exhausted |
+| `expired` | `upload` | — | Not sent by its deadline, including queueing, setup, sniffing that timed out and blocked writes; datagrams canceled by a configuration change are not counted |
+| `setup_capacity` | `upload` | — | Shared slow-operation capacity exhausted while initializing an association or opening a destination socket |
+| `setup_failed` | `upload` | — | Opening an association failed (routing, sniffing, MITM or the outbound dial), counting every datagram buffered for its sniffing; also datagrams left unsent when replaying them fails |
+| `slow_write_capacity` | `upload` | — | Shared slow-operation capacity exhausted before a blocking UDP write |
+| `endpoint_limit` | `upload` | — | UDP source endpoint limit reached |
+| `packet_resource_limit` | `upload` | — | No UDP association or socket could be opened: the process-wide packet resource limit or a source's socket limit is reached |
+| `dns_admission` | `upload` | — | Concurrent DNS query limit reached |
+| `mitm_bridge_full` | both | — | MITM HTTP/3 bridge queue full |
+| `filtered` | both | — | A request-routed MITM source sent to another destination; a rewritten destination socket received from another source |
+| `flow_queue_full` | `upload` | `smux` | A smux stream queued more than 64 KiB of datagrams; its oldest droppable datagram is evicted |
+| `carrier_queue_full` | `upload` | `smux`, `tuic`, `hysteria2` | A smux session exceeded 256 KiB of datagrams and evicted the oldest droppable datagram of its fattest stream, or a QUIC DATAGRAM send queue was full |
+| `codel` | `upload` | `smux` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond its rate- and active-flow-based delay estimate |
+| `socket_full` | `upload` | — | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
+| `too_large` | `upload` | `tuic`, `hysteria2` | QUIC datagram larger than any packet it can be sent in, or needing more fragments than the QUIC send queue holds |
+| `carrier_closed` | `upload` | `tuic`, `hysteria2` | QUIC datagram still queued when its TUIC or Hysteria2 connection closed |
+| `transport_receive_full` | `download` | `tuic`, `hysteria2` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
+| `carrier_queue_full` | `download` | `hysteria2` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
+| `unauthenticated` | `download` | `juicity` | juicity UDP datagram that does not authenticate; its socket is unconnected, so anyone may send to it |
+| `closed_stream` | `download` | —, `tuic`, `hysteria2` | Reply for an association dae has closed or is closing. Data smux receives for a stream dae has closed is not counted: the session no longer knows whether the stream carried datagrams |
+| `reply_queue_full` | `download` | — | Pushed reply backlog full |
+| `reply_socket_full` | `download` | — | The client's reply socket's send buffer was full: the reply is dropped instead of waiting |
+| `reply_send_failed` | `download` | — | Sending a reply to the client failed, for example its reply socket could not be created; the association goes on |
 
 Ingress datagrams keep their original deadline across control-plane handoff,
 sniffing replay and the MITM bridge. An expired packet is discarded before

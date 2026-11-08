@@ -231,13 +231,13 @@ func TestUDPPushCloseEndsDeliveryInBackground(t *testing.T) {
 	if _, exists := p.pool.Load(src); exists || !ue.IsClosed() {
 		t.Fatal("end of delivery kept the endpoint")
 	}
-	closed := netproxy.DropClosedStream.Load()
+	closed := dropClosedStream.Load()
 	conn.onPacket([]byte("late"), netip.MustParseAddrPort("192.0.2.1:443"))
 	time.Sleep(10 * time.Millisecond)
 	if got := replies.replies(); len(got) != 1 {
 		t.Fatalf("reply delivered after the end: %q", got)
 	}
-	if n := netproxy.DropClosedStream.Load() - closed; n != 1 {
+	if n := dropClosedStream.Load() - closed; n != 1 {
 		t.Fatalf("%d replies after the end counted, want 1", n)
 	}
 }
@@ -276,14 +276,14 @@ func TestUDPPushRetiredSocketIsInert(t *testing.T) {
 	child := ue.sockets[dst]
 	ue.mu.Unlock()
 	child.retired.Store(true)
-	closed := netproxy.DropClosedStream.Load()
+	closed := dropClosedStream.Load()
 	conn.onPacket([]byte("late"), dst)
 	conn.onClose(io.EOF)
 	time.Sleep(10 * time.Millisecond)
 	if _, exists := p.pool.Load(src); !exists || len(replies.replies()) != 0 {
 		t.Fatalf("retired socket delivered %q or ended the source", replies.replies())
 	}
-	if n := netproxy.DropClosedStream.Load() - closed; n != 1 {
+	if n := dropClosedStream.Load() - closed; n != 1 {
 		t.Fatalf("%d replies for the retired socket counted, want 1", n)
 	}
 }

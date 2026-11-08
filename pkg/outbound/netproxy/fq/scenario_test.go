@@ -25,7 +25,7 @@ func TestDatagramQueueScenarios(t *testing.T) {
 			}
 			c := newCarrier(t, rate)
 			flow := new(Flow)
-			dropped := drops(dropCoDel)
+			dropped := drops(testDrops.CoDel)
 			var offered, sent uint32
 			var waits []time.Duration
 			offer := func(at time.Time, size int) {

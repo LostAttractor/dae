@@ -23,7 +23,7 @@ const (
 
 // The receive queue holds the QUIC packets hysteria2 is carried in, not the
 // datagrams it delivers: what it drops QUIC may retransmit.
-var dropCarrierReceiveFull = netproxy.NewDrop(netproxy.DropDownload, "carrier_queue_full")
+var dropCarrierReceiveFull = netproxy.NewDrop("hysteria2", netproxy.DropDownload, "carrier_queue_full")
 
 type udpHopPacketConn struct {
 	HopInterval                     time.Duration

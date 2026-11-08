@@ -203,11 +203,11 @@ func (ue *UdpEndpoint) deliver(p *UdpEndpointPool, src netip.AddrPort, conn net.
 	from = common.ConvergeAddrPort(from)
 	// A reply for an association ending here is dropped.
 	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
-		netproxy.DropClosedStream.Add(1)
+		dropClosedStream.Add(1)
 		return true, cause
 	}
 	if !p.refreshSocket(src, ue, child, time.Now()) {
-		netproxy.DropClosedStream.Add(1)
+		dropClosedStream.Add(1)
 		return true, nil
 	}
 	if !ue.observeTarget(from, wait) {

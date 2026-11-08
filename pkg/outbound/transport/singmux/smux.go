@@ -54,6 +54,7 @@ var (
 	errSmuxRetired   = errors.New("smux: closed streams still draining")
 
 	smuxQueueDelay = netproxy.NewQueueDelay("smux")
+	smuxDrops      = fq.NewDrops("smux")
 )
 
 // smuxHeader fills in the header that frame f starts with.
@@ -120,7 +121,7 @@ func newSmuxSession(conn *monitoredConn) *smuxSession {
 		budgetWake: make(chan struct{}, 1),
 		die:        make(chan struct{}),
 	}
-	s.fq.Release, s.fq.Delay = s.releaseFrame, smuxQueueDelay
+	s.fq.Release, s.fq.Delay, s.fq.Drops = s.releaseFrame, smuxQueueDelay, smuxDrops
 	s.budget.Store(smuxReceiveBuffer)
 	go s.recvLoop()
 	go s.sendLoop()

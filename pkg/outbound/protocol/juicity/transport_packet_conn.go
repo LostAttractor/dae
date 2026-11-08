@@ -104,7 +104,7 @@ func (c *TransportPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err erro
 	}
 }
 
-var dropUnauthenticated = netproxy.NewDrop(netproxy.DropDownload, "unauthenticated")
+var dropUnauthenticated = netproxy.NewDrop("juicity", netproxy.DropDownload, "unauthenticated")
 
 func (c *TransportPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return c.Write(p)

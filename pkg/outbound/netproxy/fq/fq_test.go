@@ -41,7 +41,7 @@ type carrier struct {
 }
 
 func newCarrier(t *testing.T, rate float64) *carrier {
-	c := &carrier{s: new(Scheduler), now: epoch, rate: rate, sent: make(map[byte][]uint32), bytes: make(map[byte]int)}
+	c := &carrier{s: &Scheduler{Drops: testDrops}, now: epoch, rate: rate, sent: make(map[byte][]uint32), bytes: make(map[byte]int)}
 	// Datagram memory is shared by the tests.
 	t.Cleanup(func() { c.s.Clear(); c.s.ReleaseBatch() })
 	return c
@@ -67,6 +67,9 @@ func (c *carrier) take(want int) [][]byte {
 	c.s.ReleaseBatch()
 	return complete
 }
+
+// testDrops counts the drops of the schedulers whose counts tests check.
+var testDrops = NewDrops("fq-test")
 
 func drops(d *netproxy.Drop) func() uint64 {
 	before := d.Load()
@@ -119,7 +122,7 @@ func TestDRRSharesBytes(t *testing.T) {
 func TestCoDelControlLaw(t *testing.T) {
 	c := newCarrier(t, 1e6)
 	f := new(Flow)
-	codel := drops(dropCoDel)
+	codel := drops(testDrops.CoDel)
 	var seq uint32
 	offer := func() {
 		seq++
@@ -178,7 +181,7 @@ func TestCoDelControlLaw(t *testing.T) {
 func TestCoDelIntermittentLargeDatagrams(t *testing.T) {
 	c := newCarrier(t, 1e6)
 	f := new(Flow)
-	dropped := drops(dropCoDel)
+	dropped := drops(testDrops.CoDel)
 	for i := range 20 {
 		c.now = epoch.Add(time.Duration(i) * 50 * time.Millisecond)
 		if !admit(c.s, f, c.now, frame('d', uint32(i), 8<<10), false) {
@@ -206,7 +209,7 @@ func TestCoDelEmptyFlowKeepsDropMemory(t *testing.T) {
 			f.codel = codel{dropping: true, count: 8, lastCount: 3,
 				firstAbove: epoch.Add(-Interval), dropNext: epoch.Add(Interval)}
 			if evict {
-				c.s.dropOldest(f, false, netproxy.DropUploadMemory)
+				c.s.dropOldest(f, false, testDrops.Memory)
 			} else {
 				c.now = c.now.Add(10 * time.Millisecond)
 				c.take(8 << 10)
@@ -237,7 +240,7 @@ func TestCoDelSparesFairShare(t *testing.T) {
 				bulk[i] = new(Flow)
 			}
 			game := new(Flow)
-			codel := drops(dropCoDel)
+			codel := drops(testDrops.CoDel)
 			// One Quantum per round of the 17 flows; one datagram waits from
 			// the start.
 			interval := time.Duration(17 * Quantum / (tc.share * rate) * float64(time.Second))
@@ -273,7 +276,7 @@ func TestBurstIsNotDropped(t *testing.T) {
 		bulk[i] = new(Flow)
 	}
 	burst := new(Flow)
-	dropped := drops(dropCoDel)
+	dropped := drops(testDrops.CoDel)
 	for i := range 128 {
 		admit(c.s, burst, c.now, frame('u', uint32(i), 400), false)
 	}
@@ -295,10 +298,10 @@ func TestBurstIsNotDropped(t *testing.T) {
 // gets in, also into a flow that queued nothing.
 func TestLimitsDropOldestOfFattest(t *testing.T) {
 	used := netproxy.DatagramMemory.Status().Used
-	s := new(Scheduler)
+	s := &Scheduler{Drops: testDrops}
 	var released int
 	s.Release = func([]byte) { released++ }
-	flowFull, carrierFull := drops(dropFlowQueueFull), drops(dropCarrierQueueFull)
+	flowFull, carrierFull := drops(testDrops.FlowQueueFull), drops(testDrops.CarrierQueueFull)
 	flows := make([]*Flow, 5)
 	for i := range flows {
 		flows[i] = new(Flow)

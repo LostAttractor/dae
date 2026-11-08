@@ -72,7 +72,7 @@ func TestDatagramAdmissionDoesNotWait(t *testing.T) {
 				}
 			}
 			payload := make([]byte, size)
-			before := netproxy.DropCarrierQueueFull.Load()
+			before := datagramDrops.CarrierQueueFull.Load()
 			err = pair.WhileStalled(t, func() error {
 				for range 256 {
 					n, err := u.TryWriteTo(payload, addr)
@@ -85,24 +85,24 @@ func TestDatagramAdmissionDoesNotWait(t *testing.T) {
 				}
 				return errors.New("stalled carrier did not fill")
 			})
-			if err != netproxy.ErrPacketDropped || netproxy.DropCarrierQueueFull.Load()-before != 1 || !u.lease.Valid() || !parent.Valid() || failures.Load() != 0 {
-				t.Fatalf("admission: %v drops=%d failures=%d", err, netproxy.DropCarrierQueueFull.Load()-before, failures.Load())
+			if err != netproxy.ErrPacketDropped || datagramDrops.CarrierQueueFull.Load()-before != 1 || !u.lease.Valid() || !parent.Valid() || failures.Load() != 0 {
+				t.Fatalf("admission: %v drops=%d failures=%d", err, datagramDrops.CarrierQueueFull.Load()-before, failures.Load())
 			}
-			before = netproxy.DropCarrierQueueFull.Load()
+			before = datagramDrops.CarrierQueueFull.Load()
 			err = pair.WhileStalled(t, func() error {
 				for range 256 {
 					n, err := u.WriteTo(payload, addr)
 					if err != nil || n != len(payload) {
 						return fmt.Errorf("WriteTo: n=%d err=%v", n, err)
 					}
-					if netproxy.DropCarrierQueueFull.Load() != before {
+					if datagramDrops.CarrierQueueFull.Load() != before {
 						return nil
 					}
 				}
 				return errors.New("WriteTo did not report a counted drop")
 			})
-			if err != nil || netproxy.DropCarrierQueueFull.Load()-before != 1 {
-				t.Fatalf("reported drop: %v, count=%d", err, netproxy.DropCarrierQueueFull.Load()-before)
+			if err != nil || datagramDrops.CarrierQueueFull.Load()-before != 1 {
+				t.Fatalf("reported drop: %v, count=%d", err, datagramDrops.CarrierQueueFull.Load()-before)
 			}
 			_ = u.SetWriteDeadline(time.Now().Add(-time.Second))
 			if _, err := u.TryWriteTo(payload, addr); !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -130,11 +130,11 @@ func TestOversizedDatagramIsDroppedWhole(t *testing.T) {
 	u := packet.(*udpConn)
 	t.Cleanup(func() { _ = u.Close() })
 	addr := netproxy.NewAddr("udp", "example.test:53")
-	before := netproxy.DropTooLarge.Load()
+	before := datagramDrops.TooLarge.Load()
 	if n, err := u.TryWriteTo(make([]byte, 60000), addr); err != netproxy.ErrPacketDropped || n != 0 {
 		t.Fatalf("oversized write: %d %v", n, err)
 	}
-	if n := netproxy.DropTooLarge.Load() - before; n != 1 {
+	if n := datagramDrops.TooLarge.Load() - before; n != 1 {
 		t.Fatalf("counted %d too_large drops, want 1", n)
 	}
 	if _, err := u.TryWriteTo([]byte("next"), addr); err != nil {

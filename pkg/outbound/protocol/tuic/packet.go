@@ -35,14 +35,14 @@ func newPacketQueue() *packetQueue {
 func (p *packetQueue) PushBack(packet *packetFrame) {
 	select {
 	case <-p.done:
-		netproxy.DropClosedStream.Add(1)
+		datagramDrops.ClosedStream.Add(1)
 		return
 	default:
 	}
 	select {
 	case p.packets <- packet:
 	default:
-		netproxy.DropReceiveFull.Add(1)
+		datagramDrops.ReceiveFull.Add(1)
 	}
 }
 func (p *packetQueue) Close() error { p.once.Do(func() { close(p.done) }); return nil }
@@ -190,7 +190,7 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			d := q.fragments[packet.PKT_ID]
 			if d == nil {
 				if len(q.fragments) >= packetQueueSize {
-					netproxy.DropReceiveFull.Add(1)
+					datagramDrops.ReceiveFull.Add(1)
 					continue
 				}
 				d = &deFragger{updated: now}
@@ -210,10 +210,10 @@ func (q *quicStreamPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error) {
 	defer func() {
 		if _, limited := errors.AsType[*quic.StreamLimitReachedError](err); limited || errors.Is(err, quic.ErrDatagramQueueFull) {
-			netproxy.DropCarrierQueueFull.Add(1)
+			datagramDrops.CarrierQueueFull.Add(1)
 			err = netproxy.ErrPacketDropped
 		} else if errors.Is(err, quic.ErrDatagramBatchTooLarge) {
-			netproxy.DropTooLarge.Add(1)
+			datagramDrops.TooLarge.Add(1)
 			err = netproxy.ErrPacketDropped
 		} else {
 			err = common.WrapQUICError(err, q.lease.Resource(), q.lease, netproxy.OpWrite, q.fail)
@@ -359,3 +359,6 @@ func (q *quicStreamPacketConn) Write(p []byte) (int, error) {
 }
 
 var _ net.PacketConn = (*quicStreamPacketConn)(nil)
+
+// The datagrams TUIC discards, under its own transport label.
+var datagramDrops = netproxy.NewDatagramDrops("tuic")

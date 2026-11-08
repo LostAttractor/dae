@@ -24,6 +24,9 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/hysteria2/internal/protocol"
 )
 
+// The datagrams Hysteria2 discards, under its own transport label.
+var datagramDrops = netproxy.NewDatagramDrops("hysteria2")
+
 const (
 	udpMessageChanSize = 1024
 	defraggerTimeout   = 5 * time.Second
@@ -110,7 +113,7 @@ func (u *udpConn) feedDefrag(msg *protocol.UDPMessage) *protocol.UDPMessage {
 	entry := u.defraggers[msg.PacketID]
 	if entry == nil || !now.Before(entry.expiresAt) {
 		if len(u.defraggers) >= udpMessageChanSize {
-			netproxy.DropReceiveFull.Add(1)
+			datagramDrops.ReceiveFull.Add(1)
 			return nil
 		}
 		if u.defraggers == nil {
@@ -140,10 +143,10 @@ func (u *udpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 func (u *udpConn) TryWriteTo(b []byte, addr net.Addr) (n int, err error) {
 	defer func() {
 		if errors.Is(err, quic.ErrDatagramQueueFull) {
-			netproxy.DropCarrierQueueFull.Add(1)
+			datagramDrops.CarrierQueueFull.Add(1)
 			err = netproxy.ErrPacketDropped
 		} else if errors.Is(err, quic.ErrDatagramBatchTooLarge) {
-			netproxy.DropTooLarge.Add(1)
+			datagramDrops.TooLarge.Add(1)
 			err = netproxy.ErrPacketDropped
 		}
 	}()
@@ -326,14 +329,14 @@ func (m *udpSessionManager) run() error {
 func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 	conn, ok := m.connMap.Load(msg.SessionID)
 	if !ok {
-		netproxy.DropClosedStream.Add(1)
+		datagramDrops.ClosedStream.Add(1)
 		return
 	}
 
 	select {
 	case conn.(*udpConn).ReceiveCh <- msg:
 	default:
-		netproxy.DropReceiveFull.Add(1)
+		datagramDrops.ReceiveFull.Add(1)
 	}
 }
 

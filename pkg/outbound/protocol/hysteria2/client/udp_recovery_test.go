@@ -83,13 +83,13 @@ func TestUDPFeedCountsDrops(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer packet.Close()
-	closed, full := netproxy.DropClosedStream.Load(), netproxy.DropReceiveFull.Load()
+	closed, full := datagramDrops.ClosedStream.Load(), datagramDrops.ReceiveFull.Load()
 	conn := packet.(*udpConn)
 	m.feed(&protocol.UDPMessage{SessionID: conn.ID + 1})
 	for range cap(conn.ReceiveCh) + 1 {
 		m.feed(&protocol.UDPMessage{SessionID: conn.ID})
 	}
-	if netproxy.DropClosedStream.Load()-closed != 1 || netproxy.DropReceiveFull.Load()-full != 1 {
-		t.Fatalf("counted %d closed and %d full, want 1 each", netproxy.DropClosedStream.Load()-closed, netproxy.DropReceiveFull.Load()-full)
+	if datagramDrops.ClosedStream.Load()-closed != 1 || datagramDrops.ReceiveFull.Load()-full != 1 {
+		t.Fatalf("counted %d closed and %d full, want 1 each", datagramDrops.ClosedStream.Load()-closed, datagramDrops.ReceiveFull.Load()-full)
 	}
 }

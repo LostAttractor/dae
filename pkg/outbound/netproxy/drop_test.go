@@ -34,27 +34,29 @@ func TestQuietDropDoesNotLog(t *testing.T) {
 	}
 }
 
-func TestDropRegistersEachPairOnce(t *testing.T) {
+func TestDropRegistersEachTripleOnce(t *testing.T) {
+	NewDrop("triple-test", DropUpload, DropUploadMemory.Reason())
 	defer func() {
 		if recover() == nil {
-			t.Fatal("registered a second counter for a direction and reason")
+			t.Fatal("registered a second counter for a transport, direction and reason")
 		}
 	}()
-	NewDrop(DropReceiveFull.Direction(), DropReceiveFull.Reason())
+	NewDrop(DropUploadMemory.Transport(), DropUploadMemory.Direction(), DropUploadMemory.Reason())
 }
 
-// quic-go's DATAGRAM drops reach the shared counters, one per reason.
+// quic-go's DATAGRAM drops reach the transport's counters, one per reason.
 func TestQUICDatagramDropsAreCounted(t *testing.T) {
+	drops := NewDatagramDrops("quic-test")
 	for _, tc := range []struct {
 		reason quic.DatagramDropReason
 		drop   *Drop
 	}{
-		{quic.DatagramDropReceiveQueueFull, DropReceiveFull},
-		{quic.DatagramDropTooLarge, DropTooLarge},
-		{quic.DatagramDropClosed, dropCarrierClosed},
+		{quic.DatagramDropReceiveQueueFull, drops.ReceiveFull},
+		{quic.DatagramDropTooLarge, drops.TooLarge},
+		{quic.DatagramDropClosed, drops.carrierClosed},
 	} {
 		before := tc.drop.Load()
-		QUICDatagramDropped(tc.reason, 1200)
+		drops.QUICDatagramDropped(tc.reason, 1200)
 		if n := tc.drop.Load() - before; n != 1 {
 			t.Fatalf("reason %d counted %d %s/%s drops, want 1", tc.reason, n, tc.drop.Direction(), tc.drop.Reason())
 		}

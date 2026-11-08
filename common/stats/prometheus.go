@@ -92,8 +92,8 @@ var (
 	)
 	udpPacketDropsDesc = prometheus.NewDesc(
 		"dae_udp_packet_drops_total",
-		"Process-lifetime UDP packets dropped by dae and its tproxy socket, by the layer that dropped them.",
-		[]string{"direction", "reason"},
+		"Process-lifetime UDP packets dropped by dae and its tproxy socket, by the layer that dropped them: an outbound transport, or none for dae's own datapath and local sockets.",
+		[]string{"transport", "direction", "reason"},
 		nil,
 	)
 	muxLanePlacementsDesc = prometheus.NewDesc(
@@ -202,7 +202,7 @@ func (s *Store) collectProcess(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(processTimestampDesc, prometheus.GaugeValue, float64(lastReload), "reload")
 	ch <- prometheus.MustNewConstMetric(externalCounterErrorsDesc, prometheus.CounterValue, float64(s.externalReadErrors.Load()))
 	for drop := range netproxy.Drops() {
-		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Direction(), drop.Reason())
+		ch <- prometheus.MustNewConstMetric(udpPacketDropsDesc, prometheus.CounterValue, float64(drop.Load()), drop.Transport(), drop.Direction(), drop.Reason())
 	}
 	for placement := range netproxy.LanePlacements() {
 		ch <- prometheus.MustNewConstMetric(muxLanePlacementsDesc, prometheus.CounterValue, float64(placement.Load()), placement.Lane(), placement.Result())

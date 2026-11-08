@@ -147,10 +147,10 @@ func testSmuxPacketConn(t testing.TB, s *smuxSession) *smuxPacketConn {
 	return conn
 }
 
-// dropCount returns the upload drops counted for reason so far.
+// dropCount returns the upload drops smux counted for reason so far.
 func dropCount(reason string) uint64 {
 	for drop := range netproxy.Drops() {
-		if drop.Direction() == netproxy.DropUpload && drop.Reason() == reason {
+		if drop.Transport() == "smux" && drop.Direction() == netproxy.DropUpload && drop.Reason() == reason {
 			return drop.Load()
 		}
 	}
@@ -197,7 +197,7 @@ func datagram(seq uint32, size int) []byte {
 // are lost on the way. Only exhausted datagram memory refuses one, which
 // TryWriteTo reports and WriteTo does not.
 func TestSmuxDatagramsDropOldest(t *testing.T) {
-	flowFull, memory := dropCount("flow_queue_full"), netproxy.DropUploadMemory.Load()
+	flowFull, memory := dropCount("flow_queue_full"), smuxDrops.Memory.Load()
 	local, remote := net.Pipe()
 	carrier := newGatedConn(local)
 	s := newTestSmuxSession(carrier)
@@ -234,8 +234,8 @@ func TestSmuxDatagramsDropOldest(t *testing.T) {
 	bound := &netproxy.BindPacketConn{PacketConn: conn, Address: target}
 	n, err := bound.Write(datagram(sent, 1200))
 	limit.Close()
-	if refused != netproxy.ErrPacketDropped || n != 1200 || err != nil || netproxy.DropUploadMemory.Load()-memory != 2 {
-		t.Fatalf("without memory: TryWriteTo %v, Write %d, %v, %d counted", refused, n, err, netproxy.DropUploadMemory.Load()-memory)
+	if refused != netproxy.ErrPacketDropped || n != 1200 || err != nil || smuxDrops.Memory.Load()-memory != 2 {
+		t.Fatalf("without memory: TryWriteTo %v, Write %d, %v, %d counted", refused, n, err, smuxDrops.Memory.Load()-memory)
 	}
 	if _, err := conn.WriteTo(datagram(0, 1200), target); err != nil {
 		t.Fatalf("WriteTo with memory = %v", err)

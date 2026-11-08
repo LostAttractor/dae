@@ -109,13 +109,13 @@ func TestClientFrameWireFormat(t *testing.T) {
 }
 
 func TestPacketQueueAndReassemblyAreBounded(t *testing.T) {
-	full, closed := netproxy.DropReceiveFull.Load(), netproxy.DropClosedStream.Load()
+	full, closed := datagramDrops.ReceiveFull.Load(), datagramDrops.ClosedStream.Load()
 	queue := newPacketQueue()
 	for i := 0; i < packetQueueSize*2; i++ {
 		queue.PushBack(&packetFrame{})
 	}
-	if len(queue.packets) != packetQueueSize || netproxy.DropReceiveFull.Load()-full != packetQueueSize {
-		t.Fatalf("queue length=%d, %d drops counted", len(queue.packets), netproxy.DropReceiveFull.Load()-full)
+	if len(queue.packets) != packetQueueSize || datagramDrops.ReceiveFull.Load()-full != packetQueueSize {
+		t.Fatalf("queue length=%d, %d drops counted", len(queue.packets), datagramDrops.ReceiveFull.Load()-full)
 	}
 	queue.Close()
 	select {
@@ -124,7 +124,7 @@ func TestPacketQueueAndReassemblyAreBounded(t *testing.T) {
 		t.Fatal("close did not wake reader")
 	}
 	queue.PushBack(&packetFrame{})
-	if netproxy.DropClosedStream.Load()-closed != 1 {
+	if datagramDrops.ClosedStream.Load()-closed != 1 {
 		t.Fatal("a packet for a closed association was not counted")
 	}
 	m, _ := protocol.ParseMetadata("127.0.0.1:53")
@@ -152,14 +152,14 @@ func TestReassemblyTableDropIsCounted(t *testing.T) {
 		q.fragments[id] = &deFragger{updated: time.Now()}
 	}
 	m, _ := protocol.ParseMetadata("127.0.0.1:53")
-	dropped := netproxy.DropReceiveFull.Load()
+	dropped := datagramDrops.ReceiveFull.Load()
 	q.incomingPackets.PushBack(&packetFrame{PKT_ID: packetQueueSize, FRAG_TOTAL: 2, ADDR: addressFromMetadata(&m), DATA: []byte("a")})
 	q.incomingPackets.PushBack(&packetFrame{FRAG_TOTAL: 1, ADDR: addressFromMetadata(&m), DATA: []byte("ok")})
 	data := make([]byte, 8)
 	if n, _, err := q.ReadFrom(data); err != nil || string(data[:n]) != "ok" {
 		t.Fatalf("read %q %v", data[:n], err)
 	}
-	if n := netproxy.DropReceiveFull.Load() - dropped; n != 1 {
+	if n := datagramDrops.ReceiveFull.Load() - dropped; n != 1 {
 		t.Fatalf("counted %d drops, want 1", n)
 	}
 }

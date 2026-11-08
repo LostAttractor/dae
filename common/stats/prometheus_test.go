@@ -133,17 +133,20 @@ func TestStoreCollectorSurvivesExternalReadFailure(t *testing.T) {
 	_ = connection.Close()
 }
 
-// Every UDP drop counter is exported, also before its first drop.
+var testTransportDrop = netproxy.NewDrop("stats-test", netproxy.DropDownload, "transport_receive_full")
+
+// Every UDP drop counter is exported with its transport, also before its
+// first drop.
 func TestStoreExportsUDPPacketDrops(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(newStoreAt(time.Now()))
-	before := netproxy.DropReceiveFull.Load()
-	netproxy.DropReceiveFull.Add(1)
+	before := testTransportDrop.Load()
+	testTransportDrop.Add(1)
 	families, err := registry.Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
-	exported := 0
+	exported, found := 0, false
 	for _, family := range families {
 		if family.GetName() != "dae_udp_packet_drops_total" {
 			continue
@@ -154,14 +157,17 @@ func TestStoreExportsUDPPacketDrops(t *testing.T) {
 			for _, label := range metric.GetLabel() {
 				labels[label.GetName()] = label.GetValue()
 			}
-			if labels["direction"] == netproxy.DropReceiveFull.Direction() && labels["reason"] == netproxy.DropReceiveFull.Reason() &&
-				metric.GetCounter().GetValue() != float64(before+1) {
-				t.Fatalf("exported %v, want %d", metric.GetCounter().GetValue(), before+1)
+			if labels["transport"] == testTransportDrop.Transport() && labels["direction"] == testTransportDrop.Direction() &&
+				labels["reason"] == testTransportDrop.Reason() {
+				found = true
+				if metric.GetCounter().GetValue() != float64(before+1) {
+					t.Fatalf("exported %v, want %d", metric.GetCounter().GetValue(), before+1)
+				}
 			}
 		}
 	}
-	if want := len(slices.Collect(netproxy.Drops())); exported != want {
-		t.Fatalf("exported %d drop counters, want %d", exported, want)
+	if want := len(slices.Collect(netproxy.Drops())); exported != want || !found {
+		t.Fatalf("exported %d drop counters, want %d; transport counter found: %v", exported, want, found)
 	}
 }
 

@@ -9,6 +9,6 @@ import "github.com/daeuniverse/dae/pkg/membuffer"
 var DatagramMemory = membuffer.NewBudget(8 << 20)
 
 var (
-	DropUploadMemory   = NewDrop(DropUpload, "packet_memory_limit")
-	DropDownloadMemory = NewDrop(DropDownload, "packet_memory_limit")
+	DropUploadMemory   = NewDrop("", DropUpload, "packet_memory_limit")
+	DropDownloadMemory = NewDrop("", DropDownload, "packet_memory_limit")
 )

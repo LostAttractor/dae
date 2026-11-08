@@ -268,7 +268,7 @@ func (r *udpPushReceiver) onPacket(payload []byte, from netip.AddrPort) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.done {
-		netproxy.DropClosedStream.Add(1)
+		dropClosedStream.Add(1)
 		return
 	}
 	if r.closed {
@@ -321,7 +321,7 @@ func (r *udpPushReceiver) drainLocked() {
 // endLocked ends delivery in the background and drops queued replies.
 func (r *udpPushReceiver) endLocked(err error) {
 	r.done = true
-	netproxy.DropClosedStream.Add(uint64(len(r.backlog)))
+	dropClosedStream.Add(uint64(len(r.backlog)))
 	for _, reply := range r.backlog {
 		reply.packet.release()
 	}

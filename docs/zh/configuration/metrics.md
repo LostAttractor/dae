@@ -29,38 +29,38 @@ global {
 
 ## UDP 丢包
 
-`dae_udp_packet_drops_total{direction,reason}` 是核心指标，名称不带 `dae_plugin_` 前缀。它由丢弃数据报的那一层计数，按进程生命周期累计，重载不清零；全部组合在首次丢包前即以 0 导出。
-`direction` 为 `upload`（LAN 到外网）或 `download`。被告知丢包的调用方不重复计数。每个组合每分钟最多输出一条 Warn 日志；`route_missing`、`filtered`、`closed_stream`、`carrier_closed` 属于正常运行中的丢弃，只计数不输出日志。
+`dae_udp_packet_drops_total{transport,direction,reason}` 是核心指标，名称不带 `dae_plugin_` 前缀。它由丢弃数据报的那一层计数，按进程生命周期累计，重载不清零；全部组合在首次丢包前即以 0 导出。
+`direction` 为 `upload`（LAN 到外网）或 `download`。`transport` 为在自身队列或协议中丢弃数据报的出站 transport：`smux`、`tuic`、`hysteria2` 或 `juicity`；dae 自身 UDP 数据路径和本地 socket 的丢弃为空，下表记为 —。被告知丢包的调用方不重复计数。每个组合每分钟最多输出一条 Warn 日志；`route_missing`、`filtered`、`closed_stream`、`carrier_closed` 属于正常运行中的丢弃，只计数不输出日志。
 
-| `reason` | `direction` | 含义 |
-| --- | --- | --- |
-| `socket_overflow` | `upload` | tproxy UDP socket 接收队列溢出，随下一个入队的数据报上报 |
-| `truncated` | `upload` | 截断的数据报 |
-| `route_missing` | `upload` | 内核路由记录已不存在，或数据报排队期间其端点已移除 |
-| `source_queue_full`、`task_limit`、`source_limit` | `upload` | 每源队列、全局任务数或积压源数已满 |
-| `packet_memory_limit` | 两者 | 共享数据报内存（8 MiB）已满 |
-| `expired` | `upload` | 截止前未能发出，包括排队、建立、嗅探超时和阻塞写入；配置换代取消的数据报不计 |
-| `setup_capacity` | `upload` | 初始化关联或创建目的地 socket 时，共享慢操作额度已满 |
-| `setup_failed` | `upload` | 建立关联失败（路由、嗅探、MITM 或出站拨号），计入为嗅探缓存的全部数据报；回放这些数据报失败时未发出的部分也计入 |
-| `slow_write_capacity` | `upload` | 阻塞 UDP 写入前，共享慢操作额度已满 |
-| `endpoint_limit` | `upload` | UDP 源端点数已满 |
-| `packet_resource_limit` | `upload` | 无法打开 UDP 关联或 socket：进程级数据包资源数或单个源的 socket 数已满 |
-| `dns_admission` | `upload` | 并发 DNS 查询数已满 |
-| `mitm_bridge_full` | 两者 | MITM HTTP/3 桥队列已满 |
-| `filtered` | 两者 | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
-| `flow_queue_full` | `upload` | smux 单流排队的数据报超过 64 KiB，淘汰该流最早的可丢数据报 |
-| `carrier_queue_full` | `upload` | smux 会话的数据报超过 256 KiB，淘汰其积压最多流的最早可丢数据报；或 QUIC DATAGRAM 发送队列已满 |
-| `codel` | `upload` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过基于速率和活跃流数估计的保护阈值 |
-| `socket_full` | `upload` | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
-| `too_large` | `upload` | QUIC 数据报超过可发送的包大小，或所需分片数超过 QUIC 发送队列容量 |
-| `carrier_closed` | `upload` | TUIC 或 Hysteria2 连接关闭时仍在队列中的 QUIC 数据报 |
-| `transport_receive_full` | `download` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
-| `carrier_queue_full` | `download` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
-| `unauthenticated` | `download` | juicity UDP 收到无法认证的数据报；其 socket 未 connect，任何来源都能发来 |
-| `closed_stream` | `download` | 回包所属的关联已被 dae 关闭或正在关闭。smux 为已被 dae 关闭的流收到的数据不计：会话已无法判断该流是否承载数据报 |
-| `reply_queue_full` | `download` | 推送回包的积压队列已满 |
-| `reply_socket_full` | `download` | 发往客户端的回包 socket 发送缓冲区已满：丢弃回包而不等待 |
-| `reply_send_failed` | `download` | 回包发往客户端失败，例如无法建立回包 socket；关联继续 |
+| `reason` | `direction` | `transport` | 含义 |
+| --- | --- | --- | --- |
+| `socket_overflow` | `upload` | — | tproxy UDP socket 接收队列溢出，随下一个入队的数据报上报 |
+| `truncated` | `upload` | — | 截断的数据报 |
+| `route_missing` | `upload` | — | 内核路由记录已不存在，或数据报排队期间其端点已移除 |
+| `source_queue_full`、`task_limit`、`source_limit` | `upload` | — | 每源队列、全局任务数或积压源数已满 |
+| `packet_memory_limit` | 两者 | —、`smux` （`upload`） | 共享数据报内存（8 MiB）已满 |
+| `expired` | `upload` | — | 截止前未能发出，包括排队、建立、嗅探超时和阻塞写入；配置换代取消的数据报不计 |
+| `setup_capacity` | `upload` | — | 初始化关联或创建目的地 socket 时，共享慢操作额度已满 |
+| `setup_failed` | `upload` | — | 建立关联失败（路由、嗅探、MITM 或出站拨号），计入为嗅探缓存的全部数据报；回放这些数据报失败时未发出的部分也计入 |
+| `slow_write_capacity` | `upload` | — | 阻塞 UDP 写入前，共享慢操作额度已满 |
+| `endpoint_limit` | `upload` | — | UDP 源端点数已满 |
+| `packet_resource_limit` | `upload` | — | 无法打开 UDP 关联或 socket：进程级数据包资源数或单个源的 socket 数已满 |
+| `dns_admission` | `upload` | — | 并发 DNS 查询数已满 |
+| `mitm_bridge_full` | 两者 | — | MITM HTTP/3 桥队列已满 |
+| `filtered` | 两者 | — | 按请求路由的 MITM 源发往其他目的地；改写目的地的 socket 收到非目标来源的回包 |
+| `flow_queue_full` | `upload` | `smux` | smux 单流排队的数据报超过 64 KiB，淘汰该流最早的可丢数据报 |
+| `carrier_queue_full` | `upload` | `smux`、`tuic`、`hysteria2` | smux 会话的数据报超过 256 KiB，淘汰其积压最多流的最早可丢数据报；或 QUIC DATAGRAM 发送队列已满 |
+| `codel` | `upload` | `smux` | 被 CoDel 从 smux 流的队首丢弃：其数据报的排队时间超过 5 ms 已持续 100 ms 以上，且超过基于速率和活跃流数估计的保护阈值 |
+| `socket_full` | `upload` | — | UDP socket 发送缓冲区已满：direct、Shadowsocks、SSR、SOCKS5、juicity 的 UDP 丢弃数据报而不等待 |
+| `too_large` | `upload` | `tuic`、`hysteria2` | QUIC 数据报超过可发送的包大小，或所需分片数超过 QUIC 发送队列容量 |
+| `carrier_closed` | `upload` | `tuic`、`hysteria2` | TUIC 或 Hysteria2 连接关闭时仍在队列中的 QUIC 数据报 |
+| `transport_receive_full` | `download` | `tuic`、`hysteria2` | hysteria2、TUIC、QUIC 的数据报接收队列或分片重组表已满 |
+| `carrier_queue_full` | `download` | `hysteria2` | 端口跳跃的接收队列已满；队列中是承载 hysteria2 的 QUIC 包，QUIC 可能重传 |
+| `unauthenticated` | `download` | `juicity` | juicity UDP 收到无法认证的数据报；其 socket 未 connect，任何来源都能发来 |
+| `closed_stream` | `download` | —、`tuic`、`hysteria2` | 回包所属的关联已被 dae 关闭或正在关闭。smux 为已被 dae 关闭的流收到的数据不计：会话已无法判断该流是否承载数据报 |
+| `reply_queue_full` | `download` | — | 推送回包的积压队列已满 |
+| `reply_socket_full` | `download` | — | 发往客户端的回包 socket 发送缓冲区已满：丢弃回包而不等待 |
+| `reply_send_failed` | `download` | — | 回包发往客户端失败，例如无法建立回包 socket；关联继续 |
 
 入口数据报在控制面转交、嗅探重放和 MITM 桥接中保留原始截止时间，不在每次入队时重新计时；过期包在转发或桥接交付前丢弃。这不为传输内部队列或内核队列规定送达期限。
 

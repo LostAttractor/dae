@@ -215,7 +215,7 @@ func (t *clientImpl) receivePacket(r io.Reader, mode common.UdpRelayMode) {
 		if value, ok := t.udpIncomingPacketsMap.Load(packet.ASSOC_ID); ok {
 			value.(*quicStreamPacketConn).incomingPackets.PushBack(packet)
 		} else {
-			netproxy.DropClosedStream.Add(1)
+			datagramDrops.ClosedStream.Add(1)
 		}
 	}
 }
