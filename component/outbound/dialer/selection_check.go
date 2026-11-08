@@ -352,7 +352,9 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	}
 	now := time.Now()
 	if c.d.awaitingRecoveryLocked() {
+		// One recovery deadline: without a confirmed mode it starts discovery.
 		c.healthAt = now.Add(c.recoveryRetryDelayLocked(now))
+		c.supportAt = time.Time{}
 	} else {
 		c.healthAt = now.Add(c.d.recoveryCheckInterval())
 	}

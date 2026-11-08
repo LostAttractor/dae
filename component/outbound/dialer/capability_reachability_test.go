@@ -278,6 +278,68 @@ func TestFailedPathRetriesFollowDowntime(t *testing.T) {
 	}
 }
 
+// finishSelection completes a selection check of network with probes, as
+// the worker does for a flight requested by a group.
+func finishSelection(c *connectivityChecker, network common.NetworkIndex, probes ...probeResult) *selectionCheck {
+	c.d.mu.Lock()
+	flight := c.d.queueSelectionCheckLocked(network, time.Now().Add(time.Minute))
+	result := checkResult{attempted: true, kind: checkSelection, generation: c.d.failures.generation, request: flight, probes: probes}
+	c.d.mu.Unlock()
+	c.selections[flight.network] = flight
+	c.finish(result)
+	return flight
+}
+
+// A selection check that fails a path leaves it the single recovery
+// deadline of any other failure, not a pending discovery deadline beside it.
+func TestSelectionFailureLeavesOneRecoveryDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind checkKind
+	}{
+		{"confirmed", checkHealth},
+		{"unconfirmed", checkSupport},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newTestDialer(t, testTransport{})
+				checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+					return context.DeadlineExceeded
+				})
+				defer checker.stopRetries()
+				if tc.kind == checkHealth {
+					prepareRecoveryDialer(d)
+					d.mu.Lock()
+					d.health.networks[common.NetworkTCP6] = networkUnknown
+					d.health.networks[common.NetworkUDP6] = networkUnknown
+					d.mu.Unlock()
+				} else {
+					failure := checkResult{kind: checkInitial}
+					for _, network := range canonicalNetworkOrder {
+						failure.probes = append(failure.probes, probeResult{network: network, err: context.DeadlineExceeded})
+					}
+					checker.cancel = func() {}
+					checker.finish(failure)
+				}
+				checker.scheduleSupport()
+				if checker.supportAt.IsZero() {
+					t.Fatal("no support deadline before the selection check")
+				}
+				finishSelection(checker, common.NetworkTCP4, probeResult{network: common.NetworkTCP4, err: context.DeadlineExceeded})
+				if !d.awaitingRecovery() || checker.healthAt.IsZero() || !checker.supportAt.IsZero() {
+					t.Fatalf("failed path deadlines health=%v support=%v, want health alone", checker.healthAt, checker.supportAt)
+				}
+				time.Sleep(time.Until(checker.healthAt))
+				checker.dispatch()
+				if checker.cancel == nil || checker.runningKind != tc.kind {
+					t.Fatalf("recovery ran %v, want %v", checkKindName[checker.runningKind], checkKindName[tc.kind])
+				}
+				checker.finish(<-checker.results)
+			})
+		})
+	}
+}
+
 func TestSelectionDiscoveryDoesNotLeaveAutomaticCheckDemand(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
