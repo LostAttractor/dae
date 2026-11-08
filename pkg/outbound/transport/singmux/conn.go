@@ -59,17 +59,19 @@ func rejection(layer netproxy.FailureLayer, message []byte) error {
 }
 
 // Read sends a pending TCP stream request first: the server answers only
-// after it, and a server-first protocol may never write. UDP streams leave it
-// to the first datagram.
+// after it, and a server-first protocol may never write. A writer holding
+// writeMu sends it with its first bytes, so Read does not wait behind the
+// writer's flow control past its own deadline. UDP streams leave it to the
+// first datagram.
 func (c *Conn) Read(b []byte) (n int, err error) {
 	if !c.onceRead {
-		if !c.udp {
-			c.writeMu.Lock()
+		if !c.udp && c.writeMu.TryLock() {
 			if !c.onceWrite {
 				_, err = c.write(nil)
 			}
 			c.writeMu.Unlock()
-			if err != nil {
+			// After the peer's FIN the request cannot leave, but its answer may be buffered.
+			if err != nil && !errors.Is(err, io.EOF) {
 				return
 			}
 		}
