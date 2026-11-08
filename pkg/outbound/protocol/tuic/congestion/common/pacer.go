@@ -22,8 +22,8 @@ type Pacer struct {
 
 func NewPacer(getBandwidth func() congestion.ByteCount) *Pacer {
 	p := &Pacer{
-		budgetAtLastSent: maxBurstPackets * congestion.InitialPacketSizeIPv4,
-		maxDatagramSize:  congestion.InitialPacketSizeIPv4,
+		budgetAtLastSent: maxBurstPackets * congestion.InitialPacketSize,
+		maxDatagramSize:  congestion.InitialPacketSize,
 		getBandwidth:     getBandwidth,
 	}
 	return p

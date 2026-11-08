@@ -4,13 +4,12 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/congestion/bbr"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/tuic/congestion/brutal"
 	"github.com/daeuniverse/quic-go"
+	quiccongestion "github.com/daeuniverse/quic-go/congestion"
 )
 
 func UseBBR(conn *quic.Conn) {
-	conn.SetCongestionControl(bbr.NewBBRv3Sender(
-		bbr.DefaultClock{},
-		bbr.GetInitialPacketSize(conn.RemoteAddr()),
-	))
+	// quic-go replays the connection's current datagram size on installation.
+	conn.SetCongestionControl(bbr.NewBBRv3Sender(bbr.DefaultClock{}, quiccongestion.InitialPacketSize))
 }
 
 func UseBrutal(conn *quic.Conn, tx uint64) error {

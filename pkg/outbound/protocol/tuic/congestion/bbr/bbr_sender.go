@@ -3,7 +3,6 @@ package bbr
 import (
 	"math"
 	"math/rand/v2"
-	"net"
 	"time"
 
 	"github.com/daeuniverse/quic-go/congestion"
@@ -218,21 +217,9 @@ func (b *bbrSender) OnCongestionEvent(number congestion.PacketNumber, lostBytes,
 	b.updateControl(0)
 }
 
-func (b *bbrSender) OnRetransmissionTimeout(retransmitted bool) {
-	// A QUIC PTO is not an RTO; the transport must not call this for PTO probes.
-	if retransmitted {
-		b.saveCongestionWindow()
-		if !b.recovery {
-			b.recoveryStartPacket = b.lastSentPacket
-		}
-		b.recovery, b.recoveryEnd = true, b.lastSentPacket
-		b.congestionWindow = b.minimumWindow()
-	}
-}
-
-// SetMaxDatagramSize may also shrink the size: quic-go falls back to 1200
-// bytes when the first Initial fails with EMSGSIZE, after a 0-RTT dial may
-// already have installed this sender.
+// SetMaxDatagramSize may also shrink the size: quic-go replays its current
+// size when it installs this sender, 1200 bytes once the first Initial failed
+// with EMSGSIZE, and the initial size again after a path migration.
 func (b *bbrSender) SetMaxDatagramSize(size congestion.ByteCount) {
 	// Model estimates are bytes, not packets. Only packet-based limits scale.
 	b.initialCongestionWindow = b.initialCongestionWindow / b.maxDatagramSize * size
@@ -652,14 +639,4 @@ func (b *bbrSender) updateControl(acked congestion.ByteCount) {
 		cap = min(cap, b.probeRttWindow())
 	}
 	b.congestionWindow = min(b.congestionWindow, max(b.minimumWindow(), cap), b.maxCongestionWindow)
-}
-
-func GetInitialPacketSize(addr net.Addr) congestion.ByteCount {
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		if udpAddr.IP.To4() != nil {
-			return congestion.InitialPacketSizeIPv4
-		}
-		return congestion.InitialPacketSizeIPv6
-	}
-	return congestion.MinInitialPacketSize
 }

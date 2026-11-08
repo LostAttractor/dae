@@ -46,7 +46,7 @@ func NewBrutalSender(bps uint64) (*BrutalSender, error) {
 	}
 	bs := &BrutalSender{
 		bps:             congestion.ByteCount(bps),
-		maxDatagramSize: congestion.InitialPacketSizeIPv4,
+		maxDatagramSize: congestion.InitialPacketSize,
 		ackRate:         1,
 	}
 	bs.pacer = common.NewPacer(func() congestion.ByteCount {
@@ -173,5 +173,3 @@ func (b *BrutalSender) InRecovery() bool {
 }
 
 func (b *BrutalSender) MaybeExitSlowStart() {}
-
-func (b *BrutalSender) OnRetransmissionTimeout(packetsRetransmitted bool) {}
