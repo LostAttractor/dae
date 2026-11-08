@@ -43,14 +43,20 @@ func (c *connectivityChecker) scheduleSupport() {
 		c.supportAt, c.discoverySince = time.Time{}, time.Time{}
 		return
 	}
-	if c.supportAt.IsZero() {
-		now := time.Now()
-		if c.d.awaitingRecovery() {
-			// A failed path that never confirmed a mode recovers by discovering one.
-			c.supportAt = now.Add(c.recoveryRetryDelay(now))
-			return
+	if !c.d.awaitingRecovery() {
+		if c.supportAt.IsZero() {
+			now := time.Now()
+			c.supportAt = now.Add(c.discoveryRetryDelay(now))
 		}
-		c.supportAt = now.Add(c.discoveryRetryDelay(now))
+		return
+	}
+	// A failed path has one recovery deadline: its health checks once a mode
+	// is confirmed, otherwise discovering a mode.
+	if firstSupportedNetwork(c.d.networkStates()).Valid() {
+		c.supportAt = time.Time{}
+	} else if c.supportAt.IsZero() {
+		now := time.Now()
+		c.supportAt = now.Add(c.recoveryRetryDelay(now))
 	}
 }
 

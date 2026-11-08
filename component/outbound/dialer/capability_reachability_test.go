@@ -202,44 +202,80 @@ func TestRetainedRecoveryFollowsDowntimeAndKeepsCapability(t *testing.T) {
 }
 
 // A failed path retries on one deadline whatever its modes: each attempt
-// waits a quarter of the outage so far, and capability discovery is untouched.
+// waits a quarter of the outage so far. Once a mode is confirmed, health
+// checks recover the path and unknown modes wait for it with their discovery
+// round untouched; otherwise discovering a mode is the recovery attempt.
 func TestFailedPathRetriesFollowDowntime(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		d := newTestDialer(t, testTransport{})
-		prepareRecoveryDialer(d)
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
-			return context.DeadlineExceeded
+	for _, tc := range []struct {
+		name string
+		kind checkKind
+	}{
+		{"confirmed", checkHealth},
+		{"unconfirmed", checkSupport},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newTestDialer(t, testTransport{})
+				checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+					return context.DeadlineExceeded
+				})
+				defer checker.stopRetries()
+				failure := checkResult{kind: checkInitial}
+				for _, network := range canonicalNetworkOrder {
+					failure.probes = append(failure.probes, probeResult{network: network, err: context.DeadlineExceeded})
+				}
+				if tc.kind == checkHealth {
+					prepareRecoveryDialer(d)
+					d.mu.Lock()
+					// An IPv4-only node never settles its IPv6 modes.
+					d.health.networks[common.NetworkTCP6] = networkUnknown
+					d.health.networks[common.NetworkUDP6] = networkUnknown
+					d.mu.Unlock()
+					checker.scheduleSupport()
+					failure = checkResult{kind: checkHealth,
+						probes: []probeResult{{network: common.NetworkTCP4, err: context.DeadlineExceeded}}}
+				}
+				// deadline returns the single recovery deadline.
+				deadline := func() time.Time {
+					t.Helper()
+					if checker.healthAt.IsZero() == checker.supportAt.IsZero() {
+						t.Fatalf("recovery deadlines health=%v support=%v, want one", checker.healthAt, checker.supportAt)
+					}
+					if checker.healthAt.IsZero() {
+						return checker.supportAt
+					}
+					return checker.healthAt
+				}
+				checker.cancel = func() {}
+				checker.finish(failure)
+				d.mu.Lock()
+				d.failures.downSince = time.Now().Add(-time.Minute)
+				since := d.failures.downSince
+				d.mu.Unlock()
+				round := checker.discoverySince
+				time.Sleep(time.Until(deadline()))
+				for range 3 {
+					checker.dispatch()
+					if checker.cancel == nil || checker.runningKind != tc.kind {
+						t.Fatal("recovery was not dispatched")
+					}
+					checker.finish(<-checker.results)
+					low, high := checktime.Bounds(time.Since(since)/4, d.CheckIntervalMax)
+					if delay := time.Until(deadline()); delay < low || delay > high {
+						t.Fatalf("recovery delay=%v want [%v,%v]", delay, low, high)
+					}
+					checker.dispatch()
+					if checker.cancel != nil {
+						t.Fatal("failed recovery retried without waiting")
+					}
+					time.Sleep(time.Until(deadline()))
+				}
+				if checker.discoverySince != round {
+					t.Fatalf("recovery advanced the capability round: %v -> %v", round, checker.discoverySince)
+				}
+			})
 		})
-		defer checker.stopRetries()
-		checker.cancel = func() {}
-		checker.finish(checkResult{kind: checkHealth,
-			probes: []probeResult{{network: common.NetworkTCP4, err: context.DeadlineExceeded}}})
-		d.mu.Lock()
-		d.failures.downSince = time.Now().Add(-time.Minute)
-		since := d.failures.downSince
-		d.mu.Unlock()
-		round := checker.discoverySince
-		time.Sleep(time.Until(checker.healthAt))
-		for range 3 {
-			checker.dispatch()
-			if checker.cancel == nil || checker.runningKind != checkHealth {
-				t.Fatal("recovery was not dispatched")
-			}
-			checker.finish(<-checker.results)
-			low, high := checktime.Bounds(time.Since(since)/4, d.CheckIntervalMax)
-			if delay := time.Until(checker.healthAt); delay < low || delay > high || !checker.supportAt.IsZero() {
-				t.Fatalf("recovery delay=%v support=%v want [%v,%v]", delay, checker.supportAt, low, high)
-			}
-			checker.dispatch()
-			if checker.cancel != nil {
-				t.Fatal("failed recovery retried without waiting")
-			}
-			time.Sleep(time.Until(checker.healthAt))
-		}
-		if checker.discoverySince != round {
-			t.Fatalf("recovery advanced the capability round: %v -> %v", round, checker.discoverySince)
-		}
-	})
+	}
 }
 
 func TestSelectionDiscoveryDoesNotLeaveAutomaticCheckDemand(t *testing.T) {
