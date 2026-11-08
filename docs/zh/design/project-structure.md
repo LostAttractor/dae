@@ -157,7 +157,7 @@ TCP 报文是否属于代理只看 dae 是否拥有该 tuple：accept 之前由�
 
 无法完成清理的异常退出（例如 SIGKILL）才保留内核兜底。有效条目继续沿用原 mark；代理连接随进程的 socket 结束，需要重连，代理握手未完成的报文丢弃，其余无主报文保持原生转发。`unexpected_exit_behavior: bypass`（默认）让新的出站 TCP 握手和 UDP 源生命周期绕过全部旧路由、block、DNS/MITM 捕获和目的地址重写规则，保留报文原有 mark、使用令牌 0；这有恢复可用性与流量泄露之间的取舍。设置 `block` 则拒绝新的受管出站生命周期，仍保留原生转发与入站回复，不扩展成入站防火墙。此配置独立于正常运行时的 `no_connectivity_behavior`。
 
-启动中、在线与终态离线分开，启动不会自动获得异常旁路，终态 Runtime 不能再次发布。新进程接管异常退出留下的兼容 pinned links，监听器和新配置代就绪后才切回在线；实例锁排除双 daemon。fallback 序号跨异常退出单调发行，旧令牌不复用；正常清理确认所有旧条目和挂载已消失后才删除序号表。详细契约见[连接状态与重载生命周期（英文）](../../en/design/connection-lifecycle.md)。
+启动中、在线与终态离线分开，启动不会自动获得异常旁路，终态 Runtime 不能再次发布。新进程接管异常退出留下的兼容 pinned links，监听器和新配置代就绪后才切回在线；此前退出的重启不算接管，保留这些 links，继续按 `unexpected_exit_behavior` 处理，daemon goroutine panic 时也像 SIGKILL 一样跳过清理；实例锁排除双 daemon。fallback 序号跨异常退出单调发行，旧令牌不复用；正常清理确认所有旧条目和挂载已消失后才删除序号表。详细契约见[连接状态与重载生命周期（英文）](../../en/design/connection-lifecycle.md)。
 
 `routing_tuples_map` 是 16384 项的交接 LRU：64 字节值包含完整结果、单调秒数过期时间、TCP 初始序列号和发送方本机进程名（供用户态重新求值 `pname()`），字段无空洞。TCP accept 原子取出并删除交接；相同 SYN 的重传在 30 秒内复用它且不续期；UDP 读取快照。交接容量和过期都不影响已建立 TCP 的转发状态。
 

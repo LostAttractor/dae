@@ -21,6 +21,7 @@ type kernelLinks struct {
 	exitLink     link.Link
 	generation   uint64
 	pinPath      string
+	inherited    bool // preparePins adopted host links a crashed process left
 }
 
 func (k *kernelLinks) ownHostTCXLink(owned hostTCXLink) bool {
@@ -154,7 +155,9 @@ func (k *kernelLinks) finishRebind() error {
 	return err
 }
 
-func (k *kernelLinks) Close() error {
+// Close releases this process's link references. Unless retainPins, it also
+// removes the pinned links, detaching every dae attachment.
+func (k *kernelLinks) Close(retainPins bool) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	var err error
@@ -168,6 +171,9 @@ func (k *kernelLinks) Close() error {
 	if k.exitLink != nil {
 		err = errors.Join(err, k.exitLink.Close())
 		k.exitLink = nil
+	}
+	if retainPins {
+		return err
 	}
 	return k.removePinnedLinks(err)
 }

@@ -70,6 +70,7 @@ type Runtime struct {
 	closeOnce      sync.Once
 	closeErr       error
 	offline        bool // Terminal transition, guarded by lifecycle.
+	online         bool // Published DAEMON_ONLINE once, guarded by lifecycle.
 	kernelOwned    bool // Set before this Runtime starts netns/sysctl setup.
 
 	kernelLinks       kernelLinks
@@ -333,7 +334,10 @@ func (r *Runtime) reportError(err error) {
 
 func (r *Runtime) setExited(value uint8) error {
 	if m := r.shared["exited_map"]; m != nil {
-		return m.Update(uint32(0), value, ebpf.UpdateAny)
+		if err := m.Update(uint32(0), value, ebpf.UpdateAny); err != nil {
+			return err
+		}
+		r.online = r.online || value == routingabi.DAEMON_ONLINE
 	}
 	return nil
 }
@@ -359,7 +363,8 @@ func (r *Runtime) GoOffline() error {
 	}
 }
 
-// Close drains userspace and removes this Runtime's kernel resources.
+// Close drains userspace and removes this Runtime's kernel resources. A runtime
+// that took over a crash-retained datapath removes it only once online.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.lifecycle.Lock()
@@ -399,9 +404,17 @@ func (r *Runtime) Close() error {
 		if r.interfaces != nil {
 			r.closeErr = errors.Join(r.closeErr, r.interfaces.Close())
 		}
-		linksErr := r.kernelLinks.Close()
+		// Until it goes online, a takeover leaves a crashed predecessor's
+		// datapath to unexpected_exit_behavior, as that crash did.
+		retain := r.kernelLinks.inherited && !r.online
+		if retain {
+			log.Warn("Startup did not go online; keeping the kernel datapath left by the previous unexpected exit")
+			// Keep the timer pins the retained programs still reference.
+			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false))
+		}
+		linksErr := r.kernelLinks.Close(retain)
 		r.closeErr = errors.Join(r.closeErr, linksErr)
-		if linksErr == nil {
+		if linksErr == nil && !retain {
 			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false), r.removePinnedMaps())
 		}
 		r.tcpMonitor.close()
@@ -414,7 +427,7 @@ func (r *Runtime) Close() error {
 			}
 			CloseSysctlManager()
 		}
-		if r.closeErr == nil {
+		if r.closeErr == nil && !retain {
 			r.closeErr = r.finishPinnedCleanup()
 		}
 	})

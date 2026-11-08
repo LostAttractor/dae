@@ -303,6 +303,17 @@ func TestPersistentKernelLifecycle(t *testing.T) {
 		t.Fatal("abnormal exit lost its host classifier")
 	}
 
+	failed, input := start("unpublished")
+	input.Close()
+	if err := failed.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if actual := readLink(); actual.ID != initial.ID || actual.Program != initial.Program {
+		t.Fatal("a restart that never went online removed the crash fallback")
+	}
+	waitExited(t, oldExited, routingabi.DAEMON_OFFLINE)
+	echo("after a restart that never went online")
+
 	replacement, input := start("restart")
 	for name, id := range timerIDs() {
 		if id == originalTimers[name] {

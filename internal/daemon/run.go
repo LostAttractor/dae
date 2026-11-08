@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -101,6 +102,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			runErr = errors.Join(runErr, closeErr)
 		}
 	}()
+	defer exitOnPanic()
 	worker, closeWorker := datapath.NewWorkerClient()
 	defer closeWorker()
 	app := &application{
@@ -172,6 +174,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		resolver.SetRoute(nil)
 		exit(datapath, app.localAPI, app.managementAPI)
 	}()
+	defer exitOnPanic()
 	pruneSubscriptions(conf, filepath.Dir(options.ConfigFile))
 	logStartupNodeStatus(plane.GroupsStatus())
 	// A daemon survives the loss of its controlling terminal.
@@ -253,6 +256,16 @@ func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func())
 		}
 	})
 	return func() { close(done); stop() }
+}
+
+// exitOnPanic makes a panic on the daemon goroutine an unexpected exit: like
+// SIGKILL, it skips cleanup, so unexpected_exit_behavior governs the retained
+// datapath. Defer it after each cleanup it must skip.
+func exitOnPanic() {
+	if recovered := recover(); recovered != nil {
+		fmt.Fprintf(os.Stderr, "panic: %v\n\n%s", recovered, debug.Stack())
+		os.Exit(2)
+	}
 }
 
 func exit(datapath *control.Runtime, servers ...*apiserver.Server) {

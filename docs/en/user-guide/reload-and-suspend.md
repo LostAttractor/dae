@@ -92,7 +92,8 @@ Both modes rely on the retained hooks; they do not govern unmanaged interfaces o
 traffic after those hooks have been detached.
 
 A restarted daemon takes over crash-retained links and becomes online when its
-listeners and rules are ready. Only the explicitly registered daemon's own sockets
+listeners and rules are ready. A restart that fails before then leaves the crash
+fallback in place. Only the explicitly registered daemon's own sockets
 receive the bootstrap exemption; another process using the same mark does not.
 
 ## Suspend

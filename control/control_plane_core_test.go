@@ -85,7 +85,7 @@ func TestControlPlaneCoreCleanupOwnership(t *testing.T) {
 	if cleanups := core.takeCleanups(); len(cleanups) != 0 {
 		t.Fatalf("cleanup ownership was not drained: %d entries", len(cleanups))
 	}
-	if err := core.kernelLinks.Close(); err != nil {
+	if err := core.kernelLinks.Close(false); err != nil {
 		t.Fatal(err)
 	}
 	want = append(want, "recreated-link", "owned-link")

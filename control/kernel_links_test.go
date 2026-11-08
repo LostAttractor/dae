@@ -31,7 +31,7 @@ func TestKernelLinksSurviveReloadAndPruneRemovedInterfaces(t *testing.T) {
 			t.Fatalf("reload closed wrong attachments: %v", closed)
 		}
 	}
-	if err := links.Close(); err != nil {
+	if err := links.Close(false); err != nil {
 		t.Fatal(err)
 	}
 	if closed[1] != 1 || closed[2] != 1 {
@@ -87,7 +87,7 @@ func TestKernelCloseReleasesPersistentAttachments(t *testing.T) {
 	links := &kernelLinks{pinPath: t.TempDir(), netnsLinks: []link.Link{internal}, pidLinks: []link.Link{pid}, exitLink: exit}
 	links.ownHostTCXLink(hostTCXLink{linkIndex: 1, role: hostTCXLanIngress, link: host,
 		close: host.Close})
-	if err := links.Close(); err != nil {
+	if err := links.Close(false); err != nil {
 		t.Fatal(err)
 	}
 	if host.closed != 1 || internal.closed != 1 || pid.closed != 1 || exit.closed != 1 {
@@ -96,7 +96,7 @@ func TestKernelCloseReleasesPersistentAttachments(t *testing.T) {
 	if host.unpinned != 0 || pid.unpinned != 0 || internal.unpinned != 0 {
 		t.Fatalf("host unpins=%d pid unpins=%d netns unpins=%d", host.unpinned, pid.unpinned, internal.unpinned)
 	}
-	if err := links.Close(); err != nil || host.closed != 1 || pid.closed != 1 {
+	if err := links.Close(false); err != nil || host.closed != 1 || pid.closed != 1 {
 		t.Fatalf("Close was not idempotent: %v", err)
 	}
 }

@@ -25,7 +25,7 @@ Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` �
 
 固定表的字节布局及含义是显式契约。TCP 连接属性的 `route_epoch`、`mark`、`fallback`、`syn_seq` 分别位于偏移 0、8、12、16，偏移 20 是显式填充。fallback 为 0 表示不受代次撤销约束，1 始终无效，其余值为唯一的组代次令牌；持久发行序号不回卷、不重用。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时元数据比较不能识别相同大小的语义变化；`TestPinnedMapABI` 与固定字节夹具独立于生成类型检查布局。容量不匹配只替换对应表。
 
-`TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 验证直通 mark 和令牌边界。`TestPersistentKernelLifecycle` 在私有网络、mount、bpffs 和 `/run` 中启动自己的 helper 进程，验证同一真实 TCP 连接跨 SIGKILL 与接管的转发，以及正常退出完整清理、身份撤销、版本恢复、异常退出后的新 UDP 转发、私有 timer map 替换和清理失败边界。NAT 测试使用自建命名空间和最小 nftables 规则，覆盖双栈本机、DNAT 到本机及 LAN 转发；握手并发测试验证新 SYN 与迟到 SYN-ACK 不会混用策略。测试不得接触宿主正在运行的 dae pins 或杀死非夹具进程。保留内核状态不保留用户态 relay socket；进程级 fallback 代次仍可能随冷重启结束。
+`TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 验证直通 mark 和令牌边界。`TestPersistentKernelLifecycle` 在私有网络、mount、bpffs 和 `/run` 中启动自己的 helper 进程，验证同一真实 TCP 连接跨 SIGKILL、未上线即退出的重启与接管的转发，以及正常退出完整清理、身份撤销、版本恢复、异常退出后的新 UDP 转发、私有 timer map 替换和清理失败边界。NAT 测试使用自建命名空间和最小 nftables 规则，覆盖双栈本机、DNAT 到本机及 LAN 转发；握手并发测试验证新 SYN 与迟到 SYN-ACK 不会混用策略。测试不得接触宿主正在运行的 dae pins 或杀死非夹具进程。保留内核状态不保留用户态 relay socket；进程级 fallback 代次仍可能随冷重启结束。
 
 ## 表项容量快照
 

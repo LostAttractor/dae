@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common/consts"
+	log "github.com/sirupsen/logrus"
 )
 
 func kernelPinPath() string { return filepath.Join(consts.BpfPinRoot, consts.AppName) }
@@ -149,6 +150,8 @@ func (k *kernelLinks) preparePins(root string) error {
 			return errors.Join(errors.New("duplicate persistent TCX link"), attached.Close())
 		}
 	}
+	// Invalid pins fail startup before adoption, so cleanup can remove them.
+	k.inherited = len(k.hostTCXLinks) != 0
 	return nil
 }
 
@@ -212,6 +215,14 @@ func loadPinnedDeviceRoutes(root string) (*ebpf.Map, error) {
 	spec, err := parsedBPFSpec()
 	if err == nil {
 		err = spec.Maps["device_routes_map"].Compatible(m)
+	}
+	if errors.Is(err, ebpf.ErrMapIncompatible) {
+		// Like other incompatible pins: a cold start, not a retained failure.
+		if removeErr := errors.Join(m.Close(), os.Remove(filepath.Join(root, "device_routes_map"))); removeErr != nil {
+			return nil, fmt.Errorf("remove incompatible persistent device routes: %w", removeErr)
+		}
+		log.WithError(err).Info("Removed incompatible pinned eBPF map device_routes_map")
+		return nil, nil
 	}
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("persistent device routes: %w", err), m.Close())

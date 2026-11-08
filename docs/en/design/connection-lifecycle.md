@@ -114,7 +114,9 @@ running; it does not run the old rule interpreter to select a replacement group.
 Starting, online, and terminal offline states are distinct. Startup does not
 activate crash bypass, and an offline runtime cannot publish another generation.
 A new process takes over compatible crash-retained links and becomes online only
-after listeners and its routing generation are ready. Only sockets owned by the
+after listeners and its routing generation are ready. A restart that exits before
+then has not taken them over: it leaves them, and `unexpected_exit_behavior` keeps
+applying. A panic on the daemon goroutine skips cleanup, like SIGKILL. Only sockets owned by the
 explicitly registered daemon process receive the bootstrap exemption; an equal
 socket mark does not grant it. Process exit revokes the registration.
 
