@@ -270,14 +270,12 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 			return nil
 		}
 	}
-	if !exists || ue.conn == nil {
+	if !exists {
 		if !slot.beginSlow() {
 			dropSetupCapacity.Add(1)
 			return nil
 		}
 		defer slot.endSlow()
-	}
-	if !exists {
 		// A queued packet may outlive the endpoint whose kernel binding sent
 		// it here. Drop it; the next ingress packet will carry a fresh route.
 		if routingResult == nil {
@@ -383,6 +381,17 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, slot *udpWriteSlot, ue
 			return nil
 		}
 	}
+	// Buffering for sniffing is cheap; routing and dialing may wait.
+	if !slot.beginSlow() {
+		if dst != ue.firstDst {
+			dropSetupCapacity.Add(1)
+		} else {
+			// The packet stays buffered; the source's next one retries.
+			pending.observedAt = observedAt
+		}
+		return nil
+	}
+	defer slot.endSlow()
 
 	ue.domain = domain
 	network := common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStrFromAddr(ue.firstDst.Addr())}
