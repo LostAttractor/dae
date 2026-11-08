@@ -3,9 +3,11 @@
 package dialer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"github.com/daeuniverse/dae/component/outbound/internal/checktime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -14,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	log "github.com/sirupsen/logrus"
 )
 
 // A failure changes reachability, not capability. The failed representative
@@ -324,5 +327,51 @@ func TestRelearnSettlesCapabilitiesWithoutLeavingService(t *testing.T) {
 	d.mu.RUnlock()
 	if relearn != 0 {
 		t.Fatalf("modes left to relearn after their probes: %04b", relearn)
+	}
+}
+
+// A sweep that stops a relearned mode serving publishes it at once, whether
+// the protocol rejects the mode or it stops answering: groups must not keep
+// routing the mode to the path until its next health check.
+func TestRelearnSweepPublishesModesThatStopServing(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput, previousLevel := logger.Out, logger.Level
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetLevel(log.DebugLevel)
+	t.Cleanup(func() { logger.SetOutput(previousOutput); logger.SetLevel(previousLevel) })
+	for _, tc := range []struct {
+		name string
+		err  error
+		log  string
+	}{
+		{"rejected", netproxy.UnsupportedTunnelTypeError, "Connectivity modes unsupported"},
+		{"failing", context.DeadlineExceeded, "Connectivity mode lost"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDialer(t, testTransport{})
+			d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
+				{network: common.NetworkTCP6}, {network: common.NetworkTCP4},
+				{network: common.NetworkUDP6}, {network: common.NetworkUDP4},
+			}})
+			d.RelearnCapabilities()
+			d.beginConnectivityCheck(checkSupport) // The worker consumes the reload's request.
+			group := d.group.observer.(*testGroup)
+			before := group.changes.Load()
+			output.Reset()
+			d.applyCheck(checkResult{kind: checkSupport, probes: []probeResult{
+				{network: common.NetworkTCP4}, {network: common.NetworkUDP6},
+				{network: common.NetworkUDP4, err: tc.err},
+			}})
+			if d.Usable(common.NetworkUDP4.NetworkType()) || !d.Usable(common.NetworkUDP6.NetworkType()) {
+				t.Fatal("the sweep did not settle udp4 alone")
+			}
+			if group.changes.Load() == before {
+				t.Fatal("groups were not told that udp4 stopped serving")
+			}
+			if logs := output.String(); !strings.Contains(logs, tc.log) || !strings.Contains(logs, "udp4") {
+				t.Fatalf("udp4 stopping was not logged as %q:\n%s", tc.log, logs)
+			}
+		})
 	}
 }

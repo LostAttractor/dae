@@ -372,7 +372,7 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	c.d.mu.Unlock()
 }
 
-func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck {
+func (d *pathRuntime) applySelectionCheckLocked(result checkResult, before pathView) appliedCheck {
 	probe := result.probes[0]
 	previous := d.health.networks[probe.network]
 	d.applyCapabilityResultsLocked(result)
@@ -382,9 +382,10 @@ func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck
 	if probe.err != nil && recoveryBlockedReason(probe.err) == "" && previous != networkSupported &&
 		(errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) || d.health.phase.usable()) {
 		d.statusRevision++
+		after := d.viewLocked()
 		d.mu.Unlock()
-		d.notifyGroups(SelectionForceNone)
+		d.publish(result.kind, before, after, SelectionForceNone, true)
 		return appliedCheck{}
 	}
-	return d.applyHealthCheckLocked(result)
+	return d.applyHealthCheckLocked(result, before)
 }

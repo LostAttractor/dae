@@ -221,7 +221,7 @@ func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
 // applyReachabilityLocked records the outcome of each probed supported mode.
 // Capability is unchanged: a mode that stops answering is failing, not
 // unsupported, unless a reload asked to relearn it.
-func (d *pathRuntime) applyReachabilityLocked(result checkResult) (lost, recovered networkMask) {
+func (d *pathRuntime) applyReachabilityLocked(result checkResult) {
 	for _, probe := range result.probes {
 		if d.health.networks[probe.network] != networkSupported {
 			continue
@@ -235,28 +235,11 @@ func (d *pathRuntime) applyReachabilityLocked(result checkResult) (lost, recover
 				continue
 			}
 		}
-		failing := probe.err != nil
-		if failing == d.health.failing.has(probe.network) {
-			continue
-		}
-		d.health.failing.set(probe.network, failing)
-		if failing {
-			lost.set(probe.network, true)
-		} else {
-			recovered.set(probe.network, true)
-		}
+		d.health.failing.set(probe.network, probe.err != nil)
 	}
-	return lost, recovered
 }
 
-type probeTransition struct {
-	probe    probeResult
-	previous networkState
-	current  networkState
-}
-
-func (d *pathRuntime) applyCapabilityResultsLocked(result checkResult) []probeTransition {
-	transitions := make([]probeTransition, 0, len(result.probes))
+func (d *pathRuntime) applyCapabilityResultsLocked(result checkResult) {
 	for _, probe := range result.probes {
 		index := probe.network
 		previous := d.health.networks[index]
@@ -270,13 +253,74 @@ func (d *pathRuntime) applyCapabilityResultsLocked(result checkResult) []probeTr
 				d.health.networks[index] = networkUnknown
 			}
 		}
-		transitions = append(transitions, probeTransition{
-			probe:    probe,
-			previous: previous,
-			current:  d.health.networks[index],
-		})
 	}
-	return transitions
+}
+
+// pathView is the state that decides which modes a path serves: its phase,
+// and each mode's capability and reachability.
+type pathView struct {
+	phase    healthPhase
+	networks [common.NetworkTypeCount]networkState
+	failing  networkMask
+}
+
+func (d *pathRuntime) viewLocked() pathView {
+	return pathView{phase: d.health.phase, networks: d.health.networks, failing: d.health.failing}
+}
+
+// confirmed lists the modes whose support was confirmed since before.
+func (v pathView) confirmed(before pathView) SelectionForceMask {
+	force := SelectionForceNone
+	for network, state := range v.networks {
+		if state == networkSupported && before.networks[network] != networkSupported {
+			force |= SelectionForceFor(common.NetworkIndex(network))
+		}
+	}
+	return force
+}
+
+// publish is the single exit of applied probe results. It logs every mode
+// that changed between the views and notifies groups of any change, or
+// always when notify is set.
+func (d *pathRuntime) publish(kind checkKind, before, after pathView, force SelectionForceMask, notify bool) {
+	confirmed := after.confirmed(before)
+	var supported, unsupported []string
+	for _, network := range canonicalNetworkOrder {
+		state := after.networks[network]
+		if confirmed.Contains(network) {
+			supported = append(supported, network.String())
+		} else if kind != checkInitial && state == networkUnsupported && before.networks[network] != state {
+			unsupported = append(unsupported, network.String())
+		}
+		// Only a usable path reports single modes; a lost path reports itself.
+		if !after.phase.usable() {
+			continue
+		}
+		fields := log.Fields{"node": d.name, "network": network.String()}
+		switch failed, failing := before.failing.has(network), after.failing.has(network); {
+		case !failed && failing:
+			log.WithFields(fields).Warn("Connectivity mode lost; other modes keep serving")
+		case failed && !failing && state == networkSupported:
+			log.WithFields(fields).Info("Connectivity mode recovered")
+		}
+	}
+	if len(supported) > 0 {
+		log.WithFields(log.Fields{
+			"cause":    checkKindName[kind],
+			"networks": supported,
+			"node":     d.name,
+		}).Debug("Connectivity modes supported")
+	}
+	if len(unsupported) > 0 {
+		log.WithFields(log.Fields{
+			"cause":    checkKindName[kind],
+			"networks": unsupported,
+			"node":     d.name,
+		}).Debug("Connectivity modes unsupported")
+	}
+	if notify || before != after || force != SelectionForceNone {
+		d.notifyGroups(force)
+	}
 }
 
 var canonicalNetworkOrder = [...]common.NetworkIndex{
@@ -308,10 +352,6 @@ func resultProbe(result checkResult, index common.NetworkIndex) *probeResult {
 		}
 	}
 	return nil
-}
-
-func firstSupportConfirmed(transition probeTransition) bool {
-	return (transition.previous == networkUntested || transition.previous == networkUnknown) && transition.current == networkSupported
 }
 
 func (d *pathRuntime) takePendingForceLocked() SelectionForceMask {
@@ -364,13 +404,14 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 		return appliedCheck{success: true, healthApplied: true}, true
 	}
 
+	before := d.viewLocked()
 	switch result.kind {
 	case checkInitial, checkSupport:
-		return d.applyCapabilityCheckLocked(result), true
+		return d.applyCapabilityCheckLocked(result, before), true
 	case checkHealth:
-		return d.applyHealthCheckLocked(result), true
+		return d.applyHealthCheckLocked(result, before), true
 	case checkSelection:
-		return d.applySelectionCheckLocked(result), true
+		return d.applySelectionCheckLocked(result, before), true
 	default:
 		d.mu.Unlock()
 		return appliedCheck{}, false
@@ -395,7 +436,7 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 	}
 	d.mu.Unlock()
 	if blocksHealth {
-		d.logCheckOutcome(previousHealthy, false, nil, nil, result)
+		d.logCheckOutcome(previousHealthy, false, nil, result)
 		if d.ChecksConnectivity() {
 			d.recordAvailability(false, true, failureReportedAt)
 		} else {
@@ -434,19 +475,13 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 	return failureReportedAt
 }
 
-func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedCheck {
+func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult, before pathView) appliedCheck {
 	initial := result.kind == checkInitial
-	transitions := d.applyCapabilityResultsLocked(result)
+	d.applyCapabilityResultsLocked(result)
 	d.applyReachabilityLocked(result)
-	discovered := SelectionForceNone
-	for _, transition := range transitions {
-		if firstSupportConfirmed(transition) {
-			discovered |= SelectionForceFor(transition.probe.network)
-		}
-	}
+	discovered := d.viewLocked().confirmed(before)
 
-	previousPhase := d.health.phase
-	previousHealthy := previousPhase.usable()
+	previousHealthy := before.phase.usable()
 	canonicalIndex := d.representativeLocked()
 	canonicalResult := resultProbe(result, canonicalIndex)
 	if !initial && !discovered.Contains(canonicalIndex) {
@@ -465,16 +500,14 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 	d.health.pendingForce |= discovered
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.phase.usable()
-	phaseChanged := previousPhase != d.health.phase
+	after := d.viewLocked()
 	d.mu.Unlock()
 
-	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, transitions, result)
+	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, result)
 	if healthApplied {
 		d.recordAvailability(currentHealthy, true, failureReportedAt)
 	}
-	if initial || phaseChanged || forceSelection != SelectionForceNone {
-		d.notifyGroups(forceSelection)
-	}
+	d.publish(result.kind, before, after, forceSelection, initial)
 	return appliedCheck{
 		success:       currentHealthy,
 		healthApplied: healthApplied,
@@ -486,10 +519,10 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 // new representative does not bypass failure_recovery. A failed path recovers
 // through whichever supported mode answers first in canonical order. Without
 // the usable path's representative, a result changes only reachability.
-func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
+func (d *pathRuntime) applyHealthCheckLocked(result checkResult, before pathView) appliedCheck {
 	previousHealthy := d.health.phase.usable()
 	answering := d.representativeLocked()
-	lost, recovered := d.applyReachabilityLocked(result)
+	d.applyReachabilityLocked(result)
 	if !previousHealthy {
 		answering = d.representativeLocked()
 	}
@@ -499,9 +532,9 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 		force := d.takePendingForceLocked()
 		success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())
 		d.statusRevision++
+		after := d.viewLocked()
 		d.mu.Unlock()
-		d.logModeChanges(lost, recovered)
-		d.notifyGroups(force)
+		d.publish(result.kind, before, after, force, true)
 		return appliedCheck{success: success}
 	}
 	success := canonical != nil && canonical.err == nil
@@ -514,69 +547,28 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	}
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.phase.usable()
+	after := d.viewLocked()
 	d.mu.Unlock()
 
-	d.logCheckOutcome(previousHealthy, currentHealthy, canonical, nil, result)
-	if currentHealthy {
-		d.logModeChanges(lost, recovered)
-	}
+	d.logCheckOutcome(previousHealthy, currentHealthy, canonical, result)
 	d.recordAvailability(currentHealthy, true, failureReportedAt)
-	d.notifyGroups(forceSelection)
+	d.publish(result.kind, before, after, forceSelection, true)
 	return appliedCheck{success: currentHealthy}
 }
 
-// logModeChanges reports modes a usable path stopped or resumed serving.
-func (d *pathRuntime) logModeChanges(lost, recovered networkMask) {
-	for _, network := range canonicalNetworkOrder {
-		fields := log.Fields{"node": d.name, "network": network.String()}
-		if lost.has(network) {
-			log.WithFields(fields).Warn("Connectivity mode lost; other modes keep serving")
-		} else if recovered.has(network) {
-			log.WithFields(fields).Info("Connectivity mode recovered")
-		}
-	}
-}
-
-func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {
+func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, result checkResult) {
 	if result.kind == checkInitial {
 		if result.connectErr != nil {
 			log.WithField("node", d.name).WithError(result.connectErr).Debug("Connectivity initial check failed")
 		}
-		for _, transition := range transitions {
-			fields := log.Fields{
-				"node":    d.name,
-				"network": transition.probe.network.String(),
-			}
-			entry := log.WithFields(fields)
-			if transition.probe.err == nil {
-				entry.WithField("latency", transition.probe.latency.Truncate(time.Millisecond).String()).Trace("Connectivity initial check succeeded")
+		for _, probe := range result.probes {
+			entry := log.WithFields(log.Fields{"node": d.name, "network": probe.network.String()})
+			if probe.err == nil {
+				entry.WithField("latency", probe.latency.Truncate(time.Millisecond).String()).Trace("Connectivity initial check succeeded")
 			} else {
-				entry.WithError(transition.probe.err).Debug("Connectivity initial check failed")
+				entry.WithError(probe.err).Debug("Connectivity initial check failed")
 			}
 		}
-	}
-
-	var supported, unsupported []string
-	for _, transition := range transitions {
-		if firstSupportConfirmed(transition) {
-			supported = append(supported, transition.probe.network.String())
-		} else if result.kind == checkSupport && transition.previous != transition.current && transition.current == networkUnsupported {
-			unsupported = append(unsupported, transition.probe.network.String())
-		}
-	}
-	if len(supported) > 0 {
-		log.WithFields(log.Fields{
-			"cause":    checkKindName[result.kind],
-			"networks": supported,
-			"node":     d.name,
-		}).Debug("Connectivity modes supported")
-	}
-	if len(unsupported) > 0 {
-		log.WithFields(log.Fields{
-			"cause":    checkKindName[result.kind],
-			"networks": unsupported,
-			"node":     d.name,
-		}).Debug("Connectivity modes unsupported")
 	}
 
 	if result.kind == checkSupport && !previousHealthy && success {
