@@ -176,3 +176,41 @@ func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
 		}
 	}
 }
+
+// A status poll waits for plugin reports without holding mitmMu: a reload
+// publishing its configuration is not queued behind it.
+func TestMITMStatusReportsOutsideTheLock(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	extension := &blockingReportPlugin{entered: entered, release: release}
+	plane := &ControlPlane{}
+	plane.mitmHost = controlTestHost(t, extension, nil)
+	polled := make(chan api.PluginStatus, 1)
+	go func() { polled <- plane.MITMStatus() }()
+	<-entered
+	published := make(chan struct{})
+	go func() {
+		plane.SetPluginConfiguration(config.Plugins{{Name: "test", Type: "test", Enabled: true}}, nil)
+		close(published)
+	}()
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("configuration waited for a plugin status report")
+	}
+	close(release)
+	if status := <-polled; len(status.Plugins) != 1 || status.Plugins[0].ID != "test" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+type blockingReportPlugin struct {
+	controlTestPlugin
+	once             sync.Once
+	entered, release chan struct{}
+}
+
+func (p *blockingReportPlugin) Report() any {
+	p.once.Do(func() { close(p.entered) })
+	<-p.release
+	return nil
+}

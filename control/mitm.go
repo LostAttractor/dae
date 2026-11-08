@@ -31,17 +31,21 @@ func pluginConfigurationStatus(plugins config.Plugins) []api.PluginInstanceStatu
 	return instances
 }
 
+// MITMStatus queries plugins without holding mitmMu, so a status poll never
+// queues reloads, and the flows behind them, behind plugin reports. Updates
+// replace the configured slices instead of modifying them.
 func (c *planeHTTP) MITMStatus() api.PluginStatus {
 	c.mitmMu.RLock()
-	defer c.mitmMu.RUnlock()
+	host, configured := c.mitmHost, c.pluginStatus
+	c.mitmMu.RUnlock()
 	snapshot := api.PluginStatus{BufferMemory: mitm.BodyBufferStatus()}
-	if c.mitmHost != nil {
-		snapshot = c.mitmHost.Status()
+	if host != nil {
+		snapshot = host.Status()
 	}
-	snapshot.CompiledPlugins = append([]string{}, c.pluginStatus.CompiledPlugins...)
+	snapshot.CompiledPlugins = append([]string{}, configured.CompiledPlugins...)
 	live := snapshot.Plugins
-	snapshot.Plugins = make([]api.PluginInstanceStatus, 0, len(live)+len(c.pluginStatus.Plugins))
-	for _, p := range c.pluginStatus.Plugins {
+	snapshot.Plugins = make([]api.PluginInstanceStatus, 0, len(live)+len(configured.Plugins))
+	for _, p := range configured.Plugins {
 		if !p.Enabled {
 			p.State, p.HTTPReason = "disabled", "disabled"
 		} else if i := slices.IndexFunc(live, func(status api.PluginInstanceStatus) bool { return status.ID == p.ID }); i >= 0 {
@@ -52,7 +56,7 @@ func (c *planeHTTP) MITMStatus() api.PluginStatus {
 		snapshot.Plugins = append(snapshot.Plugins, p)
 	}
 	for _, p := range live {
-		if !slices.ContainsFunc(c.pluginStatus.Plugins, func(status api.PluginInstanceStatus) bool { return status.ID == p.ID }) {
+		if !slices.ContainsFunc(configured.Plugins, func(status api.PluginInstanceStatus) bool { return status.ID == p.ID }) {
 			snapshot.Plugins = append(snapshot.Plugins, p)
 		}
 	}
