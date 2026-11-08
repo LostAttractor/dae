@@ -20,7 +20,8 @@ import (
 )
 
 func TestNativeDatagramAdmissionDoesNotWait(t *testing.T) {
-	for _, size := range []int{1000, 60000} {
+	// 3000 bytes take several fragments, which a full queue rejects together.
+	for _, size := range []int{1000, 3000} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			pair := testutil.NewQUICPair(t)
 			parent := netproxy.NewLease(netproxy.NewResourceRef())
@@ -111,6 +112,35 @@ func TestNativeDatagramAdmissionDoesNotWait(t *testing.T) {
 				t.Fatalf("closed write: %v", err)
 			}
 		})
+	}
+}
+
+// A datagram needing more fragments than the QUIC send queue holds is dropped
+// whole: no fragment reaches the server.
+func TestOversizedNativeDatagramIsDroppedWhole(t *testing.T) {
+	pair := testutil.NewQUICPair(t)
+	parent := netproxy.NewLease(netproxy.NewResourceRef())
+	q := &quicStreamPacketConn{quicConn: pair.Client, lease: parent.NewStream(), incomingPackets: newPacketQueue(), udpRelayMode: common.NATIVE, readDeadline: protocol.MakeDeadline(), fail: func(err error) { t.Errorf("carrier failed: %v", err) }}
+	t.Cleanup(func() { q.shutdown(net.ErrClosed) })
+	addr := netproxy.NewAddr("udp", "example.test:53")
+	before := netproxy.DropTooLarge.Load()
+	if n, err := q.TryWriteTo(make([]byte, 60000), addr); err != netproxy.ErrPacketDropped || n != 0 {
+		t.Fatalf("oversized write: %d %v", n, err)
+	}
+	if n := netproxy.DropTooLarge.Load() - before; n != 1 {
+		t.Fatalf("counted %d too_large drops, want 1", n)
+	}
+	if _, err := q.TryWriteTo([]byte("next"), addr); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	wire, err := pair.Server.ReceiveDatagram(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded, err := readPacket(bytes.NewReader(wire[2:])); err != nil || string(decoded.DATA) != "next" {
+		t.Fatalf("first datagram sent: %+v, %v", decoded, err)
 	}
 }
 

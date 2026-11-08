@@ -142,6 +142,9 @@ func (u *udpConn) TryWriteTo(b []byte, addr net.Addr) (n int, err error) {
 		if errors.Is(err, quic.ErrDatagramQueueFull) {
 			netproxy.DropCarrierQueueFull.Add(1)
 			err = netproxy.ErrPacketDropped
+		} else if errors.Is(err, quic.ErrDatagramBatchTooLarge) {
+			netproxy.DropTooLarge.Add(1)
+			err = netproxy.ErrPacketDropped
 		}
 	}()
 	if addr == nil {
@@ -184,11 +187,8 @@ func (u *udpConn) TryWriteTo(b []byte, addr net.Addr) (n int, err error) {
 		if len(fMsgs) == 0 {
 			return 0, err
 		}
-		for _, fMsg := range fMsgs {
-			err := u.writePacket(buf, &fMsg)
-			if err != nil {
-				return 0, err
-			}
+		if err := u.writeFragments(buf, fMsgs); err != nil {
+			return 0, err
 		}
 		return len(b), nil
 	}
@@ -201,8 +201,28 @@ func (u *udpConn) TryWriteTo(b []byte, addr net.Addr) (n int, err error) {
 func (u *udpConn) writePacket(buf *bytes.Buffer, msg *protocol.UDPMessage) error {
 	buf.Reset()
 	msg.AppendTo(buf)
-	err := u.conn.TrySendDatagram(buf.Bytes())
-	if errors.Is(err, quic.ErrDatagramQueueFull) {
+	return u.trySend(buf.Bytes())
+}
+
+// writeFragments queues all fragments or none: a partial set can never be reassembled.
+func (u *udpConn) writeFragments(buf *bytes.Buffer, msgs []protocol.UDPMessage) error {
+	buf.Reset()
+	ends := make([]int, len(msgs))
+	for i := range msgs {
+		msgs[i].AppendTo(buf)
+		ends[i] = buf.Len()
+	}
+	fragments := make([][]byte, len(msgs))
+	start := 0
+	for i, end := range ends {
+		fragments[i], start = buf.Bytes()[start:end], end
+	}
+	return u.trySend(fragments...)
+}
+
+func (u *udpConn) trySend(datagrams ...[]byte) error {
+	err := u.conn.TrySendDatagrams(datagrams...)
+	if errors.Is(err, quic.ErrDatagramQueueFull) || errors.Is(err, quic.ErrDatagramBatchTooLarge) {
 		return err
 	}
 	return tuiccommon.WrapQUICError(err, u.lease.Resource(), u.lease, netproxy.OpWrite, u.fail)

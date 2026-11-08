@@ -50,7 +50,7 @@ func TestQUICDatagramDropsAreCounted(t *testing.T) {
 		drop   *Drop
 	}{
 		{quic.DatagramDropReceiveQueueFull, DropReceiveFull},
-		{quic.DatagramDropTooLarge, dropTooLarge},
+		{quic.DatagramDropTooLarge, DropTooLarge},
 		{quic.DatagramDropClosed, dropCarrierClosed},
 	} {
 		before := tc.drop.Load()

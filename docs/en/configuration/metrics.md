@@ -71,7 +71,7 @@ only counted.
 | `carrier_queue_full` | `upload` | A smux session exceeded 256 KiB of datagrams and evicted the oldest droppable datagram of its fattest stream, or a QUIC DATAGRAM send queue was full |
 | `codel` | `upload` | Dropped from the head of a smux stream by CoDel: its datagrams waited over 5 ms for over 100 ms, beyond its rate- and active-flow-based delay estimate |
 | `socket_full` | `upload` | A UDP socket's send buffer was full: direct, Shadowsocks, SSR, SOCKS5 and juicity UDP drop the datagram instead of waiting |
-| `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in |
+| `too_large` | `upload` | QUIC datagram larger than any packet it can be sent in, or needing more fragments than the QUIC send queue holds |
 | `carrier_closed` | `upload` | QUIC datagram still queued when its TUIC or Hysteria2 connection closed |
 | `transport_receive_full` | `download` | hysteria2, TUIC or QUIC datagram receive queue, or fragment reassembly table, full |
 | `carrier_queue_full` | `download` | Port-hopping receive queue full; it holds the QUIC packets carrying hysteria2, which QUIC may retransmit |
@@ -96,9 +96,10 @@ buffers, idle pool storage and kernel buffers are separate.
 TUIC native UDP and Hysteria2 use nonblocking QUIC DATAGRAM admission. A full
 carrier queue drops the application datagram instead of retaining a shared UDP
 worker. `TryWriteTo` reports `ErrPacketDropped`; ordinary `WriteTo` reports it as
-written, like a lossy link. If a fragmented datagram encounters a full queue,
-its remaining fragments are not queued and the protocol counts one
-`carrier_queue_full` drop. Previously accepted fragments cannot be retracted.
+written, like a lossy link. A fragmented datagram is queued whole or not at all:
+if the queue lacks room for all its fragments, none is sent and the protocol
+counts one `carrier_queue_full` drop. A datagram needing more fragments than
+the queue holds (32) is counted as `too_large`.
 TUIC QUIC relay mode and other reliable-stream transports retain backpressure.
 
 Association initialization, destination socket creation and blocking UDP writes

@@ -212,6 +212,9 @@ func (q *quicStreamPacketConn) writeTo(p []byte, addr string) (n int, err error)
 		if _, limited := errors.AsType[*quic.StreamLimitReachedError](err); limited || errors.Is(err, quic.ErrDatagramQueueFull) {
 			netproxy.DropCarrierQueueFull.Add(1)
 			err = netproxy.ErrPacketDropped
+		} else if errors.Is(err, quic.ErrDatagramBatchTooLarge) {
+			netproxy.DropTooLarge.Add(1)
+			err = netproxy.ErrPacketDropped
 		} else {
 			err = common.WrapQUICError(err, q.lease.Resource(), q.lease, netproxy.OpWrite, q.fail)
 		}

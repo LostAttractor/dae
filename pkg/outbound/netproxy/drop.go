@@ -87,8 +87,8 @@ var (
 	DropReceiveFull = NewDrop(DropDownload, "transport_receive_full")
 	// A received datagram belongs to an association closed here.
 	DropClosedStream = NewQuietDrop(DropDownload, "closed_stream")
-	// A queued datagram exceeds what the transport can ever send.
-	dropTooLarge = NewDrop(DropUpload, "too_large")
+	// A datagram exceeds what the transport can ever send.
+	DropTooLarge = NewDrop(DropUpload, "too_large")
 	// A datagram was still queued when its QUIC connection closed.
 	dropCarrierClosed = NewQuietDrop(DropUpload, "carrier_closed")
 )
@@ -99,7 +99,7 @@ var (
 func QUICDatagramDropped(reason quic.DatagramDropReason, _ int) {
 	switch reason {
 	case quic.DatagramDropTooLarge:
-		dropTooLarge.Add(1)
+		DropTooLarge.Add(1)
 	case quic.DatagramDropReceiveQueueFull:
 		DropReceiveFull.Add(1)
 	case quic.DatagramDropClosed:

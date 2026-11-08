@@ -12,6 +12,8 @@ func fragWriteNative(conn *quic.Conn, packet *packetFrame, buf *bytes.Buffer, si
 		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: int64(max(0, size) * 255)}
 	}
 	count := (len(packet.DATA) + size - 1) / size
+	buf.Reset()
+	ends := make([]int, count)
 	for id, offset := 0, 0; offset < len(packet.DATA); id++ {
 		fragment := *packet
 		fragment.FRAG_ID, fragment.FRAG_TOTAL = uint8(id), uint8(count)
@@ -20,16 +22,19 @@ func fragWriteNative(conn *quic.Conn, packet *packetFrame, buf *bytes.Buffer, si
 		if id > 0 {
 			fragment.ADDR = &address{TYPE: AtypNone}
 		}
-		buf.Reset()
 		if err := fragment.appendTo(buf); err != nil {
 			return err
 		}
-		if err := conn.TrySendDatagram(buf.Bytes()); err != nil {
-			return err
-		}
+		ends[id] = buf.Len()
 		offset = end
 	}
-	return nil
+	// A partial set can never be reassembled: queue all fragments or none.
+	fragments := make([][]byte, count)
+	start := 0
+	for id, end := range ends {
+		fragments[id], start = buf.Bytes()[start:end], end
+	}
+	return conn.TrySendDatagrams(fragments...)
 }
 
 type deFragger struct {
