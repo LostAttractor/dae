@@ -18,9 +18,12 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/cryptobyte"
 )
 
@@ -60,6 +63,8 @@ type realityTestServer struct {
 
 func (s *realityTestServer) DialContext(context.Context, string, string) (net.Conn, error) {
 	client, server := net.Pipe()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	_ = server.SetDeadline(time.Now().Add(2 * time.Second))
 	go func() {
 		defer server.Close()
 		s.result <- s.authenticate(server)
@@ -142,7 +147,7 @@ func (s *realityTestServer) authenticate(conn net.Conn) error {
 }
 
 func TestRealityHelloAuthenticatesToServer(t *testing.T) {
-	for _, fingerprint := range []string{"chrome", "firefox", "safari", " Chrome_120 ", ""} {
+	for _, fingerprint := range []string{"chrome", "firefox", "safari", " Chrome_120 ", "", "random", "randomized", "randomizedalpn", "randomizednoalpn"} {
 		t.Run(fingerprint, func(t *testing.T) {
 			key, err := ecdh.X25519().GenerateKey(rand.Reader)
 			if err != nil {
@@ -158,10 +163,36 @@ func TestRealityHelloAuthenticatesToServer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer x.Close()
-			// The server stops after the ClientHello, so the dial itself fails.
-			_, _ = x.DialContext(t.Context(), "tcp", "reality.test:443")
-			if err := <-server.result; err != nil {
-				t.Fatalf("server rejected the ClientHello: %v", err)
+			builds := 1
+			if strings.HasPrefix(fingerprint, "random") {
+				builds = 200
+				// A seed that previously selected TLS 1.2 makes the regression deterministic.
+				id := *x.fingerprint
+				id.Weights = nil
+				for i := range 256 {
+					id.Seed = &utls.PRNGSeed{byte(i)}
+					spec, err := utls.UTLSIdToSpec(id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if spec.TLSVersMax == utls.VersionTLS12 {
+						// Do not mutate the shared ID on old code either.
+						x.fingerprint = new(*x.fingerprint)
+						x.fingerprint.Seed = id.Seed
+						break
+					}
+				}
+				if x.fingerprint.Seed == nil {
+					t.Fatal("no TLS 1.2 seed found")
+				}
+			}
+			for i := range builds {
+				// The server stops after the ClientHello, so the dial itself fails.
+				_, dialErr := x.DialContext(t.Context(), "tcp", "reality.test:443")
+				if err := <-server.result; err != nil {
+					t.Fatalf("build %d: server rejected the ClientHello: %v (dial: %v)", i, err, dialErr)
+				}
+				x.fingerprint.Seed = nil
 			}
 		})
 	}

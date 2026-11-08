@@ -40,10 +40,6 @@ var (
 	Reality_Version_z byte = 10
 )
 
-// Randomized fingerprints offer an X25519 key share in only about 40% of
-// builds; a rebuild sends nothing and costs microseconds.
-const realityHelloAttempts = 16
-
 // realityECDHEKey returns the X25519 key REALITY servers authenticate: the
 // standalone X25519 share, or the X25519 half of X25519MLKEM768 without one.
 func realityECDHEKey(state *utls.PubClientHandshakeState) *ecdh.PrivateKey {
@@ -141,9 +137,18 @@ func NewReality(s string, d netproxy.Dialer) (*Reality, error) {
 		x.serverName = ""
 	}
 
-	x.fingerprint, err = nameToUtlsClientHelloID(_fingerprint)
+	id, err := nameToUtlsClientHelloID(_fingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fingerprint: %w", err)
+	}
+	x.fingerprint = new(*id)
+	switch id.Client {
+	case utls.HelloRandomized.Client, utls.HelloRandomizedALPN.Client, utls.HelloRandomizedNoALPN.Client:
+		// REALITY authenticates with an X25519 share, which random TLS 1.2 hellos omit.
+		weights := utls.DefaultWeights
+		weights.TLSVersMax_Set_VersionTLS13 = 1
+		weights.FirstKeyShare_Set_CurveP256 = 0
+		x.fingerprint.Weights = &weights
 	}
 
 	x.spiderX, x.spider, err = parseRealitySpider(x.spiderX)
@@ -173,8 +178,6 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 				_ = c.Close()
 			}
 		}()
-		attempts := 0
-	retryHandshake:
 		uConn := &RealityUConn{lease: netproxy.DependencyOf(c)}
 		utlsConfig := &utls.Config{
 			VerifyPeerCertificate:  uConn.VerifyPeerCertificate,
@@ -201,10 +204,7 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 			copy(hello.SessionId[8:], x.shortId[:])
 			ecdheKey := realityECDHEKey(&uConn.HandshakeState)
 			if ecdheKey == nil {
-				if attempts++; attempts >= realityHelloAttempts {
-					return nil, fmt.Errorf("REALITY: fingerprint %s %s offers no TLS 1.3 X25519 key share", x.fingerprint.Client, x.fingerprint.Version)
-				}
-				goto retryHandshake
+				return nil, fmt.Errorf("REALITY: fingerprint %s %s offers no TLS 1.3 X25519 key share", x.fingerprint.Client, x.fingerprint.Version)
 			}
 			uConn.AuthKey, _ = ecdheKey.ECDH(x.publicKey)
 			if uConn.AuthKey == nil {
