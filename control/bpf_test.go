@@ -79,6 +79,30 @@ func TestConfiguredBPFMapCapacities(t *testing.T) {
 	}
 }
 
+func TestLPMTemplatesDoNotCreateStandaloneMaps(t *testing.T) {
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"unused_lpm_type", "unused_http_clients", "test_lpm", "test_http_clients"} {
+		if spec.Maps[name] != nil {
+			t.Errorf("production collection contains standalone template map %s", name)
+		}
+	}
+	for name, sizes := range map[string][2]uint32{
+		"lpm_array_map": {20, 4}, "http_clients_map": {24, 8},
+	} {
+		outer := spec.Maps[name]
+		if outer == nil || outer.Type != ebpf.ArrayOfMaps || outer.InnerMap == nil {
+			t.Fatalf("%s lost its inner map template: %+v", name, outer)
+		}
+		inner := outer.InnerMap
+		if inner.Type != ebpf.LPMTrie || inner.KeySize != sizes[0] || inner.ValueSize != sizes[1] || inner.Flags != unix.BPF_F_NO_PREALLOC || inner.MaxEntries == 0 {
+			t.Fatalf("%s has an invalid inner map template: %+v", name, inner)
+		}
+	}
+}
+
 func TestRoutingTupleMapLayout(t *testing.T) {
 	spec, err := loadBpf()
 	if err != nil {

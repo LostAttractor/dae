@@ -91,7 +91,7 @@ func BenchmarkRoutingLPM(b *testing.B) {
 						copy(key.Address[10:], packet[6:12])
 					}
 					if hit {
-						if err := obj.UnusedLpmType.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+						if err := obj.TestLpm.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
 							b.Fatal(err)
 						}
 					}
@@ -149,7 +149,7 @@ func BenchmarkHTTPClientAdmission(b *testing.B) {
 				if scenario == "allowed" {
 					allow = 1
 				}
-				if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allow}, ebpf.UpdateAny); err != nil {
+				if err := obj.TestHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allow}, ebpf.UpdateAny); err != nil {
 					b.Fatal(err)
 				}
 				var rules []bpftestMatchSet

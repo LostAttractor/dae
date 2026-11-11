@@ -8,6 +8,10 @@
 #include "../tproxy.c"
 #include "./bpf_test.h"
 
+/* Fixtures need mutable inner tables; production only declares their types. */
+struct map_lpm_type test_lpm SEC(".maps");
+struct http_client_map test_http_clients SEC(".maps");
+
 static const __u32 one_key = 1;
 
 struct bridge_test_result {
@@ -1734,7 +1738,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
 	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
@@ -1775,7 +1779,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
 	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
@@ -1816,7 +1820,7 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
 	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
@@ -1857,7 +1861,7 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: proxy */
 	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, &one_key);
@@ -2107,7 +2111,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	data[14] = 0xa;
 	data[15] = 0xb;
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: direct */
 	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
@@ -2129,7 +2133,7 @@ int testcheck_mac_match(struct __sk_buff *skb)
 	data[13] = 0x9;
 	data[14] = 0xa;
 	data[15] = 0xb;
-	bpf_map_delete_elem(&unused_lpm_type, &lpm_key);
+	bpf_map_delete_elem(&test_lpm, &lpm_key);
 
 	return check_routing_ipv4_tcp(skb,
 				      TC_ACT_REDIRECT,
@@ -2165,7 +2169,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	data[14] = 0x4;
 	data[15] = 0x5;
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	/* fallback: direct */
 	set_routing_fallback(OUTBOUND_DIRECT, &one_key);
@@ -2274,7 +2278,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 	
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,
@@ -2339,7 +2343,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,
@@ -2404,7 +2408,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
 	__u32 lpm_value = bpf_ntohl(0x01000000);
-	bpf_map_update_elem(&unused_lpm_type, &lpm_key, &lpm_value, BPF_ANY);
+	bpf_map_update_elem(&test_lpm, &lpm_key, &lpm_value, BPF_ANY);
 
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,

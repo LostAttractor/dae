@@ -76,7 +76,7 @@ func (s *routingState) SetClientMembers(name string, members [][6]byte, kernelRe
 	}
 	var kernelMap *ebpf.Map
 	if kernelReady && slot < s.kernelLpmLen {
-		kernelMap, err = s.bpf.newLpmMap(prefixes)
+		kernelMap, err = newLpmMap(prefixes)
 		if err != nil {
 			return fmt.Errorf("build kernel client set %q: %w", name, err)
 		}

@@ -59,7 +59,7 @@ func routingKernelFixture(t testing.TB, shared map[string]*ebpf.Map, generation 
 		t.Fatal(err)
 	}
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		DomainRoutingMap: collection.Maps["domain_routing_map"], HttpClientsMap: collection.Maps["http_clients_map"], RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
+		DomainRoutingMap: collection.Maps["domain_routing_map"], HttpClientsMap: collection.Maps["http_clients_map"], RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	return collection, state
 }

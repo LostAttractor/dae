@@ -122,15 +122,15 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 		programs.FieldByName(name).Set(selected.Elem().FieldByName(name))
 	}
 
-	if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: 1}, ebpf.UpdateAny); err != nil {
+	if err := obj.TestHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: 1}, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, err
 	}
-	if err := obj.HttpClientsMap.Update(uint32(0), obj.UnusedHttpClients, ebpf.UpdateAny); err != nil {
+	if err := obj.HttpClientsMap.Update(uint32(0), obj.TestHttpClients, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, err
 	}
-	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
+	if err := obj.LpmArrayMap.Update(uint32(0), obj.TestLpm, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, fmt.Errorf("update LpmArrayMap: %w", err)
 	}

@@ -20,14 +20,12 @@ type _bpfLpmKey struct {
 	Data      [4]uint32
 }
 
-func (o *bpfObjects) newLpmMap(prefixes []netip.Prefix) (m *ebpf.Map, err error) {
-	m, err = ebpf.NewMap(&ebpf.MapSpec{
-		Type:       ebpf.LPMTrie,
-		Flags:      o.UnusedLpmType.Flags(),
-		MaxEntries: o.UnusedLpmType.MaxEntries(),
-		KeySize:    o.UnusedLpmType.KeySize(),
-		ValueSize:  o.UnusedLpmType.ValueSize(),
-	})
+func newLpmMap(prefixes []netip.Prefix) (m *ebpf.Map, err error) {
+	spec, err := parsedBPFSpec()
+	if err != nil {
+		return nil, err
+	}
+	m, err = ebpf.NewMap(spec.Maps[bpfMapLpmArrayMap].InnerMap.Copy())
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +100,7 @@ func (m *RoutingMatcher) BuildKernspace() error {
 
 func (m *RoutingMatcher) uploadLPMTries() error {
 	for i, cidrs := range m.simulatedLpmTries[:m.kernelLpmLen] {
-		kernelMap, err := m.bpf.newLpmMap(cidrs)
+		kernelMap, err := newLpmMap(cidrs)
 		if err != nil {
 			return fmt.Errorf("create LPM map %d: %w", i, err)
 		}

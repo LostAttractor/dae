@@ -22,7 +22,7 @@ struct map_lpm_type {
 	__uint(max_entries, MAX_LPM_SIZE);
 	__uint(key_size, sizeof(struct lpm_key));
 	__uint(value_size, sizeof(__u32));
-} unused_lpm_type SEC(".maps");
+};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
@@ -50,7 +50,7 @@ struct http_client_map {
 	__uint(max_entries, MAX_HTTP_CLIENT_ENTRIES);
 	__type(key, struct http_client_key);
 	__type(value, struct http_client_decision);
-} unused_http_clients SEC(".maps");
+};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);

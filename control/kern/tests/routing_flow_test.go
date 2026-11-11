@@ -34,7 +34,7 @@ func TestHTTPClientAdmissionSkipsInvalidPredicates(t *testing.T) {
 		{Type: uint8(consts.MatchType_Fallback), Mark: 37},
 	})
 	for _, allowed := range []uint32{0, 1} {
-		if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allowed}, ebpf.UpdateAny); err != nil {
+		if err := obj.TestHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allowed}, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
 		want := ^uint32(0)

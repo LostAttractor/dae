@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
@@ -161,23 +160,20 @@ func TestClientMembershipConcurrentMatching(t *testing.T) {
 
 func attachClientKernelMaps(t *testing.T, b *RoutingMatcher) *ebpf.Map {
 	t.Helper()
-	innerSpec := &ebpf.MapSpec{Type: ebpf.LPMTrie, KeySize: uint32(unsafe.Sizeof(_bpfLpmKey{})), ValueSize: 4,
-		MaxEntries: 8, Flags: unix.BPF_F_NO_PREALLOC}
-	template, err := ebpf.NewMap(innerSpec)
+	spec, err := parsedBPFSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4,
+		MaxEntries: uint32(len(b.clientSetSlots)), InnerMap: spec.Maps[bpfMapLpmArrayMap].InnerMap.Copy()})
 	if errors.Is(err, unix.EPERM) {
 		t.Skip("creating an eBPF map requires privileges")
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = template.Close() })
-	outer, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4,
-		MaxEntries: uint32(len(b.clientSetSlots)), InnerMap: innerSpec})
-	if err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() { _ = outer.Close() })
-	b.bpf = &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UnusedLpmType: template, LpmArrayMap: outer}}}
+	b.bpf = &BPFState{bpfObjects: &bpfObjects{LpmArrayMap: outer}}
 	// kernelReady updates require the initial private projection to exist.
 	if err := b.uploadLPMTries(); err != nil {
 		t.Fatal(err)

@@ -83,11 +83,11 @@ func TestCaptureRouting(t *testing.T) {
 					}
 
 					// Update the same LPM entry instead of sharing test state across cases.
-					if err := obj.UnusedLpmType.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+					if err := obj.TestLpm.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 					if !test.ipMatch {
-						if err := obj.UnusedLpmType.Delete(key); err != nil {
+						if err := obj.TestLpm.Delete(key); err != nil {
 							t.Fatal(err)
 						}
 					}
