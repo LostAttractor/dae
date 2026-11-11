@@ -107,7 +107,7 @@ def main():
     kernel_binary = build("kernel-tests", {}, "./control/kern/tests", "dae_bpf_tests")
     kernel_variants = {
         "kernel-full": (None, None, "TestReload(PendingSYNAndConsumedHandoff|InvalidatesUnboundUDPCache)$", None),
-        "no-syn-handoff": ("if (pending && pending->syn_seq", "if (false && pending && pending->syn_seq", "TestReloadPendingSYNAndConsumedHandoff$", "TCP verdict=2"),
+        "no-syn-handoff": ("if (tcp_handoff_live(key, tcp->seq, route_epoch, true))", "if (false && tcp_handoff_live(key, tcp->seq, route_epoch, true))", "TestReloadPendingSYNAndConsumedHandoff$", "TCP verdict=2"),
         "no-flow-state": ("return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);", "return 0;", "TestReloadPendingSYNAndConsumedHandoff$", "TCP verdict=4294967295"),
         "no-udp-generation": ("value->result.generation != routing_generation", "false", "TestReloadInvalidatesUnboundUDPCache$", "UDP verdict=4294967295"),
     }
