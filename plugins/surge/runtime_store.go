@@ -78,9 +78,6 @@ func openRuntimeStore(path string) (*runtimeStore, error) {
 	}
 	maps.DeleteFunc(runtimeStores.byPath, func(_ string, store weak.Pointer[runtimeStore]) bool { return store.Value() == nil })
 	store.path = path
-	if err := store.refresh(); err != nil {
-		return nil, err
-	}
 	runtimeStores.byPath[path] = weak.Make(store)
 	return store, nil
 }
@@ -127,9 +124,9 @@ func readRuntimeStoreSnapshot(path string) (map[string]map[string]string, os.Fil
 	return values, info, nil
 }
 
-// refresh is called with gate held (or before publishing a new store). Reads check
-// only metadata when unchanged. Writers call it under the cross-process lock as
-// well, so their update always merges against the latest committed snapshot.
+// refresh is called with gate held. Reads check only metadata when unchanged.
+// Writers call it under the cross-process lock as well, so their update always
+// merges against the latest committed snapshot.
 func (s *runtimeStore) refresh() error {
 	info, err := os.Stat(s.path)
 	if errors.Is(err, os.ErrNotExist) {

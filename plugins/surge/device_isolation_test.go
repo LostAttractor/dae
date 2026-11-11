@@ -106,7 +106,11 @@ func TestDeviceStoreRejectsInvalidSnapshot(t *testing.T) {
 			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := openRuntimeStore(path); err == nil {
+			store, err := openRuntimeStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.read(t.Context(), testLocalScope, "cookie"); err == nil {
 				t.Fatal("accepted invalid snapshot")
 			}
 			if got, err := os.ReadFile(path); err != nil || string(got) != contents {

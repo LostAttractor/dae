@@ -19,6 +19,7 @@ import (
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 type runtimeHarness struct {
@@ -331,6 +332,95 @@ func TestRuntimePersistentStoreGlobalVar(t *testing.T) {
 				t.Fatalf("host store read = %v, %v; want value, nil", got, err)
 			}
 		})
+	}
+}
+
+func TestRuntimePersistentStoreIsLazy(t *testing.T) {
+	for _, fixture := range []string{"missing", "invalid-json", "fifo"} {
+		t.Run(fixture, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "store", "store.json")
+			if fixture != "missing" {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if fixture == "fifo" {
+					if err := unix.Mkfifo(path, 0600); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(path, []byte(`{`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := testRuntime(t, RuntimeOptions{StorePath: path})
+			check := func() {
+				t.Helper()
+				if r.data.info != nil || len(r.data.values) != 0 {
+					t.Fatal("unused store loaded contents")
+				}
+				switch fixture {
+				case "missing":
+					if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("unused store created a directory: %v", err)
+					}
+				case "invalid-json":
+					if data, err := os.ReadFile(path); err != nil || string(data) != "{" {
+						t.Fatalf("unused store changed invalid JSON: %q, %v", data, err)
+					}
+				case "fifo":
+					if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+						t.Fatalf("unused store replaced FIFO: %v, %v", info, err)
+					}
+				}
+				if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unused store created a lock: %v", err)
+				}
+			}
+			check()
+			if err := r.Warm(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			check()
+			result, err := r.Run(t.Context(), `$done()`, Invocation{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result.Close()
+			check()
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			check()
+		})
+	}
+}
+
+func TestRuntimePersistentStoreSharedBeforeFirstAccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := os.WriteFile(path, []byte(`{"local":{"seed":"initial"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := testRuntime(t, RuntimeOptions{StorePath: path})
+	b := testRuntime(t, RuntimeOptions{StorePath: path})
+	if a.data != b.data {
+		t.Fatal("runtimes did not share their unused store")
+	}
+	if a.data.info != nil || len(a.data.values) != 0 {
+		t.Fatal("shared store loaded contents before first access")
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := b.Run(t.Context(), `
+      if ($persistentStore.read("seed") !== "initial") throw Error("initial snapshot lost");
+      if (!$persistentStore.write("alive", "result")) throw Error("shared store closed");
+      if ($persistentStore.read("result") !== "alive") throw Error("write lost");
+      $done();`, Invocation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, _, err := readRuntimeStoreSnapshot(path)
+	if err != nil || len(values["local"]) != 2 || values["local"]["seed"] != "initial" || values["local"]["result"] != "alive" {
+		t.Fatalf("remaining runtime lost store data: %v, %v", values, err)
 	}
 }
 

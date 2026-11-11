@@ -114,6 +114,9 @@ func TestRuntimeStoreMigrateRejectsWithoutChanges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if got, err := store.read(t.Context(), testDeviceScope, "cookie"); err != nil || got != "source" {
+				t.Fatalf("initial cookie = %v, err = %v", got, err)
+			}
 			if count, err := store.migrate(t.Context(), test.from, test.to); count != 0 || !errors.Is(err, test.want) {
 				t.Fatalf("migrate: %d %v", count, err)
 			}
