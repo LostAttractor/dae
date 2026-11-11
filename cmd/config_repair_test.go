@@ -7,6 +7,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +23,19 @@ import (
 
 func configRepairTerminal(t *testing.T, answers string) *os.File {
 	t.Helper()
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
+	master, slave := openTestPTY(t)
+	if err := slave.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(master, answers); err != nil {
+		t.Fatal(err)
+	}
+	return slave
+}
+
+func openTestPTY(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +52,7 @@ func configRepairTerminal(t *testing.T, answers string) *os.File {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { slave.Close() })
-	if err := slave.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.WriteString(master, answers); err != nil {
-		t.Fatal(err)
-	}
-	return slave
+	return master, slave
 }
 
 func writeRepairConfig(t *testing.T, path string, mode os.FileMode) {
@@ -142,7 +149,7 @@ func TestConfigRepairRequiresExplicitConsent(t *testing.T) {
 				writeRepairConfig(t, path, 0644)
 				_, _, loadErr := config.Load(path)
 				var output bytes.Buffer
-				renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader(answer)), &output, path, loadErr)
+				renamed, repaired, err := repairConfigFile(t.Context(), bufio.NewReader(strings.NewReader(answer)), &output, path, loadErr)
 				if err != nil || repaired || renamed != "" {
 					t.Fatalf("unconfirmed repair: renamed=%q repaired=%v err=%v", renamed, repaired, err)
 				}
@@ -172,7 +179,7 @@ func TestConfigRepairSkipsUnsupportedPaths(t *testing.T) {
 			}
 			_, _, loadErr := config.Load(path)
 			var output bytes.Buffer
-			renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), &output, path, loadErr)
+			renamed, repaired, err := repairConfigFile(t.Context(), bufio.NewReader(strings.NewReader("yes\n")), &output, path, loadErr)
 			if err != nil || repaired || renamed != "" || output.Len() != 0 {
 				t.Fatalf("unsupported path prompted or repaired: %q, %v, %v, %q", renamed, repaired, err, &output)
 			}
@@ -191,7 +198,7 @@ func TestConfigRepairRefusesIncludedFileRename(t *testing.T) {
 	writeRepairConfig(t, child, 0600)
 	loadErr := fmt.Errorf("load include: %w", &config.InvalidFilenameError{Path: child})
 	var output bytes.Buffer
-	renamed, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), &output, entry, loadErr)
+	renamed, repaired, err := repairConfigFile(t.Context(), bufio.NewReader(strings.NewReader("yes\n")), &output, entry, loadErr)
 	if err == nil || !strings.Contains(err.Error(), "included config") || repaired || renamed != "" || output.Len() != 0 {
 		t.Fatalf("included file rename was not refused: %q, %v, %v, %q", renamed, repaired, err, &output)
 	}
@@ -214,7 +221,7 @@ func TestConfigRenamePreservesExistingDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, loadErr := config.Load(path)
-	_, repaired, err := repairConfigFile(bufio.NewReader(strings.NewReader("yes\n")), io.Discard, path, loadErr)
+	_, repaired, err := repairConfigFile(t.Context(), bufio.NewReader(strings.NewReader("yes\n")), io.Discard, path, loadErr)
 	if repaired || !errors.Is(err, os.ErrExist) {
 		t.Fatalf("existing target was not rejected: repaired=%v err=%v", repaired, err)
 	}
@@ -249,7 +256,7 @@ func TestConfigRepairRequiresBothTerminals(t *testing.T) {
 				defer input.Close()
 				command.SetIn(input)
 			}
-			_, _, err := loadConfig(command, &path)
+			_, _, err := loadConfig(t.Context(), command, &path)
 			if _, ok := errors.AsType[*config.UnsafePermissionsError](err); !ok {
 				t.Fatalf("non-interactive load lost validation error: %v", err)
 			}
@@ -257,5 +264,43 @@ func TestConfigRepairRequiresBothTerminals(t *testing.T) {
 				t.Fatalf("non-interactive load prompted or changed file: %v, %v, %q", info, err, &output)
 			}
 		})
+	}
+}
+
+func TestConfigRepairPromptCanceled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.dae")
+	writeRepairConfig(t, path, 0644)
+	master, terminal := openTestPTY(t)
+	command := newValidateCommand(nil)
+	command.SetIn(terminal)
+	command.SetErr(terminal)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := loadConfig(ctx, command, &path)
+		done <- err
+	}()
+	if err := master.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := bufio.NewReader(master).ReadString(']')
+	if err != nil || !strings.HasSuffix(prompt, "[y/N]") {
+		t.Fatalf("repair prompt not received: %q, %v", prompt, err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("repair returned %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("repair prompt did not stop after cancellation")
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0644 {
+		t.Fatalf("canceled repair changed file: %v, %v", info, err)
+	}
+	if _, err := terminal.Stat(); err != nil {
+		t.Fatalf("canceled repair closed the caller's terminal: %v", err)
 	}
 }

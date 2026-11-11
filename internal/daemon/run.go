@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"syscall"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/apiserver"
-	"github.com/okzk/sdnotify"
+	"github.com/daeuniverse/dae/internal/handoff"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -37,11 +38,44 @@ type Options struct {
 	ConfigFile       string
 	Version          string
 	DisableTimestamp bool
+	LaunchArgs       []string
+	Startup          *Startup
 }
 
-// Run owns daemon startup, serialized configuration changes and shutdown.
-// The caller installs process-wide name resolution before concurrent work.
+// Run handles daemon startup, serialized configuration changes, and shutdown.
+// The caller owns Startup and installs the process-wide resolver.
 func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver, options Options) (runErr error) {
+	if options.Startup == nil || options.Startup.lock == nil {
+		return errors.New("daemon requires startup resources and the instance lock")
+	}
+	startup := options.Startup
+	ctx := startup.ctx
+	defer startup.cancel(context.Canceled)
+	defer func() {
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			runErr = errors.Join(runErr, fmt.Errorf("replacement startup deadline exceeded: %w", context.Cause(ctx)))
+		}
+		if _, reserved := errors.AsType[*exemptionError](runErr); !reserved {
+			cleanupCtx, stop := context.WithTimeout(context.Background(), shutdownTimeout)
+			runErr = errors.Join(runErr, handoff.DrainChildren(cleanupCtx))
+			stop()
+		}
+	}()
+	incoming := startup.incoming
+	if incoming != nil {
+		manifest := incoming.manifest
+		if !slices.Equal(conf.Global.LanInterface, manifest.LAN) || !slices.Equal(conf.Global.WanInterface, manifest.WAN) {
+			return errors.New("interception interfaces changed during replacement")
+		}
+		hostns := incoming.take("hostns")
+		daens := incoming.take("daens")
+		err := control.BorrowDaeNetns(int(hostns.Fd()), int(daens.Fd()), manifest.HostIndex, manifest.PeerIndex)
+		_ = hostns.Close()
+		_ = daens.Close()
+		if err != nil {
+			return err
+		}
+	}
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
@@ -49,19 +83,15 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	if resolver == nil {
 		return errors.New("daemon requires an installed internal resolver")
 	}
-	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	defer stopSignals()
 	if err := plugins.Preflight(ctx); err != nil {
 		return err
 	}
-	if err := control.CheckKernelFeatures(ctx); err != nil {
-		return err
+	// A validated exec state is issued only after this ELF passes kernel preflight.
+	if incoming == nil {
+		if err := control.CheckKernelFeatures(ctx); err != nil {
+			return err
+		}
 	}
-	instance, err := acquireInstanceLock("/run/dae.lock")
-	if err != nil {
-		return err
-	}
-	defer instance.Close()
 	if err := control.RegisterDaemonIdentity(); err != nil {
 		return fmt.Errorf("register daemon socket identity: %w", err)
 	}
@@ -69,20 +99,30 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	if err != nil {
 		return err
 	}
-	stopWatchdog := watchShutdown(ctx, shutdownTimeout, func() {
-		log.WithField("timeout", shutdownTimeout).Error("Shutdown timed out; forcing process exit")
-		os.Exit(1)
-	})
-	defer stopWatchdog()
 	stopSampling, err := stats.DefaultStore.StartSampling()
 	if err != nil {
 		return fmt.Errorf("start traffic sampling: %w", err)
 	}
 	// Keep sampling through reloads and until all traffic producers have drained.
 	defer stopSampling()
-	if err := reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort); err != nil {
+	var inheritedObservability map[uint16]*os.File
+	var inheritedAPI *apiserver.Server
+	if incoming != nil {
+		inheritedAPI, err = incoming.takeManagement(conf.Global.APIPort)
+		if err != nil {
+			return err
+		}
+		defer inheritedAPI.Close()
+		inheritedObservability, err = incoming.takeObservability()
+		if err != nil {
+			return err
+		}
+	}
+	observability, err := prepareInheritedObservability(conf.Global.PprofPort, conf.Global.MetricsPort, inheritedObservability, incoming != nil)
+	if err != nil {
 		return err
 	}
+	observability.Commit()
 	defer reconfigureObservabilityServers(0, 0)
 	settingsPath := filepath.Join(common.CacheDirectory(), "runtime-state.json")
 	runtimeSettings, err := settings.Open(settingsPath)
@@ -103,12 +143,32 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		}
 	}()
 	defer exitOnPanic()
+	if incoming != nil {
+		files, err := incoming.takeLinks(len(incoming.manifest.Links))
+		if err != nil {
+			return err
+		}
+		importErr := datapath.ImportReplacement(incoming.manifest.Links, files)
+		for _, file := range files {
+			_ = file.Close()
+		}
+		if importErr != nil {
+			return importErr
+		}
+	}
 	worker, closeWorker := datapath.NewWorkerClient()
 	defer closeWorker()
 	app := &application{
+		staging: incoming != nil, beginShutdown: startup.beginShutdown,
 		options: options, conf: conf, datapath: datapath,
 		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
-		geoDirs: geoDirs, operations: newOperations(),
+		geoDirs: geoDirs, operations: newOperations(), managementAPI: inheritedAPI,
+	}
+	if incoming != nil {
+		op := incoming.manifest.Operation
+		app.operations.records[op.ID] = &operationRecord{status: op, request: api.OperationRequest{Kind: "reload"}}
+		app.operations.active = op.ID
+		app.operations.replacing = true
 	}
 	loadCtx, refresh := app.resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
 	inputs, preparation, err := loadStartupInputs(loadCtx, datapath, conf, geoDirs, options.ConfigFile)
@@ -119,13 +179,23 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		})
 	}
 	if err != nil {
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			return fmt.Errorf("replacement startup: %w", context.Cause(ctx))
+		}
 		if errors.Is(err, context.Canceled) {
 			log.Info("Startup canceled")
 			return nil
 		}
 		return err
 	}
-	local, err := apiserver.Listen("unix", StatusSocketPath)
+	var local *apiserver.Server
+	if incoming != nil {
+		file := incoming.take("local")
+		local, err = apiserver.FromFile(file, "unix")
+		_ = file.Close()
+	} else {
+		local, err = apiserver.Listen("unix", StatusSocketPath)
+	}
 	if err != nil {
 		return errors.Join(fmt.Errorf("local API: %w", err), candidate.discard())
 	}
@@ -153,6 +223,9 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		return errors.Join(err, candidate.discard())
 	case <-ctx.Done():
 		local.Close()
+		if errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+			return errors.Join(context.Cause(ctx), candidate.discard())
+		}
 		return candidate.discard()
 	}
 	if err := app.publishPlane(candidate, false); err != nil {
@@ -169,23 +242,45 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	defer stopOperations()
 	defer func() {
 		app.operations.stop()
-		stopSignals()
+		startup.cancel(context.Canceled)
 		log.Info("Shutting down")
+		if !app.staging {
+			runErr = errors.Join(runErr, notifyService(context.Background(), "stopping"))
+		}
 		resolver.SetRoute(nil)
-		exit(datapath, app.localAPI, app.managementAPI)
+		runErr = errors.Join(runErr, exit(datapath, app.localAPI, app.managementAPI))
 	}()
 	defer exitOnPanic()
+	app.publishAPI()
+	if incoming != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := datapath.CommitReplacement(ctx); err != nil {
+			return err
+		}
+		log.WithField("cutover", time.Since(incoming.manifest.CutoverAt)).Info("Replacement datapath ready")
+		app.localAPI.Activate()
+		app.managementAPI.Activate()
+		observability.Activate()
+		incoming.close()
+	}
 	pruneSubscriptions(conf, filepath.Dir(options.ConfigFile))
 	logStartupNodeStatus(plane.GroupsStatus())
 	// A daemon survives the loss of its controlling terminal.
 	signal.Ignore(syscall.SIGHUP)
 	resolver.SetRoute(plane.DNSResolverDialer())
-	app.publishAPI()
 	if management != nil {
 		log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
 	}
-	sdnotify.Ready()
+	if err := app.finishStartup(ctx); err != nil {
+		return err
+	}
 	log.WithFields(log.Fields{"duration": time.Since(started), "targets": len(plane.GroupsStatus()), "plugins": len(plane.MITMStatus().Plugins)}).Info("Startup completed")
+	if incoming != nil {
+		app.operations.finish(incoming.manifest.Operation.ID, fmt.Sprintf("Replaced daemon; PID %d, version %s", os.Getpid(), options.Version), nil)
+		app.operations.endReplacement()
+	}
 	refreshTimer := time.NewTimer(time.Hour)
 	defer refreshTimer.Stop()
 	var retryAfter time.Time
@@ -198,7 +293,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			retryAfter = time.Time{}
 		}
 		if _, fatal := errors.AsType[*activationError](err); fatal {
-			sdnotify.Stopping()
 			return err
 		}
 		return nil
@@ -244,7 +338,8 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 
 // Bound terminal shutdown even when a worker cannot be canceled. Shared state
 // stays alive until its users finish; the deadline forces process exit.
-func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func()) func() {
+func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func()) (start, finish func()) {
+	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		timer := time.NewTimer(timeout)
@@ -255,7 +350,7 @@ func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func())
 			forceExit()
 		}
 	})
-	return func() { close(done); stop() }
+	return cancel, func() { close(done); stop(); cancel() }
 }
 
 // exitOnPanic makes a panic on the daemon goroutine an unexpected exit: like
@@ -268,9 +363,10 @@ func exitOnPanic() {
 	}
 }
 
-func exit(datapath *control.Runtime, servers ...*apiserver.Server) {
-	if err := datapath.GoOffline(); err != nil {
-		log.WithError(err).Error("Could not mark kernel datapath offline")
+func exit(datapath *control.Runtime, servers ...*apiserver.Server) error {
+	var err error
+	if offlineErr := datapath.GoOffline(); offlineErr != nil {
+		err = fmt.Errorf("mark kernel datapath offline: %w", offlineErr)
 	}
 	startPprofServer(0)
 	startMetricsServer(0)
@@ -280,7 +376,5 @@ func exit(datapath *control.Runtime, servers ...*apiserver.Server) {
 	for _, server := range servers {
 		server.Close()
 	}
-	if err := datapath.Close(); err != nil {
-		log.WithError(err).Error("Could not stop control plane ingress")
-	}
+	return errors.Join(err, datapath.Close())
 }

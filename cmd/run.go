@@ -11,10 +11,12 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/daeuniverse/dae/pkg/logger"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -31,6 +33,16 @@ var (
 	disableAuthSudo   bool
 )
 
+// runArguments rebuilds parsed scalar flags so the candidate inherits corrected
+// configuration paths rather than the original command line.
+func runArguments(cmd *cobra.Command) []string {
+	args := []string{cmd.Name()}
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		args = append(args, "--"+flag.Name+"="+flag.Value.String())
+	})
+	return args
+}
+
 func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 	runCmd := &cobra.Command{
 		Use:   "run",
@@ -38,9 +50,6 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			log.SetFormatter(logger.NewTextFormatter(disableTimestamp))
-			if cfgFile == "" {
-				return errors.New("argument --config or -c is required")
-			}
 			if disableAuthSudo && os.Geteuid() != 0 {
 				return errors.New("auto-sudo is disabled and current user is not root")
 			}
@@ -50,9 +59,25 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 					return err
 				}
 			}
+			startup, err := daemon.OpenStartup()
+			if err != nil {
+				return err
+			}
+			defer startup.Close()
+			if cfgFile == "" {
+				return errors.New("argument --config or -c is required")
+			}
+			if handled, err := startup.Preflight(cfgFile, definitions); handled || err != nil {
+				return err
+			}
 
-			// Read config from --config cfgFile.
-			conf, includes, err := loadConfig(cmd, &cfgFile)
+			var conf *config.Config
+			var includes []string
+			if startup.Resuming() {
+				conf, includes, err = config.Load(cfgFile)
+			} else {
+				conf, includes, err = loadConfig(startup.Context(), cmd, &cfgFile)
+			}
 			if err != nil {
 				return fmt.Errorf("read config: %w", err)
 			}
@@ -78,6 +103,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			log.WithField("files", includes).Debug("Loaded configuration files")
 			err = daemon.Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver, daemon.Options{
 				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp,
+				LaunchArgs: runArguments(cmd), Startup: startup,
 			})
 			if err != nil {
 				// Let Cobra report the error if the configured log level hides it.

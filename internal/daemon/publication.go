@@ -47,7 +47,7 @@ func (a *application) assemblePlane(ctx context.Context, preparation *control.Co
 		return nil, errors.Join(err, plane.Close())
 	}
 	plane.SetPluginConfiguration(conf.Plugins, slices.Sorted(maps.Keys(a.definitions)))
-	api, err := prepareAPIServer(a.managementAPI, conf.Global.APIPort)
+	api, err := prepareAPIServer(a.managementAPI, conf.Global.APIPort, a.staging)
 	if err != nil {
 		return nil, errors.Join(err, plane.Close())
 	}

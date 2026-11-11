@@ -10,19 +10,28 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	localca "github.com/daeuniverse/dae/component/ca"
+	"github.com/daeuniverse/dae/internal/handoff"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
 )
 
 type Server struct {
+	raw           net.Listener
+	held          *handoff.Listener
 	listener      net.Listener
 	http          *http.Server
 	cancel        context.CancelFunc
+	initGate      sync.Once
+	planeRequests *semaphore.Weighted
 	mu            sync.RWMutex
 	handler       http.Handler
 	tls           *apiTLSIdentity
@@ -39,6 +48,15 @@ type tlsIdentityKey struct{}
 
 // Listen reserves the address immediately. Requests return 503 until SetHandler.
 func Listen(network, address string) (*Server, error) {
+	return listen(network, address, false)
+}
+
+// ListenHeld reserves a new candidate address without serving before commit.
+func ListenHeld(network, address string) (*Server, error) {
+	return listen(network, address, true)
+}
+
+func listen(network, address string, hold bool) (*Server, error) {
 	var listener net.Listener
 	var err error
 	if network == "unix" {
@@ -52,8 +70,37 @@ func Listen(network, address string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	raw := listener
+	if admin, ok := raw.(*unixAdminListener); ok {
+		raw = admin.Listener
+	}
+	var held *handoff.Listener
+	if hold {
+		held = handoff.Hold(listener)
+		listener = held
+	}
+	return serveListener(listener, raw, network, held), nil
+}
+
+func FromFile(file *os.File, network string) (*Server, error) {
+	raw, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	if local, ok := raw.(*net.UnixListener); ok {
+		local.SetUnlinkOnClose(false)
+	}
+	held := handoff.Hold(raw)
+	var listener net.Listener = held
+	if network == "unix" {
+		listener = &unixAdminListener{Listener: held, uid: uint32(os.Geteuid())}
+	}
+	return serveListener(listener, raw, network, held), nil
+}
+
+func serveListener(listener, raw net.Listener, network string, held *handoff.Listener) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{listener: listener, cancel: cancel}
+	s := &Server{listener: listener, raw: raw, held: held, cancel: cancel}
 	if network != "unix" {
 		listener = newProtocolListener(listener, &tls.Config{MinVersion: tls.VersionTLS12, GetConfigForClient: s.tlsConfig})
 		s.listener = listener
@@ -63,13 +110,38 @@ func Listen(network, address string) (*Server, error) {
 		s.http.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
 			return context.WithValue(ctx, tlsGenerationKey{}, new(tlsConnectionGeneration))
 		}
+	} else {
+		s.http.ConnContext = unixConnContext
 	}
 	go func() {
 		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.WithError(err).Error("API server stopped")
 		}
 	}()
-	return s, nil
+	return s
+}
+
+func (s *Server) File() (*os.File, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return handoff.DupSocket(s.raw.(syscall.Conn), "api")
+}
+
+func (s *Server) Activate() {
+	if s != nil && s.held != nil {
+		s.held.Activate()
+	}
+}
+
+// An inherited Unix descriptor must not unlink the serving path on rejection.
+func (s *Server) SetOwnership(owned bool) {
+	if s == nil {
+		return
+	}
+	if local, ok := s.raw.(*net.UnixListener); ok {
+		local.SetUnlinkOnClose(owned)
+	}
 }
 
 func (s *Server) tlsConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -115,6 +187,21 @@ func (s *Server) SetHandler(handler http.Handler) {
 	s.handler = handler
 }
 
+// Pause drains plane requests without discarding the handler or its TLS state.
+// Local operation routes remain available. Canceling the wait reopens admission.
+func (s *Server) Pause(ctx context.Context) (resume func(), err error) {
+	gate := s.requestGate()
+	if err := gate.Acquire(ctx, math.MaxInt64); err != nil {
+		return nil, context.Cause(ctx)
+	}
+	return func() { gate.Release(math.MaxInt64) }, nil
+}
+
+func (s *Server) requestGate() *semaphore.Weighted {
+	s.initGate.Do(func() { s.planeRequests = semaphore.NewWeighted(math.MaxInt64) })
+	return s.planeRequests
+}
+
 // Configure publishes one handler for HTTP and HTTPS after draining prior
 // requests. A nil authority disables HTTPS; changing its identity retires old TLS
 // connections so a previous CA handshake cannot authenticate new CA metadata.
@@ -144,6 +231,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	gate := s.requestGate()
+	if !gate.TryAcquire(1) {
+		unavailable(w)
+		return
+	}
+	defer gate.Release(1)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r.TLS != nil {
@@ -156,13 +249,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.handler == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"API is starting or reloading"}`))
+		unavailable(w)
 		return
 	}
 	s.handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tlsIdentityKey{}, s.tls)))
+}
+
+func unavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":"API is starting or reloading"}`))
 }
 
 // Stop closes ingress and cancels requests. Close joins their state mutations

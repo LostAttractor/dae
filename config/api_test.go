@@ -68,6 +68,19 @@ func TestGlobalResourceCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHostListenerPortConflicts(t *testing.T) {
+	for _, ports := range []string{"api_port:80 metrics_port:80", "pprof_port:80 api_port:80", "metrics_port:80 pprof_port:80"} {
+		sections, err := config_parser.Parse("global { " + ports + " }\nrouting { fallback: direct }")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(sections); err == nil {
+			t.Fatalf("accepted overlapping listeners: %s", ports)
+		}
+	}
+	parseConfig(t, "global { tproxy_port:80 metrics_port:80 }\nrouting { fallback: direct }")
+}
+
 func TestResourceUpdateInterval(t *testing.T) {
 	for _, value := range []string{"0", "1s", "2h"} {
 		conf := parseConfig(t, "global { resource_update_interval: "+value+" }\nrouting { fallback: direct }")

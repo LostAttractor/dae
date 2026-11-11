@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,19 +18,36 @@ import (
 	"golang.org/x/term"
 )
 
-func loadConfig(cmd *cobra.Command, path *string) (*config.Config, []string, error) {
+func loadConfig(ctx context.Context, cmd *cobra.Command, path *string) (*config.Config, []string, error) {
 	input, inputOK := cmd.InOrStdin().(*os.File)
 	output, outputOK := cmd.ErrOrStderr().(*os.File)
 	if !inputOK || !outputOK || !term.IsTerminal(int(input.Fd())) || !term.IsTerminal(int(output.Fd())) {
 		return config.Load(*path)
 	}
-	reader := bufio.NewReader(input)
+	var reader *bufio.Reader
 	for {
 		conf, includes, err := config.Load(*path)
 		if err == nil {
 			return conf, includes, nil
 		}
-		renamed, repaired, repairErr := repairConfigFile(reader, output, *path, err)
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, nil, cause
+		}
+		if reader == nil {
+			// Reopen instead of duplicating: a nonblocking duplicate would also change stdin's flags.
+			terminal, openErr := os.OpenFile(fmt.Sprintf("/proc/self/fd/%d", input.Fd()), os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+			if openErr != nil {
+				return nil, nil, fmt.Errorf("%w; open repair prompt input: %w", err, openErr)
+			}
+			defer terminal.Close()
+			stop := context.AfterFunc(ctx, func() { _ = terminal.Close() })
+			defer stop()
+			reader = bufio.NewReader(terminal)
+		}
+		renamed, repaired, repairErr := repairConfigFile(ctx, reader, output, *path, err)
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, nil, cause
+		}
 		if repairErr != nil {
 			return nil, nil, fmt.Errorf("%w; repair config: %w", err, repairErr)
 		}
@@ -42,7 +60,7 @@ func loadConfig(cmd *cobra.Command, path *string) (*config.Config, []string, err
 	}
 }
 
-func repairConfigFile(input *bufio.Reader, output io.Writer, entry string, loadErr error) (renamed string, repaired bool, err error) {
+func repairConfigFile(ctx context.Context, input *bufio.Reader, output io.Writer, entry string, loadErr error) (renamed string, repaired bool, err error) {
 	var path, question string
 	if filenameErr, ok := errors.AsType[*config.InvalidFilenameError](loadErr); ok && filepath.Ext(filenameErr.Path) == "" {
 		path = filenameErr.Path
@@ -68,6 +86,9 @@ func repairConfigFile(input *bufio.Reader, output io.Writer, entry string, loadE
 		return "", false, err
 	}
 	answer, err := input.ReadString('\n')
+	if cause := context.Cause(ctx); cause != nil {
+		return "", false, cause
+	}
 	if errors.Is(err, io.EOF) {
 		return "", false, nil
 	}

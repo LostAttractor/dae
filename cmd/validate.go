@@ -24,7 +24,7 @@ func newValidateCommand(definitions map[string]plugin.Definition) *cobra.Command
 			if configFile == "" {
 				return fmt.Errorf("argument --config or -c is required")
 			}
-			conf, _, err := loadConfig(cmd, &configFile)
+			conf, _, err := loadConfig(cmd.Context(), cmd, &configFile)
 			if err != nil {
 				return err
 			}

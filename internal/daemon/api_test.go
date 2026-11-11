@@ -29,7 +29,7 @@ func prepareAPIOnUnusedPort(t *testing.T, current *apiserver.Server) *apiserver.
 		if err := listener.Close(); err != nil {
 			t.Fatal(err)
 		}
-		server, err := prepareAPIServer(current, port)
+		server, err := prepareAPIServer(current, port, false)
 		// Only another binder winning the release/rebind window is retryable.
 		if errors.Is(err, syscall.EADDRINUSE) {
 			continue
@@ -68,7 +68,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	server.SetHandler(handler("old CA and settings"))
 
 	// Building a candidate must not change the active page or its settings.
-	same, err := prepareAPIServer(server, port)
+	same, err := prepareAPIServer(server, port, false)
 	if err != nil || same != server {
 		t.Fatalf("unchanged port replaced listener: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	}
 	defer occupied.Close()
 	port = uint16(occupied.Addr().(*net.TCPAddr).Port)
-	if _, err := prepareAPIServer(server, port); err == nil {
+	if _, err := prepareAPIServer(server, port, false); err == nil {
 		t.Fatal("occupied port accepted")
 	}
 	check(server, http.StatusOK, "new CA and settings")
@@ -97,7 +97,7 @@ func TestAPIServerReloadAndPortChanges(t *testing.T) {
 	next.SetHandler(handler("changed port"))
 	check(next, http.StatusOK, "changed port")
 
-	if result, err := prepareAPIServer(next, 0); result != nil || err != nil {
+	if result, err := prepareAPIServer(next, 0, false); result != nil || err != nil {
 		t.Fatalf("disabled server = %v, %v", result, err)
 	}
 	next.Close()

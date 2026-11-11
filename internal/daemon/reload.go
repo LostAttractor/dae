@@ -29,6 +29,8 @@ import (
 // application owns the accepted configuration and the services selected by it.
 // Its event loop serializes reloads; API writers drain only at publication.
 type application struct {
+	staging                 bool
+	beginShutdown           func()
 	options                 Options
 	conf                    *config.Config
 	inputs                  *controlInputs
@@ -48,6 +50,8 @@ type application struct {
 
 // A failed attachment replacement is distinct from a rejected candidate.
 type activationError struct{ error }
+
+func (e *activationError) Unwrap() error { return e.error }
 
 func (a *application) report(message string) {
 	if a.progress != nil {

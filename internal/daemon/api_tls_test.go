@@ -58,7 +58,7 @@ func TestSharedAPIListenerPublishesCurrentCA(t *testing.T) {
 	}
 	first, firstClient := makeAuthority("first")
 	certificateDirectory := t.TempDir()
-	next, err := prepareAPIServer(current, port)
+	next, err := prepareAPIServer(current, port, false)
 	if err != nil || next != current {
 		t.Fatalf("listener was not reused: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestSharedAPIListenerPublishesCurrentCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer busy.Close()
-	if _, err := prepareAPIServer(current, uint16(busy.Addr().(*net.TCPAddr).Port)); err == nil {
+	if _, err := prepareAPIServer(current, uint16(busy.Addr().(*net.TCPAddr).Port), false); err == nil {
 		t.Fatal("occupied port accepted")
 	}
 	io.Copy(io.Discard, check(secondClient, "https", "/api/status", "", "test-key", 200).Body)

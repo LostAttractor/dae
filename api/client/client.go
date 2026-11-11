@@ -37,6 +37,7 @@ type Options struct {
 type Client struct {
 	base   string
 	apiKey string
+	local  bool
 	http   *http.Client
 }
 
@@ -82,7 +83,7 @@ func New(options Options) (*Client, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}
-	return &Client{base: endpoint, apiKey: options.APIKey, http: &http.Client{
+	return &Client{base: endpoint, apiKey: options.APIKey, local: u.Scheme == "unix", http: &http.Client{
 		Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
@@ -90,6 +91,8 @@ func New(options Options) (*Client, error) {
 
 // Close releases idle connections. It does not cancel active requests.
 func (c *Client) Close() { c.http.CloseIdleConnections() }
+
+func (c *Client) Local() bool { return c.local }
 
 // request is the single HTTP/JSON path for all operations. It never retries writes.
 func (c *Client) request[T any](ctx context.Context, method, path string, body any, fingerprint string) (*T, error) {

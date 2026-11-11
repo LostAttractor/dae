@@ -3625,6 +3625,17 @@ int test_daemon_exit(struct __sk_buff *skb)
 	return TCX_NEXT;
 }
 
+SEC("tc/test_process_exit")
+int test_process_exit(struct __sk_buff *skb)
+{
+	__u32 pid;
+
+	if (bpf_skb_load_bytes(skb, 0, &pid, sizeof(pid)))
+		return TCX_DROP;
+	record_daemon_exit(pid);
+	return TCX_NEXT;
+}
+
 SEC("tc/test_guard_udp_timers")
 int test_guard_udp_timers(struct __sk_buff *skb)
 {

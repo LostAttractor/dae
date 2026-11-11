@@ -9,13 +9,16 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/internal/handoff"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -109,6 +112,7 @@ func serveHTTP(name string, server *http.Server, listener net.Listener, clearCur
 type observabilityUpdate struct {
 	targets [2]observabilityServer
 	opened  []net.Listener
+	held    []*handoff.Listener
 }
 
 var listenObservability = func(address string) (net.Listener, error) {
@@ -119,6 +123,19 @@ var listenObservability = func(address string) (net.Listener, error) {
 }
 
 func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabilityUpdate, error) {
+	return prepareInheritedObservability(pprofTarget, metricsTarget, nil, false)
+}
+
+func closeObservabilityFiles(files map[uint16]*os.File) {
+	for _, file := range files {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+}
+
+func prepareInheritedObservability(pprofTarget, metricsTarget uint16, inherited map[uint16]*os.File, hold bool) (*observabilityUpdate, error) {
+	defer closeObservabilityFiles(inherited)
 	if pprofTarget != 0 && pprofTarget == metricsTarget {
 		return nil, fmt.Errorf("pprof and metrics cannot share port %d", pprofTarget)
 	}
@@ -140,10 +157,21 @@ func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabil
 			continue
 		}
 		address := fmt.Sprintf("localhost:%d", port)
-		listener, err := listenObservability(address)
+		var listener net.Listener
+		var err error
+		if file := inherited[port]; file != nil {
+			listener, err = net.FileListener(file)
+		} else {
+			listener, err = listenObservability(address)
+		}
 		if err != nil {
 			update.Close()
 			return nil, fmt.Errorf("listen for %s: %w", current[i].name, err)
+		}
+		if hold {
+			held := handoff.Hold(listener)
+			update.held = append(update.held, held)
+			listener = held
 		}
 		dispatch := new(atomic.Pointer[http.Handler])
 		dispatch.Store(&current[i].handler)
@@ -154,6 +182,36 @@ func prepareObservabilityServers(pprofTarget, metricsTarget uint16) (*observabil
 		update.opened = append(update.opened, listener)
 	}
 	return update, nil
+}
+
+func (u *observabilityUpdate) Activate() {
+	for _, listener := range u.held {
+		listener.Activate()
+	}
+}
+
+func exportObservability() (map[uint16]*os.File, error) {
+	observabilityMu.Lock()
+	defer observabilityMu.Unlock()
+	files := make(map[uint16]*os.File)
+	for _, service := range []*observabilityServer{&pprofService, &metricsService} {
+		if service.listener == nil {
+			continue
+		}
+		listener := service.listener
+		if held, ok := listener.(*handoff.Listener); ok {
+			listener = held.Listener
+		}
+		file, err := handoff.DupSocket(listener.(syscall.Conn), "observability")
+		if err != nil {
+			for _, file := range files {
+				_ = file.Close()
+			}
+			return nil, err
+		}
+		files[service.port] = file
+	}
+	return files, nil
 }
 
 func (u *observabilityUpdate) Close() {

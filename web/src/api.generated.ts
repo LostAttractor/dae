@@ -1529,8 +1529,12 @@ export interface components {
         OperationRequest: {
             /** @description Abort established connections during reload or suspend; invalid for refresh. */
             abort?: boolean;
+            /** @description Local reload only. Must match the authenticated Unix peer PID. Compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload. */
+            executable_pid?: number;
             /** @enum {string} */
             kind: "reload" | "suspend" | "refresh";
+            /** @description Force local process replacement even when the executable matches. Requires executable_pid. Replacement closes old connections before same-PID exec and rebuilds the runtime under blocking guards. */
+            replace?: boolean;
         };
         PathStats: {
             /** Format: int64 */

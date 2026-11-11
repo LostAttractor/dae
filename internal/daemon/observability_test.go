@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"syscall"
@@ -419,5 +420,100 @@ func TestObservabilityPreparationRollback(t *testing.T) {
 	_, _, current, _ = observabilityState()
 	if current != oldServer {
 		t.Fatal("discarding port transfer changed active metrics server")
+	}
+}
+
+func TestPrepareInheritedObservabilityClosesAllInheritedFDs(t *testing.T) {
+	if err := reconfigureObservabilityServers(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reconfigureObservabilityServers(0, 0) })
+	toFD := func() (uint16, *os.File) {
+		l, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tcp := l.(*net.TCPListener)
+		port := uint16(tcp.Addr().(*net.TCPAddr).Port)
+		file, err := tcp.File()
+		_ = tcp.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		return port, file
+	}
+	claimedPort, claimedFile := toFD()
+	unusedPort, unusedFile := toFD()
+	update, err := prepareInheritedObservability(claimedPort, 0, map[uint16]*os.File{
+		claimedPort: claimedFile,
+		unusedPort:  unusedFile,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Close()
+	for name, file := range map[string]*os.File{"claimed": claimedFile, "unused": unusedFile} {
+		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("%s inherited observability FD remained open: %v", name, err)
+		}
+	}
+	update.Commit()
+	update.Activate()
+	response, err := http.Get(fmt.Sprintf("http://localhost:%d/debug/pprof/", claimedPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("claimed inherited pprof status = %s", response.Status)
+	}
+
+	_, errFile := toFD()
+	if _, err := prepareInheritedObservability(1, 1, map[uint16]*os.File{1: errFile}, true); err == nil {
+		t.Fatal("shared port error should reject call")
+	}
+	if _, err := errFile.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("error path leaked inherited observability FD: %v", err)
+	}
+}
+
+func TestReplaceSwapsManagementAndMetricsPorts(t *testing.T) {
+	take := func(address string) (uint16, *os.File) {
+		t.Helper()
+		ln, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		file, err := ln.(*net.TCPListener).File()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { file.Close() })
+		return uint16(ln.Addr().(*net.TCPAddr).Port), file
+	}
+	apiPort, wildcard := take(":0")
+	metricsPort, loopback := take("localhost:0")
+	incoming := &replacementState{files: map[string]*os.File{"management": wildcard}}
+	retained, err := incoming.takeManagement(metricsPort)
+	if err != nil || retained != nil {
+		t.Fatalf("kept old wildcard binding: %v, %v", retained, err)
+	}
+	obs, err := prepareInheritedObservability(0, apiPort, map[uint16]*os.File{metricsPort: loopback}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close()
+	if !obs.targets[1].listener.Addr().(*net.TCPAddr).IP.IsLoopback() {
+		t.Fatal("metrics inherited a wildcard listener")
+	}
+	server, err := prepareAPIServer(nil, metricsPort, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if !server.Addr().(*net.TCPAddr).IP.IsUnspecified() {
+		t.Fatal("management inherited a loopback listener")
 	}
 }

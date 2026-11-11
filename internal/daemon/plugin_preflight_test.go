@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"github.com/daeuniverse/dae/control"
 	"net/http"
 	"os"
 	"strings"
@@ -13,10 +12,12 @@ import (
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/plugins/surge"
 )
 
 func TestPluginPreflightBeforeStartupResources(t *testing.T) {
+	startup := testStartup(t)
 	for _, last := range []string{`missing {}`, `bad { type: surge unknown_field: secret }`} {
 		t.Run(last, func(t *testing.T) {
 			dir := t.TempDir()
@@ -34,7 +35,7 @@ plugins { surge { module { 'https://invalid.example/module' } } `+last+` }`)
 				}, err
 			}
 			definitions := map[string]plugin.Definition{"surge": definition}
-			if err := Run(conf, nil, definitions, nil, Options{}); err == nil || !strings.Contains(err.Error(), "plugins.") || strings.Contains(err.Error(), "secret") {
+			if err := Run(conf, nil, definitions, nil, Options{Startup: startup}); err == nil || !strings.Contains(err.Error(), "plugins.") || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("startup preflight: error=%v", err)
 			}
 			// Direct host loading must also reject before attempting the CA.
@@ -67,6 +68,7 @@ func TestPluginPreflightSkipsDisabledInstances(t *testing.T) {
 }
 
 func TestPluginRuntimePreflightBeforeResources(t *testing.T) {
+	startup := testStartup(t)
 	for _, reload := range []bool{false, true} {
 		name := "startup"
 		if reload {
@@ -97,7 +99,7 @@ plugins { fixture {} }`)
 				app := application{datapath: control.NewRuntime(), conf: conf, definitions: definitions}
 				_, err = app.apply(t.Context(), conf, false, false, false)
 			} else {
-				err = Run(conf, nil, definitions, &netutils.InternalResolver{}, Options{})
+				err = Run(conf, nil, definitions, &netutils.InternalResolver{}, Options{Startup: startup})
 			}
 			if !errors.Is(err, unavailable) || !strings.Contains(err.Error(), "plugins.fixture preflight") {
 				t.Fatalf("runtime dependency was not checked first: %v", err)

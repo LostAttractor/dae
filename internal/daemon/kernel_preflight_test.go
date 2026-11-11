@@ -13,6 +13,7 @@ import (
 )
 
 func TestKernelPreflightBeforeStartupResources(t *testing.T) {
+	startup := testStartup(t)
 	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var capabilities [2]unix.CapUserData
 	if err := unix.Capget(&header, &capabilities[0]); err != nil {
@@ -24,7 +25,7 @@ func TestKernelPreflightBeforeStartupResources(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
 	conf := mitmConfigForTest(t, "")
-	err := Run(conf, nil, nil, &netutils.InternalResolver{}, Options{ConfigFile: filepath.Join(dir, "config.dae")})
+	err := Run(conf, nil, nil, &netutils.InternalResolver{}, Options{ConfigFile: filepath.Join(dir, "config.dae"), Startup: startup})
 	if err == nil || !strings.Contains(err.Error(), "kernel preflight") {
 		t.Fatalf("startup did not reject kernel prerequisites first: %v", err)
 	}

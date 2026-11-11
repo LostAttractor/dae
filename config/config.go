@@ -218,6 +218,13 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	if (conf.Certificate.CACert == "") != (conf.Certificate.CAKey == "") {
 		return nil, fmt.Errorf("certificate: ca_cert and ca_key must be configured together")
 	}
+	g := &conf.Global
+	if g.PprofPort != 0 && g.PprofPort == g.MetricsPort {
+		return nil, fmt.Errorf("global.pprof_port and metrics_port cannot share port %d", g.PprofPort)
+	}
+	if g.APIPort != 0 && (g.APIPort == g.PprofPort || g.APIPort == g.MetricsPort) {
+		return nil, fmt.Errorf("global.api_port %d conflicts with a loopback service port", g.APIPort)
+	}
 
 	if err = validateClients(conf.Client); err != nil {
 		return nil, err

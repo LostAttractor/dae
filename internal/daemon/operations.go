@@ -5,13 +5,15 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/internal/apiserver"
-	"github.com/okzk/sdnotify"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,8 +21,9 @@ const operationQueueLimit = 16
 const operationHistoryLimit = 64
 
 type operationRecord struct {
-	status  api.Operation
-	request api.OperationRequest
+	status     api.Operation
+	request    api.OperationRequest
+	executable *os.File
 }
 
 // All ingress shares this bounded queue. Only the daemon loop runs work, and
@@ -29,6 +32,7 @@ type operations struct {
 	requests  chan string
 	mu        sync.Mutex
 	closed    bool
+	replacing bool
 	active    string
 	records   map[string]*operationRecord
 	completed []string
@@ -41,14 +45,32 @@ func newOperations() *operations {
 }
 
 func (o *operations) SubmitOperation(request api.OperationRequest) (api.Operation, error) {
+	if request.ExecutablePID != 0 || request.Replace {
+		return api.Operation{}, apiserver.ErrOperationInvalid
+	}
 	return o.submit(request, "api")
 }
 
+// Ownership transfers only after the request has been accepted.
+func (o *operations) SubmitExecutableOperation(request api.OperationRequest, executable *os.File) (api.Operation, error) {
+	if request.Kind != "reload" || executable == nil || request.ExecutablePID <= 0 {
+		return api.Operation{}, apiserver.ErrOperationInvalid
+	}
+	return o.enqueue(request, "api", executable)
+}
+
 func (o *operations) submit(request api.OperationRequest, trigger string) (api.Operation, error) {
+	return o.enqueue(request, trigger, nil)
+}
+
+func (o *operations) enqueue(request api.OperationRequest, trigger string, executable *os.File) (api.Operation, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
 		return api.Operation{}, apiserver.ErrOperationsClosed
+	}
+	if o.replacing {
+		return api.Operation{}, apiserver.ErrOperationsBusy
 	}
 	if request.Kind != "reload" && request.Kind != "suspend" && request.Kind != "refresh" || request.Kind == "refresh" && request.Abort {
 		return api.Operation{}, apiserver.ErrOperationInvalid
@@ -57,13 +79,29 @@ func (o *operations) submit(request api.OperationRequest, trigger string) (api.O
 		return api.Operation{}, apiserver.ErrOperationsBusy
 	}
 	status := api.Operation{ID: rand.Text(), Kind: request.Kind, State: "queued", Trigger: trigger, QueuedAt: time.Now()}
-	record := &operationRecord{status: status, request: request}
+	record := &operationRecord{status: status, request: request, executable: executable}
 	o.records[status.ID] = record
 	if request.Kind == "refresh" {
 		o.refresh = record
 	}
 	o.requests <- status.ID
 	return status, nil
+}
+
+func (o *operations) beginReplacement() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.requests) != 0 {
+		return apiserver.ErrOperationsBusy
+	}
+	o.replacing = true
+	return nil
+}
+
+func (o *operations) endReplacement() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.replacing = false
 }
 
 func (o *operations) Operation(id string) (api.Operation, bool) {
@@ -113,6 +151,10 @@ func (o *operations) finish(id, result string, err error) {
 }
 
 func (o *operations) complete(record *operationRecord) {
+	if record.executable != nil {
+		_ = record.executable.Close()
+		record.executable = nil
+	}
 	record.status.FinishedAt = time.Now()
 	o.completed = append(o.completed, record.status.ID)
 	if len(o.completed) > operationHistoryLimit {
@@ -158,13 +200,31 @@ func (a *application) executeOperation(ctx context.Context, id string) error {
 	previous := a.progress
 	a.progress = func(message string) { a.operations.progress(id, message) }
 	defer func() { a.progress = previous }()
-	sdnotify.Reloading()
+	if err := notifyService(ctx, "reloading"); err != nil {
+		err = fmt.Errorf("notify service reloading: %w", err)
+		a.operations.finish(id, "", err)
+		return err
+	}
 	var result string
 	var err error
-	if request.Kind == "refresh" {
+	o := a.operations
+	o.mu.Lock()
+	executable := o.records[id].executable
+	o.mu.Unlock()
+	replace, err := needsReplacement(executable, request.Replace)
+	if err != nil {
+		// Keep the accepted configuration when the executable cannot be verified.
+	} else if replace {
+		result, err = a.replace(ctx, id, executable)
+	} else if request.Kind == "refresh" {
 		result, err = a.apply(ctx, a.conf, false, false, status.Trigger == "automatic")
 	} else {
 		result, err = a.reload(ctx, request.Kind == "suspend", request.Abort)
+	}
+	if _, fatal := errors.AsType[*activationError](err); !fatal {
+		if notifyErr := notifyService(ctx, "ready"); notifyErr != nil {
+			err = errors.Join(err, fmt.Errorf("notify service ready: %w", notifyErr))
+		}
 	}
 	a.operations.finish(id, result, err)
 	if err != nil {
@@ -172,6 +232,5 @@ func (a *application) executeOperation(ctx context.Context, id string) error {
 	} else {
 		log.WithFields(log.Fields{"id": id, "kind": request.Kind, "result": result}).Info("Configuration operation completed")
 	}
-	sdnotify.Ready()
 	return err
 }

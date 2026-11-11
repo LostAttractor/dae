@@ -4,6 +4,8 @@ package cmd
 
 import (
 	"context"
+	"io"
+	"net"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -12,6 +14,29 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
 )
+
+func TestReplacementPollSurvivesTransportHandoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		failures := []error{io.EOF, &net.OpError{Op: "read", Net: "unix", Err: io.ErrUnexpectedEOF}, &client.Error{StatusCode: 503}}
+		polls := 0
+		result, err := waitForOperation(t.Context(), operationWaitOptions{
+			id: "replacement", kind: "reload", replacing: true, timeout: time.Minute, pollInterval: time.Second,
+			poll: func(context.Context, string) (*api.Operation, error) {
+				polls++
+				if polls <= len(failures) {
+					return nil, failures[polls-1]
+				}
+				return &api.Operation{ID: "replacement", Kind: "reload", State: "completed", Result: "new PID"}, nil
+			},
+		})
+		if err != nil || result != "new PID" {
+			t.Fatalf("handoff: %q, %v", result, err)
+		}
+		if retryOperationPoll(&client.Error{StatusCode: 404}, true) {
+			t.Fatal("unknown operation should fail")
+		}
+	})
+}
 
 func TestOperationWaitUsesExactIdentity(t *testing.T) {
 	for _, kind := range []string{"reload", "suspend"} {

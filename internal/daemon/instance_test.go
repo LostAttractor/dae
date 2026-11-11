@@ -14,12 +14,12 @@ import (
 
 func TestInstanceLockExcludesOwnersAndSurvivesFileReuse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dae.lock")
-	first, err := acquireInstanceLock(path)
+	first, err := acquireDaemonLock(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if other, err := acquireInstanceLock(path); err == nil {
+	if other, err := acquireDaemonLock(path); err == nil {
 		other.Close()
 		t.Fatal("second owner acquired an active daemon lock")
 	}
@@ -30,7 +30,7 @@ func TestInstanceLockExcludesOwnersAndSurvivesFileReuse(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := acquireInstanceLock(path)
+	second, err := acquireDaemonLock(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestInstanceLockReleasedOnProcessDeath(t *testing.T) {
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "locked\n" {
 		t.Fatalf("child did not acquire lock: %q, %v", line, err)
 	}
-	if other, err := acquireInstanceLock(path); err == nil {
+	if other, err := acquireDaemonLock(path); err == nil {
 		other.Close()
 		t.Fatal("a second daemon could race a running daemon")
 	}
@@ -69,7 +69,7 @@ func TestInstanceLockReleasedOnProcessDeath(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = child.Wait()
-	replacement, err := acquireInstanceLock(path)
+	replacement, err := acquireDaemonLock(path)
 	if err != nil {
 		t.Fatalf("dead daemon retained its instance lock: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestInstanceLockChild(t *testing.T) {
 	if path == "" {
 		t.Skip("subprocess helper")
 	}
-	instance, err := acquireInstanceLock(path)
+	instance, err := acquireDaemonLock(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestInstanceLockRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "target"), path); err != nil {
 		t.Fatal(err)
 	}
-	if file, err := acquireInstanceLock(path); err == nil {
+	if file, err := acquireDaemonLock(path); err == nil {
 		file.Close()
 		t.Fatal("followed an instance lock symlink")
 	}

@@ -22,4 +22,8 @@ type Operation struct {
 type OperationRequest struct {
 	Kind  string `json:"kind"`
 	Abort bool   `json:"abort,omitempty"`
+	// ExecutablePID is accepted only from the same authenticated Unix peer.
+	// Zero keeps API reloads configuration-only.
+	ExecutablePID int  `json:"executable_pid,omitzero"`
+	Replace       bool `json:"replace,omitzero"`
 }

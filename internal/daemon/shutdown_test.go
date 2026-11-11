@@ -20,7 +20,7 @@ func TestShutdownWatchdog(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				forced := false
-				stop := watchShutdown(ctx, time.Second, func() { forced = true })
+				_, stop := watchShutdown(ctx, time.Second, func() { forced = true })
 				if stage == "finished before signal" {
 					stop()
 				}
@@ -68,40 +68,51 @@ func (p *shutdownTestPlugin) Close() error {
 
 func TestShutdownWatchdogBoundsStuckMITM(t *testing.T) {
 	for _, stage := range []string{"worker", "plugin close"} {
-		t.Run(stage, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				p := &shutdownTestPlugin{blockWorker: stage == "worker", release: make(chan struct{})}
-				host, err := mitm.New(mitm.Options{DrainTimeout: time.Second}, mitm.Instance{Plugin: p})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := host.Start(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				forced := false
-				stop := watchShutdown(ctx, shutdownTimeout, func() { forced = true })
-				defer stop()
-				cancel()
-				host.Abort()
-				closed := make(chan error, 1)
-				go func() { closed <- host.Close() }()
-				time.Sleep(shutdownTimeout + time.Second)
-				synctest.Wait()
-				if !forced || p.closed {
-					t.Errorf("forced exit = %v, plugin closed = %v", forced, p.closed)
-				}
-				select {
-				case <-closed:
+		for _, trigger := range []string{"signal", "replacement"} {
+			t.Run(stage+"/"+trigger, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					p := &shutdownTestPlugin{blockWorker: stage == "worker", release: make(chan struct{})}
+					host, err := mitm.New(mitm.Options{DrainTimeout: time.Second}, mitm.Instance{Plugin: p})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := host.Start(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					forced := false
+					start, stop := watchShutdown(ctx, shutdownTimeout, func() { forced = true })
+					defer stop()
+					if trigger == "signal" {
+						cancel()
+					} else {
+						app := &application{beginShutdown: start}
+						app.beginShutdown()
+						if ctx.Err() != nil {
+							t.Fatal("replacement watchdog canceled the handoff context")
+						}
+					}
+					host.Abort()
+					closed := make(chan error, 1)
+					go func() { closed <- host.Close() }()
+					time.Sleep(shutdownTimeout + time.Second)
+					synctest.Wait()
+					if !forced || p.closed {
+						t.Errorf("forced exit = %v, plugin closed = %v", forced, p.closed)
+					}
+					select {
+					case <-closed:
+						close(p.release)
+						t.Fatal("shared state could be retired while plugin cleanup was still running")
+					default:
+					}
 					close(p.release)
-					t.Fatal("shared state could be retired while plugin cleanup was still running")
-				default:
-				}
-				close(p.release)
-				if err := <-closed; err != nil {
-					t.Fatal(err)
-				}
+					if err := <-closed; err != nil {
+						t.Fatal(err)
+					}
+				})
 			})
-		})
+		}
 	}
 }

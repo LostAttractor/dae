@@ -599,7 +599,9 @@
         "type": "object",
         "properties": {
           "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
-          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." }
+          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." },
+          "executable_pid": { "type": "integer", "minimum": 0, "description": "Local reload only. Must match the authenticated Unix peer PID. Compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload." },
+          "replace": { "type": "boolean", "description": "Force local process replacement even when the executable matches. Requires executable_pid. Replacement closes old connections before same-PID exec and rebuilds the runtime under blocking guards." }
         },
         "required": ["kind"],
         "additionalProperties": false

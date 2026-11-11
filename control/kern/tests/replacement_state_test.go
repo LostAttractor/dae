@@ -117,6 +117,52 @@ func TestReplacementPIDExemption(t *testing.T) {
 	}
 }
 
+func TestReplacementPIDRevokedOnExit(t *testing.T) {
+	parent := uint32(os.Getpid())
+	candidate := parent + 1
+	for _, test := range []struct {
+		name       string
+		registered uint32
+		exiting    uint32
+		want       uint32
+	}{
+		{"daemon", parent, parent, 0},
+		{"candidate", parent, candidate, 0},
+		{"unrelated", parent, parent + 2, candidate},
+		{"recovered daemon", parent + 2, parent + 2, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			obj, err := loadTestObjects(t, "TestProcessExit")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := obj.ReplacementPidMap.Update(uint32(0), candidate, ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
+			if err := obj.DaemonIdentityMap.Update(uint32(0), uint64(test.registered), ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
+			if err := obj.ExitedMap.Update(uint32(0), uint8(routingabi.DAEMON_STOPPING), ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
+			data := make([]byte, 14)
+			binary.NativeEndian.PutUint32(data, test.exiting)
+			got, _, _, err := runBpfProgram(obj.TestProcessExit, data, nil)
+			if err != nil || got != math.MaxUint32 {
+				t.Fatalf("process exit verdict=%d: %v", got, err)
+			}
+			var exemption uint32
+			if err := obj.ReplacementPidMap.Lookup(uint32(0), &exemption); err != nil || exemption != test.want {
+				t.Fatalf("exemption=%d, want %d: %v", exemption, test.want, err)
+			}
+			var state uint8
+			if err := obj.ExitedMap.Lookup(uint32(0), &state); err != nil || state != routingabi.DAEMON_STOPPING {
+				t.Fatalf("exit weakened the replacement guard: state=%d, error=%v", state, err)
+			}
+		})
+	}
+}
+
 func tcpSequence(packet []byte, seq, ack uint32) {
 	binary.BigEndian.PutUint32(packet[38:42], seq)
 	binary.BigEndian.PutUint32(packet[42:46], ack)

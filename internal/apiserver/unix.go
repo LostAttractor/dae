@@ -3,6 +3,7 @@
 package apiserver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +13,32 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+type peerCredentialsKey struct{}
+
+func unixPeerCredentials(conn net.Conn) *unix.Ucred {
+	peer, ok := conn.(*net.UnixConn)
+	if !ok {
+		return nil
+	}
+	raw, err := peer.SyscallConn()
+	if err != nil {
+		return nil
+	}
+	var credentials *unix.Ucred
+	var credentialErr error
+	err = raw.Control(func(fd uintptr) {
+		credentials, credentialErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	})
+	if err != nil || credentialErr != nil {
+		return nil
+	}
+	return credentials
+}
+
+func unixConnContext(ctx context.Context, conn net.Conn) context.Context {
+	return context.WithValue(ctx, peerCredentialsKey{}, unixPeerCredentials(conn))
+}
 
 func listenUnix(path string) (net.Listener, error) {
 	listener, err := bindUnix(path)
@@ -47,20 +74,8 @@ func (l *unixAdminListener) Accept() (net.Conn, error) {
 }
 
 func (l *unixAdminListener) authorized(conn net.Conn) bool {
-	peer, ok := conn.(*net.UnixConn)
-	if !ok {
-		return false
-	}
-	raw, err := peer.SyscallConn()
-	if err != nil {
-		return false
-	}
-	var credentials *unix.Ucred
-	var credentialErr error
-	err = raw.Control(func(fd uintptr) {
-		credentials, credentialErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
-	return err == nil && credentialErr == nil && credentials != nil && credentials.Uid == l.uid
+	credentials := unixPeerCredentials(conn)
+	return credentials != nil && credentials.Uid == l.uid
 }
 
 // bindUnix only removes an existing socket after proving that no

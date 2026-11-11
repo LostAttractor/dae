@@ -15,14 +15,18 @@ import (
 )
 
 // Reserve a changed TCP port before retiring the active plane.
-func prepareAPIServer(current *apiserver.Server, port uint16) (*apiserver.Server, error) {
+func prepareAPIServer(current *apiserver.Server, port uint16, held bool) (*apiserver.Server, error) {
 	if port == 0 {
 		return nil, nil
 	}
 	if current != nil && current.Addr().(*net.TCPAddr).Port == int(port) {
 		return current, nil
 	}
-	server, err := apiserver.Listen("tcp", net.JoinHostPort("", strconv.Itoa(int(port))))
+	listen := apiserver.Listen
+	if held {
+		listen = apiserver.ListenHeld
+	}
+	server, err := listen("tcp", net.JoinHostPort("", strconv.Itoa(int(port))))
 	if err != nil {
 		return nil, fmt.Errorf("global.api_port: %w", err)
 	}

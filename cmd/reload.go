@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -19,7 +21,7 @@ import (
 )
 
 const (
-	reloadCommandTimeout = 3 * time.Minute
+	reloadCommandTimeout = 4 * time.Minute
 	reloadPollInterval   = 200 * time.Millisecond
 )
 
@@ -28,6 +30,7 @@ type operationWaitOptions struct {
 	timeout, pollInterval time.Duration
 	poll                  func(context.Context, string) (*api.Operation, error)
 	onProgress            func(string)
+	replacing             bool
 }
 
 // A client timeout stops waiting only. It cannot cancel or overwrite another
@@ -44,7 +47,7 @@ func waitForOperation(ctx context.Context, opts operationWaitOptions) (string, e
 			break
 		}
 		if err != nil {
-			if response, ok := errors.AsType[*client.Error](err); !ok || response.StatusCode != http.StatusServiceUnavailable {
+			if !retryOperationPoll(err, opts.replacing) {
 				return "", fmt.Errorf("read %s operation %s: %w", opts.kind, opts.id, err)
 			}
 		} else {
@@ -89,6 +92,17 @@ func waitForOperation(ctx context.Context, opts operationWaitOptions) (string, e
 	return "", ctx.Err()
 }
 
+func retryOperationPoll(err error, replacing bool) bool {
+	if response, ok := errors.AsType[*client.Error](err); ok {
+		return response.StatusCode == http.StatusServiceUnavailable
+	}
+	if !replacing {
+		return false
+	}
+	_, transport := errors.AsType[net.Error](err)
+	return transport || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
 func newReloadCommand(suspend bool) *cobra.Command {
 	kind, description := "reload", "To reload config file without interrupt connections."
 	if suspend {
@@ -96,20 +110,25 @@ func newReloadCommand(suspend bool) *cobra.Command {
 	}
 	var connection cli.Connection
 	var abort bool
+	var replace bool
 	command := &cobra.Command{
 		Use:   kind,
 		Short: description,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReloadCommand(cmd, args, &connection, kind, abort)
+			return runReloadCommand(cmd, args, &connection, kind, abort, replace)
 		},
 	}
 	connection.Bind(command.PersistentFlags())
 	command.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
+	if !suspend {
+		command.PersistentFlags().BoolVar(&replace, "replace", false, "Replace the local daemon even when its executable is unchanged.")
+		command.Short = "Reload configuration, or replace the local daemon when the executable has changed."
+	}
 	return command
 }
 
-func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connection, kind string, abort bool) error {
+func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connection, kind string, abort, force bool) error {
 	cmd.SilenceUsage = true
 	request := api.OperationRequest{Kind: kind, Abort: abort}
 	remote, err := connection.Open()
@@ -117,6 +136,14 @@ func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connect
 		return err
 	}
 	defer remote.Close()
+	if kind == "reload" {
+		request.Replace = force
+		if remote.Local() {
+			request.ExecutablePID = os.Getpid()
+		} else if request.Replace {
+			return errors.New("--replace requires a local Unix API socket")
+		}
+	}
 	status, err := remote.SubmitOperation(cmd.Context(), request)
 	if err != nil {
 		// Only a local permission failure needs elevation. Remote APIs use
@@ -132,7 +159,8 @@ func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connect
 	defer spinner.Stop()
 	result, err := waitForOperation(cmd.Context(), operationWaitOptions{
 		id: status.ID, kind: kind, timeout: reloadCommandTimeout, pollInterval: reloadPollInterval,
-		poll: remote.Operation,
+		poll:      remote.Operation,
+		replacing: request.ExecutablePID != 0,
 		onProgress: func(content string) {
 			if spinner.Enabled() {
 				spinner.Update(content)

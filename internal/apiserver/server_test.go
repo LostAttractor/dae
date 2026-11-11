@@ -4,6 +4,7 @@ package apiserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -21,6 +23,43 @@ func TestUnavailableWithoutHandler(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
+}
+
+func TestCancelPlaneDrainKeepsServing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &Server{}
+		started, release := make(chan struct{}), make(chan struct{})
+		server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/slow" {
+				close(started)
+				<-release
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		request := func(path string) int {
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			return w.Code
+		}
+		go request("/slow")
+		<-started
+		defer close(release)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		done := make(chan error, 1)
+		go func() { _, err := server.Pause(ctx); done <- err }()
+		synctest.Wait()
+		if code := request("/status"); code != 503 {
+			t.Fatalf("during drain: %d", code)
+		}
+		cause := errors.New("replacement canceled")
+		cancel(cause)
+		if err := <-done; !errors.Is(err, cause) {
+			t.Fatalf("cancel drain: %v", err)
+		}
+		if code := request("/status"); code != 200 {
+			t.Fatalf("old handler unavailable after cancellation: %d", code)
+		}
+	})
 }
 
 func TestUnixListenerPreservesLiveSocket(t *testing.T) {

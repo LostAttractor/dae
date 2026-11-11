@@ -4,16 +4,87 @@ package daemon
 
 import (
 	"errors"
+	"net"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
+
+func TestOperationNotifyFailure(t *testing.T) {
+	startup := testStartup(t)
+	t.Setenv("NOTIFY_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	app := &application{options: Options{Startup: startup}, operations: newOperations()}
+	op, err := app.operations.submit(api.OperationRequest{Kind: "reload"}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-app.operations.requests
+	err = app.executeOperation(t.Context(), op.ID)
+	if _, fatal := errors.AsType[*activationError](err); fatal || err == nil {
+		t.Fatalf("expected a recoverable RELOADING failure: %v", err)
+	}
+	status, _ := app.operations.Operation(op.ID)
+	if status.State != "failed" || status.FinishedAt.IsZero() || !strings.Contains(status.Error, "reloading") {
+		t.Fatalf("notification failure reported a successful operation: %+v", status)
+	}
+	if _, err := app.operations.submit(api.OperationRequest{Kind: "reload"}, "test"); err != nil {
+		t.Fatalf("operation queue stayed closed: %v", err)
+	}
+}
+
+func TestOperationNotifyReadyFailure(t *testing.T) {
+	startup := testStartup(t)
+	path := filepath.Join(t.TempDir(), "notify.sock")
+	socket, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	t.Setenv("NOTIFY_SOCKET", path)
+	app := &application{
+		options: Options{Startup: startup}, operations: newOperations(),
+		conf: mitmConfigForTest(t, `plugins { fixture {} }`),
+		definitions: map[string]plugin.Definition{"fixture": {
+			Configure: func(plugin.Spec) (plugin.Factory, error) {
+				if err := socket.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				var packet [256]byte
+				n, err := socket.Read(packet[:])
+				if err != nil || !strings.Contains(string(packet[:n]), "RELOADING=1") {
+					t.Fatalf("preparation preceded RELOADING: %q %v", packet[:n], err)
+				}
+				_ = socket.Close()
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				return nil, errors.New("fixture preparation failed")
+			},
+		}},
+	}
+	op, err := app.operations.submit(api.OperationRequest{Kind: "refresh"}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-app.operations.requests
+	err = app.executeOperation(t.Context(), op.ID)
+	if _, fatal := errors.AsType[*activationError](err); fatal || err == nil || !strings.Contains(err.Error(), "fixture preparation failed") {
+		t.Fatalf("expected both recoverable preparation and READY failures: %v", err)
+	}
+	status, _ := app.operations.Operation(op.ID)
+	if status.State != "failed" || status.FinishedAt.IsZero() || !strings.Contains(status.Error, "ready") {
+		t.Fatalf("operation finished before READY was sent: %+v", status)
+	}
+}
 
 func TestOperationAPIQueueAndStatus(t *testing.T) {
 	o := newOperations()

@@ -1798,7 +1798,8 @@ static __always_inline int do_tproxy_first_fragment(
 
 	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP) {
 		if (stopping())
-			return l4proto == IPPROTO_ICMP || l4proto == IPPROTO_ICMPV6 ? TCX_NEXT : TCX_DROP;
+			return l4proto == IPPROTO_ICMP || l4proto == IPPROTO_ICMPV6 ?
+			       TCX_NEXT : TCX_DROP;
 		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
 	}
 	if (parse_ret)
@@ -2715,6 +2716,15 @@ int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 
 static __always_inline void record_daemon_exit(__u32 pid)
 {
+	__u32 *candidate = bpf_map_lookup_elem(&replacement_pid_map, &zero_key);
+
+	/* Exit precedes reaping; the parent joins before granting another PID. */
+	if (candidate && (*candidate == pid || pid == PARAM.control_plane_pid ||
+			  daemon_pid_registered(pid))) {
+		__u32 cleared = 0;
+
+		bpf_map_update_elem(&replacement_pid_map, &zero_key, &cleared, BPF_ANY);
+	}
 	unregister_daemon(pid);
 	if (pid == PARAM.control_plane_pid && !stopping()) {
 		__u8 exited = DAEMON_OFFLINE;
