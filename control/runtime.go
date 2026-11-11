@@ -159,6 +159,7 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		"listen_socket_map":     b.ListenSocketMap, "redirect_track": b.RedirectTrack,
 		"routing_tuples_map":     b.RoutingTuplesMap,
 		"tcp_flow_map":           b.TcpFlowMap,
+		"tcp_proxy_socket_map":   b.TcpProxySocketMap,
 		"tcp_handshake_gate_map": b.TcpHandshakeGateMap,
 		"udp_bindings_map":       b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
 		"udp_inbound_pending_map": b.UdpInboundPendingMap,

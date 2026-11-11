@@ -84,7 +84,8 @@ type Listener struct {
 	packetConn  net.PacketConn
 }
 
-func registerListener(m *ebpf.Map, key uint32, conn syscall.Conn) error {
+// registerSocket borrows the fd; the kernel removes its map references on close.
+func registerSocket(m *ebpf.Map, key any, conn syscall.Conn) error {
 	raw, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -105,10 +106,10 @@ func (r *Runtime) openIngress(listener *Listener) error {
 	if r.listener != nil {
 		return errors.New("runtime ingress is already open")
 	}
-	if err := registerListener(r.shared["listen_socket_map"], 0, listener.tcpListener.(syscall.Conn)); err != nil {
+	if err := registerSocket(r.shared["listen_socket_map"], uint32(0), listener.tcpListener.(syscall.Conn)); err != nil {
 		return fmt.Errorf("register TCP listener: %w", err)
 	}
-	if err := registerListener(r.shared["listen_socket_map"], 1, listener.packetConn.(syscall.Conn)); err != nil {
+	if err := registerSocket(r.shared["listen_socket_map"], uint32(1), listener.packetConn.(syscall.Conn)); err != nil {
 		return fmt.Errorf("register UDP listener: %w", err)
 	}
 
@@ -128,6 +129,10 @@ func (l *Listener) Close() error {
 func (r *Runtime) admitTCP(conn net.Conn) (*ControlPlane, *routingResult) {
 	src, dst := conn.RemoteAddr().(*net.TCPAddr).AddrPort(), conn.LocalAddr().(*net.TCPAddr).AddrPort()
 	result, err := retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_TCP)
+	if err == nil {
+		// This index is optional: failed registration retains the namespace lookup.
+		_ = registerSocket(r.shared["tcp_proxy_socket_map"], tuplesKey(src, dst, unix.IPPROTO_TCP), conn.(syscall.Conn))
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err == nil {

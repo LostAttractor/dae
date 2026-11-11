@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -43,14 +44,26 @@ func nativeTestMonitor(t *testing.T) *tcpRelayMonitor {
 }
 
 func TestNativeTCPFullDuplexHalfCloseWithBacklog(t *testing.T) {
-	for _, direct := range []bool{true, false} {
-		name := "splice"
-		if !direct {
-			name = "ordinary"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		direct, indexed bool
+	}{
+		{"splice", true, false}, {"ordinary", false, false},
+		{"splice/indexed", true, true}, {"ordinary/indexed", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var index *ebpf.Map
+			if test.indexed {
+				index = testTCPSocketIndex(t, 1)
+			}
 			left, client := relayTestTCPPair(t)
 			right, server := relayTestTCPPair(t)
+			key := tuplesKey(client.LocalAddr().(*net.TCPAddr).AddrPort(), left.LocalAddr().(*net.TCPAddr).AddrPort(), unix.IPPROTO_TCP)
+			if index != nil {
+				if err := registerSocket(index, key, left); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := right.SetWriteBuffer(32 << 10); err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +83,7 @@ func TestNativeTCPFullDuplexHalfCloseWithBacklog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			done, path := nativeTestStart(t, sniffer, wrapped, nativeTestMonitor(t), nil, nil, nil, direct)
+			done, path := nativeTestStart(t, sniffer, wrapped, nativeTestMonitor(t), nil, nil, nil, test.direct)
 			owner.Retire()
 			if err := <-written; err != nil {
 				t.Fatal(err)
@@ -100,6 +113,12 @@ func TestNativeTCPFullDuplexHalfCloseWithBacklog(t *testing.T) {
 			}
 			if err := owner.Wait(t.Context()); err != nil {
 				t.Fatal(err)
+			}
+			if index != nil {
+				var cookie uint64
+				if err := index.Lookup(key, &cookie); !errors.Is(err, ebpf.ErrKeyNotExist) {
+					t.Fatalf("relay close retained socket index: %v", err)
+				}
 			}
 			gotStats := stats.DefaultStore.Snapshot()[path]
 			if gotStats.UploadBytes != uint64(len(payload)) || gotStats.DownloadBytes != uint64(len(reply)) || gotStats.ActiveConnections != 0 {

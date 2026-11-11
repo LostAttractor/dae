@@ -33,11 +33,23 @@ control forwarding state for established TCP connections.
 
 A TCP packet belongs to a proxy only while dae owns its tuple: through the setup
 handoff until accept, then through the accepted socket in dae's network
-namespace, which the kernel looks up directly. Proxy lifetimes begin with a SYN
-that dae routes and end with dae's sockets, so no table has to remember them: a
-cold start owns none, and normal shutdown resets them. A packet that neither owns
-is native and keeps its own mark. This includes connections that predate the
-datapath and late segments after dae's socket has gone.
+namespace. `tcp_proxy_socket_map` is a 65536-entry SOCKHASH of those sockets,
+shared across configuration generations but not pinned. It indexes live socket
+references, not cached ownership decisions. Accept registers the socket; the
+kernel removes its entries on close and does not let an old socket's close remove
+its replacement. No userspace tuple cleanup or expiry is needed.
+
+An index miss falls back to the namespace socket lookup, including before accept,
+when the index is full, or after the fd closes while the TCP socket still exists.
+Registration failure therefore costs a lookup, not a connection. No SK_MSG or
+SK_SKB programs are attached to the index; ordinary TCP relays retain splice.
+Both lookup paths exclude listeners, TIME_WAIT and closed sockets.
+
+Proxy lifetimes begin with a SYN that dae routes and end with dae's sockets: a
+cold start owns none, and normal shutdown resets them. A packet that neither the
+handoff nor a socket owns is native and keeps its own mark. This includes
+connections that predate the datapath and late segments after dae's socket has
+gone.
 
 `tcp_flow_map` is a bounded LRU of the properties of kernel-forwarded
 connections, fixed by their SYN's routing decision. Its 24-byte `tcp_flow_state`

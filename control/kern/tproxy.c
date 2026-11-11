@@ -376,6 +376,15 @@ struct {
 	__uint(max_entries, 16384);
 } routing_tuples_map SEC(".maps");
 
+/* Socket references, not cached ownership: close removes them in the kernel.
+ * A full index only costs a namespace lookup; it never rejects a connection. */
+struct {
+	__uint(type, BPF_MAP_TYPE_SOCKHASH);
+	__type(key, struct tuples_key);
+	__type(value, __u64);
+	__uint(max_entries, 65536);
+} tcp_proxy_socket_map SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, struct tuples_key);
@@ -1383,21 +1392,36 @@ static __always_inline int save_tcp_flow(struct tuples_key *key,
 	return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);
 }
 
-/* The accepted socket, not the consumed handoff, owns the active proxy lifetime. */
-static __noinline bool
-tcp_proxy_socket_live(struct __sk_buff *skb, const struct tuples_key *key)
+static __always_inline bool tcp_socket_live(struct bpf_sock *sk)
 {
-	struct bpf_sock_tuple tuple = {};
-	__u32 size = fill_socket_tuple(&tuple, key, skb->protocol);
-	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, &tuple, size, proxy_netns_id, 0);
-
-	if (!sk)
-		return false;
 	bool live = sk->state != BPF_TCP_LISTEN && sk->state != BPF_TCP_TIME_WAIT &&
 		sk->state != BPF_TCP_CLOSE;
 
 	bpf_sk_release(sk);
 	return live;
+}
+
+/* Separate subprograms keep the verifier's full-socket and sock-common types
+ * from sharing a state load after the compiler merges their branches. */
+static __noinline bool
+tcp_proxy_socket_lookup(struct __sk_buff *skb, const struct tuples_key *key)
+{
+	struct bpf_sock_tuple tuple = {};
+	__u32 size = fill_socket_tuple(&tuple, key, skb->protocol);
+	struct bpf_sock *sk = bpf_skc_lookup_tcp(skb, &tuple, size, proxy_netns_id, 0);
+
+	return sk ? tcp_socket_live(sk) : false;
+}
+
+/* The accepted socket, not the consumed handoff, owns the active proxy lifetime. */
+static __noinline bool
+tcp_proxy_socket_live(struct __sk_buff *skb, const struct tuples_key *key)
+{
+	struct bpf_sock *sk = bpf_map_lookup_elem(&tcp_proxy_socket_map, key);
+
+	if (sk && tcp_socket_live(sk))
+		return true;
+	return tcp_proxy_socket_lookup(skb, key);
 }
 
 /* A nonblocking gate allows map helpers while serializing tuple replacement.

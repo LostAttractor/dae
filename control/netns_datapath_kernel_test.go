@@ -214,7 +214,7 @@ func testInternalLinkTCP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	}
 	defer listener.Close()
 	tcp := listener.(*net.TCPListener)
-	if err := registerListener(objects.ListenSocketMap, 0, tcp); err != nil {
+	if err := registerSocket(objects.ListenSocketMap, uint32(0), tcp); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
@@ -231,6 +231,11 @@ func testInternalLinkTCP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 		accepted.SetDeadline(deadline)
 		if accepted.LocalAddr().(*net.TCPAddr).AddrPort() != target {
 			response <- fmt.Errorf("TCP destination changed: %s, want %s", accepted.LocalAddr(), target)
+			return
+		}
+		key := tuplesKey(accepted.RemoteAddr().(*net.TCPAddr).AddrPort(), target, unix.IPPROTO_TCP)
+		if err := registerSocket(objects.TcpProxySocketMap, key, accepted); err != nil {
+			response <- err
 			return
 		}
 		buf := make([]byte, len(payload))
@@ -288,7 +293,7 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	}
 	defer listener.Close()
 	udp := listener.(*net.UDPConn)
-	if err := registerListener(objects.ListenSocketMap, 1, udp); err != nil {
+	if err := registerSocket(objects.ListenSocketMap, uint32(1), udp); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)

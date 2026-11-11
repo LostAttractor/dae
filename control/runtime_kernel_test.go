@@ -72,7 +72,7 @@ func TestRuntimeKernelGenerationIsolationAndLinkUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, pair := range [][2]*ebpf.Map{{old.TcpFlowMap, next.TcpFlowMap}, {old.RoutingTuplesMap, next.RoutingTuplesMap}, {old.UdpBindingsMap, next.UdpBindingsMap}, {old.ListenSocketMap, next.ListenSocketMap}} {
+		for _, pair := range [][2]*ebpf.Map{{old.TcpFlowMap, next.TcpFlowMap}, {old.TcpProxySocketMap, next.TcpProxySocketMap}, {old.RoutingTuplesMap, next.RoutingTuplesMap}, {old.UdpBindingsMap, next.UdpBindingsMap}, {old.ListenSocketMap, next.ListenSocketMap}} {
 			if mapID(pair[0]) != mapID(pair[1]) {
 				t.Fatal("generation lost Runtime connection state")
 			}

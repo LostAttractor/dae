@@ -47,6 +47,11 @@ func TestRuntimeTCPHandoffAdmission(t *testing.T) {
 	}
 	r := NewRuntime()
 	r.shared["routing_tuples_map"] = m
+	index, err := ebpf.NewMap(spec.Maps["tcp_proxy_socket_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.shared["tcp_proxy_socket_map"] = index
 	t.Cleanup(func() { clear(r.planes); _ = r.Close() })
 	old, next := newLifecycleTestControlPlane(t, r.udpEndpoints), newLifecycleTestControlPlane(t, r.udpEndpoints)
 	for i, plane := range []*ControlPlane{old, next} {
@@ -108,6 +113,15 @@ func TestRuntimeTCPHandoffAdmission(t *testing.T) {
 				if _, err := io.ReadFull(client, data[:]); err != nil {
 					t.Fatal(err)
 				}
+			}
+			var cookie uint64
+			indexErr := index.Lookup(key, &cookie)
+			if plane == nil {
+				if !errors.Is(indexErr, ebpf.ErrKeyNotExist) {
+					t.Fatalf("rejected socket retained its index entry: %v", indexErr)
+				}
+			} else if indexErr != nil || cookie == 0 {
+				t.Fatalf("accepted socket was not indexed: cookie=%d, err=%v", cookie, indexErr)
 			}
 			if err := m.Lookup(key, &handoff); !errors.Is(err, ebpf.ErrKeyNotExist) {
 				t.Fatalf("handoff was not consumed: %v", err)
