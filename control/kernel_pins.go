@@ -16,6 +16,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const replacementMarker = "replacement_pending"
+
 func kernelPinPath() string { return filepath.Join(consts.BpfPinRoot, consts.AppName) }
 
 func hostTCXPinName(index int, role hostTCXRole) string {
@@ -62,7 +64,7 @@ func removePinnedLink(path string) error {
 	if err != nil {
 		return err
 	}
-	return unpinLink(attached)
+	return errors.Join(unpinLinkIfPresent(attached), attached.Close())
 }
 
 func (k *kernelLinks) removePinnedLinks(cleanupErr error) error {
@@ -102,12 +104,12 @@ func (k *kernelLinks) removePinnedLinks(cleanupErr error) error {
 	return cleanupErr
 }
 
-func unpinLink(attached link.Link) error {
+func unpinLinkIfPresent(attached link.Link) error {
 	err := attached.Unpin()
 	if errors.Is(err, os.ErrNotExist) {
-		err = nil
+		return nil
 	}
-	return errors.Join(err, attached.Close())
+	return err
 }
 
 func (k *kernelLinks) preparePins(root string) error {
@@ -118,11 +120,14 @@ func (k *kernelLinks) preparePins(root string) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return fmt.Errorf("prepare persistent BPF links: %w", err)
 	}
+	k.pinPath = path
+	if k.privatePins {
+		return nil
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err
 	}
-	k.pinPath = path
 	for _, entry := range entries {
 		index, role, ok := parseHostTCXPinName(entry.Name())
 		if !ok {
@@ -138,7 +143,7 @@ func (k *kernelLinks) preparePins(root string) error {
 		}
 		tcx := info.TCX()
 		if tcx != nil && tcx.Ifindex == 0 {
-			if err := unpinLink(attached); err != nil {
+			if err := errors.Join(unpinLinkIfPresent(attached), attached.Close()); err != nil {
 				return err
 			}
 			continue
@@ -156,7 +161,7 @@ func (k *kernelLinks) preparePins(root string) error {
 }
 
 func (k *kernelLinks) pinHostTCXLink(attached link.Link, index int, role hostTCXRole) error {
-	if k.pinPath == "" {
+	if k.pinPath == "" || k.privatePins {
 		return nil
 	}
 	return attached.Pin(filepath.Join(k.pinPath, hostTCXPinName(index, role)))
@@ -165,7 +170,7 @@ func (k *kernelLinks) pinHostTCXLink(attached link.Link, index int, role hostTCX
 // Perf-event links cannot update programs. Pin the replacement before removing
 // its predecessor, so the process exit hook never loses its kernel owner.
 func (k *kernelLinks) pinExitLink(attached link.Link) error {
-	if k.pinPath == "" {
+	if k.pinPath == "" || k.privatePins {
 		return nil
 	}
 	path := filepath.Join(k.pinPath, "exit")
@@ -194,14 +199,35 @@ func (k *kernelLinks) pinExitLink(attached link.Link) error {
 // RegisterDaemonIdentity lets only this locked daemon use the old rules for
 // bootstrap traffic before a replacement runtime has loaded its programs.
 func RegisterDaemonIdentity() error {
-	m, err := ebpf.LoadPinnedMap(filepath.Join(kernelPinPath(), "daemon_identity_map"), nil)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	pid, err := KernelProcessID()
 	if err != nil {
-		return fmt.Errorf("load daemon socket identity: %w", err)
+		return err
 	}
-	return errors.Join(m.Update(uint32(0), uint64(os.Getpid()), ebpf.UpdateAny), m.Close())
+	paths := []string{filepath.Join(kernelPinPath(), "daemon_identity_map")}
+	entries, err := os.ReadDir(replacementGuardPath())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, entry := range entries {
+		paths = append(paths, filepath.Join(replacementGuardPath(), entry.Name(), "daemon_identity_map"))
+	}
+	for _, path := range paths {
+		m, err := ebpf.LoadPinnedMap(path, nil)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("load daemon socket identity: %w", err)
+		}
+		spec := &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1}
+		if err := spec.Compatible(m); err != nil {
+			return errors.Join(fmt.Errorf("daemon socket identity layout: %w", err), m.Close())
+		}
+		if err := errors.Join(m.Update(uint32(0), uint64(pid), ebpf.UpdateAny), m.Close()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadPinnedDeviceRoutes(root string) (*ebpf.Map, error) {
@@ -408,7 +434,7 @@ func pruneTimerDirectory(directory string, needed map[ebpf.MapID]bool) error {
 // removePins removes dae's pinned state once its links are gone: every map,
 // this version's or an earlier one's, and the runtime timer pins. The
 // fallback sequence goes last, so a failed removal never pairs surviving
-// grants with reused tokens.
+// grants with reused tokens. Close calls this only when it owns the pins.
 func (r *Runtime) removePins() error {
 	if r.kernelLinks.pinPath == "" {
 		return nil
@@ -436,4 +462,123 @@ func (r *Runtime) removePins() error {
 		return err
 	}
 	return os.Remove(root)
+}
+
+// Publish only while old and new guards are pinned. A partial publication is
+// recovered as a private generation, never by loading the mixed canonical maps.
+func (r *Runtime) publishReplacementPins() error {
+	k := &r.kernelLinks
+	if !k.privatePins || k.pinPath == "" {
+		return nil
+	}
+	spec, err := parsedBPFSpec()
+	if err != nil {
+		return err
+	}
+	// A generation without capture interfaces has no guard bundle to mark a partial publish.
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(k.pinPath), replacementMarker), 0700); err != nil {
+		return err
+	}
+	for name, mapSpec := range spec.Maps {
+		if mapSpec.Pinning != ebpf.PinByName && name != "device_routes_map" {
+			continue
+		}
+		m := r.shared[name]
+		if m == nil {
+			return fmt.Errorf("persistent replacement map %s is unavailable", name)
+		}
+		owned, err := m.Clone()
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(filepath.Dir(k.pinPath), name)
+		err = publishKernelPin(path, owned.Pin)
+		if err = errors.Join(err, owned.Close()); err != nil {
+			return fmt.Errorf("publish replacement map %s: %w", name, err)
+		}
+	}
+	publishLink := func(owned *link.Link, name string) error {
+		info, err := (*owned).Info()
+		if err != nil {
+			return err
+		}
+		pinned, err := link.NewFromID(info.ID)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(k.pinPath, name)
+		err = publishKernelPin(path, pinned.Pin)
+		if err = errors.Join(err, pinned.Close()); err != nil {
+			return err
+		}
+		// Reload the pin so Unpin owns the final path, not the temporary path.
+		pinned, err = link.LoadPinnedLink(path, nil)
+		if err != nil {
+			return err
+		}
+		previous := *owned
+		*owned = pinned
+		return previous.Close()
+	}
+	for i := range k.hostTCXLinks {
+		owned := &k.hostTCXLinks[i]
+		err := publishLink(&owned.link, hostTCXPinName(owned.linkIndex, owned.role))
+		owned.close = owned.link.Close
+		if err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(k.pinPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if name, temporary := strings.CutSuffix(entry.Name(), "_next"); temporary && daeLinkPinName(name) {
+			if err := removePinnedLink(filepath.Join(k.pinPath, entry.Name())); err != nil {
+				return err
+			}
+			continue
+		}
+		index, role, ok := parseHostTCXPinName(entry.Name())
+		if !ok {
+			continue
+		}
+		current := false
+		for _, owned := range k.hostTCXLinks {
+			current = current || owned.linkIndex == index && owned.role == role
+		}
+		if !current {
+			if err := removePinnedLink(filepath.Join(k.pinPath, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range k.pidLinks {
+		if err := publishLink(&k.pidLinks[i], fmt.Sprintf("pid_%d", socketIdentityAttachTypes[i])); err != nil {
+			return err
+		}
+	}
+	for _, attach := range socketIdentityAttachTypes[len(k.pidLinks):] {
+		if err := removePinnedLink(filepath.Join(k.pinPath, fmt.Sprintf("pid_%d", attach))); err != nil {
+			return err
+		}
+	}
+	if k.exitLink != nil {
+		return publishLink(&k.exitLink, "exit")
+	}
+	return nil
+}
+
+func publishKernelPin(path string, pin func(string) error) error {
+	temporary := path + "_next"
+	if err := os.Remove(temporary); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := pin(temporary); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return errors.Join(err, os.Remove(temporary))
+	}
+	return nil
 }

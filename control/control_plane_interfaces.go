@@ -63,6 +63,9 @@ func (c *ControlPlane) bindHostInterfaces() error {
 			core.hostBinder.seedAutoWanBindings()
 		}
 		retryHost = c.reconcileWan()
+		if retryHost && core.bpf.staged {
+			return fmt.Errorf("WAN attachments are not ready for replacement")
+		}
 	}
 	if hostEnabled {
 		c.hostReconcileDone = make(chan struct{})
@@ -139,6 +142,10 @@ func (c *ControlPlane) reconcileLan() bool {
 }
 
 func (c *ControlPlane) reconcileHostInterfaces() bool {
+	if err := c.core.hostBinder.reconcileThawedLinks(c.lanInterface); err != nil {
+		log.WithError(err).Error("Could not reconcile thawed host attachments")
+		return true
+	}
 	retry := c.reconcileLan()
 	return c.reconcileWan() || retry
 }

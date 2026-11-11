@@ -95,22 +95,51 @@ func loadBpfObjectsWithConstants(obj any, opts *ebpf.CollectionOptions, constant
 		if err := removeIncompatiblePinnedMaps(spec, opts.Maps.PinPath); err != nil {
 			return err
 		}
+	} else {
+		// A replacement must not adopt its predecessor's business maps.
+		for _, m := range spec.Maps {
+			m.Pinning = ebpf.PinNone
+		}
 	}
 	return spec.LoadAndAssign(obj, opts)
+}
+
+// KernelProcessID returns the caller's TGID in the same namespace as BPF socket
+// owners and exit hooks, which can differ from os.Getpid() in a PID namespace.
+func KernelProcessID() (uint32, error) {
+	probe, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.SocketFilter, License: "GPL",
+		Instructions: asm.Instructions{asm.FnGetCurrentPidTgid.Call(), asm.RSh.Imm(asm.R0, 32), asm.Return()},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("load kernel process ID probe: %w", err)
+	}
+	kernelPID, _, err := probe.Test(make([]byte, 14))
+	if err := errors.Join(err, probe.Close()); err != nil {
+		return 0, fmt.Errorf("read kernel process ID: %w", err)
+	}
+	if kernelPID == 0 {
+		return 0, errors.New("kernel process ID is zero")
+	}
+	return kernelPID, nil
 }
 
 func fullLoadBpfObjects(
 	bpf *bpfObjects,
 	opts *ebpf.CollectionOptions,
-) (err error) {
+) (uint32, error) {
 	hasBpfGetCurrentTask, err := probeBPFCurrentTask()
 	if err != nil {
-		return err
+		return 0, err
+	}
+	kernelPID, err := KernelProcessID()
+	if err != nil {
+		return 0, err
 	}
 	constants := map[string]any{
 		"proxy_netns_id": GetDaeNetns().ID(),
 		"PARAM": bpfDaeParam{
-			ControlPlanePid:      uint32(os.Getpid()),
+			ControlPlanePid:      kernelPID,
 			Dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
 			Dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
 			Dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
@@ -118,9 +147,9 @@ func fullLoadBpfObjects(
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {
-		return explainBPFLoadError(err)
+		return 0, explainBPFLoadError(err)
 	}
-	return nil
+	return kernelPID, nil
 }
 
 func probeBPFCurrentTask() (uint8, error) {

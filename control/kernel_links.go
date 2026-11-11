@@ -4,6 +4,7 @@ package control
 
 import (
 	"errors"
+	"net"
 	"slices"
 	"sync"
 
@@ -22,11 +23,20 @@ type kernelLinks struct {
 	generation   uint64
 	pinPath      string
 	inherited    bool // preparePins adopted host links a crashed process left
+	frozen       bool // ExportReplacement snapshot is active outside mu
+	recheckHost  bool // a released snapshot may have missed interface removals
+	transferred  bool // Block surrendered the old runtime's attachment ownership
+	privatePins  bool // private generation; canonical pins stay borrowed until ConfirmReady
+	preparing    bool // host topology stays frozen until final readiness
+	prepareErr   error
 }
 
 func (k *kernelLinks) ownHostTCXLink(owned hostTCXLink) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.transferred || k.frozen {
+		return false
+	}
 	for _, existing := range k.hostTCXLinks {
 		if existing.linkIndex == owned.linkIndex && existing.role == owned.role {
 			return false
@@ -48,15 +58,23 @@ func (k *kernelLinks) hostTCXLink(index int, role hostTCXRole) (link.Link, bool)
 	return nil, false
 }
 
-func (k *kernelLinks) detachHostTCXLink(owned hostTCXLink) error {
-	if k.pinPath != "" && owned.link != nil {
-		return unpinLink(owned.link)
+func (k *kernelLinks) unpinHostTCXLink(owned hostTCXLink) error {
+	if k.pinPath != "" && !k.privatePins && !k.transferred && owned.link != nil {
+		return unpinLinkIfPresent(owned.link)
 	}
-	return owned.close()
+	return nil
+}
+
+func (k *kernelLinks) detachHostTCXLink(owned hostTCXLink) error {
+	return errors.Join(k.unpinHostTCXLink(owned), owned.close())
 }
 
 func (k *kernelLinks) closeHostTCXLinks(index int, roles ...hostTCXRole) error {
 	k.mu.Lock()
+	if k.preparing || k.transferred || k.frozen {
+		k.mu.Unlock()
+		return nil
+	}
 	var removed []hostTCXLink
 	kept := k.hostTCXLinks[:0]
 	for _, owned := range k.hostTCXLinks {
@@ -97,12 +115,19 @@ func (k *kernelLinks) useHostTCXLink(index int, role hostTCXRole) bool {
 func (k *kernelLinks) updateHostTCXLink(index int, spec hostTCXProgram) (bool, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.transferred || k.frozen {
+		return true, net.ErrClosed
+	}
 	for i := range k.hostTCXLinks {
 		owned := &k.hostTCXLinks[i]
 		if owned.linkIndex != index || owned.role != spec.role {
 			continue
 		}
 		if owned.program != spec.program {
+			if k.preparing {
+				k.prepareErr = errors.New("host attachment changed during preparation")
+				return true, k.prepareErr
+			}
 			if err := owned.link.Update(spec.program); err != nil {
 				return true, err
 			}
@@ -110,6 +135,10 @@ func (k *kernelLinks) updateHostTCXLink(index int, spec hostTCXProgram) (bool, e
 		}
 		owned.generation = k.generation
 		return true, nil
+	}
+	if k.preparing {
+		k.prepareErr = errors.New("interception interfaces changed; reload configuration before replacing the executable")
+		return true, k.prepareErr
 	}
 	return false, nil
 }
@@ -125,6 +154,9 @@ func (k *kernelLinks) updatePrograms(old, next *bpfObjects) error {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.transferred || k.frozen {
+		return net.ErrClosed
+	}
 	for i := range k.hostTCXLinks {
 		owned := &k.hostTCXLinks[i]
 		if program := pairs[owned.program]; program != nil {
@@ -142,6 +174,20 @@ func (k *kernelLinks) updatePrograms(old, next *bpfObjects) error {
 func (k *kernelLinks) finishRebind() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.transferred || k.frozen {
+		return net.ErrClosed
+	}
+	if k.preparing {
+		if k.prepareErr != nil {
+			return k.prepareErr
+		}
+		for _, owned := range k.hostTCXLinks {
+			if owned.generation != k.generation {
+				return errors.New("interception interfaces changed; reload configuration before replacing the executable")
+			}
+		}
+		return nil
+	}
 	var err error
 	kept := k.hostTCXLinks[:0]
 	for _, owned := range k.hostTCXLinks {
@@ -160,6 +206,7 @@ func (k *kernelLinks) finishRebind() error {
 func (k *kernelLinks) Close(retainPins bool) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.frozen = false
 	var err error
 	for i := len(k.hostTCXLinks) - 1; i >= 0; i-- {
 		err = errors.Join(err, k.hostTCXLinks[i].close())

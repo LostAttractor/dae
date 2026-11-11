@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -105,6 +106,9 @@ func TestTCPProxyTupleBecomesInbound(t *testing.T) {
 }
 
 func TestTCPFlowSurvivesRealIngressRelayClose(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("BPF privileges required")
+	}
 	synctest.Test(t, func(t *testing.T) {
 		spec, err := loadBpf()
 		if err != nil {
@@ -295,7 +299,7 @@ func TestTCPFlowStateOwnedByKernel(t *testing.T) {
 				fresh := slices.Clone(syn)
 				fresh[len(fresh)-13]++
 				verdict := ^uint32(0)
-				want := new(bpfTcpFlowState{Mark: next.mark, SynSeq: binary.NativeEndian.Uint32(fresh[len(fresh)-16:])})
+				want := new(bpfTcpFlowState{Mark: next.mark, SynSeq: binary.NativeEndian.Uint32(fresh[len(fresh)-16:]), ExplicitDirect: 1})
 				if next.capture {
 					verdict, want = 7, nil
 				}

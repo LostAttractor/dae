@@ -21,7 +21,7 @@ func (c *ControlPlane) PrepareKernel() error {
 	if c.kernelReady {
 		return nil
 	}
-	if err := c.restoreRuntimeSettings(false); err != nil {
+	if err := c.restoreRuntimeSettings(c.Runtime().staged); err != nil {
 		return err
 	}
 	if err := c.commitKernelState(); err != nil {
@@ -66,7 +66,7 @@ func (c *ControlPlane) activateLinks() error {
 		g.EnableSelectionTolerance()
 	}
 	log.WithFields(log.Fields{"window": core.domainRegistry.window, "activity": "userspace and captured splice", "kernel_capacity": core.domainRegistry.kernel.max}).Info("Domain retention active; uncaptured kernel-direct traffic does not refresh evidence")
-	if c.domainRegistryDir != "" {
+	if c.domainRegistryDir != "" && !c.Runtime().staged {
 		core.domainRegistry.EnablePersistence(c.domainRegistryDir)
 	}
 	SetAnyfromSoMark(c.soMarkFromDae)
@@ -76,6 +76,11 @@ func (c *ControlPlane) activateLinks() error {
 
 func (c *ControlPlane) commitKernelState() error {
 	core := c.core
+	core.lifecycleMu.Lock()
+	defer core.lifecycleMu.Unlock()
+	if core.closed.Err() != nil {
+		return net.ErrClosed
+	}
 	if core.bpf.UnexpectedExitBehavior != nil {
 		if err := core.bpf.UnexpectedExitBehavior.Set(uint32(c.unexpectedExitOutbound)); err != nil {
 			return fmt.Errorf("publish unexpected exit behavior: %w", err)
@@ -93,8 +98,14 @@ func (c *ControlPlane) commitKernelState() error {
 	if err := c.routingMatcher.BuildKernspace(); err != nil {
 		return fmt.Errorf("publish routing: %w", err)
 	}
-	if !core.isReload && c.domainRegistryDir != "" {
-		if err := core.domainRegistry.Restore(c.domainRegistryDir, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+	// An exec successor reaches kernel preparation only after the old writer exits.
+	return c.restoreDomainRegistry()
+}
+
+// restoreDomainRegistry requires core.lifecycleMu to exclude concurrent shutdown.
+func (c *ControlPlane) restoreDomainRegistry() error {
+	if !c.core.isReload && c.domainRegistryDir != "" {
+		if err := c.core.domainRegistry.Restore(c.domainRegistryDir, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
 			if _, incomplete := errors.AsType[*domainProjectionError](err); incomplete {
 				return err
 			}

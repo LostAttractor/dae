@@ -777,8 +777,9 @@ func TestPersistentKernelProcess(t *testing.T) {
 		var registered uint64
 		err = identity.Lookup(uint32(0), &registered)
 		identity.Close()
-		if err != nil || registered != uint64(os.Getpid()) {
-			t.Fatalf("bootstrap did not register its socket owner: %d, %v", registered, err)
+		kernelPID, pidErr := KernelProcessID()
+		if err != nil || pidErr != nil || registered != uint64(kernelPID) {
+			t.Fatalf("bootstrap did not register its socket owner: %d, want %d, errors=%v", registered, kernelPID, errors.Join(err, pidErr))
 		}
 	}
 	r := NewRuntime()
@@ -887,5 +888,113 @@ func TestPersistentKernelProcess(t *testing.T) {
 	}
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplacementPinsStayBorrowedUntilReady(t *testing.T) {
+	for _, transferred := range []bool{false, true} {
+		root := t.TempDir()
+		path := filepath.Join(root, "links", hostTCXPinName(7, hostTCXLanIngress))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("predecessor"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r := NewRuntime()
+		r.kernelLinks.privatePins = !transferred
+		r.kernelLinks.transferred = transferred
+		if transferred {
+			r.kernelLinks.pinPath = filepath.Dir(path)
+		} else if err := r.kernelLinks.preparePins(root); err != nil {
+			t.Fatalf("private generation attempted to adopt predecessor: %v", err)
+		}
+		if err := r.ConfirmReady(func() error { t.Fatal("uncommitted READY"); return nil }); err == nil {
+			t.Fatal("uncommitted runtime claimed canonical pins")
+		}
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if data, err := os.ReadFile(path); err != nil || string(data) != "predecessor" {
+			t.Fatalf("borrower removed canonical pin: %q, %v", data, err)
+		}
+	}
+}
+
+func TestHostlessReplacementFailureForcesPrivateRecoveryKernel(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("DAE_TEST_ISOLATED") != "1" {
+		t.Skip("requires isolated bpffs and BPF privileges")
+	}
+	root, err := os.MkdirTemp(consts.BpfPinRoot, "hostless-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range spec.Maps {
+		m.Pinning = ebpf.PinNone
+	}
+	var objects bpfObjects
+	if err := spec.LoadAndAssign(&objects, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer objects.Close()
+	r := NewRuntime()
+	defer r.Close()
+	r.kernelLinks.privatePins = true
+	if err := r.retainMaps(&objects); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.kernelLinks.preparePins(root); err != nil {
+		t.Fatal(err)
+	}
+	// Maps publish before link cleanup. A non-link at an old canonical link path
+	// makes that cleanup fail, after the new canonical maps are already visible.
+	if err := objects.ExitedMap.Pin(filepath.Join(root, "links", hostTCXPinName(7, hostTCXLanIngress))); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.publishReplacementPins(); err == nil {
+		t.Fatal("publication succeeded despite an invalid old link pin")
+	}
+	if _, err := os.Stat(filepath.Join(root, "device_routes_map")); err != nil {
+		t.Fatalf("did not exercise a partial publication: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovery := NewRuntime()
+	defer recovery.Close()
+	if err := recovery.prepareKernelPinsAt(root); err != nil || !recovery.recoveringGuards || !recovery.kernelLinks.privatePins {
+		t.Fatalf("hostless recovery tried to reuse canonical pins: %v", err)
+	}
+}
+
+func TestPublishKernelPin(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "pin")
+		if fail {
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err := publishKernelPin(path, func(temporary string) error {
+			return os.WriteFile(temporary, []byte("new"), 0600)
+		})
+		if (err != nil) != fail {
+			t.Fatalf("publication failure=%v: %v", fail, err)
+		}
+		if _, err := os.Stat(path + "_next"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("publication leaked temporary pin: %v", err)
+		}
+		if !fail {
+			if data, err := os.ReadFile(path); err != nil || string(data) != "new" {
+				t.Fatalf("publication did not replace canonical pin: %q, %v", data, err)
+			}
+		}
 	}
 }

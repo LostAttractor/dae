@@ -1073,7 +1073,7 @@ SEC("tc/check/ipv4_first_udp_fragment_lan_egress")
 int testcheck_ipv4_first_udp_fragment_lan_egress(struct __sk_buff *skb)
 {
 	return check_ipv4_udp_state(skb, TCX_NEXT,
-		IPV4(192,168,0,2), IPV4(1,1,1,2), 19235, 81, true);
+		IPV4(192,168,0,2), IPV4(1,1,1,2), 19235, 81, false);
 }
 
 SEC("tc/pktgen/ipv6_first_udp_fragment_routing")
@@ -3616,4 +3616,38 @@ SEC("tc/check/registered_daemon_socket")
 int testcheck_registered_daemon_socket(struct __sk_buff *skb)
 {
 	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/test_daemon_exit")
+int test_daemon_exit(struct __sk_buff *skb)
+{
+	record_daemon_exit(PARAM.control_plane_pid);
+	return TCX_NEXT;
+}
+
+SEC("tc/test_guard_udp_timers")
+int test_guard_udp_timers(struct __sk_buff *skb)
+{
+	struct tuples_key key = { .l4proto = IPPROTO_UDP };
+	struct udp_conn_state *state = new_udp_conn_state(&key, false);
+	struct udp_routing_cache_key source = {};
+	struct routing_result result = {
+		.flow_flags = FLOW_EXPLICIT_DIRECT,
+		.generation = routing_generation,
+		.source_origin = SOURCE_LOCAL,
+	};
+
+	if (!state || save_udp_route(&source, &result, 0))
+		return TCX_DROP;
+	state->last_seen = udp_conn_now() - UDP_CONN_STATE_TIMEOUT_S - 1;
+	if (bpf_timer_start(&state->timer, 100000000, 0))
+		return TCX_DROP;
+	struct udp_routing_cache_value *value = bpf_map_lookup_elem(&udp_routing_cache_map, &source);
+
+	if (!value)
+		return TCX_DROP;
+	bpf_spin_lock(&value->lock);
+	value->cached_until = 1;
+	bpf_spin_unlock(&value->lock);
+	return bpf_timer_start(&value->timer, 100000000, 0) ? TCX_DROP : TCX_NEXT;
 }

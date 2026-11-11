@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
@@ -58,16 +59,22 @@ func pendingInbound(t *testing.T, obj *bpftestObjects, source, destination netip
 	return err == nil
 }
 
-// Datagrams from many sources that nobody answers take no state; the answer
-// to one of them gives its flow inbound state, and the answer leaves directly.
-// An inbound flow idle for the timeout has ended: its late answer is routed.
+// Test-run datagrams have no CT evidence. Seed one authenticated pending
+// observation to exercise its answer and expiry independently of live CT.
 func testInboundAnswer(t *testing.T, obj *bpftestObjects, inbound, answer *ebpf.Program, local netip.AddrPort, remote func(uint16) netip.AddrPort, routed uint32) {
 	t.Helper()
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC_COARSE, &now); err != nil {
+		t.Fatal(err)
+	}
 	for port := uint16(5000); port < 5064; port++ {
 		runUDP(t, inbound, remote(port), local, 0, tcxNext)
-		if _, ok := udpConnState(t, obj, local, remote(port)); ok || !pendingInbound(t, obj, local, remote(port)) {
+		if _, ok := udpConnState(t, obj, local, remote(port)); ok || pendingInbound(t, obj, local, remote(port)) {
 			t.Fatalf("unanswered datagram from %v: state %v", remote(port), ok)
 		}
+	}
+	if err := obj.UdpInboundPendingMap.Update(udpFlowKey(local, remote(5000)), uint32(now.Sec), ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
 	}
 	runUDP(t, answer, local, remote(5000), 0, tcxNext)
 	if state, ok := udpConnState(t, obj, local, remote(5000)); !ok || !state.IsWanIngressDirection {
@@ -77,10 +84,6 @@ func testInboundAnswer(t *testing.T, obj *bpftestObjects, inbound, answer *ebpf.
 	runUDP(t, inbound, remote(5000), local, 0, tcxNext)
 	runUDP(t, answer, local, remote(5000), 0, tcxNext)
 
-	var now unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC_COARSE, &now); err != nil {
-		t.Fatal(err)
-	}
 	if err := obj.UdpInboundPendingMap.Update(udpFlowKey(local, remote(5001)), uint32(now.Sec)-udpConnStateTimeout-1, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
@@ -155,12 +158,10 @@ func TestUDPInboundStateNeedsLocalSocket(t *testing.T) {
 				t.Fatal("reply turned an outbound flow inbound")
 			}
 
-			ctx := runUDP(t, obj.TproxyWanIngressL2, peer(4003), service, daeReplyMark, tcxNext)
-			if state, ok := udpConnState(t, obj, service, peer(4003)); !ok || state.IsWanIngressDirection {
-				t.Fatalf("relayed reply state = %+v, %v", state, ok)
-			}
-			if binary.NativeEndian.Uint32(ctx[48:52]) != 0 {
-				t.Fatal("relay mark outlived the reply path")
+			// A late WAN relay without host CT must not reverse the flow direction.
+			runUDP(t, obj.TproxyWanIngressL2, peer(4003), service, daeReplyMark, 2)
+			if _, ok := udpConnState(t, obj, service, peer(4003)); ok {
+				t.Fatal("untracked WAN relay created outbound state")
 			}
 
 			raw, err := conn.SyscallConn()
@@ -214,5 +215,165 @@ func TestUDPConnStateExpiry(t *testing.T) {
 	}
 	if status, _, _, err := runBpfProgram(obj.TestExpireUdpConnState, make([]byte, 64), make([]byte, 256)); err != nil || status != 0 {
 		t.Fatalf("UDP conn state expiry failed at step %d: %v", status, err)
+	}
+}
+
+func TestUDPReplacementWithoutConntrack(t *testing.T) {
+	for _, family := range []struct{ name, local, remote string }{
+		{"ipv4", "192.0.2.10:5000", "198.51.100.7:4000"},
+		{"ipv6", "[2001:db8::10]:5000", "[2001:db8:1::7]:4000"},
+	} {
+		for _, wan := range []bool{false, true} {
+			path := "lan"
+			if wan {
+				path = "wan"
+			}
+			for _, order := range []string{"reply-first", "client-first"} {
+				t.Run(family.name+"/"+path+"/"+order, func(t *testing.T) {
+					programs := []string{"LanIngressL2", "LanEgressL2", "TproxyWanIngressL2", "TproxyWanEgressL2", "ConntrackProbe"}
+					old, err := loadTestObjects(t, programs...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					current, err := loadTestObjects(t, programs...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					installRoutingFlow(t, old, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect)}})
+					installRoutingFlow(t, current, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)}})
+					local, remote := netip.MustParseAddrPort(family.local), netip.MustParseAddrPort(family.remote)
+					requestA, requestB, replyB := old.LanIngressL2, current.LanIngressL2, current.LanEgressL2
+					if wan {
+						requestA, requestB, replyB = old.TproxyWanEgressL2, current.TproxyWanEgressL2, current.TproxyWanIngressL2
+					}
+					runUDP(t, current.ConntrackProbe, local, remote, 0, 0)
+					runUDP(t, requestA, local, remote, 0, tcxNext)
+					if order == "client-first" {
+						runUDP(t, requestB, local, remote, 0, 2)
+					}
+					runUDP(t, replyB, remote, local, 0, tcxNext)
+					runUDP(t, requestB, local, remote, 0, 2)
+					runUDP(t, replyB, remote, local, 0, tcxNext)
+					runUDP(t, requestB, local, remote, 0, 2)
+				})
+			}
+		}
+	}
+}
+
+// A bound service socket and a reply-path marker are not direction evidence.
+func TestUDPReplyMarkerWithoutConntrack(t *testing.T) {
+	for _, network := range []string{"udp4", "udp6"} {
+		t.Run(network, func(t *testing.T) {
+			obj, err := loadTestObjects(t, "LanIngressL2", "LanEgressL2", "TproxyWanIngressL2", "TproxyWanEgressL2", "ConntrackProbe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			installRoutingFlow(t, obj, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)}})
+			local, remote := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddrPort("198.51.100.7:4001")
+			if network == "udp6" {
+				local, remote = netip.MustParseAddr("::1"), netip.MustParseAddrPort("[2001:db8:1::7]:4001")
+			}
+			service, err := net.ListenUDP(network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, 0)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { service.Close() })
+			localPort := service.LocalAddr().(*net.UDPAddr).AddrPort()
+			for _, path := range []struct {
+				reply, request *ebpf.Program
+				verdict        uint32
+			}{
+				{obj.TproxyWanIngressL2, obj.TproxyWanEgressL2, 2},
+				{obj.LanEgressL2, obj.LanIngressL2, tcxNext},
+			} {
+				runUDP(t, obj.ConntrackProbe, localPort, remote, 0, 0)
+				ctx := runUDP(t, path.reply, remote, localPort, daeReplyMark, path.verdict)
+				if path.verdict == tcxNext && binary.NativeEndian.Uint32(ctx[48:52]) != 0 {
+					t.Fatal("relay marker outlived the reply path")
+				}
+				runUDP(t, path.request, localPort, remote, 0, 2)
+				other := netip.AddrPortFrom(remote.Addr(), remote.Port()+1)
+				runUDP(t, path.request, localPort, other, 0, 2)
+			}
+		})
+	}
+}
+
+func TestUDPRepliesReleaseRetiredTimerPrograms(t *testing.T) {
+	old, err := loadTestObjects(t, "LanIngressL2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.RoutingGeneration.Set(uint32(1)); err != nil {
+		t.Fatal(err)
+	}
+	installRoutingFlow(t, old, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: 0}})
+	local, remote := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("198.51.100.7:4000")
+	runUDP(t, old.LanIngressL2, local, remote, 0, tcxNext)
+	info, err := old.LanIngressL2.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	programID, ok := info.ID()
+	if !ok {
+		t.Fatal("program ID unavailable")
+	}
+	mapInfo, err := old.RoutingMap.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routingID, ok := mapInfo.ID()
+	if !ok {
+		t.Fatal("routing map ID unavailable")
+	}
+	current, err := loadTestObjectsWithMaps(t, map[string]*ebpf.Map{
+		"udp_conn_state_map": old.UdpConnStateMap, "udp_routing_cache_map": old.UdpRoutingCacheMap,
+	}, "LanEgressL2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.RoutingGeneration.Set(uint32(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := ebpf.NewProgramFromID(programID)
+	if err != nil {
+		t.Fatalf("old UDP timers did not retain their callback program: %v", err)
+	}
+	if err := retained.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// No new outbound packet: the reply must release both old timer references.
+	runUDP(t, current.LanEgressL2, remote, local, 0, tcxNext)
+	if state, ok := udpConnState(t, current, local, remote); !ok || state.Generation != 2 || state.IsWanIngressDirection {
+		t.Fatalf("reply did not adopt the timer without changing direction: %+v, %v", state, ok)
+	}
+	cacheKey := bpftestUdpRoutingCacheKey{Sport: nativeUint16(local.Port())}
+	cacheKey.Sip.U6Addr8 = local.Addr().As16()
+	if err := current.UdpRoutingCacheMap.Lookup(cacheKey, new(bpftestUdpRoutingCacheValue)); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("reply retained the old-generation route timer: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		program, programErr := ebpf.NewProgramFromID(programID)
+		if programErr == nil {
+			program.Close()
+		} else if !errors.Is(programErr, os.ErrNotExist) {
+			t.Fatal(programErr)
+		}
+		routing, mapErr := ebpf.NewMapFromID(routingID)
+		if mapErr == nil {
+			routing.Close()
+		} else if !errors.Is(mapErr, os.ErrNotExist) {
+			t.Fatal(mapErr)
+		}
+		if programErr != nil && mapErr != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reply kept retired references: program=%v routing=%v", programErr, mapErr)
+		}
 	}
 }

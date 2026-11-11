@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -88,18 +89,23 @@ func TestMPTCPSubflowOwner(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestMPTCPSubflowOwner$")
 	cmd.Env = append(os.Environ(), "DAE_SOCKET_OWNER_CHILD=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNET, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
-	if output, err := cmd.CombinedOutput(); cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == mptcpUnavailableExit {
+	output, err := cmd.CombinedOutput()
+	if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == mptcpUnavailableExit {
 		t.Skipf("MPTCP unavailable: %s", output)
 	} else if err != nil {
 		t.Fatalf("MPTCP client: %v\n%s", err, output)
+	}
+	var pid uint32
+	if _, err := fmt.Sscan(string(output), &pid); err != nil || pid == 0 {
+		t.Fatalf("client kernel PID: %q: %v", output, err)
 	}
 	for _, source := range []string{"127.0.0.1", "127.0.0.2"} {
 		var probe bpftestSocketOwnerProbe
 		if err := obj.SocketOwnerProbeMap.Lookup(netip.MustParseAddr(source).As4(), &probe); err != nil {
 			t.Fatalf("no segments from %s: %v", source, err)
 		}
-		if probe.Owned == 0 || probe.Unowned != 0 || probe.Pid != uint32(cmd.Process.Pid) {
-			t.Errorf("segments from %s: %+v, want all owned by %d", source, probe, cmd.Process.Pid)
+		if probe.Owned == 0 || probe.Unowned != 0 || probe.Pid != pid {
+			t.Errorf("segments from %s: %+v, want all owned by %d", source, probe, pid)
 		}
 	}
 }
@@ -108,6 +114,20 @@ func TestMPTCPSubflowOwner(t *testing.T) {
 // 127.0.0.2 endpoint. It sends until the join is established and has carried
 // data, then returns while all sockets are still open.
 func mptcpJoinClient() error {
+	// Ownership records use the initial PID namespace, not the isolated fixture's os.Getpid.
+	identity, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.SocketFilter, License: "GPL",
+		Instructions: asm.Instructions{asm.FnGetCurrentPidTgid.Call(), asm.RSh.Imm(asm.R0, 32), asm.Return()},
+	})
+	if err != nil {
+		return err
+	}
+	defer identity.Close()
+	pid, err := identity.Run(&ebpf.RunOptions{Data: make([]byte, 14)})
+	if err != nil {
+		return err
+	}
+	fmt.Println(pid)
 	lo, err := netlink.LinkByName("lo")
 	if err != nil {
 		return err

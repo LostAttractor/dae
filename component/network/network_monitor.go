@@ -146,7 +146,7 @@ func NewHostNetworkMonitor(interfaces *InterfaceScope) (*HostNetworkMonitor, err
 			return subscribeRuleUpdates(done, hostNetworkEventError(done, "rule"))
 		},
 	}
-	return newHostNetworkMonitor(currentHostNetworkSnapshot, links, nil, nil, nil, subscriptionEnd, subscriptions,
+	return newHostNetworkMonitor(CurrentHostNetworkSnapshot, links, nil, nil, nil, subscriptionEnd, subscriptions,
 		hostNetworkDebounceInterval, hostNetworkResyncInterval), nil
 }
 
@@ -468,7 +468,8 @@ func (m *HostNetworkMonitor) Close() error {
 	return nil
 }
 
-func currentHostNetworkSnapshot() (HostNetworkSnapshot, error) {
+// CurrentHostNetworkSnapshot reads an authoritative view without waiting for event delivery.
+func CurrentHostNetworkSnapshot() (HostNetworkSnapshot, error) {
 	links, err := netlink.LinkList()
 	if err != nil {
 		return HostNetworkSnapshot{}, err

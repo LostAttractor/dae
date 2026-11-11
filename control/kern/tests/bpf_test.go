@@ -45,6 +45,11 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 
 func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, error) {
 	t.Helper()
+	return loadTestObjectsWithMaps(t, nil, programNames...)
+}
+
+func loadTestObjectsWithMaps(t testing.TB, replacements map[string]*ebpf.Map, programNames ...string) (*bpftestObjects, error) {
+	t.Helper()
 	obj := &bpftestObjects{}
 	// LoadAndAssign only loads requested programs and their dependencies. Keep
 	// fresh maps for each fixture without verifying every other fixture again.
@@ -73,16 +78,6 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 	selected := reflect.New(reflect.StructOf(fields))
 	selected.Elem().Field(0).Set(reflect.ValueOf(&obj.bpftestMaps))
 	selected.Elem().Field(1).Set(reflect.ValueOf(&obj.bpftestVariables))
-	pinPath := fmt.Sprintf("/sys/fs/bpf/dae-tests-%d", os.Getpid())
-	if err := os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
-		return nil, err
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(pinPath); err != nil {
-			t.Errorf("Failed to clean BPF test pins: %v", err)
-		}
-	})
-
 	spec, err := loadBpftest()
 	// Ablation experiments load separately compiled test objects, keeping
 	// experimental switches out of the production classifier.
@@ -101,16 +96,10 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 	}); err != nil {
 		return nil, err
 	}
-	// Kernel tests must not reuse or replace the daemon's persistent routing state.
-	spec.Maps["tcp_flow_map"].Pinning = ebpf.PinNone
-	if err := spec.LoadAndAssign(selected.Interface(),
-		&ebpf.CollectionOptions{
-			Maps: ebpf.MapOptions{
-				PinPath: pinPath,
-			},
-			Programs: ebpf.ProgramOptions{},
-		},
-	); err != nil {
+	for _, m := range spec.Maps {
+		m.Pinning = ebpf.PinNone
+	}
+	if err := spec.LoadAndAssign(selected.Interface(), &ebpf.CollectionOptions{MapReplacements: replacements}); err != nil {
 		var verifierLog string
 		if ve, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			verifierLog = fmt.Sprintf("Verifier error: %+v\n", ve)

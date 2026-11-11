@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/internal/routingabi"
 	"maps"
 	"net"
 	"slices"
@@ -14,11 +13,13 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -64,21 +65,26 @@ func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.
 // Runtime owns resources whose lifetime is independent of configuration reload.
 // Generations own private programs/projections and references to shared services.
 type Runtime struct {
-	lifecycle      sync.Mutex
-	mu             sync.Mutex   // generation admission and retirement
-	dnsFanout      sync.RWMutex // orders DNS evidence fanout with reload forks
-	current        *ControlPlane
-	planes         map[uint32]*ControlPlane
-	shared         map[string]*ebpf.Map
-	nextGeneration uint32
-	retired        <-chan struct{}
-	done           chan struct{}
-	errors         chan error
-	closeOnce      sync.Once
-	closeErr       error
-	offline        bool // Terminal transition, guarded by lifecycle.
-	online         bool // Published DAEMON_ONLINE once, guarded by lifecycle.
-	kernelOwned    bool // Set before this Runtime starts netns/sysctl setup.
+	lifecycle              sync.Mutex
+	mu                     sync.Mutex   // generation admission and retirement
+	dnsFanout              sync.RWMutex // orders DNS evidence fanout with reload forks
+	current                *ControlPlane
+	planes                 map[uint32]*ControlPlane
+	shared                 map[string]*ebpf.Map
+	nextGeneration         uint32
+	retired                <-chan struct{}
+	done                   chan struct{}
+	errors                 chan error
+	closeOnce              sync.Once
+	closeErr               error
+	offline                bool        // Terminal transition, guarded by lifecycle.
+	online                 bool        // Published DAEMON_ONLINE once, guarded by lifecycle.
+	kernelOwned            bool        // Set before this Runtime starts netns/sysctl setup.
+	staged                 bool        // Exec successor awaiting CommitReplacement; implies privatePins.
+	recoveringGuards       bool        // Cold startup awaiting guard retirement; implies privatePins.
+	identityHooks          []link.Link // Old socket writers retained until their guards retire.
+	replacementLinks       []replacementAttachment
+	replacementDescriptors []ReplacementLink
 
 	kernelLinks       kernelLinks
 	tcpConnections    tcpConnectionSet
@@ -153,6 +159,7 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 	for name, m := range map[string]*ebpf.Map{
 		"socket_owner_map":      b.SocketOwnerMap,
 		"daemon_identity_map":   b.DaemonIdentityMap,
+		"replacement_pid_map":   b.ReplacementPidMap,
 		"device_routes_map":     b.DeviceRoutesMap,
 		"exited_map":            b.ExitedMap,
 		"fallback_lease_map":    b.FallbackLeaseMap,
@@ -189,6 +196,9 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
+	if r.staged {
+		return r.stageReplacementLocked(c)
+	}
 	select {
 	case <-r.done:
 		return net.ErrClosed
@@ -274,6 +284,11 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 			return err
 		}
 	}
+	if r.recoveringGuards {
+		if err := r.finishReplacementGuards(); err != nil {
+			return err
+		}
+	}
 	if old != nil {
 		// Rebuilt instances belong only to the new routing generation. The
 		// closed predecessor rejects late setups instead of mixing their policies.
@@ -352,6 +367,15 @@ func (r *Runtime) reportError(err error) {
 
 func (r *Runtime) setExited(value uint8) error {
 	if m := r.shared["exited_map"]; m != nil {
+		if value == routingabi.DAEMON_OFFLINE {
+			var state uint8
+			if err := m.Lookup(uint32(0), &state); err != nil {
+				return err
+			}
+			if state == routingabi.DAEMON_STOPPING {
+				return nil
+			}
+		}
 		if err := m.Update(uint32(0), value, ebpf.UpdateAny); err != nil {
 			return err
 		}
@@ -362,7 +386,12 @@ func (r *Runtime) setExited(value uint8) error {
 
 func (r *Runtime) goOffline() error {
 	r.offline = true
-	err := r.setExited(routingabi.DAEMON_OFFLINE)
+	var err error
+	if r.kernelLinks.transferred || r.kernelLinks.privatePins {
+		err = r.StopIngress()
+	} else {
+		err = r.setExited(routingabi.DAEMON_OFFLINE)
+	}
 	if r.fallbacks != nil {
 		r.fallbacks.Freeze()
 	}
@@ -416,21 +445,21 @@ func (r *Runtime) Close() error {
 			<-r.retired
 		}
 		<-aborted
-		if err := r.pluginStates.Close(); err != nil {
-			log.WithError(err).Warn("Close shared plugin state")
-		}
+		r.closeErr = errors.Join(r.closeErr, r.pluginStates.Close())
 		if r.interfaces != nil {
 			r.closeErr = errors.Join(r.closeErr, r.interfaces.Close())
 		}
 		// Until it goes online, a takeover leaves a crashed predecessor's
 		// datapath to unexpected_exit_behavior, as that crash did.
-		retain := r.kernelLinks.inherited && !r.online
-		if retain {
+		retainedCrash := r.kernelLinks.inherited && !r.online
+		retain := retainedCrash || r.kernelLinks.transferred || r.kernelLinks.privatePins
+		if retainedCrash {
 			log.Warn("Startup did not go online; keeping the kernel datapath left by the previous unexpected exit")
 			// Keep the timer pins the retained programs still reference.
 			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false))
 		}
-		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain))
+		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain), r.closeIdentityHooks())
+		r.replacementLinks, r.replacementDescriptors = nil, nil
 		r.tcpMonitor.close()
 		for _, m := range r.shared {
 			r.closeErr = errors.Join(r.closeErr, m.Close())

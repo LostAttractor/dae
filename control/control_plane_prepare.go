@@ -77,6 +77,12 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if err = InitSysctlManager(); err != nil {
 		return nil, err
 	}
+	if runtime.staged {
+		sysctl.preparing.Store(true)
+		if err := GetDaeNetns().inheritSysctls(); err != nil {
+			return nil, fmt.Errorf("validate inherited namespace sysctls: %w", err)
+		}
+	}
 	if err = GetDaeNetns().Setup(); err != nil {
 		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
 	}
@@ -85,16 +91,12 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	}
 
 	pinPath := kernelPinPath()
-	if err = os.MkdirAll(pinPath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
-	}
-
-	if err := runtime.kernelLinks.preparePins(pinPath); err != nil {
+	if err := runtime.prepareKernelPinsAt(pinPath); err != nil {
 		return nil, err
 	}
 	mapReplacements := runtime.shared
 	var previousRoutes *ebpf.Map
-	if len(runtime.shared) == 0 {
+	if len(runtime.shared) == 0 && !runtime.kernelLinks.privatePins {
 		if err := runtime.pruneUDPTimerPins(false); err != nil {
 			log.WithError(err).Warn("Prune unreferenced runtime timer pins")
 		}
@@ -116,15 +118,18 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	collectionOpts := &ebpf.CollectionOptions{
 		MapReplacements: mapReplacements,
 		Cache:           kernelBTFCache,
-		Maps:            ebpf.MapOptions{PinPath: pinPath},
 		Programs:        programOptions,
+	}
+	if !runtime.kernelLinks.privatePins {
+		collectionOpts.Maps.PinPath = pinPath
 	}
 	if runtime.nextGeneration == ^uint32(0) {
 		return nil, errors.New("routing generation exhausted")
 	}
 	runtime.nextGeneration++
 	bpf := &BPFState{bpfObjects: new(bpfObjects), Runtime: runtime, routingGeneration: runtime.nextGeneration}
-	if err = fullLoadBpfObjects(bpf.bpfObjects, collectionOpts); err != nil {
+	kernelPID, err := fullLoadBpfObjects(bpf.bpfObjects, collectionOpts)
+	if err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	if err := bpf.RoutingGeneration.Set(bpf.routingGeneration); err != nil {
@@ -133,13 +138,17 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if len(runtime.shared) != 0 {
 		return bpf, nil
 	}
-	if err := bpf.ExitedMap.Update(uint32(0), uint8(routingabi.DAEMON_STARTING), ebpf.UpdateAny); err != nil {
-		return nil, errors.Join(fmt.Errorf("initialize starting datapath: %w", err), bpf.Close())
+	initialState := uint8(routingabi.DAEMON_STARTING)
+	if runtime.recoveringGuards || runtime.staged {
+		initialState = uint8(routingabi.DAEMON_STOPPING)
 	}
-	if err := bpf.DaemonIdentityMap.Update(uint32(0), uint64(os.Getpid()), ebpf.UpdateAny); err != nil {
+	if err := bpf.ExitedMap.Update(uint32(0), initialState, ebpf.UpdateAny); err != nil {
+		return nil, errors.Join(fmt.Errorf("initialize datapath state: %w", err), bpf.Close())
+	}
+	if err := bpf.DaemonIdentityMap.Update(uint32(0), uint64(kernelPID), ebpf.UpdateAny); err != nil {
 		return nil, errors.Join(fmt.Errorf("register daemon socket identity: %w", err), bpf.Close())
 	}
-	if previousRoutes == nil {
+	if previousRoutes == nil && !runtime.kernelLinks.privatePins {
 		if err := bpf.DeviceRoutesMap.Pin(filepath.Join(pinPath, "device_routes_map")); err != nil {
 			return nil, errors.Join(fmt.Errorf("pin device route epochs: %w", err), bpf.Close())
 		}
@@ -180,4 +189,25 @@ func (p *ControlPlanePreparation) Close() error {
 	bpf := p.bpf
 	p.bpf = nil
 	return bpf.Close()
+}
+
+func (r *Runtime) prepareKernelPinsAt(pinPath string) error {
+	if !r.IsReload() && !r.staged {
+		for _, name := range []string{replacementMarker, "guards"} {
+			if _, err := os.Stat(filepath.Join(pinPath, name)); err == nil {
+				r.recoveringGuards = true
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	r.kernelLinks.privatePins = r.kernelLinks.privatePins || r.staged || r.recoveringGuards
+	if err := os.MkdirAll(pinPath, 0755); err != nil {
+		return fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
+	}
+	if err := r.kernelLinks.preparePins(pinPath); err != nil {
+		return err
+	}
+	return nil
 }

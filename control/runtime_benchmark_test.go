@@ -51,7 +51,9 @@ func runtimeRefreshFixture(t testing.TB) (*ControlPlane, *ebpf.Collection) {
 	if err := collection.Assign(&variables); err != nil {
 		t.Fatal(err)
 	}
-	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: maps, bpfVariables: variables}}
+	runtime := NewRuntime()
+	t.Cleanup(func() { _ = runtime.Close() })
+	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: maps, bpfVariables: variables}, Runtime: runtime}
 	var rules strings.Builder
 	for i := range 64 {
 		fmt.Fprintf(&rules, "dip(10.%d.0.0/16) -> direct(mark: %d)\n", i, i+1)

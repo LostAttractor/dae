@@ -60,8 +60,21 @@ func TestKernelChecksStopOnCancellation(t *testing.T) {
 	}
 }
 
+func TestCheckProductionBPFHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := CheckProductionBPF(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckProductionBPF ignored canceled context: %v", err)
+	}
+}
+
 func TestKernelFeaturePreflightIntegration(t *testing.T) {
-	testKernelFeaturePreflight(t, func() error { return CheckKernelFeatures(t.Context()) })
+	testKernelFeaturePreflight(t, func() error {
+		if err := CheckKernelFeatures(t.Context()); err != nil {
+			return err
+		}
+		return CheckProductionBPF(t.Context())
+	})
 }
 
 func TestKernelFeaturePreflightVethIntegration(t *testing.T) {
@@ -82,40 +95,39 @@ func TestKernelFeaturePreflightVethIntegration(t *testing.T) {
 
 func testKernelFeaturePreflight(t *testing.T, check func() error) {
 	t.Helper()
-	if os.Geteuid() != 0 {
-		t.Skip("root is required for kernel feature probes")
-	}
-	before, err := netns.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer before.Close()
-	// The preflight must neither touch an active dae instance nor leave pins.
-	pins, err := os.ReadDir(consts.BpfPinRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := check(); err != nil {
-		t.Fatal(err)
-	}
-	after, err := netns.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer after.Close()
-	if !before.Equal(after) {
-		t.Fatal("preflight changed the caller's network namespace")
-	}
-	remaining, err := os.ReadDir(consts.BpfPinRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pins) != len(remaining) {
-		t.Fatalf("preflight leaked pinned resources: before=%v after=%v", pins, remaining)
-	}
-	for i := range pins {
-		if pins[i].Name() != remaining[i].Name() {
-			t.Fatalf("preflight changed pinned resources: before=%v after=%v", pins, remaining)
+	withConntrackTestNamespace(t, "tracked", func() {
+		before, err := netns.Get()
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		defer before.Close()
+		// The preflight must neither touch an active dae instance nor leave pins.
+		pins, err := os.ReadDir(consts.BpfPinRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := check(); err != nil {
+			t.Fatal(err)
+		}
+		after, err := netns.Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer after.Close()
+		if !before.Equal(after) {
+			t.Fatal("preflight changed the caller's network namespace")
+		}
+		remaining, err := os.ReadDir(consts.BpfPinRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pins) != len(remaining) {
+			t.Fatalf("preflight leaked pinned resources: before=%v after=%v", pins, remaining)
+		}
+		for i := range pins {
+			if pins[i].Name() != remaining[i].Name() {
+				t.Fatalf("preflight changed pinned resources: before=%v after=%v", pins, remaining)
+			}
+		}
+	})
 }

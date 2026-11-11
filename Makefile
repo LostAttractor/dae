@@ -232,6 +232,7 @@ $(BUILD_TAGS_FILE): $(BPF_INPUTS) build/ebpf.inputs | check-go-version check-bpf
 	done > build/ebpf.outputs
 
 test: plugins ebpf web-assets
+	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) scripts/routing-map-memory.go scripts/routing-map-memory_test.go
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 	$(MAKE) check-boundaries
 

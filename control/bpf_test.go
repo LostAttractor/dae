@@ -110,7 +110,7 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result bpfRoutingResult
-	if size := unsafe.Sizeof(result); size != 40 || spec.Maps["routing_tuples_map"].ValueSize != 64 || spec.Maps["tcp_flow_map"].ValueSize != 24 {
+	if size := unsafe.Sizeof(result); size != 40 || spec.Maps["routing_tuples_map"].ValueSize != 64 || spec.Maps["tcp_flow_map"].ValueSize != 24 || unsafe.Sizeof(bpfTcpFlowState{}) != 24 {
 		t.Fatalf("routing layouts: result=%d handoff=%d flow=%d", size, spec.Maps["routing_tuples_map"].ValueSize, spec.Maps["tcp_flow_map"].ValueSize)
 	}
 	if spec.Maps["udp_routing_scratch_map"] != nil {

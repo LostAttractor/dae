@@ -27,7 +27,7 @@ func TestDNSMetadataChannelIntegration(t *testing.T) {
 	for _, kind := range []string{"netkit", "veth"} {
 		for _, lan := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/LAN=%v", kind, lan), func(t *testing.T) {
-				withInternalLinkDatapath(t, kind, lan, func(ns *DaeNetns, objects *bpfObjects) {
+				withInternalLinkDatapath(t, kind, lan, func(ns *DaeNetns, objects *bpfObjects, _ []link.Link) {
 					if _, err := ns.With(func() (struct{}, error) {
 						return struct{}{}, netlink.LinkSetMTU(ns.dae0peer, 1280)
 					}); err != nil {
@@ -58,7 +58,7 @@ func TestDNSLargeRequestIntegration(t *testing.T) {
 	for _, kind := range []string{"netkit", "veth"} {
 		for _, lan := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/LAN=%v", kind, lan), func(t *testing.T) {
-				withInternalLinkDatapath(t, kind, lan, func(ns *DaeNetns, objects *bpfObjects) {
+				withInternalLinkDatapath(t, kind, lan, func(ns *DaeNetns, objects *bpfObjects, _ []link.Link) {
 					must := func(err error) {
 						t.Helper()
 						if err != nil {
@@ -94,7 +94,7 @@ func TestDNSQueuedSourceIntegration(t *testing.T) {
 	for _, kind := range []string{"netkit", "veth"} {
 		for _, family := range []string{"4", "6"} {
 			t.Run(kind+"/IPv"+family, func(t *testing.T) {
-				withInternalLinkDatapath(t, kind, true, func(ns *DaeNetns, objects *bpfObjects) {
+				withInternalLinkDatapath(t, kind, true, func(ns *DaeNetns, objects *bpfObjects, _ []link.Link) {
 					testDNSQueuedSources(t, ns, objects, family)
 				})
 			})

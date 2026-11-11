@@ -219,9 +219,9 @@ l4proto(udp) && dip(192.0.2.20) -> dnat(198.51.100.2)`, "dip(192.0.2.20) -> bloc
 		{"tcp", consts.L4ProtoType_UDP, "198.51.100.1:443"},
 		{"udp", consts.L4ProtoType_TCP, "198.51.100.2:443"},
 	} {
-		identity := routingResult{Protocol: uint8(test.ingress)}
+		identity := routingResult{FlowFlags: uint8(test.ingress)}
 		option, err := plane.selectRoutedAddress(t.Context(), test.network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "example.com", netip.MustParseAddrPort("192.0.2.20:443"))
-		if err != nil || option.DialTarget != test.target || identity.Protocol != uint8(test.ingress) {
+		if err != nil || option.DialTarget != test.target || identity.FlowFlags != uint8(test.ingress) {
 			t.Fatalf("%s destination predicate used ingress protocol: %+v, %v", test.network, option, err)
 		}
 	}

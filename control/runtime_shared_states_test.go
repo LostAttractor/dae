@@ -24,7 +24,7 @@ func (s *runtimeTestState) Close() error {
 func TestRuntimeSharedStatesCloseAfterGenerationsRetire(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := NewRuntime()
-		state := &runtimeTestState{err: errors.New("optional persistence failed")}
+		state := &runtimeTestState{err: errors.New("shared state cleanup failed")}
 		_, release, err := r.SharedStates().Acquire(t.Context(), "state", func() (io.Closer, error) { return state, nil })
 		if err != nil {
 			t.Fatal(err)
@@ -57,15 +57,18 @@ func TestRuntimeSharedStatesCloseAfterGenerationsRetire(t *testing.T) {
 			t.Fatalf("Acquire during shutdown = %v", err)
 		}
 		close(retired)
-		if err := <-closed; err != nil {
-			t.Fatalf("optional shared-state failure escaped shutdown: %v", err)
+		if err := <-closed; !errors.Is(err, state.err) {
+			t.Fatalf("shared-state close failure missing from shutdown: %v", err)
+		}
+		if err := r.Close(); !errors.Is(err, state.err) {
+			t.Fatalf("repeated close lost shared-state failure: %v", err)
 		}
 		if state.closes.Load() != 1 {
 			t.Fatalf("state closes = %d, want 1", state.closes.Load())
 		}
 		select {
 		case err := <-r.errors:
-			t.Fatalf("optional shared-state failure reached fatal errors: %v", err)
+			t.Fatalf("shutdown failure reached asynchronous errors: %v", err)
 		default:
 		}
 	})
@@ -81,8 +84,8 @@ func TestRuntimeSharedStatesRetryFailedFinalRelease(t *testing.T) {
 	if err := release(); !errors.Is(err, state.err) {
 		t.Fatal(err)
 	}
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
+	if err := r.Close(); !errors.Is(err, state.err) {
+		t.Fatalf("shutdown retry lost shared-state close failure: %v", err)
 	}
 	if state.closes.Load() != 2 {
 		t.Fatalf("state closes = %d, want a shutdown retry", state.closes.Load())

@@ -10,65 +10,64 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
+// The attachment order is also the role numbering in the replacement manifest.
+const (
+	netnsSocketLookup = iota
+	netnsPeerEgress
+	netnsPeerIngress
+	netnsHostIngress
+	netnsRoleCount
+)
+
+func (p *bpfPrograms) namespacePrograms() [netnsRoleCount]*ebpf.Program {
+	return [netnsRoleCount]*ebpf.Program{
+		netnsSocketLookup: p.TproxySkLookup, netnsPeerEgress: p.TproxyDae0peerEgress,
+		netnsPeerIngress: p.TproxyDae0peerIngress, netnsHostIngress: p.TproxyDae0Ingress,
+	}
+}
+
+func namespaceAttachType(role uint8, netkit bool) ebpf.AttachType {
+	switch role {
+	case netnsSocketLookup:
+		return ebpf.AttachSkLookup
+	case netnsPeerEgress:
+		return ebpf.AttachTCXEgress
+	case netnsPeerIngress:
+		if netkit {
+			return ebpf.AttachNetkitPrimary
+		}
+	case netnsHostIngress:
+		if netkit {
+			return ebpf.AttachNetkitPeer
+		}
+	}
+	return ebpf.AttachTCXIngress
+}
+
 // attachPrograms attaches only the internal handoff and return paths. Host
 // capture predicates and kernel-direct decisions remain in the host TCX programs.
-// Netkit and TCX share SCHED_CLS programs; link creation selects the hook.
-func (ns *DaeNetns) attachPrograms(programs bpfPrograms) (links []link.Link, err error) {
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, closeBpfLinks(links))
-			links = nil
-		}
-	}()
-	skLookup, err := link.AttachNetNs(int(ns.daeNs), programs.TproxySkLookup)
-	if err != nil {
-		return nil, fmt.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
-	}
-	links = append(links, skLookup)
-	peerEgress, err := ns.With(func() (link.Link, error) {
-		return link.AttachTCX(link.TCXOptions{
-			Interface: ns.dae0peer.Attrs().Index, Program: programs.TproxyDae0peerEgress,
-			Attach: ebpf.AttachTCXEgress,
-		})
-	})
-	if err != nil {
-		return links, fmt.Errorf("attach dae0peer DNS reply egress: %w", err)
-	}
-	links = append(links, peerEgress)
-	if ns.dae0.Type() == "netkit" {
-		for _, target := range []struct {
-			program *ebpf.Program
-			attach  ebpf.AttachType
-		}{
-			{programs.TproxyDae0peerIngress, ebpf.AttachNetkitPrimary},
-			{programs.TproxyDae0Ingress, ebpf.AttachNetkitPeer},
-		} {
-			attached, err := link.AttachNetkit(link.NetkitOptions{
-				Interface: ns.dae0.Attrs().Index, Program: target.program, Attach: target.attach,
+func (ns *DaeNetns) attachPrograms(programs bpfPrograms) ([]link.Link, error) {
+	var links []link.Link
+	for role, program := range programs.namespacePrograms() {
+		attach := namespaceAttachType(uint8(role), ns.dae0.Type() == "netkit")
+		var l link.Link
+		var err error
+		switch {
+		case attach == ebpf.AttachSkLookup:
+			l, err = link.AttachNetNs(int(ns.daeNs), program)
+		case attach == ebpf.AttachNetkitPrimary || attach == ebpf.AttachNetkitPeer:
+			l, err = link.AttachNetkit(link.NetkitOptions{Interface: ns.dae0.Attrs().Index, Program: program, Attach: attach})
+		case role == netnsHostIngress:
+			l, err = link.AttachTCX(link.TCXOptions{Interface: ns.dae0.Attrs().Index, Program: program, Attach: attach})
+		default:
+			l, err = ns.With(func() (link.Link, error) {
+				return link.AttachTCX(link.TCXOptions{Interface: ns.dae0peer.Attrs().Index, Program: program, Attach: attach})
 			})
-			if err != nil {
-				return links, fmt.Errorf("attach %s program: %w", target.attach, err)
-			}
-			links = append(links, attached)
 		}
-		return links, nil
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("attach namespace role %d (%s): %w", role, attach, err), closeBpfLinks(links))
+		}
+		links = append(links, l)
 	}
-	peer, err := ns.With(func() (link.Link, error) {
-		return link.AttachTCX(link.TCXOptions{
-			Interface: ns.dae0peer.Attrs().Index, Program: programs.TproxyDae0peerIngress,
-			Attach: ebpf.AttachTCXIngress,
-		})
-	})
-	if err != nil {
-		return links, fmt.Errorf("attach veth dae0peer ingress: %w", err)
-	}
-	links = append(links, peer)
-	host, err := link.AttachTCX(link.TCXOptions{
-		Interface: ns.dae0.Attrs().Index, Program: programs.TproxyDae0Ingress,
-		Attach: ebpf.AttachTCXIngress,
-	})
-	if err != nil {
-		return links, fmt.Errorf("attach veth dae0 ingress: %w", err)
-	}
-	return append(links, host), nil
+	return links, nil
 }

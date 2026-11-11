@@ -70,7 +70,10 @@ func TestReloadKernelPreservesEstablishedTCP(t *testing.T) {
 	for _, f := range flows {
 		t.Run("establish/"+f.name, func(t *testing.T) { run(t, collection, f.syn, f.verdict, f.mark) })
 	}
-	next, nextState := dnsKernelGeneration(t, map[string]*ebpf.Map{"tcp_flow_map": collection.Maps["tcp_flow_map"], "routing_tuples_map": collection.Maps["routing_tuples_map"]}, 1)
+	next, nextState := dnsKernelGeneration(t, map[string]*ebpf.Map{
+		"tcp_flow_map":       collection.Maps["tcp_flow_map"],
+		"routing_tuples_map": collection.Maps["routing_tuples_map"],
+	}, 1)
 	// Publish an intentionally incompatible new policy while attachments remain
 	// active. Established flows must not consult either old or partial new rules.
 	replacement, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "l4proto(tcp) -> block"))

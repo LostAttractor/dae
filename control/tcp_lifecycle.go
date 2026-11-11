@@ -49,8 +49,9 @@ func (s *tcpConnectionSet) abort() <-chan struct{} {
 	var closes sync.WaitGroup
 	s.mu.Lock()
 	for conn, lease := range s.connections {
-		lease.Abort(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup, Scope: netproxy.ScopeOperation}))
 		setTCPResetOnClose(conn)
+		// Abort callbacks may close immediately; arm the reset first.
+		lease.Abort(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup, Scope: netproxy.ScopeOperation}))
 		closes.Go(func() {
 			_ = conn.Close()
 		})

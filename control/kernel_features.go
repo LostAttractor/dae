@@ -46,10 +46,38 @@ func runKernelChecks(ctx context.Context, checks ...kernelCheck) error {
 
 // CheckKernelFeatures verifies the running kernel before startup resources are
 // prepared. Small programs probe attachment APIs; the real collection load
-// validates production programs and helpers once. Network probes live in an unnamed network namespace;
-// cgroup probes only attach allow-only programs. All probe resources are closed.
+// validates production programs and helpers once. Conntrack probes use host
+// loopback sockets and unattached programs; attachment probes use an unnamed
+// network namespace. Cgroup probes only attach allow-only programs. All probe
+// resources are closed.
 func CheckKernelFeatures(ctx context.Context) error {
 	return checkKernelFeatures(ctx, netlink.LinkAdd)
+}
+
+// CheckProductionBPF loads and immediately closes the embedded production eBPF
+// collection with unpinned maps so replacement preflight validates kernel
+// verifier acceptance before blocking the predecessor.
+func CheckProductionBPF(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	hasBpfGetCurrentTask, err := probeBPFCurrentTask()
+	if err != nil {
+		return fmt.Errorf("kernel preflight: %w", err)
+	}
+	var objects bpfObjects
+	if err := loadBpfObjectsWithConstants(&objects, nil, map[string]any{
+		"proxy_netns_id": int32(-1),
+		"PARAM": bpfDaeParam{
+			ControlPlanePid:      1,
+			Dae0Ifindex:          1,
+			Dae0peerIfindex:      2,
+			HasBpfGetCurrentTask: hasBpfGetCurrentTask,
+		},
+	}); err != nil {
+		return fmt.Errorf("kernel preflight: verify production eBPF programs: %w", explainBPFLoadError(err))
+	}
+	return objects.Close()
 }
 
 func checkKernelFeatures(ctx context.Context, addLink func(netlink.Link) error) error {
@@ -62,6 +90,9 @@ func checkKernelFeatures(ctx context.Context, addLink func(netlink.Link) error) 
 			return err
 		}},
 	); err != nil {
+		return fmt.Errorf("kernel preflight failed: %w", err)
+	}
+	if err := runKernelChecks(ctx, kernelCheck{"host conntrack", func() error { return probeHostConntrack(ctx) }}); err != nil {
 		return fmt.Errorf("kernel preflight failed: %w", err)
 	}
 	// Use the same device selection and attachment path as normal startup.

@@ -34,7 +34,7 @@ func TestInternalLinkDatapathIntegration(t *testing.T) {
 	for _, linkType := range []string{"netkit", "veth"} {
 		for _, origin := range []string{"WAN", "LAN"} {
 			t.Run(linkType+"/"+origin, func(t *testing.T) {
-				withInternalLinkDatapath(t, linkType, origin == "LAN", func(ns *DaeNetns, objects *bpfObjects) {
+				withInternalLinkDatapath(t, linkType, origin == "LAN", func(ns *DaeNetns, objects *bpfObjects, _ []link.Link) {
 					for _, family := range []string{"4", "6"} {
 						target := netip.MustParseAddrPort("203.0.113.8:4444")
 						if family == "6" {
@@ -51,7 +51,7 @@ func TestInternalLinkDatapathIntegration(t *testing.T) {
 	}
 }
 
-func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(*DaeNetns, *bpfObjects)) {
+func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(*DaeNetns, *bpfObjects, []link.Link)) {
 	t.Helper()
 	must := func(err error) {
 		t.Helper()
@@ -73,6 +73,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 	must(err)
 	defer host.Close()
 	configureDatapathTestNamespace(t)
+	defer enableConntrackForTest(t, host)()
 	peerNS, err := netns.New()
 	must(err)
 	defer peerNS.Close()
@@ -99,7 +100,16 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 	must(err)
 	must(netlink.LinkSetUp(peer))
 	must(netns.Set(host))
+	// Reserve netns ID 0 on an unrelated namespace so proxy_netns_id is non-zero.
+	decoyNS, err := netns.New()
+	must(err)
+	defer decoyNS.Close()
+	must(netlink.SetNetNsIdByFd(int(decoyNS), -1))
 	ns := &DaeNetns{dae0: primary, dae0peer: peer, hostNs: host, daeNs: peerNS}
+	must(ns.setupNetnsID())
+	if ns.ID() <= 0 {
+		t.Fatalf("expected non-zero dae netns ID, got %d", ns.ID())
+	}
 	ns.setupDone.Store(true)
 	must(ns.setupIPv4Datapath())
 	must(ns.setupIPv6Datapath())
@@ -130,7 +140,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 		must(netlink.LinkSetUp(clientLink))
 		targetMAC = uplink.Attrs().HardwareAddr
 	}
-	for _, cidr := range []string{"198.18.0.1/24", "2001:db8:1::1/64"} {
+	for _, cidr := range []string{"198.18.0.1/24", "198.18.0.2/24", "2001:db8:1::1/64", "2001:db8:1::2/64"} {
 		addr, err := netlink.ParseAddr(cidr)
 		must(err)
 		addr.Flags = unix.IFA_F_NODAD
@@ -146,6 +156,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 
 	spec, err := loadBpf()
 	must(err)
+	must(spec.Variables["proxy_netns_id"].Set(ns.ID()))
 	must(spec.Variables["PARAM"].Set(bpfDaeParam{
 		ControlPlanePid: uint32(os.Getpid()), Dae0Ifindex: uint32(primary.Attrs().Index),
 		Dae0peerIfindex: uint32(peer.Attrs().Index), Dae0peerMac: [6]uint8(peer.Attrs().HardwareAddr),
@@ -180,7 +191,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 	must(err)
 	defer ingress.Close()
 	must(netns.Set(clientNS))
-	run(ns, objects)
+	run(ns, objects, append(internalLinks, ingress, egress))
 }
 
 func configureDatapathTestNamespace(t *testing.T) {
@@ -298,14 +309,18 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	udp.SetDeadline(deadline)
-	client, err := (&net.Dialer{Deadline: deadline}).DialContext(t.Context(), "udp"+family, target.String())
+	sourceIP := "198.18.0.1"
+	if family == "6" {
+		sourceIP = "2001:db8:1::1"
+	}
+	client, err := net.ListenUDP("udp"+family, &net.UDPAddr{IP: net.ParseIP(sourceIP)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 	client.SetDeadline(deadline)
 	payload := []byte("internal UDP echo")
-	if _, err := client.Write(payload); err != nil {
+	if _, err := client.WriteToUDPAddrPort(payload, target); err != nil {
 		t.Fatal(err)
 	}
 	buf, oob := make([]byte, 256), make([]byte, 128)
@@ -318,13 +333,6 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	}
 	if source != client.LocalAddr().(*net.UDPAddr).AddrPort() {
 		t.Fatalf("UDP source changed: %s, want %s", source, client.LocalAddr())
-	}
-	// A relayed reply without state starts its flow as outbound. An inbound
-	// flow would send the client's next datagrams around the relay.
-	flow := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(target.Port()), L4proto: unix.IPPROTO_UDP}
-	flow.Sip.U6Addr8, flow.Dip.U6Addr8 = source.Addr().As16(), target.Addr().As16()
-	if err := objects.UdpConnStateMap.Delete(flow); err != nil {
-		t.Fatalf("UDP flow state: %v", err)
 	}
 	reply, err := ns.With(func() (net.PacketConn, error) {
 		lc := tproxyListenConfig()
@@ -341,11 +349,46 @@ func testInternalLinkUDP(t *testing.T, ns *DaeNetns, objects *bpfObjects, family
 	if err != nil || !bytes.Equal(buf[:n], payload) {
 		t.Fatalf("UDP reply=%q err=%v", buf[:n], err)
 	}
-	var state bpfUdpConnState
-	if err := objects.UdpConnStateMap.Lookup(flow, &state); err != nil || state.IsWanIngressDirection {
-		t.Fatalf("relayed reply flow state %+v: %v", state, err)
+	// A relay's reply must not exempt the client's next request from capture.
+	if _, err := client.WriteToUDPAddrPort(payload, target); err != nil {
+		t.Fatal(err)
+	}
+	n, oobn, _, from, err := udp.ReadMsgUDPAddrPort(buf, oob)
+	if err != nil || !bytes.Equal(buf[:n], payload) || from != source ||
+		common.ConvergeAddrPort(RetrieveOriginalDest(oob[:oobn])) != target {
+		t.Fatalf("UDP request after relay: source=%s packet=%q err=%v", from, buf[:n], err)
 	}
 	assertInternalLinkRoute(t, objects, source, target, unix.IPPROTO_UDP)
+
+	// Established source lifetimes outlive their first handoff and can send
+	// to other destinations without publishing another per-destination record.
+	c := &ControlPlane{core: &controlPlaneCore{bpf: &BPFState{bpfObjects: objects}}}
+	result, err := retrieveRoutingResult(objects.RoutingTuplesMap, source, target, unix.IPPROTO_UDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbind, err := c.bindUDPSource(source, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unbind()
+	key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(target.Port()), L4proto: unix.IPPROTO_UDP}
+	key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), target.Addr().As16()
+	if err := objects.RoutingTuplesMap.Delete(key); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range []netip.AddrPort{target, netip.AddrPortFrom(target.Addr(), target.Port()+1)} {
+		if _, err := client.WriteToUDPAddrPort(payload, dst); err != nil {
+			t.Fatal(err)
+		}
+		n, oobn, _, from, err := udp.ReadMsgUDPAddrPort(buf, oob)
+		if err != nil {
+			t.Fatalf("bound UDP source to %s: %v", dst, err)
+		}
+		if !bytes.Equal(buf[:n], payload) || from != source || common.ConvergeAddrPort(RetrieveOriginalDest(oob[:oobn])) != dst {
+			t.Fatalf("bound UDP source to %s: source=%s packet=%q", dst, from, buf[:n])
+		}
+	}
 }
 
 func assertInternalLinkRoute(t *testing.T, objects *bpfObjects, source, destination netip.AddrPort, proto uint8) {

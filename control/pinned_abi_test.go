@@ -59,7 +59,7 @@ func TestPinnedMapABI(t *testing.T) {
 		fields []field
 	}{
 		"tcp_flow_map/key":       {spec.Maps["tcp_flow_map"].Key, 40, []field{{"sip", 0, 16}, {"dip", 16, 16}, {"sport", 32, 2}, {"dport", 34, 2}, {"l4proto", 36, 1}}},
-		"tcp_flow_map/value":     {spec.Maps["tcp_flow_map"].Value, 24, []field{{"route_epoch", 0, 8}, {"mark", 8, 4}, {"fallback", 12, 4}, {"syn_seq", 16, 4}, {"padding", 20, 4}}},
+		"tcp_flow_map/value":     {spec.Maps["tcp_flow_map"].Value, 24, []field{{"route_epoch", 0, 8}, {"mark", 8, 4}, {"fallback", 12, 4}, {"syn_seq", 16, 4}, {"explicit_direct", 20, 4}}},
 		"socket_owner_map/value": {spec.Maps["socket_owner_map"].Value, 20, []field{{"pid", 0, 4}, {"pname", 4, 16}}},
 	} {
 		t.Run(name, func(t *testing.T) {

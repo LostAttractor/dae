@@ -211,6 +211,9 @@ struct udp_binding {
 
 _Static_assert(sizeof(struct udp_binding) == 16, "UDP binding ABI size");
 
+#define FLOW_EXPLICIT_DIRECT 0x80
+_Static_assert(!(L4ProtoType_X & FLOW_EXPLICIT_DIRECT), "flow flags overlap L4 protocol bits");
+
 /* Shared by TCP tuples and UDP source decisions, with no alignment holes.
  * Process-name predicates use the socket owner storage, not this result.
  * Preserve first-packet metadata: interfaces, DSCP and policies can change
@@ -226,7 +229,7 @@ struct routing_result {
 	__u8 outbound;
 	__u8 must;
 	__u8 capture_flags;
-	__u8 protocol;
+	__u8 flow_flags; /* L4ProtoType bits and explicit-direct provenance. */
 	__u8 dscp;
 	__u8 source_origin;
 	__u32 physinif;
@@ -297,7 +300,7 @@ struct tcp_flow_state {
 	__u32 mark;
 	__u32 fallback;
 	__be32 syn_seq;
-	__u32 padding;
+	__u32 explicit_direct;
 };
 
 /* Bounded setup mailbox. TCP consumes its entry at accept; UDP snapshots it.
@@ -561,6 +564,15 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } daemon_identity_map SEC(".maps");
 
+/* The preflight child is not the registered daemon. Its kernel TGID is
+ * published separately and cleared before the generation becomes active. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u32);
+} replacement_pid_map SEC(".maps");
+
 static __always_inline bool daemon_pid_registered(__u32 pid)
 {
 	__u64 *registered = bpf_map_lookup_elem(&daemon_identity_map, &zero_key);
@@ -581,6 +593,11 @@ static __always_inline __u8 daemon_status(void)
 	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
 
 	return exited ? *exited : DAEMON_STARTING;
+}
+
+static __always_inline bool stopping(void)
+{
+	return daemon_status() == DAEMON_STOPPING;
 }
 
 static __always_inline bool daemon_offline(void)
@@ -895,6 +912,15 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 
 		*l4proto = nexthdr;
+	} else if (ethh->h_proto == bpf_htons(ETH_P_ARP)) {
+		struct arphdr arp;
+
+		if (bpf_skb_load_bytes(skb, *offset, &arp, sizeof(arp)) ||
+		    arp.ar_hln != ETH_ALEN || arp.ar_pln != 4 ||
+		    arp.ar_pro != bpf_htons(ETH_P_IP) ||
+		    *offset + sizeof(arp) + 2 * (ETH_ALEN + 4) > skb->len)
+			return -EINVAL;
+		return 2; /* Valid control protocol, independent of capture policy. */
 	} else {
 		return 1;
 	}
@@ -929,6 +955,11 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			return -EINVAL;
 		*offset += sizeof(struct udphdr);
 		break;
+	case IPPROTO_ICMP:
+		if (ethh->h_proto != bpf_htons(ETH_P_IP) ||
+		    *offset + sizeof(struct icmphdr) > *packet_end)
+			return -EINVAL;
+		return 2;
 	case IPPROTO_ICMPV6:
 		if (ethh->h_proto != bpf_htons(ETH_P_IPV6))
 			return 1;
@@ -1117,6 +1148,8 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 
 	if (!value)
 		return 0;
+	if (stopping() && !(value->result.flow_flags & FLOW_EXPLICIT_DIRECT))
+		return -1;
 	struct device_route_state *device = device_route(value->result.mac);
 
 	if (device && device->updating)
@@ -1418,43 +1451,100 @@ static __always_inline void note_inbound_udp(const struct tuples_key *key)
 		*(volatile __u32 *)seen = now;
 }
 
-/* Absent from kernels without conntrack. The low bits of _nfct hold the
- * packet's ip_conntrack_info. */
+/* The 12-byte options ABI is supported by the minimum kernel (6.13).
+ * Lookups use the current host namespace and its default conntrack zone. */
+struct bpf_ct_opts {
+	__s32 netns_id;
+	__s32 error;
+	__u8 l4proto;
+	__u8 dir;
+	__u16 reserved;
+};
+
+struct nf_conn {};
+struct nf_conn *bpf_skb_ct_lookup(struct __sk_buff *ctx,
+				  struct bpf_sock_tuple *tuple, __u32 tuple_size,
+				  struct bpf_ct_opts *opts, __u32 opts_size) __ksym;
+void bpf_ct_release(struct nf_conn *ct) __ksym;
+
+enum ct_direction {
+	CT_UNKNOWN,
+	CT_ORIGINAL,
+	CT_REPLY,
+};
+
 struct sk_buff___dae_ct {
 	unsigned long _nfct;
 } __attribute__((preserve_access_index));
 
-#define NFCT_INFO_MASK 7
-#define NFCT_ESTABLISHED_REPLY 3 /* IP_CT_ESTABLISHED_REPLY */
+#define NFCT_INFO_MASK 7UL
+#define NFCT_ESTABLISHED_REPLY 3
+#define NFCT_RELATED_REPLY 4
 
-/* Whether conntrack saw the flow of a local packet start at the remote end.
- * WAN ingress, before NAT, misses a local socket that NAT redirects inbound
- * flows to; its replies leave WAN egress after reverse NAT, still without
- * state. dae's relayed replies start outbound state, so their flows never
- * get here. */
-static __always_inline bool answers_inbound_flow(struct __sk_buff *ctx)
+static __always_inline int attached_ct_direction(struct __sk_buff *ctx)
 {
-	struct sk_buff___dae_ct *skb;
-
 	if (!bpf_core_field_exists(struct sk_buff___dae_ct, _nfct))
-		return false;
-	skb = bpf_cast_to_kern_ctx(ctx);
-	return (skb->_nfct & NFCT_INFO_MASK) == NFCT_ESTABLISHED_REPLY;
+		return CT_UNKNOWN;
+	struct sk_buff___dae_ct *skb = bpf_cast_to_kern_ctx(ctx);
+	unsigned long nfct = skb->_nfct;
+	__u32 info = nfct & NFCT_INFO_MASK;
+
+	if (!(nfct & ~NFCT_INFO_MASK))
+		return CT_UNKNOWN;
+	if (info < NFCT_ESTABLISHED_REPLY)
+		return CT_ORIGINAL;
+	if (info <= NFCT_RELATED_REPLY)
+		return CT_REPLY;
+	return CT_UNKNOWN;
 }
 
-/* Whether a packet without state answers an inbound flow, whose replies leave
- * directly: one that started on the reply path within the idle timeout, or
- * one that conntrack saw start at the remote end. An answered flow keeps its
- * state; the pending entry ages out of its LRU. */
+static __always_inline int lookup_ct_direction(struct __sk_buff *skb,
+					       const struct tuples_key *five)
+{
+	struct bpf_sock_tuple tuple = {};
+	struct bpf_ct_opts opts = {.netns_id = BPF_F_CURRENT_NETNS,
+				   .l4proto = IPPROTO_UDP};
+	__u32 size = fill_socket_tuple(&tuple, five, skb->protocol);
+	struct nf_conn *ct;
+
+	ct = bpf_skb_ct_lookup(skb, &tuple, size, &opts, sizeof(opts));
+	if (!ct)
+		return opts.error == -ENOENT ? CT_UNKNOWN : opts.error;
+	bpf_ct_release(ct);
+	return opts.dir == 0 ? CT_ORIGINAL : CT_REPLY;
+}
+
 static __always_inline bool answers_inbound_udp(struct __sk_buff *skb, bool is_wan,
 						const struct tuples_key *key)
 {
 	__u32 *seen = bpf_map_lookup_elem(&udp_inbound_pending_map, key);
 
-	/* Signed: a datagram on another CPU may store a later second than now. */
+	/* Pending entries are recorded only for proven original-direction packets. */
 	if (seen && (__s32)(udp_conn_now() - *(volatile __u32 *)seen) <= UDP_CONN_STATE_TIMEOUT_S)
 		return true;
-	return is_wan && answers_inbound_flow(skb);
+	/* WAN egress is after NAT; LAN ingress must query before netfilter. */
+	return (is_wan ? attached_ct_direction(skb) : lookup_ct_direction(skb, key)) == CT_REPLY;
+}
+
+/* Unattached startup probe queries records created by real host UDP sockets. */
+SEC("tc/conntrack_probe")
+int conntrack_probe(struct __sk_buff *skb)
+{
+	struct ethhdr ethh;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
+	struct tuples tuples;
+	__u8 protocol;
+	__u32 offset = 0, packet_end;
+	enum fragment_state fragment;
+	int ret = parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h,
+				  &protocol, &offset, &packet_end, &fragment);
+
+	if (ret || protocol != IPPROTO_UDP || fragment != FRAGMENT_NONE ||
+	    !bpf_core_field_exists(struct sk_buff___dae_ct, _nfct))
+		return -EINVAL;
+	get_tuples(skb, &tuples, &l3h, &l4h, protocol);
+	return lookup_ct_direction(skb, &tuples.five);
 }
 
 static __always_inline struct pid_pname *socket_owner(struct __sk_buff *skb)
@@ -1471,7 +1561,13 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 						 struct pid_pname **pid_pname)
 {
 	*pid_pname = socket_owner(skb);
-	return *pid_pname && daemon_pid_registered((*pid_pname)->pid);
+	if (!*pid_pname)
+		return false;
+	if (daemon_pid_registered((*pid_pname)->pid))
+		return true;
+	__u32 *candidate = bpf_map_lookup_elem(&replacement_pid_map, &zero_key);
+
+	return candidate && *candidate && (*pid_pname)->pid == *candidate;
 }
 
 static __always_inline int save_tcp_flow(struct tuples_key *key,
@@ -1483,6 +1579,7 @@ static __always_inline int save_tcp_flow(struct tuples_key *key,
 		.mark = result->mark,
 		.fallback = fallback,
 		.syn_seq = tcp->seq,
+		.explicit_direct = !!(result->flow_flags & FLOW_EXPLICIT_DIRECT),
 	};
 
 	if (result->outbound != OUTBOUND_DIRECT || result->capture_flags)
@@ -1577,6 +1674,8 @@ tcp_packet_action(struct __sk_buff *skb, struct tuples_key *key,
 	if (saved) {
 		flow = *saved;
 		valid = flow.route_epoch == route_epoch && fallback_live(flow.fallback);
+		if (stopping() && !flow.explicit_direct)
+			valid = false;
 	}
 	if (tcp->syn && !tcp->ack) {
 		if (saved && flow.syn_seq == tcp->seq) {
@@ -1616,7 +1715,7 @@ tcp_packet_action(struct __sk_buff *skb, struct tuples_key *key,
 	}
 	if (tcp_handoff_live(key, 0, 0, false) || tcp_proxy_socket_live(skb, key))
 		return TCP_PACKET_PROXY;
-	return TCP_PACKET_NATIVE;
+	return stopping() ? -1 : TCP_PACKET_NATIVE;
 }
 
 static __always_inline int publish_handoff(struct tuples_key *key,
@@ -1669,6 +1768,9 @@ static __always_inline void decode_route_result(struct routing_result *result,
 	result->mark = encoded >> ROUTE_RESULT_MARK_SHIFT;
 	result->must = (encoded >> ROUTE_RESULT_MUST_SHIFT) & 1;
 	result->capture_flags = encoded >> ROUTE_RESULT_CAPTURE_SHIFT;
+	if (result->outbound == OUTBOUND_DIRECT && !result->capture_flags &&
+	    !(encoded & ROUTE_RESULT_SKIPPED_NOALIVE))
+		result->flow_flags |= FLOW_EXPLICIT_DIRECT;
 }
 
 static __always_inline void fill_route_metadata(struct routing_result *result,
@@ -1680,7 +1782,7 @@ static __always_inline void fill_route_metadata(struct routing_result *result,
 	result->generation = generation;
 	result->route_epoch = route_epoch;
 	result->profile_id = params->profile_id;
-	result->protocol = params->l4proto_type;
+	result->flow_flags |= params->l4proto_type;
 	result->dscp = params->dscp;
 	result->ifindex = params->ifindex;
 	result->physinif = params->physinif;
@@ -1694,8 +1796,11 @@ static __always_inline int do_tproxy_first_fragment(
 {
 	__u32 generation = routing_generation;
 
-	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP)
+	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP) {
+		if (stopping())
+			return l4proto == IPPROTO_ICMP || l4proto == IPPROTO_ICMPV6 ? TCX_NEXT : TCX_DROP;
 		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
+	}
 	if (parse_ret)
 		return TCX_DROP;
 	struct ingress_scratch *scratch = bpf_map_lookup_elem(&ingress_scratch_map, &zero_key);
@@ -1753,7 +1858,7 @@ static __always_inline int do_tproxy_first_fragment(
 		    (hit && (saved->outbound != OUTBOUND_DIRECT ||
 			     saved->mark || saved->capture_flags)))
 			return TCX_DROP;
-		if (hit)
+		if (hit && (tuples->five.dport != bpf_htons(53) || !stopping()))
 			goto direct;
 	}
 	/* Later fragments cannot prove an offline lifetime; do not admit a new
@@ -1770,14 +1875,16 @@ static __always_inline int do_tproxy_first_fragment(
 
 	if (route_result < 0 ||
 	    ((route_result & ROUTE_RESULT_SKIPPED_NOALIVE) &&
-	     daemon_offline() != scratch->state.offline) ||
+	     (daemon_offline() && !stopping()) != scratch->state.offline) ||
 	    (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
 		return TCX_DROP;
 	struct routing_result decoded = {};
 	__u32 fallback = 0;
 
 	decode_route_result(&decoded, route_result);
-	if (degrade_unavailable(&decoded, skb->protocol, l4proto, &fallback))
+	if (stopping() && !(decoded.flow_flags & FLOW_EXPLICIT_DIRECT))
+		return TCX_DROP;
+	if (!stopping() && degrade_unavailable(&decoded, skb->protocol, l4proto, &fallback))
 		return TCX_DROP;
 	if (decoded.outbound == OUTBOUND_DIRECT) {
 		if (!fallback_live(fallback) || decoded.mark || skb->mark)
@@ -1786,6 +1893,7 @@ static __always_inline int do_tproxy_first_fragment(
 
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
+		result->flow_flags = decoded.flow_flags;
 		fill_route_metadata(result, params, generation, route_epoch, is_wan);
 		if (l4proto == IPPROTO_UDP) {
 			if (save_udp_route(&udp_key, result, fallback) ||
@@ -1838,7 +1946,7 @@ static __always_inline int do_tproxy_unfragmented(
 	__u32 generation = routing_generation;
 
 	if (parse_ret)
-		return TCX_NEXT;
+		return parse_ret == 2 || !stopping() ? TCX_NEXT : TCX_DROP;
 	if (l4proto == IPPROTO_ICMPV6)
 		return TCX_NEXT;
 
@@ -1916,14 +2024,13 @@ static __always_inline int do_tproxy_unfragmented(
 	struct routing_result *routing_result = &scratch->route.result;
 	__u32 fallback = 0;
 
-	__builtin_memset(routing_result, 0, sizeof(*routing_result));
 	struct udp_routing_cache_key udp_key = {};
 
 	if (l4proto == IPPROTO_UDP)
 		fill_udp_routing_cache_key(&udp_key, tuples);
 	/* Online DNS is per-destination. Crash bypass must not let an old proxy
 	 * source escape its binding merely by sending to a DNS destination. */
-	if (l4proto == IPPROTO_UDP && (!isdns || crashed)) {
+	if (l4proto == IPPROTO_UDP && (!isdns || crashed || stopping())) {
 		struct udp_binding *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
 		struct udp_binding source = { .source_origin = is_wan ? SOURCE_LOCAL : SOURCE_LAN };
 
@@ -1939,12 +2046,14 @@ static __always_inline int do_tproxy_unfragmented(
 
 		if (hit < 0)
 			return TCX_DROP;
-		if (hit)
+		/* During replacement only this DNS packet's route can prove explicit direct. */
+		if (hit && (!isdns || crashed))
 			goto selected;
 	}
 
 	struct route_params *params = &scratch->params;
 
+	__builtin_memset(routing_result, 0, sizeof(*routing_result));
 	fill_route_params(params, skb, is_wan, ethh, l4h, tuples, pid_pname,
 			  l4proto, offset, packet_end, protocol, ifindex);
 
@@ -1963,14 +2072,15 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (route_ret < 0 ||
 	    ((route_ret & ROUTE_RESULT_SKIPPED_NOALIVE) &&
-	     daemon_offline() != scratch->state.offline))
+	     (daemon_offline() && !stopping()) != scratch->state.offline))
 		return TCX_DROP;
 	decode_route_result(routing_result, route_ret);
 	fill_route_metadata(routing_result, params, generation, route_epoch, is_wan);
 
-	if (routing_result->outbound == OUTBOUND_BLOCK)
+	if (routing_result->outbound == OUTBOUND_BLOCK ||
+	    (stopping() && !(routing_result->flow_flags & FLOW_EXPLICIT_DIRECT)))
 		return TCX_DROP;
-	if (!routing_result->capture_flags &&
+	if (!stopping() && !routing_result->capture_flags &&
 	    degrade_unavailable(routing_result, protocol, l4proto, &fallback))
 		return TCX_DROP;
 	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must)) {
@@ -2000,6 +2110,8 @@ static __always_inline int do_tproxy_unfragmented(
 	}
 
 selected:
+	if (stopping() && !(routing_result->flow_flags & FLOW_EXPLICIT_DIRECT))
+		return TCX_DROP;
 	/* A membership commit may have raced route evaluation. */
 	device = device_route(ethh->h_source);
 	if (device && (device->updating || device->epoch != route_epoch) && !exempt)
@@ -2112,9 +2224,9 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		return TCX_DROP;
 	}
 	if (fragment_state == FRAGMENT_NONFIRST)
-		return TCX_NEXT;
+		return stopping() ? TCX_DROP : TCX_NEXT;
 	if (ret)
-		return TCX_NEXT;
+		return ret == 2 || !stopping() ? TCX_NEXT : TCX_DROP;
 
 	if (!wan && skb->ingress_ifindex == NOWHERE_IFINDEX &&
 	    l4proto == IPPROTO_ICMPV6 &&
@@ -2147,14 +2259,25 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		 * associations and start outbound state. */
 		bool relayed = skb->cb[0] == DAE_REPLY_MARK;
 
-		if (relayed)
+		if (relayed) {
+			/* Reinjection must not create a reversed original after host CT expired. */
+			if (wan && lookup_ct_direction(skb, &tuples.five) != CT_REPLY)
+				return TCX_DROP;
 			skb->cb[0] = 0;
+		}
 		if (touch_udp_conn_state(&reversed_tuples_key))
 			return TCX_NEXT;
 		if (relayed && !new_udp_conn_state(&reversed_tuples_key, false))
 			return TCX_DROP;
-		if (!relayed && (!wan || udp_to_local_socket(skb, &tuples.five)))
-			note_inbound_udp(&reversed_tuples_key);
+		if (!relayed && (!wan || udp_to_local_socket(skb, &tuples.five))) {
+			int direction = attached_ct_direction(skb);
+
+			if (direction == CT_UNKNOWN)
+				direction = lookup_ct_direction(skb, &tuples.five);
+			/* Old outbound replies in a fresh generation are not inbound requests. */
+			if (direction == CT_ORIGINAL)
+				note_inbound_udp(&reversed_tuples_key);
+		}
 	}
 
 	return TCX_NEXT;
@@ -2318,6 +2441,20 @@ static __always_inline bool dns_reply_matches(struct __sk_buff *skb,
 SEC("netkit/peer")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
+	if (stopping()) {
+		struct ethhdr ethh;
+		struct l3_hdr l3h;
+		struct l4_hdr l4h;
+		__u8 protocol;
+		__u32 offset = 0, packet_end;
+		enum fragment_state fragment;
+
+		if (parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h,
+				    &protocol, &offset, &packet_end, &fragment) ||
+		    fragment != FRAGMENT_NONE || protocol != IPPROTO_TCP || !l4h.tcph.rst)
+			return TC_ACT_SHOT;
+	}
+
 	struct redirect_entry *redirect_entry;
 
 	if (skb->cb[0] == DNS_REPLY_MARK) {
@@ -2388,6 +2525,8 @@ int tproxy_sk_lookup(struct bpf_sk_lookup *ctx)
 
 	if (ctx->ingress_ifindex != PARAM.dae0peer_ifindex)
 		return SK_PASS;
+	if (stopping())
+		return SK_DROP;
 	if (ctx->family != AF_INET && ctx->family != AF_INET6)
 		return SK_PASS;
 
@@ -2574,24 +2713,25 @@ int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 	return 1;
 }
 
-SEC("tp/sched/sched_process_exit")
-int handle_exit(struct trace_event_raw_sched_process_template *ctx)
+static __always_inline void record_daemon_exit(__u32 pid)
 {
-	/* Get PID and TID of exiting thread/process. */
-	__u64 id = bpf_get_current_pid_tgid();
-	__u32 pid = id >> 32;
-	__u32 tid = id;
-
-	/* Ignore thread exits. */
-	if (pid != tid)
-		return 0;
-
 	unregister_daemon(pid);
-	if (pid == PARAM.control_plane_pid) {
+	if (pid == PARAM.control_plane_pid && !stopping()) {
 		__u8 exited = DAEMON_OFFLINE;
 
 		bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY);
 	}
+}
+
+SEC("tp/sched/sched_process_exit")
+int handle_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	__u32 pid = id >> 32;
+	__u32 tid = id;
+
+	if (pid == tid)
+		record_daemon_exit(pid);
 	return 0;
 }
 

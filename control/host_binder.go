@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"path"
+	"slices"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -71,6 +72,10 @@ func (c *hostBinder) resetHostTCXLinks() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.kernelLinks.mu.Lock()
+	if c.kernelLinks.preparing || c.kernelLinks.transferred || c.kernelLinks.frozen {
+		c.kernelLinks.mu.Unlock()
+		return
+	}
 	links := c.hostTCXLinks
 	c.hostTCXLinks = nil
 	c.kernelLinks.mu.Unlock()
@@ -79,6 +84,57 @@ func (c *hostBinder) resetHostTCXLinks() {
 			log.WithError(err).WithFields(log.Fields{"interface_index": links[i].linkIndex, "role": links[i].role}).Error("Could not close stale TCX link")
 		}
 	}
+}
+
+// During a freeze, DELLINK and rename callbacks cannot retire attachments.
+// Check the actual link as well as its index: a deleted interface's index can be reused.
+func (c *hostBinder) reconcileThawedLinks(lan []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.kernelLinks
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.recheckHost || k.frozen || k.transferred || c.closed.Err() != nil {
+		return nil
+	}
+	devices, err := netlink.LinkList()
+	if err != nil {
+		return err
+	}
+	lanIndices := make(map[int]bool)
+	for _, dev := range devices {
+		name := dev.Attrs().Name
+		lanIndices[dev.Attrs().Index] = name != hostLinkName && matchesInterface(lan, name)
+	}
+	for i := len(k.hostTCXLinks) - 1; i >= 0; i-- {
+		owned := k.hostTCXLinks[i]
+		info, err := owned.link.Info()
+		if err != nil {
+			return err
+		}
+		if tcx := info.TCX(); tcx != nil && int(tcx.Ifindex) == owned.linkIndex && (owned.role >= hostTCXWanIngress || lanIndices[owned.linkIndex]) {
+			continue
+		}
+		// Keep the FD and its record until the stale pin is gone so the next pass can retry.
+		if err := k.unpinHostTCXLink(owned); err != nil {
+			return err
+		}
+		k.hostTCXLinks = slices.Delete(k.hostTCXLinks, i, i+1)
+		if err := owned.close(); err != nil {
+			return err
+		}
+	}
+	k.recheckHost = false
+	return nil
+}
+
+func matchesInterface(patterns []string, name string) bool {
+	for _, pattern := range patterns {
+		if match, _ := path.Match(pattern, name); match {
+			return true
+		}
+	}
+	return false
 }
 
 func linkHdrLen(link netlink.Link) uint32 {
@@ -464,6 +520,13 @@ func (c *hostBinder) reconcileWanWith(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Err() != nil {
+		return false
+	}
+	c.kernelLinks.mu.Lock()
+	frozen := c.kernelLinks.frozen || c.kernelLinks.transferred
+	c.kernelLinks.mu.Unlock()
+	if frozen {
+		// Preserve ownership until detach can actually run. Release schedules a retry.
 		return false
 	}
 	var desired map[int]string

@@ -6,6 +6,7 @@ package tests
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -25,8 +26,8 @@ import (
 
 // A local UDP service behind a port redirect has no socket on the port WAN
 // ingress sees before NAT. WAN egress recognizes its replies by their
-// conntrack direction and sends them directly; the service's own new flows are
-// still routed, here to a proxy that the test leaves without a relay.
+// conntrack direction even when replacement occurs before the first reply.
+// The same socket's new flows still obey proxy and block rules.
 func TestUDPInboundStateBehindRedirect(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root is required for the isolated NAT test")
@@ -81,11 +82,13 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		must(netlink.LinkSetUp(l))
 		return l
 	}
+	up("lo")
 	must(netlink.LinkAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "wan"}, PeerName: "remote"}))
 	peerLink, err := netlink.LinkByName("remote")
 	must(err)
 	must(netlink.LinkSetNsFd(peerLink, int(remote)))
 	wan := up("wan", "192.0.2.1/24", "2001:db8::1/64")
+	var attachments []link.Link
 	for _, attach := range []struct {
 		program *ebpf.Program
 		kind    ebpf.AttachType
@@ -93,6 +96,7 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		l, err := link.AttachTCX(link.TCXOptions{Interface: wan.Attrs().Index, Program: attach.program, Attach: attach.kind})
 		must(err)
 		defer l.Close()
+		attachments = append(attachments, l)
 	}
 	redirectUDP(t, router, exposed, service)
 	servers := map[string]*net.UDPConn{}
@@ -111,6 +115,8 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		{"udp4", "192.0.2.2", "192.0.2.1"},
 		{"udp6", "2001:db8::2", "2001:db8::1"},
 	} {
+		must(attachments[0].Update(obj.TproxyWanIngressL2))
+		must(attachments[1].Update(obj.TproxyWanEgressL2))
 		listen := func() *net.UDPConn {
 			t.Helper()
 			conn, err := net.ListenUDP(family.network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr(family.local), 0)))
@@ -122,8 +128,17 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		received := func(conn *net.UDPConn, wait time.Duration) bool {
 			t.Helper()
 			must(conn.SetReadDeadline(time.Now().Add(wait)))
-			_, err := conn.Read(buf)
-			return err == nil
+			n, err := conn.Read(buf)
+			if err != nil {
+				if timeout, ok := errors.AsType[net.Error](err); ok && timeout.Timeout() {
+					return false
+				}
+				t.Fatal(err)
+			}
+			if string(buf[:n]) != family.network {
+				t.Fatalf("unexpected UDP payload %q", buf[:n])
+			}
+			return true
 		}
 		server, client, other := servers[family.network], listen(), listen()
 		payload := []byte(family.network)
@@ -135,14 +150,24 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: redirected datagram: %v", family.network, err)
 		}
+		// A received the request; B has fresh private maps and sees the first reply.
+		must(netns.Set(router))
+		current, err := loadTestObjects(t, "TproxyWanIngressL2", "TproxyWanEgressL2", "ConntrackProbe")
+		must(err)
+		installRoutingFlow(t, current, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: proxy}})
+		for _, version := range []uint8{4, 6} {
+			must(current.OutboundConnectivityMap.Update(bpftestOutboundConnectivityQuery{Outbound: proxy, L4proto: unix.IPPROTO_UDP, Ipversion: version}, bpftestOutboundConnectivity{}, ebpf.UpdateAny))
+		}
+		must(attachments[0].Update(current.TproxyWanIngressL2))
+		must(attachments[1].Update(current.TproxyWanEgressL2))
+		serviceAddr := netip.AddrPortFrom(netip.MustParseAddr(family.router), service)
+		clientAddr := client.LocalAddr().(*net.UDPAddr).AddrPort()
+		runUDP(t, current.ConntrackProbe, clientAddr, exposedAddr, 0, 1)
+		runUDP(t, current.ConntrackProbe, serviceAddr, clientAddr, 0, 2)
 		_, err = server.WriteToUDPAddrPort(payload, from)
 		must(err)
 		if !received(client, 2*time.Second) {
-			t.Fatalf("%s: reply of the redirected service did not leave directly", family.network)
-		}
-		clientAddr := client.LocalAddr().(*net.UDPAddr).AddrPort()
-		if state, ok := udpConnState(t, obj, exposedAddr, clientAddr); !ok || !state.IsWanIngressDirection {
-			t.Fatalf("%s: redirected service state = %+v, %v", family.network, state, ok)
+			t.Fatalf("%s: first reply after replacement did not leave directly", family.network)
 		}
 
 		otherAddr := other.LocalAddr().(*net.UDPAddr).AddrPort()
@@ -151,9 +176,25 @@ func TestUDPInboundStateBehindRedirect(t *testing.T) {
 		if received(other, 200*time.Millisecond) {
 			t.Fatalf("%s: new flow of the service left directly", family.network)
 		}
-		serviceAddr := netip.AddrPortFrom(netip.MustParseAddr(family.router), service)
-		if state, ok := udpConnState(t, obj, serviceAddr, otherAddr); !ok || state.IsWanIngressDirection {
-			t.Fatalf("%s: service outbound state = %+v, %v", family.network, state, ok)
+		var handoff bpftestRoutingHandoff
+		must(current.RoutingTuplesMap.Lookup(udpFlowKey(serviceAddr, otherAddr), &handoff))
+		if handoff.Result.Outbound != proxy {
+			t.Fatalf("%s: new service flow chose outbound %d, want proxy", family.network, handoff.Result.Outbound)
+		}
+		// The same service socket must also obey a block rule on another flow.
+		installRoutingFlow(t, current, []bpftestMatchSet{{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundBlock)}})
+		must(current.RoutingGeneration.Set(uint32(2)))
+		must(netns.Set(remote))
+		blocked := listen()
+		_, err = server.WriteToUDPAddrPort(payload, blocked.LocalAddr().(*net.UDPAddr).AddrPort())
+		must(err)
+		if received(blocked, 200*time.Millisecond) {
+			t.Fatalf("%s: new service flow bypassed the block rule", family.network)
+		}
+		_, err = server.WriteToUDPAddrPort(payload, from)
+		must(err)
+		if !received(client, 2*time.Second) {
+			t.Fatalf("%s: genuine reply was blocked", family.network)
 		}
 	}
 }
@@ -176,6 +217,6 @@ func redirectUDP(t *testing.T, ns netns.NsHandle, from, to uint16) {
 		&expr.Redir{RegisterProtoMin: 1},
 	}})
 	if err := conn.Flush(); err != nil {
-		t.Skipf("nftables NAT unavailable: %v", err)
+		t.Fatalf("install isolated nftables redirect: %v", err)
 	}
 }

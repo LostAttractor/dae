@@ -174,7 +174,7 @@ func TestNativeTCPAbortAndResetWithBacklog(t *testing.T) {
 			if action == "reset" && (!errors.Is(err, syscall.ECONNRESET) || !strings.Contains(err.Error(), "TCP ")) {
 				t.Fatalf("lost direction/errno: %v", err)
 			}
-			if action == "policy" || action == "route" {
+			if action == "owner_close" || action == "policy" || action == "route" {
 				if _, err := client.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
 					t.Fatalf("owner abort did not reset client: %v", err)
 				}

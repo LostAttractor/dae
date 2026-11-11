@@ -55,7 +55,11 @@ func (d *deviceRoutes) acquire(result *routingResult) (*netproxy.Lease, error) {
 // map publishes all affected MACs together, including a file reload that edits
 // several sets. Holding mu also excludes userspace route registration.
 func (d *deviceRoutes) table(changed map[[6]byte]bool, updating bool) (*ebpf.Map, error) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: 6, ValueSize: 16, MaxEntries: 65536})
+	spec, err := parsedBPFSpec()
+	if err != nil {
+		return nil, err
+	}
+	m, err := ebpf.NewMap(spec.Maps["device_routes_map"].InnerMap.Copy())
 	if err != nil {
 		return nil, err
 	}

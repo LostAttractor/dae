@@ -56,7 +56,7 @@ func TestFallbackTokensFollowTheirGeneration(t *testing.T) {
 	if value(outbound.Connectivity{Network: network}, consts.OutboundDirect).Fallback != 0 ||
 		value(unavailable, consts.OutboundBlock).Fallback != 0 ||
 		value(outbound.Connectivity{Network: network, Available: true, Fallback: generation}, consts.OutboundDirect).Fallback != 0 {
-		t.Fatal("only an interruptible direct fallback may carry a token")
+		t.Fatal("non-revocable or non-fallback state received a token")
 	}
 	token := value(unavailable, consts.OutboundDirect).Fallback
 	var present uint8

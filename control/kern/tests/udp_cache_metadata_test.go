@@ -98,7 +98,7 @@ func TestUDPFragmentRoutingCacheMetadata(t *testing.T) {
 						t.Fatalf("missing cache: %v", iter.Err())
 					}
 					result := cached.Result
-					if result.Protocol != 2 || result.Dscp != dscp || result.Ifindex != ifindex || result.ProfileId != profileID || result.Generation != generation || result.Mac != mac || result.SourceOrigin != uint8(network.origin) {
+					if result.FlowFlags&uint8(consts.L4ProtoType_X) != uint8(consts.L4ProtoType_UDP) || result.Dscp != dscp || result.Ifindex != ifindex || result.ProfileId != profileID || result.Generation != generation || result.Mac != mac || result.SourceOrigin != uint8(network.origin) {
 						t.Fatalf("incomplete source metadata: %+v", result)
 					}
 				})
@@ -225,7 +225,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 						if result.Outbound != wantOutbound || result.Mark != wantMark || result.Must != wantMust || result.CaptureFlags != test.capture {
 							t.Fatalf("lost cached routing decision: %+v", result)
 						}
-						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.Generation != generation || result.SourceOrigin != uint8(network.origin) {
+						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.FlowFlags&uint8(consts.L4ProtoType_X) != uint8(consts.L4ProtoType_UDP) || result.RouteEpoch != 0 || result.Generation != generation || result.SourceOrigin != uint8(network.origin) {
 							t.Fatalf("lost initial source metadata: %+v", result)
 						}
 					}

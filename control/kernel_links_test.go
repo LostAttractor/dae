@@ -39,6 +39,29 @@ func TestKernelLinksSurviveReloadAndPruneRemovedInterfaces(t *testing.T) {
 	}
 }
 
+func TestReplacementRejectsWANAttachmentRetry(t *testing.T) {
+	core := &hostBinder{kernelLinks: &kernelLinks{preparing: true}, closed: t.Context(),
+		bpf: &BPFState{bpfObjects: new(bpfObjects)}, wanBindings: make(map[int]*wanBinding)}
+	for _, role := range []hostTCXRole{hostTCXWanIngress, hostTCXWanEgress} {
+		core.ownHostTCXLink(hostTCXLink{linkIndex: 2, role: role})
+	}
+	core.beginRebind()
+	core.seedAutoWanBindings()
+	snapshot := &network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
+		{Index: 2, Name: "wan0", IPv4Default: true, MainDefault: true},
+		{Index: 3, Name: "wan1", IPv4Default: true, MainDefault: true},
+	}}
+	retry := core.reconcileWanWith(snapshot, nil, func(index int) (netlink.Link, error) {
+		return &netlink.Dummy{Index: index, Name: map[int]string{2: "wan0", 3: "wan1"}[index], EncapType: "ether"}, nil
+	})
+	if !retry {
+		t.Fatal("new WAN unexpectedly attached during preparation")
+	}
+	if err := core.finishRebind(); err == nil {
+		t.Fatal("candidate accepted an incomplete WAN attachment set")
+	}
+}
+
 func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 	for _, preparationFails := range []bool{false, true} {
 		core := &hostBinder{kernelLinks: new(kernelLinks), closed: t.Context(), wanBindings: make(map[int]*wanBinding)}
@@ -78,10 +101,32 @@ func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 type persistentTestLink struct {
 	link.Link
 	closed, unpinned int
+	unpinErr         error
 }
 
-func (l *persistentTestLink) Close() error { l.closed++; return nil }
-func (l *persistentTestLink) Unpin() error { l.unpinned++; return nil }
+func (l *persistentTestLink) Close() error              { l.closed++; return nil }
+func (l *persistentTestLink) Unpin() error              { l.unpinned++; return l.unpinErr }
+func (l *persistentTestLink) Info() (*link.Info, error) { return &link.Info{}, nil }
+
+func TestThawedLinkRetriesUnpin(t *testing.T) {
+	busy := errors.New("temporary unpin failure")
+	host := &persistentTestLink{unpinErr: busy}
+	binder := &hostBinder{closed: t.Context(), kernelLinks: &kernelLinks{pinPath: t.TempDir(), recheckHost: true}}
+	binder.ownHostTCXLink(hostTCXLink{linkIndex: 1, role: hostTCXLanIngress, link: host, close: host.Close})
+	if err := binder.reconcileThawedLinks(nil); !errors.Is(err, busy) {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if host.closed != 0 || len(binder.hostTCXLinks) != 1 || !binder.recheckHost {
+		t.Fatalf("failed unpin lost ownership: closes=%d links=%d recheck=%v", host.closed, len(binder.hostTCXLinks), binder.recheckHost)
+	}
+	host.unpinErr = nil
+	if err := binder.reconcileThawedLinks(nil); err != nil {
+		t.Fatal(err)
+	}
+	if host.unpinned != 2 || host.closed != 1 || len(binder.hostTCXLinks) != 0 || binder.recheckHost {
+		t.Fatalf("after retry: unpins=%d closes=%d links=%d recheck=%v", host.unpinned, host.closed, len(binder.hostTCXLinks), binder.recheckHost)
+	}
+}
 
 func TestKernelCloseReleasesPersistentAttachments(t *testing.T) {
 	host, internal, pid, exit := new(persistentTestLink), new(persistentTestLink), new(persistentTestLink), new(persistentTestLink)

@@ -65,6 +65,7 @@ enum daemon_state {
 	DAEMON_ONLINE = 0,
 	DAEMON_OFFLINE = 1,
 	DAEMON_STARTING = 2,
+	DAEMON_STOPPING = 3,
 };
 
 enum outbound_connectivity_state {

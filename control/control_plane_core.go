@@ -176,6 +176,14 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 	return c.closeErr
 }
 
+var socketIdentityAttachTypes = [...]ebpf.AttachType{
+	ebpf.AttachCGroupInetSockCreate,
+	ebpf.AttachCGroupInet4Connect,
+	ebpf.AttachCGroupInet6Connect,
+	ebpf.AttachCGroupUDP4Sendmsg,
+	ebpf.AttachCGroupUDP6Sendmsg,
+}
+
 func (c *controlPlaneCore) setupSkPidMonitor() error {
 	c.kernelLinks.mu.Lock()
 	defer c.kernelLinks.mu.Unlock()
@@ -187,40 +195,28 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 	if err != nil {
 		return err
 	}
-	type cgProg struct {
-		Prog   *ebpf.Program
-		Attach ebpf.AttachType
-	}
-	cgProgs := []cgProg{
-		{Prog: c.bpf.TproxyWanCgSockCreate, Attach: ebpf.AttachCGroupInetSockCreate},
-		{Prog: c.bpf.TproxyWanCgConnect4, Attach: ebpf.AttachCGroupInet4Connect},
-		{Prog: c.bpf.TproxyWanCgConnect6, Attach: ebpf.AttachCGroupInet6Connect},
-		{Prog: c.bpf.TproxyWanCgSendmsg4, Attach: ebpf.AttachCGroupUDP4Sendmsg},
-		{Prog: c.bpf.TproxyWanCgSendmsg6, Attach: ebpf.AttachCGroupUDP6Sendmsg},
-	}
-	for _, prog := range cgProgs {
+	programs := []*ebpf.Program{c.bpf.TproxyWanCgSockCreate, c.bpf.TproxyWanCgConnect4, c.bpf.TproxyWanCgConnect6, c.bpf.TproxyWanCgSendmsg4, c.bpf.TproxyWanCgSendmsg6}
+	for i, prog := range programs {
 		var attached ciliumLink.Link
-		path := filepath.Join(c.pinPath, fmt.Sprintf("pid_%d", prog.Attach))
-		if c.pinPath != "" {
+		path := filepath.Join(c.pinPath, fmt.Sprintf("pid_%d", socketIdentityAttachTypes[i]))
+		if c.pinPath != "" && !c.privatePins {
 			attached, err = ciliumLink.LoadPinnedLink(path, nil)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("load socket identity hook: %w", err)
 			}
 		}
 		if attached != nil {
-			if err := attached.Update(prog.Prog); err != nil {
+			if err := attached.Update(prog); err != nil {
 				return errors.Join(fmt.Errorf("update socket identity hook: %w", err), attached.Close())
 			}
 		} else {
 			attached, err = ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
-				Path:    cgroupPath,
-				Attach:  prog.Attach,
-				Program: prog.Prog,
+				Path: cgroupPath, Attach: socketIdentityAttachTypes[i], Program: prog,
 			})
 			if err != nil {
-				return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
+				return fmt.Errorf("AttachCgroup: %v: %w", prog.String(), err)
 			}
-			if c.pinPath != "" {
+			if c.pinPath != "" && !c.privatePins {
 				if err := attached.Pin(path); err != nil {
 					return errors.Join(fmt.Errorf("pin socket identity hook: %w", err), attached.Close())
 				}

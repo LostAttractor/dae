@@ -37,6 +37,7 @@ type DaeNetns struct {
 	setupDone atomic.Bool
 	mu        sync.RWMutex
 	closed    bool
+	borrowed  atomic.Bool
 
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
@@ -93,7 +94,7 @@ func (ns *DaeNetns) Close() (err error) {
 	}
 	ns.closed = true
 	ready := ns.setupDone.Swap(false)
-	if ns.dae0 != nil {
+	if ns.dae0 != nil && !ns.borrowed.Load() {
 		if nsErr := DeleteNamedNetns(NsName); nsErr != nil && !errors.Is(nsErr, os.ErrNotExist) {
 			err = errors.Join(err, nsErr)
 		}
@@ -105,6 +106,102 @@ func (ns *DaeNetns) Close() (err error) {
 		err = errors.Join(err, ns.closeHandles())
 	}
 	return err
+}
+
+// BorrowDaeNetns opens the predecessor's namespace without creating, deleting,
+// or reconfiguring its network objects. Ownership changes only after successful startup.
+func BorrowDaeNetns(hostFD, daeFD int, hostIndex, peerIndex int) error {
+	InitDaeNetns()
+	return GetDaeNetns().borrow(hostFD, daeFD, hostIndex, peerIndex)
+}
+
+func (ns *DaeNetns) borrow(hostFD, daeFD int, hostIndex, peerIndex int) error {
+	host, err := unix.FcntlInt(uintptr(hostFD), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	peer, err := unix.FcntlInt(uintptr(daeFD), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		_ = unix.Close(host)
+		return err
+	}
+	ns.hostNs, ns.daeNs, ns.id = netns.NsHandle(host), netns.NsHandle(peer), 0
+	ns.borrowed.Store(true)
+	named, err := netns.GetFromName(NsName)
+	if err != nil {
+		return errors.Join(err, ns.closeHandles())
+	}
+	same := named.Equal(ns.daeNs)
+	_ = named.Close()
+	if !same {
+		return errors.Join(errors.New("daens changed during handoff"), ns.closeHandles())
+	}
+	// Query host link index and peer nsid relative to the borrowed host namespace.
+	if err := func() error {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		original, err := netns.Get()
+		if err != nil {
+			return err
+		}
+		defer original.Close()
+		if !original.Equal(ns.hostNs) {
+			if err := netns.Set(ns.hostNs); err != nil {
+				return err
+			}
+			defer func() { _ = netns.Set(original) }()
+		}
+		ns.dae0, err = netlink.LinkByName(hostLinkName)
+		if err != nil {
+			return err
+		}
+		if ns.dae0.Attrs().Index != hostIndex {
+			return errors.New("dae0 changed during handoff")
+		}
+		return ns.setupNetnsID()
+	}(); err != nil {
+		return errors.Join(err, ns.closeHandles())
+	}
+	ns.setupDone.Store(true)
+	_, err = ns.With(func() (bool, error) {
+		var err error
+		ns.dae0peer, err = netlink.LinkByName(peerLinkName)
+		if err != nil {
+			return false, err
+		}
+		if ns.dae0peer.Attrs().Index != peerIndex {
+			return false, errors.New("dae0peer changed during handoff")
+		}
+		return true, nil
+	})
+	if err != nil {
+		ns.setupDone.Store(false)
+		return errors.Join(err, ns.closeHandles())
+	}
+	return nil
+}
+
+func (ns *DaeNetns) SetOwnership(owned bool) {
+	ns.borrowed.Store(!owned)
+}
+
+func (ns *DaeNetns) NamespaceFDs() (int, int) { return int(ns.hostNs), int(ns.daeNs) }
+
+// Rebuild this process's watchdogs and verify shared host sysctls without
+// reconfiguring namespace links, addresses, or routes.
+func (ns *DaeNetns) inheritSysctls() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	original, err := netns.Get()
+	if err != nil {
+		return err
+	}
+	defer original.Close()
+	defer netns.Set(original)
+	if err := netns.Set(ns.hostNs); err != nil {
+		return err
+	}
+	return ns.setupSysctl()
 }
 
 func (ns *DaeNetns) closeHandles() error {

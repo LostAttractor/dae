@@ -391,7 +391,7 @@ __noinline __s64 route(struct route_params *params, struct route_state *state)
 	ctx.profile = profile;
 	ctx.params = params;
 	__builtin_memset(state, 0, sizeof(*state));
-	state->offline = daemon_offline();
+	state->offline = daemon_offline() && !stopping();
 	state->result = -EFAULT;
 	ctx.state = state;
 
