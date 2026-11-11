@@ -10,6 +10,17 @@ make config-parser-check
 make -C web test
 ```
 
+Surge 的 worker 测试需要 delegated cgroup v2 memory；普通终端未获委派时，将上述 `make test` 放到临时 systemd 单元中运行，测试本身仍使用当前用户：
+
+```sh
+sudo systemd-run --wait --pipe --collect --uid="$(id -u)" \
+  --property=Delegate=memory --property=DelegateSubgroup=daemon \
+  --working-directory="$PWD" env "PATH=$PATH" "HOME=$HOME" \
+  make test TEST_ARGS=-count=1
+```
+
+Node 后端在末尾追加 `SURGE_RUNTIME=nodejs`。临时单元退出后自动回收，不修改现有服务配置。
+
 根测试覆盖核心、`pkg/outbound`、配置解析器和全部自有插件，包括 DNS cache、Surge 与 router 的组合用例。`make test` 同时检查协议库和宿主的依赖方向；`make client-test` 检查无 CGO 的 API/CLI 边界。第三方 fork 保持独立模块，使用单独的测试命令：
 
 ```sh
@@ -19,11 +30,11 @@ go test -race github.com/buke/quickjs-go/...
 
 Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` 指定浏览器路径，`openssl` 和 NSS `certutil` 须位于 PATH。证书测试使用临时 HOME、浏览器配置和 NSS 信任库，不修改现有信任设置；不使用忽略 TLS 错误的启动参数。额外的 `pnpm --dir web run test:certificate` 需要 Go 工具链，单独运行生产 Go API、CSP 与浏览器请求函数的集成检查，覆盖安装 CA、未安装 CA、手动接受 HTTPS 警告，以及 HTTP/HTTPS 页面。除 IPv4/IPv6 回环地址外，存在私有 IPv4 网卡时也从该地址测试普通 LAN HTTP；没有该网卡时明确报告跳过。普通 Go 测试不替代需要 root 的 `make ebpf-test`。
 
-## 固定内核状态
+## 持久内核状态与阻断防护
 
-跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`socket_owner_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。daemon 重启按表比较元数据，复用兼容的 pin；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
+跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`socket_owner_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。普通 restart 按表比较元数据，复用兼容的 canonical pins；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
 
-固定表的字节布局及含义是显式契约。TCP 连接属性的 `route_epoch`、`mark`、`fallback`、`syn_seq` 分别位于偏移 0、8、12、16，偏移 20 是显式填充。fallback 为 0 表示不受代次撤销约束，1 始终无效，其余值为唯一的组代次令牌；持久发行序号不回卷、不重用。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时元数据比较不能识别相同大小的语义变化；`TestPinnedMapABI` 与固定字节夹具独立于生成类型检查布局。容量不匹配只替换对应表。
+固定表的字节布局及含义是显式契约。TCP 连接属性的 `route_epoch`、`mark`、`fallback`、`syn_seq` 分别位于偏移 0、8、12、16，偏移 20 的 u32 为 `explicit_direct`，`routing_result` 偏移 31 的 byte 同样记录该证据，大小仍为 24/40 字节。零表示 unknown，旧 padding 为零不能在 `STOPPING` 中证明 direct。fallback 为 0 只表示不受代次撤销约束，不等于 explicit direct；1 始终无效，其余值为唯一的组代次令牌，没有 `PERMANENT` 特殊 token；持久发行序号不回卷、不重用。Socket 归属值的 `pid` 位于偏移 0，16 字节 `pname` 位于 4。运行时元数据比较不能识别相同大小的语义变化；`TestPinnedMapABI` 与固定字节夹具独立于生成类型检查布局。容量不匹配只替换对应表。
 
 `TestRemoveIncompatiblePinnedMaps` 验证选择性替换及保留表的 ID、内容；`TestPinnedTCPFlowEncoding` 验证直通 mark 和令牌边界。`TestPersistentKernelLifecycle` 在私有网络、mount、bpffs 和 `/run` 中启动自己的 helper 进程，验证同一真实 TCP 连接跨 SIGKILL、未上线即退出的重启与接管的转发，以及正常退出完整清理（含旧版本的 map pin）、身份撤销、版本恢复、异常退出后的新 UDP 转发、私有 timer map 替换和清理失败边界。NAT 测试使用自建命名空间和最小 nftables 规则，覆盖双栈本机、DNAT 到本机及 LAN 转发；握手并发测试验证新 SYN 与迟到 SYN-ACK 不会混用策略。测试不得接触宿主正在运行的 dae pins 或杀死非夹具进程。保留内核状态不保留用户态 relay socket；进程级 fallback 代次仍可能随冷重启结束。
 
@@ -32,6 +43,22 @@ Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` �
 状态通过内核已有元素计数采样 hash/LRU 占用。独立按需加载的 BPF iterator 只对当前控制面选中的 map ID 读取计数，不扫描 flow entries、不刷新 LRU，也不在转发路径增加计数。并发增删时的 per-CPU 合计是采样值，不是事务快照。数组展示实际编译的指令或 LPM 表槽位数，不把预分配的数组单元误报为已占满。
 
 用户态 UDP 表直接读取 source、packet resource 和回包 socket 的已有准入预算，共享资源只计一次；建立中、关闭中的预留按实际准入所有者释放时机计数。已占用表项不等于活动连接数，读取失败显示不可用而不是空表。测试使用私有小表与自写资源池夹具，不读取生产表内容。
+
+## 替换私有状态与 guard 生命周期
+
+进程替换是带故障防护的进程重启，不是全局原子或无损交接。Block 前失败保留旧服务；Block 后旧连接关闭不可回滚，失败后保持 fail-closed，直到成功恢复。多 hook 逐步安装与撤旧是有防护的中间态，不是一个全局原子事务。
+
+只有进程替换和 guard 恢复创建私有业务 maps，不复用前任业务 pins；成功提交显式发布自身 canonical pins，正常运行继续持久化，普通 restart 复用兼容 pins，同进程配置 reload 共享 Runtime maps。TCP/UDP 用户态 relay socket、fallback lease 和私有连接状态不跨 exec 迁移。共享网络对象的 link 通过 FD 交接；协议中的 link 角色、固定网络拓扑及受管接口集合仍是交接契约，见[进程热替换](../design/process-replacement.md)。
+
+`/sys/fs/bpf/dae/guards/<link-id>/` bundle 持有入口 link、`udp_conn_state_map`、`udp_routing_cache_map`、该代 socket-owner writer links、exit hook 和 `daemon_identity_map`。只有 UDP 使用 timer maps；内核 timer 需要 map FD 或 map pin，仅有 link→program→map 引用不足以维持过期回收。旧 canonical 与 guard 两处引用必须实际释放，同名 pin 不能将旧身份 writer `Update` 为新程序。guard maps 不是新运行时的业务状态源；恢复先验证全部旧捕获 hook 的覆盖，再解除旧防护。
+
+已有明确直连在仅有旧 guard、且该 guard 仍持有有效证据时可能继续；新旧私有 maps 不共享跨代 direct 证据，重叠 guard 允许暂停直连，后置失败可能使暂停持续到成功恢复。测试必须允许该暂停，同时继续拒绝捕获及不确定流量，不能要求直连不中断。
+
+TCP 使用短期 handoff，随后由真实 accepted socket 接收；SOCKHASH 只是可选索引，容量满或登记失败回退到 proxy netns socket lookup。24 字节值的 LRU `tcp_flow_map` 只记录 native 属性，不是代理准入账本或 FIN/ACK 状态机，没有 TCP timer takeover。成功替换与普通 restart 语义一致：`ONLINE` 下未知非 SYN 归为 native，不提供永久拒绝旧未知 ACK 的保证。
+
+`TestReplacementGuardBundleKernel` 检查成组引用、重复 pin 身份校验、部分失败回滚和清理顺序；`TestGuardTimerMapReferences` 比较关闭 map FD 后仅保留程序引用与额外 pin 时的 UDP GC 行为。`TestReplacementGuardsKernel` 和 `TestFailedRecoveryDoesNotExpandGuardsKernel` 验证失去进程 FD 后仍阻断，以及失败恢复不会扩大后续必须覆盖的 hook 集合。`TestUDPRepliesReleaseRetiredTimerPrograms` 检查 UDP timer 回调退役，不引入 TCP timer 状态。测试使用隔离 maps、PID/网络/挂载 namespace 及私有 bpffs，不接触正在运行的 daemon 的 pins。
+
+UDP 保留 `udp_conn_state_map`、`udp_inbound_pending_map`、binding、routing cache 及 timer 生命周期；host CT 提供新私有代恢复入站回复的方向证据。仅 `CT_ORIGINAL` 创建入站 pending，仅 `CT_REPLY` 恢复入站回复；CT miss、过期或 NOTRACK 不是 direct 证据，缺少有效 CT 时不承诺跨实例入站连续性。
 
 ## 性能测量
 
@@ -48,7 +75,25 @@ go test -c -tags dae_bpf_tests -o /tmp/dae-kernel.test ./control/kern/tests
 sudo /tmp/dae-kernel.test -test.run '^$' -test.bench 'Benchmark(RoutingFlow|RoutingLPM|RoutingConditionalBlock|HTTPClientAdmission|UDPRoutingCache)' -test.benchtime 30x -test.count 3
 ```
 
-使用 `scripts/routing-program-metrics.go` 测量生产 ELF 的验证指令数、程序大小和加载时间，使用 `scripts/routing-map-memory.go` 测量内核实际 map 内存。两者均创建隔离 maps，不复用 daemon pins，也不挂载网络接口；使用当前 direnv 工具链编译后以 root 运行。加载成本、每包耗时和内存占用应分别测量。
+使用 `scripts/routing-program-metrics.go` 测量生产 ELF 的验证指令数、程序大小和加载时间，使用 `scripts/routing-map-memory.go` 测量内核报告的 map 内存。两者均创建隔离 maps，不复用 daemon pins，也不挂载网络接口；使用当前 direnv 工具链编译后以 root 运行。
+
+内存脚本从 ELF 读取实际类型、容量和分配标志，逐表读取 `fdinfo.memlock`：
+
+- 对按需分配的 HASH，测量空表、1、16、1,024、65,536 项和满表，跳过超容量或重复的检查点。覆盖 UDP 绑定、域名路由、路由接口与 profile，以及 `device_routes_map.inner` 设备路由子表。
+- 对预分配 HASH、LRU_HASH、ARRAY、PERCPU_ARRAY 和 ARRAY_OF_MAPS，只测创建成本，不重复填满。覆盖 TCP native 属性 LRU、UDP 路由缓存和主要 LRU 表；输出内核 possible CPU 数量，便于比较 per-CPU 分配。
+- 外层 map 与单个 inner 模板分别报告；外层槽位不填入子表。设备路由表未使用时没有实际子表，更新时可能同时持有旧表、过渡表和新表，因此不能把单表结果直接当成运行时总量或更新峰值。
+- 必测 map 或设备路由 inner 模板缺失、类型不支持时失败退出；其余未支持类型显式输出 `status=not_measured`。LPM、socket storage、SOCKMAP 和 SOCKHASH 不测，不生成前缀或 socket 夹具。
+
+该口径不是进程 RSS，也不包含真实流量激活 timer、创建 socket storage 等生命周期分配；不汇总为 daemon 总内存或替换峰值。加载成本、每包耗时和内存占用应分别测量。
+
+```sh
+make ebpf
+go test scripts/routing-map-memory.go scripts/routing-map-memory_test.go
+go build -o /tmp/dae-map-memory scripts/routing-map-memory.go
+sudo /tmp/dae-map-memory control/bpf_bpfel.o
+```
+
+`make test` 包含上述脚本的非特权回归，校验生产 ELF 覆盖范围及缺失对象的失败行为。内核测量回归需独立 PID、网络和挂载 namespace；先编译测试二进制，再以 root 和 `DAE_TEST_ISOLATED=1` 运行 `TestMeasureMapKernel`，验证不同容量检查点、固定分配、嵌套模板和不复用 pin。
 
 用户态 `BenchmarkRoutingMatcher` 使用相同的有效指令比较执行器与输入准备开销，覆盖顺序端口、域名、混合 LPM 和 AND/OR 短路，同时报告分配次数：
 
@@ -179,3 +224,82 @@ SUDO="sudo -n" OUT=/tmp/qexp-ab scripts/tests/queueing/matrix.sh /tmp/before.tes
 报告中的时延只统计预热之后测量窗口内发出的探针：`game_up_ms`、`itcp_up_ms` 为上行单向时延，`flood_up_ms` 为洪泛中每 16 ms 一个满长探针的上行时延，即洪泛自身的排队时延，`game_down_ms` 为回包时延减去 netem 时延，`game_window_unechoed` 为窗口内发出但没有收到回包的探针数，这些探针不在时延分位数中。窗口结束后探针照常发送但不记录，负载也继续，直到每种探针都收到一个窗口之后发出的探针的回应：同一条流中排在它之前的窗口探针此时已在负载下收到回应或丢失。game 与 flood 分别等待各自的探针，纯洪泛场景也保持负载直到洪泛探针完成。等待最长为一个测量窗口，`settle_s` 为窗口结束到负载停止的时长；`settle_timeout` 为 true 表示等待超时，时延结果无效。`late` 为负载停止后才收到回应的窗口探针数，包含洪泛上行和下行；这些探针的时延被截短，应为 0。名称带 `_q1`、`_q4` 的项只统计窗口第一个和最后一个四分之一内发出的探针，二者差距大说明时延仍在增长，结果不是稳态。吞吐来自服务端回报。`QEXP_SOCKET_SAMPLES` 默认开启；关闭时不做 socket 轮询，也不输出 `notsent_bytes`。默认的两种配对场景会关闭它，避免比较不同数量载体的观测成本。开启时，`notsent_bytes` 每 10 ms 用 `SIOCOUTQNSD` 读取全部承载，取其中最大值作为一个样本，空闲承载不会稀释分位数；MPTCP 回落的 socket 上该读数还包含子流的在途字节，按 `TCP_INFO` 的 `bytes_sent − bytes_retrans − bytes_acked` 扣除。`cpu_ms_per_gb` 为测量窗口内进程 CPU 时间除以有效上传量，分子 `cpu_ms` 与分母 `uploaded_bytes` 一并输出。TCP、QUIC 和 UDP 洪泛共用窗口两端采样的服务端累计接收字节增量；洪泛复用探针带回的接收计数，按固定包长换算为字节，入队、socket 或 qdisc 丢弃的数据不计入，`flood_mbit` 为这一增量换算的有效速率。计数回报存在采样间隔与回程延迟，应在稳定负载下配对比较；LAN 回程持续积压时不宜用它验收 CPU。启用 socket 采样、LAN 侧 QUIC 客户端或写者自旋时，不输出 CPU/GB。关闭这些额外工作后，纯游戏负载输出 `cpu_us_per_game_packet`，以测量窗口内发出的探针数 `game_window_sent` 为分母；必须同时检查交付数量和丢包，不能把提前丢弃视为转发效率。`datagram_memory_peak` 为共享 UDP 数据报内存的峰值字节数，`maxrss_kb` 为客户端进程的最大常驻内存。
 
 `drops` 为从打开第一条 UDP 流之前开始的丢包计数增量，与各流的发送计数起点一致。`game_lost`、`flood_lost` 为上行少收的数量，下行少收数量为 game、flood 各流的 `NAME_probes_received − NAME_echoed − NAME_lan_dropped` 之和；`NAME_probes_received` 是反射器收到的探针数，`NAME_lan_dropped` 是 LAN 读者来不及接收的回包。普通洪泛数据报不产生回包，不能用包含它们的 `flood_received` 计算下行丢失。`qdisc_drops` 为同一时段客户端出口 qdisc 的丢包数。`upload_unaccounted`、`download_unaccounted` 分别为上下行少收数量减去对应方向的丢包计数，应为 0；`QEXP_UDP=direct` 且仅有 UDP 负载时，上行再减去 `qdisc_drops`；存在 `bulk`、`itcp`、`ttfb` 或 TCP download 时，qdisc 丢包可能来自 TCP，不能归属到 UDP，因而不输出 `upload_unaccounted`，下行核对仍保留；`summarize.py` 对这两项、`late` 及 `settle_timeout` 输出各次运行中偏离 0 最远的值，不能用中位数掩盖无效运行。LAN 侧 QUIC 流的丢包也会计入，但其数据报不在核对范围内，有 QUIC 流的场景不输出这两项。
+
+## 进程热替换
+
+先运行不需要特权的协议与生命周期测试：
+
+```sh
+go test -race ./internal/daemon ./internal/handoff
+```
+
+`internal/handoff` 的 `TestSelfExec` 使用测试 ELF 自身作为最小夹具，覆盖不同内容 ELF 和同 ELF 强制 exec、PID/starttime 恒定、包初始化重新执行及旧 heap 消失、环境/参数保持、旧子进程回收与 FD 不增长，不依赖第三方程序或网络资源。`TestExecFailure` 检查 exec 错误及 FD 白名单；`TestSealedState`、`TestReadStateRejectsInvalidInput` 检查 sealed memfd，`TestSignalsStopDrainsQueuedSIGTERM` 检查停止信号屏障。`TestDrainChildren` 和 `TestChildrenAcrossThreads` 覆盖子进程清理与多线程后代发现。daemon 的 `TestReadReplacementRejectsInvalidState`、`TestStartupRejectsInvalidInheritedDescriptors` 检查内部入口拒绝非法身份、期限和 FD；`TestStopReplacementCandidate` 检查先撤销 PID 豁免再回收、撤销失败保留 PID。内核 `TestReplacementPIDRevokedOnExit` 验证 daemon 或 candidate 退出也会清除临时豁免且不削弱 `STOPPING`，无关进程退出不撤销它。
+
+在使用 systemd 的测试机上，可单独验证真实 exec 原语的服务管理行为，不挂载 BPF：
+
+```sh
+go test -c -o /tmp/dae-handoff.test ./internal/handoff
+sudo python3 -I scripts/test-exec-systemd.py /tmp/dae-handoff.test
+```
+
+此夹具只创建唯一命名的临时单元，覆盖 `Type=simple` 和 `Type=notify`，均使用 `NotifyAccess=main / Restart=no / KillMode=control-group`。它检查单进程连续 exec 的 MainPID/starttime 恒定、不同 ELF 与同 ELF 强制 exec 的代际证据、环境/参数保持、旧子进程回收、FD 不随代数增长、RELOADING → READY、正常 stop 成功，以及 SIGKILL 后单元 `Result=signal`。输出该最小夹具的 RSS 和一秒空闲 CPU ticks，不代表完整 daemon 的内存或转发成本。退出时停止并清理测试单元，不操作既有 dae 服务。
+
+构建后，用标准库编写的本地夹具验证真实业务交接：
+
+```sh
+make
+sudo python3 -I scripts/test-process-replacement.py "$PWD/dae"
+sudo python3 -I scripts/test-process-replacement.py "$PWD/dae" --wan
+```
+
+夹具在独立 PID、网络和挂载命名空间中运行，并挂载私有 `/run` 与 bpffs。它创建本地 DNS、订阅服务器和 LAN 客户端，检查只有一个常驻 dae 业务进程、同内容普通 reload 不换代、不同内容且同版本字符串的替换、同 ELF 强制替换、多次 exec 的 PID/starttime 恒定及 `/proc/<pid>/exe` 身份，并以 API `StartedAt` 和启动日志证明新运行时代际。还检查预检拒绝后旧 API/流量继续、空闲 TCP 客户端无需发送即收到 RST、固定网络对象身份、API/metrics/pprof 监听器复用及端口变更、旧端口关闭、重复替换 FD 稳定，以及连续 SIGKILL 后冷启动恢复。
+
+未缓存订阅使用受控本地服务器，确认真实下载位于 Block 窗口：下载等待时 guard 已存在、捕获 DNS 被阻断且没有意外直出，共享导出尚未发布；放行后检查新运行时发布自身的 nft 目标。此时 API 可能返回 503，也可能因仅保留监听 FD 而超时/断连，不能要求 operation 查询整个切换期可用。配置内端口重叠必须在 Block 前失败；坏 settings 和外部进程占用端口的用例必须在 Block 后失败，保留固定对象、旧导出和 guard；修复后通过正常冷启动恢复，原 operation 失败。需要 root、Python 3.12+、iproute2、nftables 和 `util-linux`，不访问外网。夹具仅在自己的 host namespace 中添加最小 nft CT state 引用以启用连接跟踪，不改变宿主防火墙。
+
+`--wan` 额外创建私有 `wan0` veth 和 `upstream` 网络命名空间，将 HTTP 订阅服务器放在真实 WAN 对端，而不是依靠 loopback 绕过捕获。夹具使用随机 URL，先确认没有可用订阅缓存，exec 后核对 validated cache 中的 URL 和响应正文，证明新映像在旧 `STOPPING` guard 下完成了未缓存 WAN 下载。到相同目标的普通其他 PID 请求在运行期、`STOPPING` 下载等待期及接管后都必须被显式 block 规则拒绝；daemon 身份通路不能扩大为其他进程的豁免。两种模式均只使用本地隔离网络，不访问外网。
+
+内存按整个 daemon 进程树读取 `/proc/<pid>/smaps_rollup`，汇总 PSS 与 `Private_Clean + Private_Dirty`，分别记录稳定态和以 20 ms 间隔采样的替换峰值；包括临时预检和插件后代，而非只比较主 PID 的 RSS。采样峰值仍可能漏掉更短的瞬态，须同时报告采样间隔、进程数、配置/资源缓存状态及工具链。替换日志 `Replacement datapath ready` 的 `cutover` 字段给出封印继承描述到数据面 ready 的耗时，包括 API 排空，连续 DNS 的最大到达间隔另行报告，二者不能混用；DNS 间隔还包含调度、客户端超时和连接重建，跨故障恢复的总间隔也不能当作单次成功切换耗时。不要将最小 exec 夹具的 RSS、单独 BPF map 测量或某个旧进程的 RSS 当作完整替换的内存收益。
+
+`TestReplacementBlockAndIdleResetKernel` 在 Netkit/veth、LAN/WAN、IPv4/IPv6 组合下验证生产 BPF 程序：旧入口阻断捕获流量，旧空闲 TCP 和 backlog 通过未修改的回程收到 RST；随后安装新下游和位于旧入口之后的新 TCX 程序，解除防护后新 TCP/UDP 恢复。设置 `DAE_TEST_ISOLATED=1`，并使用独立 PID、网络、挂载 namespace 和私有 bpffs。
+
+`TestHostConntrackIntegration` 在测试自己的网络 namespace 中完成真实 IPv4/IPv6 回环 UDP 往返，再用未挂载的 BPF probe 检查 ORIGINAL/REPLY；分别覆盖启用跟踪、未启用、NOTRACK 和非默认 zone。生产预检只查询实际服务 namespace 的能力，不添加防火墙规则、不挂接 loopback TC，也不清空 CT；缺少必要能力时冷启动或候选准备失败。测试夹具在私有 namespace 中明确启用 CT，不能跳过生产检查来获得启动成功。回环通过不保证接口专用 NOTRACK、自定义 zone 或未来规则变更的行为。
+
+`control/kern/tests` 中的 `TestUDPForwardConntrackReplacement` 使用隔离的 router、LAN/WAN 端点和真实系统 CT，覆盖 IPv4/IPv6、无 NAT/SNAT 出站的 reply-first/client-first 顺序，以及无 NAT/DNAT 入站在替换后才发送第一份本地应答；它也检查同一 socket 访问其他远端仍执行新路由。`TestUDPInboundStateBehindRedirect` 覆盖 REDIRECT 后的入站应答方向。`TestUDPReplacementWithoutConntrack` 验证缺 CT 时不能凭私有状态缺失获得入站豁免，`TestUDPReplyMarkerWithoutConntrack` 验证内部回包标记不等同于方向证明；`TestUDPNotrackDoesNotExemptReplyAfterReplacement` 验证 NOTRACK 不能给替换后的回复授予豁免。
+
+`TestUDPRelayDoesNotCreateInboundConntrack` 经生产 Netkit/veth 回程验证 LAN/WAN、IPv4/IPv6：只删除测试流自己的 host CT，再发送合成回复。WAN 无正确 REPLY 证据时必须丢弃迟到回复，不能反向创建 CT；LAN 直接回程无需 host CT。之后客户端下一包仍须被捕获。此测试同样要求 `DAE_TEST_ISOLATED=1` 及独立 PID、网络、挂载 namespace 和私有 bpffs，不可在真实服务 namespace 中运行。
+
+daemon 的内核测试逐项使用新的测试进程及 namespace，不能在同一进程中复用已关闭的全局网络运行时。`TestReplacementFailureAfterBlockKernel` 和 `TestReplacementCloseFailureAfterBlockKernel` 运行目标测试 ELF 的真实 parser/plugin Preflight，断言不构造插件或加载资源；在可控预检窗口检查旧 API 可用、新配置操作返回 409，以及预检拒绝/取消后旧服务和实例锁仍保留；描述编码超限也必须在 API 排空及 Block 前失败，旧 API、导出和 guards 不变。坏 settings 不阻止轻量预检；最终 API drain 后才返回 503。Block 后分别注入取消和 shared plugin state 关闭错误，检查不执行 exec、不发布新导出，旧 ipset/nft、固定对象和 pinned guard 保留。`TestReplacementGuardsKernel` 使用自编写的最小 BPF 程序和不同布局的 maps，注入部分附件安装失败，关闭进程持有的 FD 后检查阻断 pin 仍然存在；恢复启动必须覆盖所有旧 hook 才能解除防护。`TestReplacementGuardBundleKernel` 检查入口 link 与必要 timer maps 的成组引用、重复 pin 的身份校验、部分失败回滚及清理顺序。`TestFailedRecoveryDoesNotExpandGuardsKernel` 验证 A+B → 失败 A+C → A+B 不会被错误尝试留下的新防护阻挡。`TestStoppingEntryAndExit`、`TestStoppingUDPAndFragments` 验证退出标记不覆盖停机状态，`STOPPING` 下拒绝捕获、不确定流量和非首分片而保留明确直连；恢复 `ONLINE` 后未知非 SYN 归为 native，新入站 TCP 回复保持可用。进程夹具持续发送捕获 DNS，并检查目标收到的来源，检测交接期间的意外直出。
+
+通过 sealed exec state 校验恢复时，`Run` 不重复执行目标 ELF 已通过的 `CheckKernelFeatures`，但仍对重新加载的配置执行插件 Configure/Preflight 并实际加载、验证业务 BPF；普通冷启动和失败后重启仍完整检查，settings/Registry 仍仅在旧写者结束后的正式启动中读取，不引入内核能力缓存结构或配置。
+
+`TestReplacementReadinessFailureKernel` 和 `TestReplacementReadinessCanceledKernel` 覆盖数据面已发布但固定对象仍被借用时的失败：READY 通知失败或启动取消必须在退出前重新阻断，保留固定对象和已发布集合；这是 `ONLINE` 后的失败处置，不是回滚旧进程或由 READY 确认的原子提交。原替换操作完成前仍拒绝新的配置操作。`TestReplacementReadinessSuccessKernel` 通过本地 Unix datagram 接收 READY，检查最终就绪成功才结束恢复保护、取得删除权。`TestReplacementClaimKeepsInterfaceFreezeUntilReady` 验证状态/拓扑校验失败保留 `privatePins` 与接口冻结，通知成功才释放；已提交运行时的冗余 bundle 清理失败则应告警而非令就绪失败，测试须将其与 fatal 的校验及旧 guard 撤除错误区分。随后正常关闭会删除已接管的固定网络对象、canonical pins 和 Unix socket。
+
+`TestStartupStopBeforeRunKernel` 在 `OpenStartup` 后、进入 `Run` 前用阻塞 I/O 模拟不接受取消上下文的配置读取，发送 SIGTERM 后必须由 15 秒停机 watchdog 强制退出。Startup 在配置 I/O 前安装唯一的 `watchShutdown`，统一持有取消上下文和恢复期限；`Run` 复用该生命周期，不交接 watchdog，也不重置已开始的停止期限。此测试需 root、`DAE_TEST_ISOLATED=1`、独立 PID/网络/挂载 namespace 和私有 `/run`，不证明 ELF 加载或包初始化阶段可被 daemon watchdog 保护。
+
+`TestStartupLifecycleBudget` 使用虚拟时间检查准备完成、进入 `Run` 前恢复超时、先收到停止信号及重复启动停机宽限；完成准备不能取消业务，重复停机不能延长期限。`TestStartupJoinsExpiredPreparation` 检查停止恢复计时器时必须等待已开始的取消回调，避免就绪后才收到过期取消。这些生命周期测试无需 root。
+
+`TestReplacementSnapshotFileOwnership` 使用本地文件检查 FD 一次性移交、重复释放快照及仅关闭未移交 FD，无需 root。
+
+`TestReplacementRetainsSocketIdentityHooksKernel` 检查旧 WAN socket-owner hooks 临时跨旧 Runtime 关闭保活，与新 `pidLinks` 和本代 `socket_owner_map` storage 分离；正式身份使用 `daemon_identity_map`，新正式启动向旧 guard 重新注册，退出 hook 注销实际退出身份且不覆盖 `STOPPING`，临时预检豁免独立使用 `replacement_pid_map`；通过真实 socket 对照 `KernelProcessID` 的 kernel TGID，覆盖 PID namespace 身份口径。导出 FD 经 `TakeFiles` 转移后，释放快照和关闭旧 Runtime 都不能关闭它们，新 Runtime 仍须能够导入；未移交的 FD 由快照释放。交换身份 hook FD 必须拒绝且不泄漏；取消或拓扑变化保留旧 hooks/guard，成功撤旧后仅新 hooks 继续记录 socket；真实 `PrepareKernel` 路径还检查 Registry 在附件安装前只恢复一次，且不提前启用持久化。`TestReplacementCommitCancellationWithoutHost` 检查没有 MITM host 时也不能忽略 Commit 取消，`TestReplacementRequiresPreparationBeforeCommit` 检查未准备或未暂存的运行时不能提交替换。
+
+`TestReplacementCommitExportsFailureKernel` 的 `prepare` 子用例用不兼容 nft set 验证导出准备失败不消费待安装附件、不添加新 guard、不改变旧导出；`after-apply` 子用例在真实 ipset/nft 发布完成后令 `Host.Start` 失败；`partial-apply` 使用 nft 容量限制触发部分发布失败。两者检查保留已应用集合、保持 staged/guard 且清理临时备份，不恢复旧导出。此测试同样要求 root、`DAE_TEST_ISOLATED=1`、独立 PID/网络/挂载 namespace，以及私有 `/run` 和 bpffs；普通配置 reload 的事务回滚另行保持原有回归。
+
+`TestReplacementRestoresFinalRegistry` 验证新运行时读取旧写者关闭后的最终状态，保留恢复前的 journal 追加、压实和最终续期，使用新 matcher 投影，且后续正常追加不强制重建 baseline；`TestReplacementRegistryCloseBeforePersistence` 覆盖未 Restore 和 Restore 后未 Enable 的关闭不写回，包括完整 `.tmp` 与旧格式文件。`TestReplacementRegistryProjectionFailureKeepsStaged` 验证投影失败不启动插件、不启用持久化或解除 staging；`TestReplacementRegistryRejectsClosedPlane` 检查关闭屏障。`TestReplacementOpensFinalSettings` 检查候选首次 Open 取得旧写者最终的选择器、MITM 覆盖和客户端成员，且后续写入不擦除这些值；`TestReplacementRejectsInvalidInitialSettings` 检查损坏设置在首次 Open 即被拒绝。这些用例使用临时目录和内核 map 回调，可作为非特权定向回归运行：
+
+```sh
+go test -race -tags=netgo,osusergo,trace ./control \
+  -run '^TestReplacement(OpensFinalSettings|RejectsInvalidInitialSettings|RestoresFinalRegistry|RegistryCloseBeforePersistence|RegistryProjectionFailureKeepsStaged|RegistryRejectsClosedPlane)$' -count=1
+```
+
+Surge 的 `TestRuntimePersistentStoreIsLazy` 逐阶段检查构造、`Warm`、不访问 store 的脚本及 `Close` 不加载内容或创建存储目录、JSON、`.lock`；`TestRuntimePersistentStoreSharedBeforeFirstAccess` 检查首次访问前的共享，以及关闭一个 runtime 不影响另一个。store 用例同时覆盖首次 read/write 前的外部原子替换、坏 JSON/FIFO 实际访问失败且可修复重试，以及既有跨进程合并、flock 和 gate 超时：
+
+```sh
+CGO_ENABLED=1 go test -race ./plugins/surge \
+  -run '^(TestRuntimeStore|TestRuntimePersistentStore|TestRuntimeRetiredStoreIsReleased|TestConfiguredStore)' -count=1
+```
+
+QuickJS 和 Node 均运行该组；Node 在命令中加入 `-tags=surge_nodejs`，race 仍需 `CGO_ENABLED=1`，并沿用上文的 delegated cgroup 临时单元。
+
+测量替换恢复成本时，区分首次 `Restore` 的耗时和现有 `cutover` 诊断；后者从最终描述封印前计至数据面 ready，包含封印与 API 排空，不等于纯 Block 时长。完整 Restore 包含校验重放、过期清理、规则匹配及 BPF 投影，不能用文件读取时间代替。比较 CT 方向查询成本时，保持规则、包序列、CPU、内核与工具链一致，结合内核 `bpf-ns/op` 和真实 UDP 转发延迟、吞吐测量；不能只比较 map 内存或不含 CT 的路由缓存命中基准。
+
+`TestTCPProxyTupleKeepsAcceptedSocket` 和 `TestTCPSocketIndexLifecycle` 验证真实 accepted socket 的接收权及可选 SOCKHASH 索引生命周期；`TestTCPFlowEvictionKeepsConnection` 验证 LRU 属性淘汰不关闭真实连接。`TestPinnedMapABI`、`TestPinnedTCPFlowEncoding` 继续约束持久布局和令牌含义；`TestUDPRepliesReleaseRetiredTimerPrograms`、`TestGuardTimerMapReferences` 保留 UDP timer 退休与引用回归。TCP 不使用准入 HASH、FIN/ACK 关闭状态机或 timer takeover。

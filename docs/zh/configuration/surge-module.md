@@ -90,7 +90,9 @@ Node.js 预热需要可写且已委派 memory 控制器的 cgroup v2。每个 wo
 
 ### 持久存储
 
-存储按 **实例 × 有效执行域 × key** 分区。本机调用始终共享实例的本机分区。实例 `isolate_lan` 默认 `true`；dae 模块描述符可设置模块级 `isolate_lan`，也可用 `script { name: '脚本名' isolate_lan: false }` 逐脚本覆盖。优先级为**脚本覆盖 > 模块覆盖 > 实例默认**，未声明时逐层继承，适用于 HTTP request/response、DNS、cron 和 generic。sgmodule、JavaScript 和持久化 key 均不需要修改。开启隔离的 LAN 调用按宿主确认的直连设备 MAC 使用独立分区；来源未知或 LAN 身份不能确认时，`read` 返回 null、`write` 和删除返回 false，不使用 IP、网关 MAC 或零 MAC 猜测本机。关闭隔离后，所有来源共用本机分区。默认文件例如 `/var/lib/dae/plugins/surge/surge-store.json`；实例改名使用新文件，旧文件保留。`store: false` 仅控制持久化，不改变隔离规则；不读取或修改已有文件，重载后内存数据丢失，重新开启会恢复文件内的数据。
+存储按 **实例 × 有效执行域 × key** 分区。本机调用始终共享实例的本机分区。实例 `isolate_lan` 默认 `true`；dae 模块描述符可设置模块级 `isolate_lan`，也可用 `script { name: '脚本名' isolate_lan: false }` 逐脚本覆盖。优先级为**脚本覆盖 > 模块覆盖 > 实例默认**，未声明时逐层继承，适用于 HTTP request/response、DNS、cron 和 generic。sgmodule、JavaScript 和持久化 key 均不需要修改。开启隔离的 LAN 调用按宿主确认的直连设备 MAC 使用独立分区；来源未知或 LAN 身份不能确认时，`read` 返回 null、`write` 和删除返回 false，不使用 IP、网关 MAC 或零 MAC 猜测本机。关闭隔离后，所有来源共用本机分区。默认文件例如 `/var/lib/dae/plugins/surge/surge-store.json`；实例改名使用新文件，旧文件保留。`store: false` 仅控制持久化，不改变隔离规则；不读取或修改已有文件，重载后内存数据丢失，重新开启后首次访问时恢复文件内的数据。
+
+运行时构造不读取 store 内容；绝对路径和 symlink 规范化仍可能访问文件系统元数据。`Warm` 不执行用户脚本，不访问 store 的脚本和 `Close` 也不读取或写回 store；未实际访问时，不创建存储目录、JSON 或 `.lock`。首次 read 或 write 才加载最新文件，即使此前没有 read，首次 write 也先载入快照再修改单键，保留其他键。坏 JSON、FIFO、权限等存储错误延至实际 read 报错或 write 返回 false，不会因构造或预热而提前报错；失败不以空缓存覆盖坏文件，修复后可重试。
 
 同一文件的 JSON 结构为 `分区 → keys → strings`，本机使用保留分区名，设备使用规范 MAC；全部分区合计上限为 64 MiB，单值上限为 4 MiB。同一实例、同一有效执行域内，HTTP、DNS、cron 和 generic 按原 key 共享，不按脚本或模块另行切分；省略键时使用解析后的 script-path，相同路径共享默认条目。显式键须为不含路径分隔符的非空字符串，值只接受字符串，null 删除。写入通过同目录的 `surge-store.json.lock` 跨进程锁保护，合并最新数据后原子替换；读取检查文件身份、大小和修改时间，仅变化时重新加载 JSON。锁等待受脚本超时约束，数据和锁文件使用 `0600`。单次键写入有并发保护，多次 read/write 不构成事务。
 

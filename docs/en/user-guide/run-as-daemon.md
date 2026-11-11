@@ -85,3 +85,56 @@ sudo systemctl status dae
 ```bash
 sudo journalctl -xefu dae
 ```
+
+## Binary upgrades
+
+If dae is already running, `dae run` exits with an error and suggests `dae reload`
+before loading configuration or preparing resources. The existing instance keeps
+serving traffic. This also applies while it is starting or being replaced, and
+does not depend on a PID file.
+
+Install the new executable, then run `systemctl reload dae`. `ExecReload` must
+invoke the newly installed binary. Identical executable contents reload
+configuration; changed contents run lightweight target preflight, then close the
+old Runtime and exec the new binary in the same business process. There is no
+resident supervisor or separate worker. The service's PID and process starttime
+remain unchanged; its Go heap and goroutines do not. Full resource/plugin/BPF
+initialization happens after captured traffic is blocked, so replacement does not
+preserve sessions or guarantee a bounded service interruption. See
+[replacement behavior and failure boundaries](reload-and-suspend.md#process-replacement).
+
+Replacement does not require systemd or a `MainPID` transfer: foreground runs and
+`Type=simple` units are supported too. The sample `Type=notify` unit uses the default
+`NotifyAccess=main`; the single business process sends RELOADING and sends READY
+only after the new runtime is ready. Internal replacement does not send STOPPING.
+Normal service stop runs cleanup directly in that process. An ELF loader or
+package initializer that hangs before startup deadline handling is installed
+still requires intervention from an external manager; dae adds no resident watchdog.
+
+For a NixOS unit running this fork directly, the relevant settings are:
+
+```nix
+{ config, ... }:
+let
+  dae = config.services.dae.package;
+in {
+  systemd.services.dae = {
+    reloadIfChanged = true;
+    serviceConfig = {
+      Type = "notify";
+      ExecReload = [ "" "${dae}/bin/dae reload" ];
+    };
+  };
+}
+```
+
+Keep the unit's existing `ExecStart` pointing directly at the package's `dae run`.
+[`reloadIfChanged`](https://github.com/NixOS/nixpkgs/blob/master/nixos/lib/systemd-unit-options.nix)
+selects reload even when the store path changes; no stable executable wrapper is
+needed. Configure `run -c` with a runtime configuration path whose contents can
+change. A `LoadCredential` snapshot is created at service startup and is not
+refreshed by same-PID exec. Preflight and exec retain the running daemon's effective
+arguments, environment and working directory, not the reload CLI's environment.
+Changes to those settings, credentials or other service startup conditions require
+an explicit restart. Allow at least four minutes for the service's reload timeout
+when configuration resources may load slowly.

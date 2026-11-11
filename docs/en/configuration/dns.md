@@ -398,6 +398,19 @@ intact: startup restores no evidence, logs a warning and leaves the files
 untouched until the next start. On reload the new configuration takes over the
 in-memory evidence and both files.
 
+[Process replacement preflight](../../zh/design/process-replacement.md#持久化恢复)
+does not call `Restore` or read or modify these shared files. After the old Runtime
+closes cleanly and the same process execs the new ELF, the new runtime first
+restores during kernel preparation, before installing new host entries, including
+the final renewals written during clean shutdown.
+The complete kernel projection must succeed before plugin workers start,
+persistence is enabled or blocking guards are released. Healthy files keep the
+final epoch and append position; there is no warmup-snapshot merge or forced
+baseline rebuild. Closing the new runtime before restore or before persistence is
+enabled does not write back. After persistence is enabled, even a guard-release
+failure follows normal single-writer close semantics. Corrupt caches retain the
+usual recovery tolerance, but incomplete projection cannot open traffic.
+
 Write failures are logged and switch to rewriting the baseline, retried when
 each renewal window ends and on clean close. They do not prevent safe retirement or in-memory registry adoption
 during reload.
@@ -467,10 +480,16 @@ diagnostics.
 make MAX_DOMAIN_ROUTING_NUM=131072 MAX_UDP_ROUTING_CACHE_NUM=131072
 ```
 
-Userspace reads the actual map capacity. See [BPF map capacities](../user-guide/build-by-yourself.md#bpf-map-capacities)
-for the supported rule-scale and traffic-state parameters. Rebuild and restart to create maps with new
-sizes; configuration reload does not resize them. `MAX_MATCH_SET_LEN` changes
-bitmap width and therefore per-IP memory cost.
+Userspace reads the actual map capacity. The supported parameters are
+`MAX_MATCH_SET_LEN` and the three traffic-table capacities
+`MAX_DOMAIN_ROUTING_NUM`, `MAX_DST_MAPPING_NUM` and `MAX_UDP_ROUTING_CACHE_NUM`.
+See [BPF map capacities](../user-guide/build-by-yourself.md#bpf-map-capacities)
+for their purposes and defaults. UDP initiation direction uses system CT, with
+no private direction-table capacity parameter; `MAX_UDP_ROUTING_CACHE_NUM`
+still controls the routing cache and binding maps. Interface counts, internal
+LPM limits, process metadata and API observation tables remain internal constants.
+Rebuild and restart to create maps with new sizes; configuration reload does not
+resize them. `MAX_MATCH_SET_LEN` changes bitmap width and therefore per-IP memory cost.
 
 ## Optional plugins
 

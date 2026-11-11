@@ -44,8 +44,10 @@ sudo dae check-kernel
 
 Checks cover the Linux version, BTF, production eBPF programs/maps/helpers,
 writable bpffs, cgroup v2 hooks, Netkit/veth, TCX, SK_LOOKUP, the process-exit tracepoint,
-IPv4/IPv6 policy routing and transparent sockets. Network attachment probes use a
-temporary network namespace; cgroup probes only allow traffic. Probe resources
+IPv4/IPv6 policy routing, transparent sockets and host UDP conntrack. The conntrack
+probe exchanges loopback datagrams in the serving namespace and queries their
+directions without attaching a program or changing firewall rules. Network
+attachment probes use a temporary namespace; cgroup probes only allow traffic. Probe resources
 are released on completion. Missing required support or privileges stops startup;
 the optional long-process-name helper retains its fallback path,
 and unavailable IPv6 policy routing produces a warning.
@@ -71,6 +73,8 @@ CONFIG_NET_NS=y
 CONFIG_NET=y
 CONFIG_INET=y
 CONFIG_IPV6=y
+CONFIG_NETFILTER=y
+CONFIG_NF_CONNTRACK=y
 CONFIG_IP_MULTIPLE_TABLES=y
 CONFIG_NET_XGRESS=y
 CONFIG_NET_INGRESS=y
@@ -87,6 +91,14 @@ CONFIG_BPF_EVENTS=y
 when the kernel reports Netkit unsupported, it automatically uses a veth pair
 with TCX ingress programs on both ends. Permission, name-conflict and resource
 errors are reported rather than interpreted as missing Netkit support.
+
+UDP direction requires system conntrack and its `bpf_skb_ct_lookup` / `bpf_ct_release`
+kfuncs. `CONFIG_NF_CONNTRACK=m` is also supported when the module is already loaded
+and its BTF is available (`CONFIG_DEBUG_INFO_BTF_MODULES=y`). The serving namespace
+must actually track IPv4/IPv6 flows; loading the module alone does not enable its
+hooks. Startup and replacement preparation fail when this check fails. The probe
+checks the default zone and loopback path, not interface-specific NOTRACK or custom
+zones; dae does not enable tracking by changing the host firewall.
 
 Host interfaces use TCX links. Internal interfaces use native Netkit hooks or
 veth TCX links; dae does not require the TC classifier/qdisc options `CONFIG_NET_CLS_BPF`,
@@ -145,9 +157,12 @@ install or mount them separately when needed.
 
 Download the `dae-<target>` executable for your platform, such as
 `dae-linux-x86_64`, from [Releases](https://github.com/LostAttractor/dae/releases).
-See [run as a daemon](user-guide/run-as-daemon.md) to install it with systemd, and
-the [distribution pipeline](user-guide/build-by-yourself.md#distribution-pipeline)
-for targets, checksums and builds of the `next` branch.
+See [service deployment](user-guide/run-as-daemon.md) for installation and upgrades
+with systemd, [reload and suspend](user-guide/reload-and-suspend.md) for
+configuration reload and same-PID exec, and the
+[process replacement design (Chinese)](../zh/design/process-replacement.md) for
+handoff constraints. The [distribution pipeline](user-guide/build-by-yourself.md#distribution-pipeline)
+describes targets, checksums and builds of the `next` branch.
 
 ### Alpine
 

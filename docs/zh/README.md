@@ -47,7 +47,8 @@ sudo dae check-kernel
 ```
 
 检查包括 Linux 版本、BTF、实际 eBPF 程序/映射/helper 加载、bpffs 写入、cgroup v2 hooks、
-Netkit/veth、TCX、SK_LOOKUP、进程退出 tracepoint、IPv4/IPv6 策略路由和透明套接字。
+Netkit/veth、TCX、SK_LOOKUP、进程退出 tracepoint、IPv4/IPv6 策略路由、透明套接字和宿主 UDP conntrack。
+conntrack 探针在实际服务的网络命名空间中交换回环数据报并查询方向，不挂载程序、不改变防火墙规则。
 网络挂载探测在临时网络命名空间中执行；cgroup 探测程序仅放行，探测结束即释放资源。
 缺少必需能力或权限会直接报错；可选长进程名 helper 缺失时使用截断的进程名，
 IPv6 策略路由不可用时给出警告。
@@ -70,6 +71,8 @@ CONFIG_NET_NS=y
 CONFIG_NET=y
 CONFIG_INET=y
 CONFIG_IPV6=y
+CONFIG_NETFILTER=y
+CONFIG_NF_CONNTRACK=y
 CONFIG_IP_MULTIPLE_TABLES=y
 CONFIG_NET_XGRESS=y
 CONFIG_NET_INGRESS=y
@@ -84,6 +87,12 @@ CONFIG_BPF_EVENTS=y
 内部链路需要 `CONFIG_NETKIT=y` 或 `CONFIG_VETH=y`/`m`（模块须可加载）之一。
 dae 优先创建 Netkit L2 设备；内核报告不支持 Netkit 时，自动使用 veth，并在两端挂载 TCX ingress 程序。
 权限不足、名称冲突和资源不足等错误会直接报告，不会被当成缺少 Netkit 支持。
+
+UDP 方向依赖系统 conntrack 及其 `bpf_skb_ct_lookup` / `bpf_ct_release` kfunc。
+也支持 `CONFIG_NF_CONNTRACK=m`，但模块必须已经加载，并提供模块 BTF（`CONFIG_DEBUG_INFO_BTF_MODULES=y`）。
+实际服务的网络命名空间必须启用 IPv4/IPv6 流量跟踪；仅加载模块不代表跟踪 hooks 已启用。
+检查失败会拒绝冷启动或候选准备。探针检查默认 zone 的回环路径，不证明接口专用 NOTRACK 或自定义 zone 的行为；
+dae 不会通过修改宿主防火墙来启用跟踪。
 
 宿主接口使用 TCX link，内部接口使用 Netkit 原生 hook 或 veth TCX link；dae 不要求 TC classifier/qdisc 的
 `CONFIG_NET_CLS_BPF`、`CONFIG_NET_SCH_INGRESS` 或 `CONFIG_NET_CLS_ACT`。
@@ -134,7 +143,7 @@ CI 产物、Release 二进制和 Docker 镜像均不附带 Geo 数据文件，�
 ### 预编译二进制
 
 从 [Releases](https://github.com/LostAttractor/dae/releases) 下载对应平台的 `dae-<target>` 可执行文件，如 `dae-linux-x86_64`。
-以 systemd 服务安装见 [run as daemon](../en/user-guide/run-as-daemon.md)；目标平台、校验文件及 `next` 分支构建见[分发流程](../en/user-guide/build-by-yourself.md#distribution-pipeline)。
+以 systemd 服务安装及升级见[服务部署（英文）](../en/user-guide/run-as-daemon.md)；重载、同 PID exec 替换和暂停见[使用指南（英文）](../en/user-guide/reload-and-suspend.md)，交接约束见[进程热替换](design/process-replacement.md)。目标平台、校验文件及 `next` 分支构建见[分发流程](../en/user-guide/build-by-yourself.md#distribution-pipeline)。
 
 ### Alpine
 

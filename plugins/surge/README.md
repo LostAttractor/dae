@@ -90,8 +90,19 @@ whole script execution; stop other writers sharing the file before migration.
 See [usage and limits](../../docs/en/configuration/surge-module.md#migrating-data-after-a-mac-change).
 
 The single JSON file maps bucket names to key/string maps, with 64 MiB total and
-4 MiB per value. Reads reuse the decoded snapshot until file identity, size or
-mtime changes. DNS script answers key by effective scope, script, domain and
+4 MiB per value. Construction normalizes absolute paths and symlinks, which may perform metadata
+I/O, but does not read store contents. Live runtimes share stores by normalized
+path through a weak cache. `Warm` does not execute user scripts; construction, warmup,
+scripts that do not access the store, and `Close` do not load or flush its
+contents or create store directories, JSON or sidecar lock files. The first
+actual read or write loads the latest snapshot; a first write without a preceding
+read still preserves other keys. Invalid JSON, FIFOs and file-access errors surface
+on read or as write returning false, without overwriting the bad file; repairing
+the file allows retry on the same runtime. Reads reuse the decoded snapshot until
+the file identity, size or mtime changes. Writes retain cross-process locking,
+refresh-before-merge and atomic replacement.
+
+DNS script answers key by effective scope, script, domain and
 plugin chain; unknown bypasses the cache, while shared calls reuse local entries.
 [`notification.go`](notification.go) retains up to 50 messages per effective
 scope and script (scope/MAC/module/name/type), with a conservative 1 MiB JSON

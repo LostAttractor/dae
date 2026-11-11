@@ -2,7 +2,12 @@
 
 ## Reload
 
-`dae reload` refreshes subscriptions, routing and plugin resources, then compares
+Local `dae reload` compares the contents of its executable with the running
+daemon. Identical executables use configuration reload; different executables use
+[process replacement](#process-replacement). Version labels do not affect this
+decision, so rebuilding the same development version is detected.
+
+Configuration reload refreshes subscriptions, routing and plugin resources, then compares
 effective inputs. Unchanged groups, physical paths and plugin instances keep their
 transports, health/selection state, workers, caches and metrics. Refresh errors use
 a complete validated fallback or reject the reload; preparation failures leave the
@@ -40,7 +45,7 @@ Usage:
 dae reload
 ```
 
-The command waits for the daemon to confirm completion, with a three-minute
+The command waits for the daemon to confirm completion, with a four-minute
 timeout. After 150 ms, terminal stderr shows a spinner with the current stage;
 it clears before the result or error is printed. Redirected stderr and
 `TERM=dumb` disable animation and retain ordinary progress lines on stdout.
@@ -49,9 +54,10 @@ ID. Reload, suspend and resource refresh share a serialized queue of up to 16
 pending requests. A full queue rejects new requests. A client timeout does not
 cancel accepted work.
 
-The local operation API remains available while routing is replaced. The daemon
-retains the 64 most recently finished operations; unknown or expired IDs return
-an error.
+During configuration reload, the local operation API remains available while
+routing is replaced. The daemon retains the 64 most recently finished operations;
+unknown or expired IDs return an error. Process replacement has a separate API
+interruption, described below.
 
 To abort established connections, including connections retained by earlier reloads:
 
@@ -73,6 +79,7 @@ until they end.
 Unexpected termination that cannot finish cleanup, such as SIGKILL, retains a
 small kernel fallback datapath. Valid native connections keep their saved marks;
 established proxy TCP connections end with dae's sockets and must reconnect.
+Panics skip normal cleanup to apply the same unexpected-exit policy.
 Choose the policy for new managed outbound connections in `global`:
 
 ```dae
@@ -95,6 +102,179 @@ A restarted daemon takes over crash-retained links and becomes online when its
 listeners and rules are ready. A restart that fails before then leaves the crash
 fallback in place. Only the explicitly registered daemon's own sockets
 receive the bootstrap exemption; another process using the same mark does not.
+
+## Process replacement
+
+Process replacement is a **restart with failure protection**, not a globally atomic
+or lossless handoff. Failures before Block leave the old service running. After
+Block, closing old connections cannot be rolled back; failures keep managed traffic
+fail-closed until successful recovery. Direct traffic is not guaranteed to remain
+uninterrupted.
+
+Run the newly installed executable to upgrade the running daemon, or force the
+same executable to rebuild its runtime through same-PID exec:
+
+```shell
+/path/to/new/dae reload
+dae reload --replace
+```
+
+The daemon authenticates the local Unix peer and opens that peer's executable.
+It uses its own effective run arguments, environment and working directory for
+both preflight and exec, not the invoking CLI's environment. No executable path
+is accepted over the API. Remote API reloads remain configuration-only; remote
+`--replace` is rejected.
+
+A short-lived process runs the target ELF's parser, plugin `Preflight` and kernel
+checks. It does not read settings or DomainRegistry, download subscriptions or
+modules, run scripts' `Warm`, build a complete Runtime or publish client sets.
+The old dataplane and API remain available during preflight; new configuration
+operations return 409. Successful preflight is not a guarantee that full startup
+will succeed.
+
+After preflight, the daemon collects inherited FDs and encodes and seals the
+handoff description before draining active management API requests. Encoding,
+size-limit or sealing failures leave the old API and business running.
+Management reads and writes handled by the drained servers return 503. The
+existing local operation route can still answer until its server closes, but
+queries are not available throughout replacement: exec retains listener FDs,
+not Go HTTP servers, so requests may time out or disconnect before the new
+servers resume. The CLI retries operation reads, not the submission. Fixed
+`dae0`, `dae0peer`, `daens` and unchanged API/observability listeners retain their
+identity through inherited FDs.
+
+Before closing old connections, the daemon sets its entry programs to
+`STOPPING`: only proven explicit-direct traffic, necessary control protocols and
+restricted daemon/preflight identity exemptions remain allowed. Proxy/captured,
+fallback, uncertain traffic and non-first fragments are dropped. Fallback zero
+does not prove explicit direct. This active blocking state is separate from
+ordinary `unexpected_exit_behavior`; crashes still use the configured bypass/block
+policy. Old TCP sockets and listener backlogs close through
+the unchanged old return path, allowing idle clients to receive RST without first
+sending another packet. RST delivery across the network is not guaranteed.
+Existing explicit-direct traffic may continue through a single old guard while
+its evidence remains valid. Old and new guards use private maps with no
+cross-generation direct evidence: during overlap, the new guard may block traffic
+allowed by the old guard. A later failure can extend that pause until successful
+recovery; neither uninterrupted direct traffic nor a bounded pause is promised.
+
+The single business process explicitly closes its old Runtime, flushes state and
+reaps plugin descendants before executing the already-open target ELF with the
+same PID and process starttime. No resident supervisor or separate business worker
+is involved. The old Go heap and goroutines disappear; cleanup cannot rely on
+defers running after exec.
+
+The new image reads settings once and performs full resource, plugin and private
+BPF initialization while the old guards block captured traffic. It restores DomainRegistry before installation. At commit, it prepares client exports
+before updating the downstream socket, ingress and DNS reply links and attaching new host TCX programs after the old guards.
+Both generations retain independent maps. Temporary old WAN socket-owner hooks
+remain separate from the new runtime's hooks until old guards retire. Each
+writes its own `socket_owner_map`; formal startup re-registers the daemon in the
+old guards' `daemon_identity_map` without sharing business maps or exempting other
+processes. Preflight uses a separate temporary PID exemption, revoked before
+reaping and also cleared by the kernel if the daemon or candidate exits.
+After installation, the same commit applies the prepared client ipset/nft exports,
+starts plugin workers and enables Registry persistence.
+It validates complete hook coverage, publishes its own canonical pins, releases
+old guards incrementally and enters `ONLINE`. Installation and retirement across
+multiple hooks are protected intermediate states, not a globally atomic
+transaction. `ONLINE` is this runtime's dataplane activation point; READY is a
+readiness notification, not a globally atomic commit receipt. Its own guard bundles
+and interface freeze remain while the daemon validates every attachment and sends READY
+within the original deadline. Only then does it claim the canonical pins and remove
+`/sys/fs/bpf/dae/replacement_pending`. This marker protects partial publication
+even when no interface matches the capture rules. Fixed network objects and the Unix API socket
+also remain borrowed until final readiness. A late READY failure or cancellation
+can still re-enter `STOPPING` and terminate the successor while retaining recovery
+protection. This handles a failure after dataplane activation; it neither ignores
+READY failure nor resumes the old process. Traffic during the interruption is
+dropped; replacement does not queue it, preserve active sessions or promise an
+interruption below a fixed threshold.
+
+Socket lookup delivers traffic only when its runtime is `ONLINE`. UDP source
+associations support multiple destinations without a routing handoff for every
+packet. Replacement closes the old associations; the ready successor requires
+its own valid routing handoff to create an association, or uses an existing new
+association. DNS keeps per-destination routing. UDP connection state, inbound
+pending, bindings, caches and timers remain in use. A new private generation needs
+host CT evidence: only `CT_ORIGINAL` creates inbound pending state, and only
+`CT_REPLY` restores inbound replies. CT miss/NOTRACK is not direct evidence;
+late WAN relay replies without matching CT REPLY are dropped. Late packets follow
+the same admission rules; missing routing information never causes a direct fallback.
+
+After successful replacement, TCP follows ordinary restart semantics. A short-lived
+handoff leads to the real accepted proxy socket; an optional SOCKHASH index falls
+back to proxy network-namespace socket lookup if full or registration fails.
+The LRU `tcp_flow_map` holds only native routing properties, not proxy admission or
+FIN/ACK state. Unknown non-SYN packets are native once `ONLINE`, so replacement
+does not promise to reject every old unknown ACK after success. LRU eviction can
+lose saved marks and fallback constraints without closing the actual connection.
+Non-first fragments are blocked during `STOPPING`; once running, first-fragment
+routing checks allow direct datagrams to reassemble and reject proxied fragments.
+ARP and other supported, non-captured control protocols remain available while
+stopping.
+
+Failures before blocking leave the old runtime serving and shared client exports
+unchanged. Canceling the API drain reopens the existing handlers. A service
+notification failure during a recoverable operation fails that operation and leaves
+the daemon serving. Once blocking begins, failures are terminal for that handoff: the old
+runtime is not resumed, and pinned entry guards under `/sys/fs/bpf/dae/guards`
+remain even if the process exits. Overlapping service ports are rejected before Block. Invalid settings, ports held by other processes, downloads,
+script `Warm`, real business BPF loading, and client export preparation or
+publication may all fail after this boundary. Partial publication or later
+activation failure keeps the applied sets and blocking
+guards while cleaning temporary export backups; it does not roll back to the old
+sets. After commit, failures to remove redundant guard bundles or unreferenced old
+UDP timer pins only log warnings, as does successful takeover's export-backup
+cleanup. State/topology validation errors and failure to retire old guards before
+commit completes remain fatal. Ordinary configuration reload retains its export
+rollback behavior.
+A subsequent successful startup removes persistent guards only after its own ready
+entries cover the guarded hooks. Restore the original
+interception interface configuration if coverage validation fails. A failed
+coverage check does not add new persistent guards. Only replacement and guard
+recovery start with private business maps rather than adopting predecessor pins;
+normal operation publishes canonical pins, and ordinary restart reuses compatible
+pins. Each guard bundle retains its entry link, UDP connection-state and routing-cache
+timer maps, socket-owner writer links, exit hook and daemon identity map. There is
+no TCP timer. Retirement releases both canonical and guard references; old identity
+writers are not replaced through same-name pin updates.
+Failed handoffs never silently choose restart or bypass traffic protection. During
+cold recovery, old guards still block ordinary captured traffic. The newly
+registered daemon identity may fetch startup resources through its restricted
+exemption; this does not guarantee upstream availability or exempt other processes.
+
+Connections, DNS sessions, in-memory caches and counters are not migrated.
+Persisted selections and client membership come from the new image's single
+settings read after the old API closes and exec completes. DomainRegistry first
+restores during kernel preparation, before new host entries are installed and
+after the old writer closes and finishes its final flush;
+the new writer reads that final state before enabling persistence, preserving
+single-writer ownership. Other caches and certificates retain their own preparation
+contracts. Surge's
+[persistent store](../../zh/configuration/surge-module.md#持久存储) loads contents
+only on actual script read/write, not runtime construction, warmup or close.
+
+Replacement requires unchanged LAN/WAN interception lists, their resolved interface
+and attachment sets (including automatic WANs and wildcard matches), and the
+existing fixed network topology. Apply interface-list edits with the running executable first,
+or restart explicitly. Changes to the run arguments, environment, systemd
+credentials or fixed topology also require an ordinary restart. A replacement may
+change the transparent listener port and socket mark because its connection state
+is private. Replacement has a three-minute transaction deadline that is preserved
+across exec. Once blocking starts, the old runtime has a separate 15-second
+shutdown watchdog, including stuck plugin cleanup. Stop signals and the remaining
+deadline are checked before exec. The new image has startup deadline protection,
+but the old Go watchdog cannot survive exec: an ELF loader or package initializer
+that hangs permanently still needs an external service manager. There is no
+resident watchdog. Concurrent configuration operations return 409 while the API
+can answer during replacement; already queued work must finish first. Successful
+replacement completes the original operation ID with the unchanged PID and new
+version; cold recovery after a failed handoff does not restore that operation.
+
+For service deployment, see [systemd and NixOS](run-as-daemon.md#binary-upgrades).
+For resource ownership and state details, see the
+[process replacement design (Chinese)](../../zh/design/process-replacement.md).
 
 ## Suspend
 
