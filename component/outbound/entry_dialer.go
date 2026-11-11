@@ -16,13 +16,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
-// entryUserTimeout closes node carriers whose data stays unacknowledged, so
-// pools replace black-holed connections instead of queueing streams on them.
-// It exceeds a failed health check (two probe timeouts): a carrier never dies
-// before its path would fail anyway. With Go's 15s keepalive it also bounds
-// idle carriers.
-const entryUserTimeout = 30 * time.Second
-
 func (p *PathSpec) effectiveMark(option *dialer.GlobalOption) uint32 {
 	if p.Entry.Mark != nil {
 		return *p.Entry.Mark
@@ -55,7 +48,11 @@ func (p *PathSpec) entryDialer(option *dialer.GlobalOption, pool *PathPool) (net
 	}
 	entry := direct.Option{
 		Resolver: resolver, Mark: int(p.effectiveMark(option)), Interface: p.Entry.Interface,
-		Mptcp: option.Mptcp, IPVersion: p.IPVersion, UserTimeout: entryUserTimeout,
+		Mptcp: option.Mptcp, IPVersion: p.IPVersion,
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 15 * time.Second, Interval: 5 * time.Second, Count: 3},
+		// Linux times out a silent zero window with in-flight data at twice this
+		// cap. Keep that threshold at 30s without USER_TIMEOUT's backpressure abort.
+		TCPMaxRTO: 15 * time.Second,
 		// Node carriers are always written first, so a deferred SYN is sent.
 		TCPFastOpen: option.TCPFastOpen,
 	}

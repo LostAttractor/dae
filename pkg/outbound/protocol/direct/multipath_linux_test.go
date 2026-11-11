@@ -238,33 +238,47 @@ func TestMultipathMemoryIgnoresFailedDials(t *testing.T) {
 	}
 }
 
-// A probe that fell back is kept without another dial, and its only subflow
-// takes the user timeout the MPTCP socket refused before connecting.
-func TestMultipathFallbackKeepsProbeWithUserTimeout(t *testing.T) {
-	const timeout = 30 * time.Second
-	plain := multipathTestListener(t, false)
-	if protocol, negotiated := dialProtocol(t, NewDirectDialer(Option{Mptcp: true}), plain); protocol != unix.IPPROTO_MPTCP || negotiated {
-		t.Skipf("MPTCP fallback unavailable: protocol=%d negotiated=%v", protocol, negotiated)
-	}
-	dialer := NewDirectDialer(Option{Mptcp: true, Multipath: new(MultipathMemory), UserTimeout: timeout})
-	probes, plains := countDials(dialer)
-	conn, err := dialer.DialContext(t.Context(), "tcp", plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	tcp := conn.(*net.TCPConn)
-	if !mptcpSocket(tcp) || *probes != 1 || *plains != 0 {
-		t.Fatalf("did not keep the probe: MPTCP=%v, probes=%d, plain dials=%d", mptcpSocket(tcp), *probes, *plains)
-	}
-	raw, err := tcp.SyscallConn()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := -1
-	_ = raw.Control(func(fd uintptr) { got, _ = unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT) })
-	if got != int(timeout.Milliseconds()) {
-		t.Fatalf("TCP_USER_TIMEOUT = %dms, want %v", got, timeout)
+// Neither negotiated nor fallen-back MPTCP is redialed to apply TCP_RTO_MAX_MS.
+func TestMultipathKeepsProbeWithMaxRTO(t *testing.T) {
+	for _, negotiated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("negotiated=%v", negotiated), func(t *testing.T) {
+			address := multipathTestListener(t, negotiated)
+			if protocol, got := dialProtocol(t, NewDirectDialer(Option{Mptcp: true}), address); protocol != unix.IPPROTO_MPTCP || got != negotiated {
+				t.Skipf("MPTCP unavailable: protocol=%d negotiated=%v", protocol, got)
+			}
+			dialer := NewDirectDialer(Option{Mptcp: true, Multipath: new(MultipathMemory), TCPMaxRTO: 15 * time.Second})
+			probes, plains := countDials(dialer)
+			for i := range 2 {
+				conn, err := dialer.DialContext(t.Context(), "tcp", address)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				tcp := conn.(*net.TCPConn)
+				wantProbes, wantPlains := 1, i
+				if negotiated {
+					wantProbes, wantPlains = i+1, 0
+				}
+				wantMPTCP := negotiated || i == 0
+				if got, err := tcp.MultipathTCP(); err != nil || got != negotiated {
+					t.Fatalf("negotiated MPTCP = %v, %v; want %v", got, err, negotiated)
+				}
+				if mptcpSocket(tcp) != wantMPTCP || *probes != wantProbes || *plains != wantPlains {
+					t.Fatalf("dial %d: MPTCP=%v, probes=%d, plain dials=%d; want %v, %d, %d", i, mptcpSocket(tcp), *probes, *plains, wantMPTCP, wantProbes, wantPlains)
+				}
+				if !negotiated {
+					if got, err := tcpSocketOption(tcp, unix.TCP_USER_TIMEOUT); err != nil || got != 0 {
+						t.Fatalf("TCP_USER_TIMEOUT = %dms, %v; want disabled", got, err)
+					}
+				}
+				// Only subsequent, plain TCP dials to an incapable peer get the cap.
+				if !wantMPTCP {
+					if got, err := tcpSocketOption(tcp, tcpRTOMaxMS); !errors.Is(err, unix.ENOPROTOOPT) && (err != nil || got != 15000) {
+						t.Fatalf("TCP_RTO_MAX_MS = %dms, %v; want 15000 or unsupported", got, err)
+					}
+				}
+			}
+		})
 	}
 }
 

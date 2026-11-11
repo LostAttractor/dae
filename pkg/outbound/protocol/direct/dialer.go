@@ -26,14 +26,14 @@ type Option struct {
 	Mptcp  bool
 	// Multipath, with Mptcp, chooses MPTCP per destination by whether it
 	// negotiated MPTCP before; nil dials every TCP connection with MPTCP.
-	Multipath *MultipathMemory
-	Mark      int
-	Interface string
-	IPVersion int // 0, 4 or 6; applies to data sockets, not Resolver's DNS transport.
-	// UserTimeout bounds unacknowledged data on TCP data sockets, closing
-	// carriers of a black-holed path. Negotiated MPTCP connections cannot
-	// set it; fallen-back ones set it on their only subflow.
-	UserTimeout time.Duration
+	Multipath       *MultipathMemory
+	Mark            int
+	Interface       string
+	IPVersion       int // 0, 4 or 6; applies to data sockets, not Resolver's DNS transport.
+	KeepAliveConfig net.KeepAliveConfig
+	// TCPMaxRTO caps retransmission and zero-window probe intervals on Linux
+	// TCP sockets that support it; acknowledged zero windows stay open.
+	TCPMaxRTO time.Duration
 	// TCPFastOpen defers the SYN of plain TCP data sockets to their first
 	// write once the kernel holds the server's cookie; MPTCP sockets keep a
 	// full handshake. Only for peers the caller always writes to first: a
@@ -43,15 +43,14 @@ type Option struct {
 }
 
 type directDialer struct {
-	dialer      net.Dialer  // UDP, and TCP unless memory chooses multipath
-	multipath   *net.Dialer // MPTCP; set with memory
-	memory      *MultipathMemory
-	mark        int
-	iface       string
-	lookup      happyeyeballs.Lookup
-	ipVersion   string
-	fastOpen    bool
-	userTimeout time.Duration
+	dialer    net.Dialer  // UDP, and TCP unless memory chooses multipath
+	multipath *net.Dialer // MPTCP; set with memory
+	memory    *MultipathMemory
+	mark      int
+	iface     string
+	lookup    happyeyeballs.Lookup
+	ipVersion string
+	fastOpen  bool
 }
 
 func NewDirectDialer(option Option) netproxy.Dialer {
@@ -59,7 +58,7 @@ func NewDirectDialer(option Option) netproxy.Dialer {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	d := &directDialer{dialer: net.Dialer{Resolver: resolver}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup, fastOpen: option.TCPFastOpen, userTimeout: option.UserTimeout}
+	d := &directDialer{dialer: net.Dialer{Resolver: resolver, KeepAliveConfig: option.KeepAliveConfig}, mark: option.Mark, iface: option.Interface, lookup: option.Lookup, fastOpen: option.TCPFastOpen}
 	if d.lookup == nil {
 		d.lookup = resolver.LookupNetIP
 	}
@@ -106,8 +105,8 @@ func socketControl(option Option) func(context.Context, string, string, syscall.
 		if option.TCPFastOpen {
 			setFastOpenConnect(c)
 		}
-		if option.UserTimeout > 0 {
-			return setUserTimeout(c, option.UserTimeout)
+		if option.TCPMaxRTO > 0 {
+			return setMaxRTO(c, option.TCPMaxRTO)
 		}
 		return nil
 	}
@@ -142,19 +141,6 @@ func (d *directDialer) dialTCP(ctx context.Context, network string, ip netip.Add
 		}
 	}
 	d.memory.settle(table, key, result)
-	if result == multipathIncapable && d.userTimeout > 0 {
-		// The probe stays a single-path connection: the kernel serves TCP
-		// options of a fallen-back socket from its only subflow, which the
-		// MPTCP socket refused before connecting.
-		raw, rawErr := conn.(*net.TCPConn).SyscallConn()
-		if rawErr == nil {
-			rawErr = setsockoptUserTimeout(raw, d.userTimeout)
-		}
-		if rawErr != nil {
-			_ = conn.Close()
-			return nil, rawErr
-		}
-	}
 	return conn, err
 }
 
