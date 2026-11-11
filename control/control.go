@@ -5,7 +5,7 @@
 
 package control
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -type device_route_state -type http_client_key -type http_client_decision -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TARGET" bpf kern/tproxy.c -- -I../kern
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -type device_route_state -type http_client_key -type http_client_decision -type udp_routing_scratch -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TARGET" bpf kern/tproxy.c -- -I../kern
 //go:generate go run ../cmd/dae-bpf-pack bpf_bpf*.go
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -no-global-types -type map_usage -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TARGET" bpfusage kern/map_usage.c -- -I../kern
 //go:generate go run ../cmd/dae-bpf-pack bpfusage_bpf*.go

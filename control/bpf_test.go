@@ -112,6 +112,9 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	if size := unsafe.Sizeof(result); size != 40 || spec.Maps["routing_tuples_map"].ValueSize != 64 || spec.Maps["tcp_flow_map"].ValueSize != 24 {
 		t.Fatalf("routing layouts: result=%d handoff=%d flow=%d", size, spec.Maps["routing_tuples_map"].ValueSize, spec.Maps["tcp_flow_map"].ValueSize)
 	}
+	if spec.Maps["udp_routing_scratch_map"] != nil {
+		t.Fatal("UDP insertion must reuse ingress scratch, not a standalone map")
+	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
 	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 40 || unsafe.Sizeof(value) != 72 || unsafe.Sizeof(value.Result) != 40 {

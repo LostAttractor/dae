@@ -420,13 +420,6 @@ struct {
 	__uint(max_entries, MAX_UDP_ROUTING_CACHE_NUM);
 } udp_bindings_map SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct udp_routing_scratch);
-	__uint(max_entries, 1);
-} udp_routing_scratch_map SEC(".maps");
-
 #include "routing_maps.h"
 
 struct pid_pname {
@@ -946,7 +939,7 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
  */
 struct ingress_scratch {
 	struct tuples tuples;
-	struct routing_result result;
+	struct udp_routing_scratch route;
 	struct route_params params;
 	struct route_state state;
 };
@@ -1079,12 +1072,15 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 				     struct routing_result *result, __u32 fallback)
 {
-	struct udp_routing_scratch *value =
-		bpf_map_lookup_elem(&udp_routing_scratch_map, &zero_key);
+	struct ingress_scratch *scratch =
+		bpf_map_lookup_elem(&ingress_scratch_map, &zero_key);
 
-	if (!value)
+	if (!scratch)
 		return -1;
-	__builtin_memset(value, 0, sizeof(*value));
+	struct udp_routing_scratch *value = &scratch->route;
+
+	/* result can be value->result; only the timer/lock bytes need clearing. */
+	__builtin_memset(value->zero, 0, sizeof(value->zero));
 	value->result = *result;
 	value->cached_until = bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
 	value->fallback = fallback;
@@ -1639,7 +1635,7 @@ static __always_inline int do_tproxy_first_fragment(
 	struct udp_routing_cache_key udp_key = {};
 
 	if (l4proto == IPPROTO_UDP) {
-		struct routing_result *saved = &scratch->result;
+		struct routing_result *saved = &scratch->route.result;
 
 		fill_udp_routing_cache_key(&udp_key, tuples);
 		if (bpf_map_lookup_elem(&udp_bindings_map, &udp_key))
@@ -1679,7 +1675,7 @@ static __always_inline int do_tproxy_first_fragment(
 	if (decoded.outbound == OUTBOUND_DIRECT) {
 		if (!fallback_live(fallback) || decoded.mark || skb->mark)
 			return TCX_DROP;
-		struct routing_result *result = &scratch->result;
+		struct routing_result *result = &scratch->route.result;
 
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
@@ -1809,7 +1805,7 @@ static __always_inline int do_tproxy_unfragmented(
 		}
 	}
 
-	struct routing_result *routing_result = &scratch->result;
+	struct routing_result *routing_result = &scratch->route.result;
 	__u32 fallback = 0;
 
 	__builtin_memset(routing_result, 0, sizeof(*routing_result));
