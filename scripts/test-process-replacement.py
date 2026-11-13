@@ -118,12 +118,12 @@ def log_message(line, message):
     return re.search(r'\bmsg="?' + re.escape(message) + r'"?(?= |$)', line) is not None
 
 
-def cutover_durations(log):
+def phase_durations(log, message, field):
     durations = []
     for line in log.splitlines():
-        if not log_message(line, "Replacement datapath ready"):
+        if not log_message(line, message):
             continue
-        match = re.search(r'\bcutover=(?:"([^"]+)"|(\S+))', line)
+        match = re.search(r'\b' + re.escape(field) + r'=(?:"([^"]+)"|(\S+))', line)
         assert match, line
         durations.append(duration_seconds(match[1] or match[2]))
     return durations
@@ -268,6 +268,7 @@ def main(binary, wan=False):
 
     blocked, release, served = threading.Event(), threading.Event(), threading.Event()
     probe_paths = []
+    download_requests = []
     download_path = "/nodes/" + os.urandom(8).hex()
     subscription_body = b"http://127.0.0.1:9#fixture"
 
@@ -279,6 +280,7 @@ def main(binary, wan=False):
                 self.end_headers()
                 return
             assert self.path == download_path, self.path
+            download_requests.append(time.monotonic())
             blocked.set()
             if not release.wait(20):
                 self.send_error(504, "fixture release timed out")
@@ -339,17 +341,23 @@ def main(binary, wan=False):
             stat = Path(f"/proc/{master.pid}/stat").read_text()
             return master.pid, stat.rsplit(") ", 1)[1].split()[19]
 
-        def assert_image(executable):
+        def assert_image(executable, preparing=False):
             assert master.poll() is None and main_identity() == main_initial
             assert os.path.samefile(f"/proc/{master.pid}/exe", executable)
             assert Path(f"/proc/{master.pid}/cmdline").read_bytes().split(b"\0")[1:2] == [b"run"]
+            helpers = 0
             for child in process_tree(master.pid) - {master.pid}:
                 try:
                     args = Path(f"/proc/{child}/cmdline").read_bytes().split(b"\0")
                     daemon_child = args[1:2] == [b"run"] and os.path.samefile(f"/proc/{child}/exe", executable)
                 except (FileNotFoundError, ProcessLookupError):
                     continue
+                if daemon_child and preparing and args[0] == b"/proc/self/fd/3":
+                    assert "memfd:dae-prepared-inputs" in os.readlink(f"/proc/{child}/fd/6")
+                    helpers += 1
+                    continue
                 assert not daemon_child, f"unexpected resident daemon/supervisor child: {child} {args!r}"
+            assert helpers == int(preparing), (helpers, preparing)
 
         def pins():
             return [path for path in Path("/sys/fs/bpf/dae").rglob("*") if not path.is_dir()]
@@ -421,16 +429,6 @@ def main(binary, wan=False):
             exported = next(item["set"] for item in json.loads(result.stdout)["nftables"] if "set" in item)
             return set(exported.get("elem", []))
 
-        def assert_api_blocked():
-            before = settings_path.read_bytes()
-            for management in (False, True):
-                try:
-                    status, body = api_request("GET", "/api/status", management=management, timeout=0.15)
-                except (OSError, http.client.HTTPException):
-                    continue  # Exec keeps listening FDs, not the old Go HTTP servers.
-                assert status == 503, (management, status, body)
-            assert settings_path.read_bytes() == before, "blocked API changed persisted settings"
-
         def listeners():
             for port, path in zip(ports, ("/api/status", "/metrics", "/debug/pprof/")):
                 headers = {"Authorization": "Bearer fixture-key"} if port == ports[0] else {}
@@ -500,7 +498,7 @@ def main(binary, wan=False):
                     received += chunk
                 traffic()
                 listeners()
-                reload(binary)
+                assert "No changes" in reload(binary), "cold preparation omitted a host interface from routing inputs"
                 traffic()
                 memory_stable = {"initial": process_tree_memory(master.pid)}
                 memory_sampler = MemorySampler(lambda: master.pid)
@@ -517,7 +515,8 @@ def main(binary, wan=False):
                     assert exported_members("clients") == {member}
                     assert_running_pins()
                     traffic()
-                # Preflight is intentionally lightweight; the real download is inside Block.
+                # Target input preparation runs while the old dataplane still serves.
+                # The successor must not rediscover configuration or download again.
                 replacement_text = text.replace("dae_replacement/clients", "dae_replacement/successor")
                 subscription_url = f"http://{subscription_host}:{subscriptions.server_port}{download_path}"
                 subscription_cache = directory / "cache" / "resources" / "subscriptions"
@@ -526,20 +525,24 @@ def main(binary, wan=False):
                 arrival_start = max(0, len(arrivals) - 1)
                 pending = subprocess.Popen([binary, "reload", "--replace"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                 assert blocked.wait(10), log.read_text()
-                assert_image(binary)
+                assert_image(binary, preparing=True)
                 assert identity() == initial and listener_identity(ports) == initial_listeners
-                assert_guards()
-                assert_api_blocked()
+                assert_running_pins()
+                assert generation() == original_generation and startups() == original_startups
+                listeners()
                 if wan:
                     probe_subscription(True)
                 assert exported_members("clients") == {member}
                 assert subprocess.run([TOOLS["nft"], "list", "set", "inet", "dae_replacement", "successor"], capture_output=True).returncode != 0
                 duplicate_run()
-                assert_blocked_traffic()
+                traffic()
+                write_config("invalid after input capture")
                 release.set()
                 stdout, stderr = pending.communicate(timeout=30)
                 assert pending.returncode == 0, stdout + stderr + log.read_text()
                 assert served.wait(5)
+                assert len(download_requests) == 1, "successor performed another resource request"
+                assert config.read_text() == "invalid after input capture"
                 if wan:
                     probe_subscription(True)
                     snapshots = [json.loads(path.read_text()) for path in subscription_cache.glob("*.json")]
@@ -599,10 +602,11 @@ def main(binary, wan=False):
                 time.sleep(1)  # Match the baseline's post-replacement settling interval.
                 memory_stable["after_replacements"] = process_tree_memory(master.pid)
                 memory_sampler.finish(memory_stable)
-                durations = cutover_durations(log.read_text())
-                assert len(durations) == len(exec_dns_gaps) == 6 and all(duration > 0 for duration in durations), durations
-                print(f"Same-PID exec: PID/starttime={main_initial}, FD={fd_counts}")
-                print("Successful exec measurements (final cutover and DNS inter-arrival are distinct): " + json.dumps([dict(dns_gap, cutover_ms=round(duration * 1000, 1)) for dns_gap, duration in zip(exec_dns_gaps, durations)]))
+                durations = phase_durations(log.read_text(), "Replacement datapath ready", "cutover")
+                preparations = phase_durations(log.read_text(), "Replacement inputs prepared", "duration")
+                assert len(durations) == len(preparations) == len(exec_dns_gaps) == 6 and all(duration > 0 for duration in durations), durations
+                print(f"Same-PID exec: PID/starttime={main_initial}, FD={fd_counts}, resource_requests={len(download_requests)}")
+                print("Successful exec measurements (preparation, final cutover and DNS inter-arrival are distinct): " + json.dumps([dict(dns_gap, preparation_ms=round(preparation * 1000, 1), cutover_ms=round(duration * 1000, 1)) for dns_gap, preparation, duration in zip(exec_dns_gaps, preparations, durations)]))
 
                 def cold_restart():
                     nonlocal master, main_initial, initial
@@ -655,8 +659,8 @@ def main(binary, wan=False):
                 assert master.wait(timeout=20) == 0, log.read_text()
                 assert not pins(), pins()
                 if wan:
-                    print("PASS: private WAN denied another PID before/during/after exec while an uncached daemon HTTP download completed under the old STOPPING guard")
-                print("PASS: single resident daemon, stable PID/starttime across exec, lightweight preflight failures, successor-owned exports, blocked downloads without direct DNS, content-based replacement, forced same-ELF generations, stable FDs and fixed identities, TCP abort, listener changes, post-Block failures and cold recovery, crash restarts retaining compatible canonical pins and normal-stop cleanup")
+                    print("PASS: private WAN denied another PID before/during/after exec while the target prepared an uncached resource before Block")
+                print("PASS: single resident daemon, stable PID/starttime across exec, input preparation failures, old API and traffic during downloads, sealed configuration replay after source changes without another request, successor-owned exports, no direct DNS leakage, content-based replacement, forced same-ELF generations, stable FDs and fixed identities, TCP abort, listener changes, post-Block failures and cold recovery, crash restarts retaining compatible canonical pins and normal-stop cleanup")
             except BaseException:
                 print(log.read_text(), file=sys.stderr)
                 raise

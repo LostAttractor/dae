@@ -23,7 +23,9 @@ plugins {
 
 Surge 的 `store` 默认为 `true`，按实例 ID 自动保存在 `DAE_LOCATION_CACHE/plugins/<ID>/surge-store.json`；不同实例的数据独立，设置 `store: false` 改为实例内存存储。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS、路由或后台任务。未知的启用类型、重复 ID 或已启用插件的未知字段会报错。关闭的插件不执行配置解析、资源准备、实例构造或后台任务，允许保留尚未编入的类型及其私有配置。
 
-启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 解析并校验各实例配置，得到运行资源工厂，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。普通 `dae reload` 会刷新插件声明的外部资源，比较有效配置和资源内容，只重建变化的实例；内置 Surge 会比较模块及其依赖脚本内容。刷新失败时使用完整有效缓存或拒绝重载，不将资源失败解释为删除实例。静态校验或资源准备失败会保持当前控制平面，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
+启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 解析并校验各实例配置。随后 `Resources` 读取并校验输入，返回完整的静态 `Plan`；此时不创建活插件实例、VM 或执行 `Warm`。用户态准备完成后才加载业务 eBPF 并构造正式实例。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。普通 `dae reload` 会刷新插件声明的外部资源，比较有效配置和资源内容，只重建变化的实例；内置 Surge 会比较模块及其依赖脚本内容。刷新失败时使用完整有效缓存或拒绝重载，不将资源失败解释为删除实例。静态校验或资源准备失败会保持当前控制平面，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
+
+每个启用插件都必须实现 `Definition.Resources` 并返回非 nil 的 `Resources.Plan`，没有效果也须显式返回空 Plan。缺少声明会给出带实例名的配置错误，外部插件同样适用；host 不会构造实例来调用 `Plugin.Plan()` 兜底。插件作者应让静态声明与正式实例的 `Plan()` 共用纯逻辑，不能为求声明创建临时引擎或 VM。`LoadResources` 与 `BuildInstances` 分开资源读取和实例构造，后者取得正式生命周期 ctx 与 Storage/Metrics/SharedStates；资源产物不保留加载 ctx。普通 reload 继续按原输入相等性复用实例，并只在接受候选后通过 `CommitResources` 发布资源状态。进程替换会在 Block 前取得静态声明，跨 exec 只传原始输入 bytes，不序列化 `Config`/`Value` 或实例；正式实例、`Warm` 和后台 worker 仍遵循各自后置阶段。缺失快照或录制超限等 fatal 错误不能当作空声明或缓存 fallback，详见[插件 API（英文）](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
 `client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。开启 MITM 时 daemon 自动准备持久化 CA；指定已有证书使用顶层 `certificate`，见[本地 CA](certificate.md)。仅使用 DNS、IP Host 或路由插件且未开启 API、MITM 时不创建 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
 

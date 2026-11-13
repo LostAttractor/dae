@@ -38,8 +38,7 @@ func TestReplacementPreflightProcess(t *testing.T) {
 			}, nil
 		},
 		Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
-			t.Fatal("lightweight preflight loaded resources")
-			return plugin.Resources{}, nil
+			return plugin.Resources{Plan: new(plugin.Plan)}, nil
 		},
 		Preflight: func(ctx context.Context, _ plugin.Spec) error {
 			path := os.Getenv("DAE_REPLACEMENT_TEST_CONTROL")

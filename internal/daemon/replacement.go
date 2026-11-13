@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/apiserver"
 	"github.com/daeuniverse/dae/internal/handoff"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -83,7 +85,7 @@ func readReplacement(value string) (_ *replacementState, resultErr error) {
 			return nil, fmt.Errorf("inherited %s: %w", name, err)
 		}
 	}
-	for _, name := range []string{"lock", "hostns", "daens", "local"} {
+	for _, name := range []string{"lock", "hostns", "daens", "local", "inputs"} {
 		if state.files[name] == nil {
 			return nil, fmt.Errorf("missing inherited %s", name)
 		}
@@ -101,7 +103,7 @@ func readReplacement(value string) (_ *replacementState, resultErr error) {
 
 func replacementResource(name string, links int) bool {
 	switch name {
-	case "lock", "hostns", "daens", "local", "management":
+	case "lock", "hostns", "daens", "local", "management", "inputs":
 		return true
 	}
 	kind, value, ok := strings.Cut(name, "/")
@@ -115,6 +117,9 @@ func replacementResource(name string, links int) bool {
 func validateReplacementResource(name string, file *os.File) error {
 	fd := int(file.Fd())
 	switch {
+	case name == "inputs":
+		_, err := handoff.SealedFileSize(file, resource.MaxInputArchiveBytes)
+		return err
 	case name == "hostns" || name == "daens":
 		kind, err := unix.IoctlRetInt(fd, unix.NS_GET_NSTYPE)
 		if err != nil || kind != unix.CLONE_NEWNET {
@@ -235,9 +240,15 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 	}
 	defer a.operations.endReplacement()
 	a.report("Checking replacement executable...")
-	if err := a.preflightReplacement(ctx, executable); err != nil {
+	preparedInputs, err := a.preflightReplacement(ctx, executable)
+	if err != nil {
 		return "", err
 	}
+	defer func() {
+		if preparedInputs != nil {
+			_ = preparedInputs.Close()
+		}
+	}()
 	snapshot, err := a.datapath.ExportReplacement(ctx)
 	if err != nil {
 		return "", err
@@ -260,6 +271,8 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 		manifest.Files[name] = int(file.Fd())
 		files = append(files, file)
 	}
+	add("inputs", preparedInputs)
+	preparedInputs = nil // The exec descriptor set now owns it.
 	duplicate := func(name string, fd int) error {
 		file, err := handoff.Dup(fd, name)
 		if err == nil {
@@ -386,10 +399,20 @@ type exemptionError struct{ error }
 
 func (e *exemptionError) Unwrap() error { return e.error }
 
-func (a *application) preflightReplacement(ctx context.Context, executable *os.File) (resultErr error) {
+func (a *application) preflightReplacement(ctx context.Context, executable *os.File) (_ *os.File, resultErr error) {
+	started := time.Now()
+	inputs, err := handoff.NewSealableFile("dae-prepared-inputs")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			_ = inputs.Close()
+		}
+	}()
 	channel, childSocket, err := handoff.SocketPair()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer channel.Close()
 	defer childSocket.Close()
@@ -398,7 +421,7 @@ func (a *application) preflightReplacement(ctx context.Context, executable *os.F
 	stop := context.AfterFunc(ctx, func() { _ = channel.Close() })
 	defer stop()
 	command := exec.CommandContext(ctx, "/proc/self/fd/3", a.options.LaunchArgs...)
-	command.ExtraFiles = []*os.File{executable, childSocket, a.options.Startup.lock}
+	command.ExtraFiles = []*os.File{executable, childSocket, a.options.Startup.lock, inputs}
 	command.Env = replacementEnvironment(preflightEnv, 4)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
@@ -413,44 +436,52 @@ func (a *application) preflightReplacement(ctx context.Context, executable *os.F
 		}
 	}()
 	if err := command.Start(); err != nil {
-		return err
+		return nil, err
 	}
 	_ = childSocket.Close()
 	var hello preflightHello
 	if err := channel.Receive(&hello); err != nil {
-		return fmt.Errorf("replacement preflight identity: %w", err)
+		return nil, fmt.Errorf("replacement preflight identity: %w", err)
 	}
 	if hello.Error != "" {
-		return errors.New(hello.Error)
+		return nil, errors.New(hello.Error)
 	}
 	if hello.Protocol != handoff.Protocol || hello.KernelPID == 0 {
-		return errors.New("invalid replacement preflight identity")
+		return nil, errors.New("invalid replacement preflight identity")
 	}
 	if err := a.datapath.SetReplacementPID(hello.KernelPID); err != nil {
-		return err
+		return nil, err
 	}
 	allowed = true
-	if err := channel.Send(preflightRequest{Protocol: handoff.Protocol, Parent: os.Getpid(), Deadline: deadline, LAN: a.conf.Global.LanInterface, WAN: a.conf.Global.WanInterface}); err != nil {
-		return err
+	if err := channel.Send(preflightRequest{Protocol: handoff.Protocol, Parent: os.Getpid(), Deadline: deadline, LAN: a.conf.Global.LanInterface, WAN: a.conf.Global.WanInterface, Identity: control.CurrentProcessIdentity(), SelectorHints: a.plane.PreparationSelectorHints()}); err != nil {
+		return nil, err
 	}
 	var result preflightResult
 	if err := channel.Receive(&result); err != nil {
-		return fmt.Errorf("replacement preflight: %w", err)
+		return nil, fmt.Errorf("replacement preflight: %w", err)
 	}
 	if err := a.datapath.SetReplacementPID(0); err != nil {
-		return &activationError{&exemptionError{err}}
+		return nil, &activationError{&exemptionError{err}}
 	}
 	allowed = false
 	if err := channel.Send(struct{}{}); err != nil {
-		return err
+		return nil, err
 	}
 	if err := command.Wait(); err != nil {
-		return fmt.Errorf("replacement preflight exit: %w", err)
+		return nil, fmt.Errorf("replacement preflight exit: %w", err)
 	}
 	if result.Error != "" {
-		return errors.New(result.Error)
+		return nil, errors.New(result.Error)
 	}
-	return ctx.Err()
+	size, err := handoff.SealedFileSize(inputs, resource.MaxInputArchiveBytes)
+	if err != nil {
+		return nil, fmt.Errorf("replacement prepared inputs: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	log.WithFields(log.Fields{"duration": time.Since(started), "bytes": size}).Info("Replacement inputs prepared")
+	return inputs, nil
 }
 
 // Revocation precedes Wait: an exempt PID must not be reused by another process.

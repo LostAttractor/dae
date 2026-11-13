@@ -125,12 +125,26 @@ both preflight and exec, not the invoking CLI's environment. No executable path
 is accepted over the API. Remote API reloads remain configuration-only; remote
 `--replace` is rejected.
 
-A short-lived process runs the target ELF's parser, plugin `Preflight` and kernel
-checks. It does not read settings or DomainRegistry, download subscriptions or
-modules, run scripts' `Warm`, build a complete Runtime or publish client sets.
-The old dataplane and API remain available during preflight; new configuration
-operations return 409. Successful preflight is not a guarantee that full startup
-will succeed.
+A short-lived target ELF process runs its parser, plugin `Preflight` and kernel
+checks, then prepares a userspace control plane without business BPF. Before
+Block, it reads and validates configuration/include selections, subscriptions,
+modules and dependencies, geodata and complete static plugin plans. It does not
+read settings or DomainRegistry, construct live plugin instances, run `Warm` or
+plugin workers, build a complete Runtime or publish client sets. The old dataplane
+and API keep serving during downloads and validation; new configuration operations
+return 409. The parent revokes the helper's PID exemption before reaping it.
+Successful prefetch is not a guarantee that full startup will succeed.
+
+The accepted raw inputs travel in a separate sealed memfd: at most 128 MiB for an
+input or complete resource group, and 512 MiB for the entire archive. Configuration
+bytes and include/glob selections, asset locations and bytes, complete cache-group
+results and failures, and decisions to skip subscriptions are frozen together.
+After exec, initialization strictly replays those inputs, even if source files
+change or disappear or a server becomes unavailable. Missing, corrupt,
+inconsistent or oversized inputs fail the operation; they never trigger live I/O
+fallback. The archive does not carry live plugin objects, the old heap, settings
+or Registry state. Recording/replay contexts are not retained by runtime services
+or subsequent reloads.
 
 After preflight, the daemon collects inherited FDs and encodes and seals the
 handoff description before draining active management API requests. Encoding,
@@ -164,9 +178,13 @@ same PID and process starttime. No resident supervisor or separate business work
 is involved. The old Go heap and goroutines disappear; cleanup cannot rely on
 defers running after exec.
 
-The new image reads settings once and performs full resource, plugin and private
-BPF initialization while the old guards block captured traffic. It restores DomainRegistry before installation. At commit, it prepares client exports
-before updating the downstream socket, ingress and DNS reply links and attaching new host TCX programs after the old guards.
+The new image reads final settings once, rebuilds userspace objects from the
+frozen inputs, then loads private business BPF, constructs plugin instances and
+runs `Warm`, then restores DomainRegistry and prepares its private kernel
+projection while old guards still block captured traffic. Minimal host
+socket-owner hooks precede persistent proxy sockets; business BPF follows
+userspace preparation. At commit, it prepares client exports before locally
+updating the downstream socket, ingress and DNS reply links and attaching new host TCX programs after the old guards.
 Both generations retain independent maps. Temporary old WAN socket-owner hooks
 remain separate from the new runtime's hooks until old guards retire. Each
 writes its own `socket_owner_map`; formal startup re-registers the daemon in the
@@ -219,9 +237,13 @@ unchanged. Canceling the API drain reopens the existing handlers. A service
 notification failure during a recoverable operation fails that operation and leaves
 the daemon serving. Once blocking begins, failures are terminal for that handoff: the old
 runtime is not resumed, and pinned entry guards under `/sys/fs/bpf/dae/guards`
-remain even if the process exits. Overlapping service ports are rejected before Block. Invalid settings, ports held by other processes, downloads,
+remain even if the process exits. Downloads and static-input validation happen
+before Block, including rejection of overlapping API, pprof and metrics ports.
+A replacement can swap these ports by releasing obsolete listeners before binding
+the new addresses. Invalid final settings, ports occupied by other processes, instance construction,
 script `Warm`, real business BPF loading, and client export preparation or
-publication may all fail after this boundary. Partial publication or later
+publication may still fail after this boundary. A strict replay failure also
+retains protection rather than fetching replacement inputs. Partial publication or later
 activation failure keeps the applied sets and blocking
 guards while cleaning temporary export backups; it does not roll back to the old
 sets. After commit, failures to remove redundant guard bundles or unreferenced old
@@ -245,6 +267,7 @@ registered daemon identity may fetch startup resources through its restricted
 exemption; this does not guarantee upstream availability or exempt other processes.
 
 Connections, DNS sessions, in-memory caches and counters are not migrated.
+Prefetch uses only old in-memory selector hints, not persisted settings.
 Persisted selections and client membership come from the new image's single
 settings read after the old API closes and exec completes. DomainRegistry first
 restores during kernel preparation, before new host entries are installed and

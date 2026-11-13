@@ -172,56 +172,39 @@ func sameControlConfig(previous, next *config.Config) bool {
 	return reflect.DeepEqual(project(previous), project(next))
 }
 
-// Startup can prepare kernel resources while external inputs are loading.
-// Reload retains its input-first order so unchanged resources skip rebuilding.
-func loadStartupInputs(ctx context.Context, datapath *control.Runtime, conf *config.Config, dirs []string, configFile string) (*controlInputs, *control.ControlPlanePreparation, error) {
-	mark := conf.Global.SoMarkFromDae
-	if err := common.ValidateSoMarkFromDae(mark); err != nil {
-		return nil, nil, err
-	}
-	group, groupCtx := errgroup.WithContext(ctx)
-	var inputs *controlInputs
-	var preparation *control.ControlPlanePreparation
-	group.Go(func() error {
-		var err error
-		inputs, err = loadControlInputs(groupCtx, conf, false, dirs, configFile, nil)
-		return err
-	})
-	group.Go(func() error {
-		var err error
-		preparation, err = control.PrepareControlPlane(groupCtx, datapath, mark)
-		return err
-	})
-	if err := group.Wait(); err != nil {
-		return nil, nil, errors.Join(err, preparation.Close())
-	}
-	return inputs, preparation, nil
-}
-
-func newControlPlane(ctx context.Context, datapath *control.Runtime, preparation *control.ControlPlanePreparation, conf *config.Config, inputs *controlInputs, runtimeSettings *settings.Store, loadMITM func(*http.Client) (control.PreparedMITM, error)) (*control.ControlPlane, error) {
-	// Own an optional startup preparation even when validation fails.
-	if preparation != nil {
-		defer preparation.Close()
-	}
+// Prepare routed inputs with host identity only, then bind one business
+// generation and construct its live services. All startup paths use this order.
+func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, inputs *controlInputs, runtimeSettings *settings.Store, loadMITM func(*http.Client) (control.PreparedMITM, error)) (*control.ControlPlane, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	mark := conf.Global.SoMarkFromDae
-	if err := common.ValidateSoMarkFromDae(mark); err != nil {
+	// Constructors may retain their context for transport or VM lifetimes.
+	// Only the resource loader closure may carry initialization inputs.
+	if resource.HasInputs(ctx) {
+		return nil, errors.New("live control plane context must not retain initialization inputs")
+	}
+	if err := common.ValidateSoMarkFromDae(conf.Global.SoMarkFromDae); err != nil {
 		return nil, err
 	}
-	if preparation == nil {
-		var err error
-		preparation, err = control.PrepareControlPlane(ctx, datapath, mark)
-		if err != nil {
-			return nil, err
-		}
-		defer preparation.Close()
-	}
-	assemblyStarted := time.Now()
-	c, err := control.NewControlPlane(ctx, preparation, inputs.rules, inputs.nodes, conf, runtimeSettings, loadMITM)
+	resources, err := datapath.PrepareUserspace(ctx, conf.Global.SoMarkFromDae, len(conf.Global.WanInterface) != 0)
 	if err != nil {
 		return nil, err
+	}
+	assemblyStarted := time.Now()
+	c, err := control.NewUserspaceControlPlane(ctx, resources, inputs.rules, inputs.nodes, conf, runtimeSettings, loadMITM)
+	if err != nil {
+		return nil, err
+	}
+	preparation, err := control.PrepareControlPlane(ctx, datapath, conf.Global.SoMarkFromDae)
+	if err != nil {
+		return nil, errors.Join(err, c.Close())
+	}
+	defer preparation.Close()
+	if err := c.BindKernel(preparation); err != nil {
+		return nil, errors.Join(err, c.Close())
+	}
+	if err := c.BuildServices(ctx); err != nil {
+		return nil, errors.Join(err, c.Close())
 	}
 	c.SetDomainRegistryDir(common.CacheDirectory())
 	if err := c.PrepareKernel(); err != nil {
@@ -281,7 +264,9 @@ func resolveNodeDescriptors(
 			Name: node.Name, Link: node.Link, Options: node.Options, Required: true,
 		})
 	}
-	if !isReload && !conf.Global.DisableWaitingNetwork {
+	// Replacement preparation already bounds every resource attempt; replay
+	// must not wait for network access to inputs that have been frozen.
+	if !isReload && !resource.HasInputs(ctx) && !conf.Global.DisableWaitingNetwork {
 		if err := waitForNetworkOnline(ctx, startupNetworkWaitTimeout, dialer,
 			"http://edge.microsoft.com/captiveportal/generate_204",
 			"http://www.gstatic.com/generate_204",
@@ -349,7 +334,7 @@ func resolveNodeDescriptors(
 		})
 	}
 	resolveGroup.Wait()
-	if isReload && loadCtx.Err() != nil {
+	if (isReload || resource.HasInputs(ctx)) && loadCtx.Err() != nil {
 		return nil, loadCtx.Err()
 	}
 	if err := ctx.Err(); err != nil {
@@ -362,7 +347,7 @@ func resolveNodeDescriptors(
 	for i, result := range results {
 		sub := conf.Subscription[i]
 		if result.err != nil {
-			if isReload {
+			if isReload || errors.Is(result.err, resource.ErrInputReplay) || errors.Is(result.err, resource.ErrInputRecording) {
 				return nil, fmt.Errorf("subscription %s: %w", subscription.RedactURL(sub.String()), result.err)
 			}
 			log.WithError(resource.RedactError(result.err)).WithField("subscription", subscription.RedactURL(sub.String())).Warn("Subscription unavailable; skipping its nodes")

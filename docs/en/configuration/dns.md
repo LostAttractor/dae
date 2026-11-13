@@ -398,7 +398,7 @@ intact: startup restores no evidence, logs a warning and leaves the files
 untouched until the next start. On reload the new configuration takes over the
 in-memory evidence and both files.
 
-[Process replacement preflight](../../zh/design/process-replacement.md#持久化恢复)
+[Process replacement input preparation](../../zh/design/process-replacement.md#持久化恢复)
 does not call `Restore` or read or modify these shared files. After the old Runtime
 closes cleanly and the same process execs the new ELF, the new runtime first
 restores during kernel preparation, before installing new host entries, including

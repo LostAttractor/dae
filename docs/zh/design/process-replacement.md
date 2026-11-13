@@ -8,7 +8,7 @@
 
 `dae run` 直接运行业务，正常运行只有一个 dae 业务进程，没有常驻 supervisor 或主进程/worker 拆分。替换通过关闭旧业务后同 PID exec 已打开的目标 ELF 完成；PID 和 `/proc/<pid>/stat` 的 starttime 不变，但旧 Go heap、goroutine 和用户态连接全部消失。exec 不运行旧映像的 defer，因此 Runtime 关闭、持久化 flush、API 排空和插件子进程回收必须在 exec 前显式完成。
 
-短生命周期预检进程运行目标 ELF 的配置解析器、`plugin.Preflight` 和内核能力检查，不构造完整 Runtime。daemon 自身持有实例锁并设置 Linux subreaper，以便在插件正常关闭和已有 `exec.Cmd.Wait` 完成后检查残余后代。预检进程只借用同一打开文件描述，不能主动解锁。预检使用独立的 `replacement_pid_map` 临时豁免，正常路径先撤销再 `Wait`；撤销失败时不能回收并释放仍被豁免的 PID。daemon 或候选异常退出时，内核退出 hook 也会清除临时豁免，防止 PID 复用。残余存活后代须有界终止、回收并使替换失败，不能带入新映像。
+短生命周期预检进程运行目标 ELF 的配置解析器、`plugin.Preflight` 和内核能力检查，并构造不绑定业务 BPF 的用户态控制平面，读取和校验操作输入及插件静态 Plan；它不构造完整 Runtime、活插件实例或执行 `Warm`/Worker。daemon 自身持有实例锁并设置 Linux subreaper，以便在插件正常关闭和已有 `exec.Cmd.Wait` 完成后检查残余后代。预检进程只借用同一打开文件描述，不能主动解锁。预检使用独立的 `replacement_pid_map` 临时豁免，正常路径先撤销再 `Wait`；撤销失败时不能回收并释放仍被豁免的 PID。daemon 或候选异常退出时，内核退出 hook 也会清除临时豁免，防止 PID 复用。残余存活后代须有界终止、回收并使替换失败，不能带入新映像。
 
 固定的 `dae0`、`dae0peer`、`daens`、实例锁及未变更的 API/observability 监听器通过 FD 跨 exec 保留身份，新运行时在数据面提交和最终就绪检查均成功前只借用固定对象，不拥有删除权。监听 FD 不等于 HTTP 服务连续可用：旧 Go server 关闭后、新 server 恢复前，请求可能超时或断连。
 
@@ -18,7 +18,9 @@
 
 共享网络对象的 BPF link 通过 FD 保留。导出快照先将 Runtime 的原始 links 标记为冻结状态再借用（避免在跨 exec 复制与校验期间长期持有互斥锁），为每个附件复制一份 FD 并将其所有权交给替换流程；阻塞提交或释放快照时解除冻结，未移交的 FD 在释放快照时关闭。
 
-内部 handoff 协议版本为 4。描述包含原 PID、事务期限、交割起点、operation、FD 角色、link 身份及固定拓扑，在 API 排空和 Block 前写入最多 64 KiB 的 sealed memfd；编码、超限或封印失败不影响旧服务。恢复时校验大小、封印、版本、同 PID、原期限、FD 唯一性/类型、实例锁、namespace 和 link 身份；非法内部入口直接拒绝，不降级为普通启动。环境变量只定位继承 FD，不能单独授权。exec 前以 `CLOSE_RANGE_CLOEXEC` 保护全部非标准 FD，只对白名单清除 CLOEXEC；新映像接收后立即恢复 CLOEXEC，避免泄漏给插件。没有前任 pidfd 等待、候选收养或跨进程提交授权消息。
+内部 handoff 协议版本为 5。描述包含原 PID、事务期限、交割起点、operation、FD 角色、link 身份及固定拓扑，在 API 排空和 Block 前写入最多 64 KiB 的 sealed memfd；编码、超限或封印失败不影响旧服务。恢复时校验大小、封印、版本、同 PID、原期限、FD 唯一性/类型、实例锁、namespace 和 link 身份；非法内部入口直接拒绝，不降级为普通启动。环境变量只定位继承 FD，不能单独授权。exec 前以 `CLOSE_RANGE_CLOEXEC` 保护全部非标准 FD，只对白名单清除 CLOEXEC；新映像接收后立即恢复 CLOEXEC，避免泄漏给插件。没有前任 pidfd 等待、候选收养或跨进程提交授权消息。
+
+原始操作输入通过另一份独立 memfd 传输，不塞入 64 KiB 的 handoff 描述，也不序列化已解析的配置、`Resources.Config`/`Value` 或 Go 对象。父进程建立空的可封印文件，经 `ExtraFiles` 交给目标 ELF 写入并封印，再验证封印和大小后加入正式 exec 的 FD 白名单。单项输入或完整资源组上限为 128 MiB，完整包（含头、索引、原始 bytes 和摘要）上限为 512 MiB。正式启动严格回放；缺项、身份/解释不符、损坏或超限均失败，不退回 live 文件或网络。
 
 LAN/WAN 捕获接口列表及其解析出的实际 ifindex/角色集合必须相同，包括 `auto` 和通配符的变化；阻断前、安装和提交时检查完整覆盖。固定网络拓扑或服务启动条件变化需要显式重启。
 
@@ -39,18 +41,20 @@ LAN/WAN 捕获接口列表及其解析出的实际 ifindex/角色集合必须相
 
 ## 交接状态
 
-1. **轻量预检**：旧 daemon 启动目标 ELF，沿用自身环境、工作目录和有效启动参数。私有 socket、父进程身份、继承锁和原期限通过校验后，目标执行非交互配置解析、插件 Preflight 和 kernel checks；父进程死亡或通道断开会取消预检。此阶段不读取 settings/Registry，不下载订阅或模块、不执行脚本 `Warm`，不构建完整 Runtime、不发布客户端集合。旧数据面和 API 继续服务，新的配置操作返回 409。预检成功后先撤销 PID 豁免、回收临时进程，再导出并冻结 kernel links。
+1. **用户态预取与静态准备**：旧 daemon 启动目标 ELF，沿用自身环境、工作目录和有效启动参数。私有 socket、父进程身份、继承锁和原期限通过校验后，目标执行非交互配置解析、插件 Preflight 和 kernel checks，构造无业务 BPF 的用户态控制平面。它读取配置及 include/glob 选择、订阅、模块和依赖、geodata 与插件静态 Plan，并封印本次接受的原始输入；父进程死亡或通道断开会取消准备。此阶段不读取 settings/Registry，不创建活插件实例、不执行 `Warm` 或启动插件 Worker，不发布客户端集合。旧数据面和 API 在下载及校验期间继续服务，新的配置操作返回 409。成功后父进程先撤销 PID 豁免、再 `Wait` 回收临时进程，随后导出并冻结 kernel links。
 2. **交割准备与 API 排空**：保存所需监听器和网络对象 FD，记录交割阶段起点并编码、封印完整继承描述，成功后才暂停本地与管理 API 的业务请求，按原期限等待在途请求结束；仍由旧 server 接收的管理读写返回 503。本地 operation 路由在 server 存活时仍可查询，但不能保证整个切换期可用。排空时取消会直接重新开放原 handler。写入 `STOPPING` 前再次检查取消；若失败，只清理本次新增的 guard，解冻后按当前接口补挂或撤除 hook。
 3. **阻断与关闭**：将捕获入口 link、UDP timer maps 及身份 hooks/maps 成组 pin 到 `/sys/fs/bpf/dae/guards/<link-id>/`，设置 `STOPPING` 并放弃固定对象删除权。此处是不可逆边界。旧 daemon 启动由 Startup 持有的 15 秒停机宽限，调用正常的 `Runtime.Close()`：关闭 UDP 工作、监听器及 backlog，为旧 TCP 设置 abortive close，等待连接、任务和插件关闭并完成 flush。保留旧回程供 RST 使用，直到旧业务关闭；关闭错误不能忽略。
-4. **同 PID exec 与重建**：完成子进程回收；停止信号接收器并汇合、检查已排队的真实停止信号，复核原期限，再 exec 已打开的目标 ELF。新映像重建 Go 运行时，校验并借用继承资源，首次读取最终 settings，再加载订阅、模块和完整私有业务 BPF，构造正式插件实例、执行 `Warm`，在 `PrepareKernel` 中首次恢复 DomainRegistry 并完成私有投影，然后建立透明监听器。原三分钟事务期限不因 exec 重置。重绑前先释放不再使用的 wildcard 管理监听器；管理端口与 loopback 观测端口可在替换时互换，但不会跨监听地址复用旧 FD。
+4. **同 PID exec 与重建**：完成子进程回收；停止信号接收器并汇合、检查已排队的真实停止信号，复核原期限，再 exec 已打开的目标 ELF。新映像重建 Go 运行时，校验并借用继承资源，首次读取最终 settings，严格重放冻结输入并重建用户态对象；用户态准备完成后才加载完整私有业务 BPF，构造正式插件实例、执行 `Warm`，在 `PrepareKernel` 中首次恢复 DomainRegistry 并完成私有投影，然后建立透明监听器。原三分钟事务期限不因 exec 重置。重绑前先释放不再使用的 wildcard 管理监听器；管理端口与 loopback 观测端口可在替换时互换，但不会跨监听地址复用旧 FD。
 5. **本地提交的安装阶段**：`CommitReplacement` 先准备当前 settings 对应的 client ipset/nft 导出，再以 checked update 更新 socket lookup、peer 侧 DNS 回复出口和两侧入口的 links，再将新 host TCX links 通过 `AfterLink` 挂在旧 guard 后面并 pin。旧 host link 的额外 FD 必须在撤旧 guard 前关闭，否则 unpin 后仍会保活旧入口。新入口也保持 `STOPPING`；`SK_LOOKUP` 在本运行时进入 `ONLINE` 前拒绝交付，包括已越过旧入口的迟到包。
 6. **数据面生效与就绪通知**：同一次 `CommitReplacement` 在安装完成后发布已准备的 client ipset/nft 导出，通过 `Host.Start` 启动插件后台 worker、启用 Registry 持久化；再次检查取消/期限及完整入口覆盖后先创建 `/sys/fs/bpf/dae/replacement_pending`，再发布自身 canonical pins；无捕获接口也有恢复标记。随后逐步撤旧 guard 和旧身份 hooks，使新运行时进入 `ONLINE`。`ONLINE` 是本运行时的数据面生效点，不代表所有 hook 和共享导出的原子提交。新代自身 guard bundles、`privatePins` 和 `preparing` 接口冻结仍保留，Commit 不提前放弃恢复保护或取得 canonical pins 的删除权。Commit 成功后开放 API/observability；`ConfirmReady` 在接口仍冻结时校验全部 hook 及 guard 身份，在原期限内发送 READY；成功后才取得所有权并移除恢复标记，清理冗余临时 bundles、解除接口冻结并取得 canonical pins 的正常删除权，同时取得固定 netns 对象和 Unix API 的删除权，完成原 operation。READY 是就绪通知，不是全局原子提交回执；晚期 READY 失败或取消仍可使新运行时重新进入 `STOPPING` 并终止，保留恢复标记和防护，不清除借用状态。这是已生效数据面的失败处置，不是恢复旧进程，也不能忽略 READY 失败。API handler 在每次启动中只发布一次，并在继承监听器激活前准备完成。
 
-通过 sealed exec state 校验恢复时，`Run` 不重复执行目标 ELF 已通过的 `CheckKernelFeatures`，但仍对重新加载的配置执行插件 Configure/Preflight 并实际加载、验证业务 BPF；普通冷启动和失败后重启仍完整检查，settings/Registry 仍仅在旧写者结束后的正式启动中读取，不引入内核能力缓存结构或配置。
+通过 sealed exec state 校验恢复时，`Run` 不重复执行目标 ELF 已通过的 `CheckKernelFeatures`，但仍对重放出的配置执行插件 Configure/Preflight 并实际加载、验证业务 BPF；普通冷启动和失败后重启仍完整检查，settings/Registry 仍只在旧写者结束后的正式启动中读取，不引入内核能力缓存结构或配置。
 
 旧 WAN socket-owner hooks 需要临时跨 exec 保活：旧 guard 读取旧 `socket_owner_map`，同 PID 并不使新 socket 自动拥有旧 map 中的身份。临时旧 hooks 与新运行时的 `pidLinks` 分开持有，各自填充本代 socket-local storage；正式身份通过 `daemon_identity_map` 显式注册、注销。新的正式启动也向旧 guard 重新注册自己的真实身份，使恢复时的 daemon socket 可通过旧入口，而不豁免其他进程。撤旧 guard 后才关闭旧 writer/exit hooks 的引用，不共享新旧业务 maps，也不扩大 mark 豁免。`KernelProcessID` 通过短生命周期、无 maps 的 BPF probe 取得与 socket-owner/退出 hook 相同口径的 kernel TGID，用于业务 `PARAM` 和预检 hello，避免 PID namespace 中 `os.Getpid()` 与内核身份错配；socket 热路径不增加额外 lookup。
 
-Block 前失败会清理预检进程并保留旧服务；若已暂停 API，则重新开放原 handler，共享导出保持原样。Block 后失败不恢复已经关闭的旧业务或旧 API，保留 pinned guard 和已发布集合。配置内端口重叠在预检阶段拒绝。坏 settings、外部进程占用端口、订阅/模块下载、脚本 `Warm` 及真实业务 BPF 加载错误都可能在 Block 后才出现；轻量预检成功不等于完整启动必成功。完整初始化位于 Block 窗口，不承诺无损切换或低于某个时长阈值。
+准备路由使用的逻辑进程身份与实际获得内核豁免的 TGID 分开：目标用户态 plane 使用旧 daemon 的逻辑 PID/pname 评估自身资源请求，临时 PID 豁免则登记预检进程的真实 kernel TGID。选择器只借用旧运行时内存中的 hints，不读取 settings，也不将 hints 当作提交时的最终选择。正式 Runtime 先建立 namespace 和稳定的接口视图，再编译用户态路由，并在可能建立代理长连接前安装最小的宿主 socket-owner hooks；这一步不加载业务路由、traffic、timer 或 listener maps。API 豁免和接口规则因此与实际宿主拓扑一致，用户态 plane 完成后再绑定完整业务 BPF。连通性更新在绑定前保留原有逻辑 lease，不提前发行或丢弃 fallback token；内核投影时才根据该 lease 发行 token。
+
+Block 前失败会清理预检进程并保留旧服务；若已暂停 API，则重新开放原 handler，共享导出保持原样。Block 后失败不恢复已经关闭的旧业务或旧 API，保留 pinned guard 和已发布集合。订阅/模块下载和静态输入校验位于 Block 前；配置内 API、metrics 与 pprof 的非零端口重叠在预检即被拒绝；坏 settings、端口被外部进程占用、插件构造、`Warm`、真实业务 BPF 加载或最终发布错误仍可能在 Block 后出现。严格回放失败也必须保留防护，不能重新下载来尝试继续。预取成功不等于完整启动必成功，后置初始化仍占用 Block 窗口，不承诺无损切换或低于某个时长阈值。
 
 客户端集合发布部分成功或后续激活失败时，保留已应用部分并清理临时备份，不回滚共享导出。成功接管后的备份清理、已提交运行时的冗余 guard-bundle 清理和无引用旧 UDP timer pins 清理失败只记录警告，不因这类清理错误撤销已生效服务。状态或拓扑校验错误、提交完成前的旧 guard 撤除错误仍是 fatal，不能作为清理警告忽略。普通配置 reload 的导出事务回滚语义不变。防护只 pin 真正捕获流量的 LAN ingress 与 WAN egress；同一 hook 上的回程程序不能算作替代入口。进程退出、FD 关闭不会自动移除这些链接；下一次正常启动准备好完整数据路径后才移除遗留防护。恢复先验证所有旧 hook 的覆盖，再持久化新入口；撤旧之前失败会撤销本轮新增 pin，不能扩大下一次恢复必须覆盖的接口集合。开始撤旧后，新防护必须保留。如果新的接口集合不能覆盖旧的受管 hook，拒绝解除防护并要求恢复原接口配置。失败不会静默降级成 restart 或直连。冷启动恢复期间旧 guard 仍阻断普通捕获流量；已重新注册的正式 daemon 可通过受限身份豁免取得启动资源，这不保证上游可达，也不向其他进程开放通路。
 
@@ -59,6 +63,12 @@ Block 前失败会清理预检进程并保留旧服务；若已暂停 API，则�
 TCP 从短期路由 handoff 转交给真实 accepted socket；SOCKHASH 只是可选索引加速，容量满或登记失败时回退到 proxy netns socket lookup，不把索引失败当作拒绝连接。`tcp_flow_map` 是 24 字节值的 LRU，仅保存 native 的路由 epoch、mark、fallback、SYN 序号及 explicit-direct 属性，不是代理连接准入 HASH 或 FIN/ACK 状态机，也没有 TCP timer takeover。淘汰会丢失保存的属性，不等于关闭真实连接；代理连接生命周期由 socket 和现有用户态关闭流程负责。
 
 旧映像的用户态连接和内存缓存不迁移。私有 map 也不迁移连接状态。持久化配置、选择器和客户端成员在新映像中恢复；指标随新映像重新计数。进程替换不等同于保持连接的配置 reload。
+
+## 冻结输入的边界
+
+配置文件的原始 bytes 与 include/glob 选择集合分别冻结，包括空匹配；资产位置选择与 geodata 内容同样冻结。资源 cache 按完整加载组保留接受的响应、依赖与最终位置、有效 cache fallback、普通失败和跳过订阅的决定；回放重做解释，但不重新下载、不重新发现文件集合，也不因源恢复而加入预取时跳过的订阅。`ErrInputRecording` 和 `ErrInputReplay` 是 fatal 错误，不能被缓存 fallback、兼容解码或可选资源 skip 吞掉。
+
+`Configure → LoadResources → Plan` 不需要活插件实例，`BuildInstances` 使用正式生命周期 ctx 与 Services；没有 `Resources.Plan` 的启用插件明确报错，不构造实例调用 `Plan()` 兜底。原始输入只在本次初始化上下文中录制或回放，不传播到发布后的服务、后台 worker 或后续 reload。普通配置 reload 仍按输入相等性复用实例、传输和状态；跨 exec 重建对象，不迁移旧 heap。settings、Registry、Surge store 等可变业务状态不属于输入包，各自在下述最终阶段恢复。
 
 ## 持久化恢复
 

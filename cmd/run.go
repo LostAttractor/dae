@@ -74,7 +74,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			var conf *config.Config
 			var includes []string
 			if startup.Resuming() {
-				conf, includes, err = config.Load(cfgFile)
+				conf, includes, err = config.LoadContext(startup.InitializationContext(), cfgFile)
 			} else {
 				conf, includes, err = loadConfig(startup.Context(), cmd, &cfgFile)
 			}

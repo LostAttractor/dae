@@ -197,10 +197,14 @@ reference only in its private host namespace; production does not enable
 tracking by changing the host firewall. It checks a single resident business
 process, stable PID/starttime, actual `/proc/<pid>/exe` identity and a new API
 `StartedAt`/startup log for each exec, including forced same-ELF replacement.
-Preflight rejection must leave the old API and traffic available. A controlled,
-uncached subscription download occurs inside Block with guards present, captured
-DNS blocked without direct leakage, and exports unchanged until commit. During
-that window, API requests may receive 503, time out or disconnect: retained
+Preflight rejection must leave the old API and traffic available. Hold a controlled,
+uncached subscription download before Block and require the old API and captured
+traffic to continue, with shared exports unchanged. After input preparation,
+change or remove the configuration/includes and local resource files and stop the
+subscription server: strict exec replay must consume the accepted inputs without
+extra requests or rediscovering files. Separately verify Block with guards present,
+captured DNS denied without direct leakage, and exports unchanged until commit.
+During Block, API requests may receive 503, time out or disconnect: retained
 listener FDs do not keep Go HTTP servers alive. Invalid settings and ports occupied by another process
 are post-Block failures that retain guards, fixed objects and existing exports;
 normal cold startup recovers after repair, but the old operation fails. The fixture
@@ -216,10 +220,11 @@ sudo python3 -I scripts/test-process-replacement.py "$PWD/dae" --wan
 This mode creates a private `wan0` veth and an `upstream` network namespace with
 an HTTP subscription server, rather than bypassing capture through loopback. A
 random URL, an initially absent subscription cache, and matching URL/body in the
-validated cache establish that the new image downloaded uncached data under the
-old `STOPPING` guard. An ordinary other PID must remain denied by the explicit
-block rule for that same destination while running, during the blocked download,
-and after takeover; daemon identity must not exempt other processes. Both modes
+validated response establish that target prefetch obtained uncached data before
+Block. Stop the server after preparation and require exec replay to make no extra
+request. An ordinary other PID must remain denied by the explicit block rule for
+that same destination while running, during prefetch, during Block and after
+takeover; daemon identity must not exempt other processes. Both modes
 use only isolated local networks, not the Internet. See the
 [test procedures (Chinese)](../../zh/development/testing-and-performance.md#进程热替换).
 
@@ -261,20 +266,44 @@ only the minimal fixture, not daemon forwarding. Cleanup stops only its own unit
 
 ## Replacement persistence and measurements
 
+Non-root input-boundary regressions include
+`TestPreparedInputsRebuildWithoutLiveSources` (configuration, local subscriptions,
+successful/failed remote subscriptions and modules after source deletion and
+server shutdown, unchanged accepted nodes and three requests, no live plugin),
+`TestUserspacePreparationCompilesStaticPlanBeforeInstances` (static routing without
+business BPF or live instances), and the `TestInputs*` codec/group tests. Pluginhost
+checks factory order, context ownership, missing declarations and resource-error
+rollback. Config, assets, geodata, routing and local-subscription tests cover frozen
+selection, ordinary security checks, missing replay entries and capture limits.
+The kernel-backed `TestPreparationConnectivityProjectsOriginalFallbackLease`
+checks that binding projects the retained lease rather than issuing a new policy
+identity during userspace preparation. `TestHostIdentityPrecedesBusinessMaps`
+also needs root: it checks that only socket-owner hooks/map exist initially, a real
+socket already has its kernel TGID, and subsequent business BPF reuses that map
+while temporary FDs are released.
+
 The daemon runs a short-lived target ELF preflight with its own effective run
 arguments, environment and working directory, not the reload CLI's environment.
-Preflight uses the target parser, plugin `Preflight` and kernel checks; it does not
-read settings/Registry, download subscriptions/modules, execute script `Warm`,
-construct a full Runtime or publish client sets. The old dataplane and API remain
-available; new configuration operations return 409. After preflight cleanup, the
+Preflight uses the target parser, plugin `Preflight` and kernel checks, then
+constructs a userspace control plane without business BPF. It reads configuration
+and include/glob selections, subscriptions, modules/dependencies, geodata and
+complete static plugin plans before Block. It does not read settings/Registry,
+construct live plugin instances, execute `Warm` or plugin workers, construct a full
+Runtime or publish client sets. The old dataplane and API remain available during
+prefetch; new configuration operations return 409. The parent revokes the temporary
+PID exemption before `Wait`. After preflight cleanup, the
 daemon freezes links, collects inherited FDs, and encodes and seals the handoff
 description before pausing plane requests and entering Block. The drain can be canceled
 without reinstalling the handler. Management reads/writes receive 503 during the drain;
 operation queries may time out or disconnect while only listener FDs survive exec.
 The API barrier freezes daemon writers, not external file editors.
 
-The internal handoff protocol version is 4. Same-PID exec retains only whitelisted
-FDs and bounded sealed-memfd state. Recovery validates seals, size, protocol, PID,
+The internal handoff protocol version is 5. Same-PID exec retains only whitelisted
+FDs. The handoff description remains a sealed memfd bounded to 64 KiB; operation
+inputs use a separate memfd created by the parent, written and sealed by the
+target through `ExtraFiles`. A single input or complete resource group is limited
+to 128 MiB; the whole archive, including its header, index, payload and digest, is
+limited to 512 MiB. Recovery validates seals, size, protocol, PID,
 the original deadline, FD roles/uniqueness and lock/namespace/link identities, then
 restores CLOEXEC before plugins can inherit FDs. There is no resident supervisor,
 predecessor-pidfd wait, adopted business worker or commit-authorization message.
@@ -285,15 +314,27 @@ package initialization still requires an external manager, not a resident watchd
 
 When resuming from validated sealed exec state, `Run` skips repeating
 `CheckKernelFeatures` already passed by the target ELF, but still runs plugin
-Configure/Preflight on the reloaded configuration and loads/verifies business BPF;
+Configure/Preflight on the replayed configuration and loads/verifies business BPF;
 cold startup and restarts after failure retain full checks, settings/Registry
 are read only after the old writer closes, and no kernel-capability cache structure or configuration
 is introduced.
 
+Input replay is strict: configuration bytes and include/glob selection, asset
+locations and contents, and complete accepted resource-cache groups are frozen.
+Groups retain successful reads, failures, validated fallback and skipped-subscription
+decisions. Missing or inconsistent entries, corrupt archives and input limits are
+fatal; `ErrInputRecording`/`ErrInputReplay` must not trigger live fallback, compatibility
+fallback or optional-resource skip. Only initialization readers carry this context;
+runtime services and later reloads do not. No parsed `Config`/`Value`, live plane,
+settings or Registry objects are serialized.
+
 After exec, startup calls `settings.Open` once for outbound selection, private
-routing and later exports. Full resource/plugin/BPF initialization occurs inside
-Block; invalid settings, ports occupied by another process, downloads, `Warm` and real business BPF
-loading may therefore fail after old-service retirement. The new runtime locally
+routing and later exports. It reconstructs userspace objects from the frozen raw
+inputs, then binds business BPF and builds live services. Downloads and static
+validation precede Block, but invalid final settings, ports occupied by another process, plugin
+construction, `Warm`, business BPF loading and publication may still fail after
+old-service retirement. Replay failure also retains guards, without fetching new
+inputs. The new runtime locally
 updates the socket lookup, peer DNS egress and both ingress links, then attaches new host TCX links after old guards.
 Temporary old WAN socket-owner hooks remain separate from new `pidLinks` until old
 guards retire. Their `socket_owner_map` storage stays generation-local; formal
@@ -304,6 +345,18 @@ temporary preflight exemption. `KernelProcessID`
 uses a temporary map-free BPF probe to obtain the kernel TGID for `PARAM` and the
 preflight hello, matching socket owners even inside a PID namespace without an
 extra socket-hot-path lookup.
+
+Logical routing identity is separate from the actual exempt TGID: the helper uses
+the old daemon's logical PID/pname for resource-request routing, while its actual
+kernel TGID receives the temporary exemption. Selector choices during prefetch are
+only old in-memory hints; final settings remain authoritative after exec. Formal
+Runtime startup establishes its namespace and interface view before compiling
+userspace routing, and installs minimal host socket-owner hooks before persistent
+proxy sockets. It loads business BPF only after userspace preparation. This keeps
+API exemptions and interface rules consistent with the installed host topology;
+the minimal hooks do not allocate business routing, traffic, timer or listener maps. Unbound
+connectivity updates retain their original fallback lease; token issuance waits
+until kernel projection after binding.
 
 DomainRegistry first restores during `PrepareKernel`, after old Runtime close/exec
 and before new host entries are installed. The old writer closes and completes its final flush before the
@@ -356,7 +409,8 @@ go test -race -tags=netgo,osusergo,trace ./control \
 
 `TestReplacementFailureAfterBlockKernel` and
 `TestReplacementCloseFailureAfterBlockKernel` run the target test ELF's real
-parser/plugin Preflight and reject plugin construction or resource loading there.
+parser/plugin Preflight and userspace input preparation; live plugin construction,
+`Warm` and workers must remain deferred.
 They check available old API/new-operation 409 during preflight, rejection and
 cancellation without retiring the old service or releasing its lock, and 503 only
 at final API drain. Invalid settings do not fail preflight. Cancellation or shared
@@ -443,8 +497,15 @@ contract does not defer all caches or certificates.
 
 Distinguish the first full `Restore` from the complete cutover stage. Restore
 includes validation, journal replay, expiry collection, rule matching and BPF
-projection, not just file reads. The `Replacement datapath ready` log measures final description
-sealing through datapath readiness in its `cutover` field, including API draining. Report
+projection, not just file reads. The `Replacement inputs prepared` log's `duration`
+runs from the parent's prefetch start through receipt and validation of the sealed
+archive, exemption revocation and `Wait`; `bytes` reports the archive size. It
+includes target startup, probes, reads/downloads, validation, userspace preparation,
+sealing and cleanup, not just disk/network I/O or local construction. The
+`Replacement datapath ready` log's `cutover` field measures final description
+sealing through dataplane readiness, including API draining, Block, old shutdown
+and initialization after exec. It is not pure traffic-blocking time. The fixture
+reports these as `preparation_ms` and `cutover_ms`. Report
 continuous DNS inter-arrival gaps separately: they also include scheduling,
 client timeouts and connection setup, not pure blocking time or a zero-loss
 guarantee. A suite-wide gap spanning failures and cold recovery is not a successful

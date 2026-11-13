@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const Protocol = 4
+const Protocol = 5
 
 // Channel is private to a parent and the executable it starts. All descriptor
 // transfers use ExtraFiles before exec; messages never name arbitrary paths.

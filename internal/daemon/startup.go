@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"slices"
 	"strconv"
 	"time"
 
+	"github.com/daeuniverse/dae/common/resource"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/handoff"
 	"golang.org/x/sys/unix"
@@ -31,6 +31,8 @@ type Startup struct {
 	stopWatchdog       func()
 	incoming           *replacementState
 	preflight          *handoff.Channel
+	preflightInputs    *os.File
+	inputs             *resource.Inputs
 	preparation        *time.Timer
 	preparationExpired chan struct{}
 }
@@ -66,9 +68,14 @@ func OpenStartup() (_ *Startup, err error) {
 		if err != nil {
 			return nil, err
 		}
-		s.lock = s.incoming.files["lock"]
-		delete(s.incoming.files, "lock")
+		s.lock = s.incoming.take("lock")
 		s.setPreparationDeadline(s.incoming.manifest.Deadline)
+		inputs := s.incoming.take("inputs")
+		s.inputs, err = readPreparedInputs(s.ctx, inputs)
+		_ = inputs.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read prepared inputs: %w", err)
+		}
 	case hasProbe:
 		fd, parseErr := strconv.Atoi(probe)
 		if parseErr != nil || fd != 4 {
@@ -96,6 +103,13 @@ func OpenStartup() (_ *Startup, err error) {
 			return nil, err
 		}
 		if err := validateDaemonLock(s.lock); err != nil {
+			return nil, err
+		}
+		s.preflightInputs, err = handoff.InheritedFile(6, "preflight-inputs")
+		if err != nil {
+			return nil, err
+		}
+		if err := validateEmptyInputFile(s.preflightInputs); err != nil {
 			return nil, err
 		}
 		_ = unix.Close(3)
@@ -146,6 +160,10 @@ func (s *Startup) Close() {
 	if s.preflight != nil {
 		_ = s.preflight.Close()
 	}
+	if s.preflightInputs != nil {
+		_ = s.preflightInputs.Close()
+	}
+	s.inputs = nil
 	s.incoming.close()
 	if s.lock != nil {
 		_ = s.lock.Close()
@@ -157,10 +175,12 @@ func (s *Startup) Close() {
 }
 
 type preflightRequest struct {
-	Protocol int
-	Parent   int
-	Deadline time.Time
-	LAN, WAN []string
+	Protocol      int
+	Parent        int
+	Deadline      time.Time
+	LAN, WAN      []string
+	Identity      control.ProcessIdentity
+	SelectorHints map[string]*selector.Path
 }
 
 type preflightHello struct {
@@ -213,17 +233,14 @@ func (s *Startup) Preflight(path string, definitions map[string]plugin.Definitio
 		released <- err
 	}()
 	check := func() error {
-		conf, _, err := config.Load(path)
+		inputs, err := prepareReplacementInputs(ctx, path, request, definitions)
 		if err != nil {
 			return err
 		}
-		if !slices.Equal(conf.Global.LanInterface, request.LAN) || !slices.Equal(conf.Global.WanInterface, request.WAN) {
-			return errors.New("interception interfaces changed; reload configuration before replacing the executable")
-		}
-		if err := ValidateConfig(ctx, conf, definitions); err != nil {
+		if err := inputs.Encode(s.preflightInputs); err != nil {
 			return err
 		}
-		return control.CheckKernelFeatures(ctx)
+		return handoff.SealFile(s.preflightInputs)
 	}
 	result := preflightResult{}
 	if err := check(); err != nil {

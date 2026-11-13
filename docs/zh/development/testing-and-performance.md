@@ -227,6 +227,12 @@ SUDO="sudo -n" OUT=/tmp/qexp-ab scripts/tests/queueing/matrix.sh /tmp/before.tes
 
 ## 进程热替换
 
+目标 ELF 在 Block 前运行配置解析、插件 Preflight 和内核能力检查，再构造不绑定业务 BPF 的用户态 plane，读取配置/include、订阅、模块和依赖、geodata 与完整静态 Plan。此阶段不构造活插件、VM 或执行 `Warm`/Worker，不读取 settings/Registry；旧数据面与 API 继续服务。handoff 协议为 4：父进程经 `ExtraFiles` 交给目标一份独立输入 memfd，目标写入并封印，父进程先撤销 PID 豁免再 `Wait`；64 KiB 的交接描述与输入包分开，单输入/完整资源组上限为 128 MiB，整个输入包上限为 512 MiB。
+
+正式 exec 仅为初始化 reader 绑定严格回放，保留配置/include/glob 选择、资产位置和 bytes、完整 cache 组的成功/失败/fallback，以及跳过订阅的决定；缺项、损坏、解释不符或超限不能退回 live I/O，也不能被兼容解码或 skip 吞掉。正式 Runtime 先安装必要的最小 socket-owner hooks，再允许持久代理 socket；用户态准备完成后才加载业务 BPF、构造插件和 `Warm`。连通性保存原 lease，绑定后才发行内核 token。选择器只使用旧内存 hints，准备路由的逻辑 PID/pname 不等于取得临时豁免的真实 kernel TGID。settings 在旧 API 关闭、exec 后首次读取，Registry 在本地 Commit 恢复，Surge store 仍惰性读取；运行期 ctx 和后续 reload 不携带本次 reader 快照。旧写者必须先关闭并完成最终 flush，新写者才读取最终状态并启用持久化，保持单写者约束。完整状态边界见[进程热替换设计](../design/process-replacement.md)。
+
+新运行时完成 Registry 投影、共享导出发布与完整入口覆盖校验后，逐步撤除旧 guard 并进入 `ONLINE`。`ONLINE` 是本运行时的数据面生效点，不是所有 hook 和共享导出的原子提交；READY 是就绪通知，不是全局原子提交回执。晚期 READY 失败或取消仍可安全重新阻断并终止新实例，保留恢复防护；这是失败处置，不是恢复旧进程，也不能忽略 READY 失败。`ConfirmReady` 先在接口冻结期间校验全部 hook，再发送 READY；成功后才解除冻结、移除独立恢复标记并取得正常删除权。已提交运行时的冗余 guard-bundle 清理、无引用旧 UDP timer pins 清理和成功接管后的导出备份清理失败只记录警告；状态/拓扑校验错误及提交完成前的旧 guard 撤除错误仍为 fatal。
+
 先运行不需要特权的协议与生命周期测试：
 
 ```sh
@@ -234,6 +240,10 @@ go test -race ./internal/daemon ./internal/handoff
 ```
 
 `internal/handoff` 的 `TestSelfExec` 使用测试 ELF 自身作为最小夹具，覆盖不同内容 ELF 和同 ELF 强制 exec、PID/starttime 恒定、包初始化重新执行及旧 heap 消失、环境/参数保持、旧子进程回收与 FD 不增长，不依赖第三方程序或网络资源。`TestExecFailure` 检查 exec 错误及 FD 白名单；`TestSealedState`、`TestReadStateRejectsInvalidInput` 检查 sealed memfd，`TestSignalsStopDrainsQueuedSIGTERM` 检查停止信号屏障。`TestDrainChildren` 和 `TestChildrenAcrossThreads` 覆盖子进程清理与多线程后代发现。daemon 的 `TestReadReplacementRejectsInvalidState`、`TestStartupRejectsInvalidInheritedDescriptors` 检查内部入口拒绝非法身份、期限和 FD；`TestStopReplacementCandidate` 检查先撤销 PID 豁免再回收、撤销失败保留 PID。内核 `TestReplacementPIDRevokedOnExit` 验证 daemon 或 candidate 退出也会清除临时豁免且不削弱 `STOPPING`，无关进程退出不撤销它。
+
+`TestPreparedInputsRebuildWithoutLiveSources` 在无 root 的跨层路径中录制配置、本地订阅、成功/失败远端订阅和模块；删除配置/本地源并关闭服务器后，经 sealed memfd 解码回放得到相同节点，三个原始请求不增加，且不构造活插件。`TestUserspacePreparationCompilesStaticPlanBeforeInstances` 检查无业务 BPF 时已应用完整静态路由，`TestInputs*` 检查 byte/group/codec 的严格失败语义；config、assets、geodata、routing 和 subscription 包另行覆盖 include/glob 选择、位置及普通/兼容 dat、MMDB、权限/symlink 安全检查和 missing/超限。pluginhost 测试覆盖 Factory 前完整声明、顺序、ctx 所有权、缺声明拒绝与失败释放。
+
+`TestHostIdentityPrecedesBusinessMaps` 需要 root，检查正式装配先仅加载 socket-owner hooks/map，真实 socket 在业务 BPF 创建前已有 kernel TGID，后续业务加载复用同一 map 并释放临时 FD。`TestPreparationConnectivityProjectsOriginalFallbackLease` 检查用户态保存 lease 而不提前发行 token，绑定后投影仍对应原 lease；它也需要内核 map 权限。
 
 在使用 systemd 的测试机上，可单独验证真实 exec 原语的服务管理行为，不挂载 BPF：
 
@@ -254,11 +264,11 @@ sudo python3 -I scripts/test-process-replacement.py "$PWD/dae" --wan
 
 夹具在独立 PID、网络和挂载命名空间中运行，并挂载私有 `/run` 与 bpffs。它创建本地 DNS、订阅服务器和 LAN 客户端，检查只有一个常驻 dae 业务进程、同内容普通 reload 不换代、不同内容且同版本字符串的替换、同 ELF 强制替换、多次 exec 的 PID/starttime 恒定及 `/proc/<pid>/exe` 身份，并以 API `StartedAt` 和启动日志证明新运行时代际。还检查预检拒绝后旧 API/流量继续、空闲 TCP 客户端无需发送即收到 RST、固定网络对象身份、API/metrics/pprof 监听器复用及端口变更、旧端口关闭、重复替换 FD 稳定，以及连续 SIGKILL 后冷启动恢复。
 
-未缓存订阅使用受控本地服务器，确认真实下载位于 Block 窗口：下载等待时 guard 已存在、捕获 DNS 被阻断且没有意外直出，共享导出尚未发布；放行后检查新运行时发布自身的 nft 目标。此时 API 可能返回 503，也可能因仅保留监听 FD 而超时/断连，不能要求 operation 查询整个切换期可用。配置内端口重叠必须在 Block 前失败；坏 settings 和外部进程占用端口的用例必须在 Block 后失败，保留固定对象、旧导出和 guard；修复后通过正常冷启动恢复，原 operation 失败。需要 root、Python 3.12+、iproute2、nftables 和 `util-linux`，不访问外网。夹具仅在自己的 host namespace 中添加最小 nft CT state 引用以启用连接跟踪，不改变宿主防火墙。
+未缓存订阅使用受控本地服务器，将下载等待窗口保持在 Block 前：此时不应出现本次替换的 guard，旧 API 与捕获流量继续服务，共享导出不变。输入准备后修改或删除配置/include 与本地源，并关闭远端服务器，要求正式 exec 仍使用接受的输入，不重新发现文件或产生额外请求。Block 的验证另行进行：guard 存在时捕获 DNS 必须被阻断且没有意外直出，共享导出尚未提交；成功提交后检查新运行时发布自身的 nft 目标。Block 期间 API 可能返回 503，也可能因仅保留监听 FD 而超时/断连，不能要求 operation 查询整个切换期可用。配置内端口重叠必须在 Block 前失败；坏 settings 和外部进程占用端口的用例必须在 Block 后失败，保留固定对象、旧导出和 guard；修复后通过正常冷启动恢复，原 operation 失败。需要 root、Python 3.12+、iproute2、nftables 和 `util-linux`，不访问外网。夹具仅在自己的 host namespace 中添加最小 nft CT state 引用以启用连接跟踪，不改变宿主防火墙。
 
-`--wan` 额外创建私有 `wan0` veth 和 `upstream` 网络命名空间，将 HTTP 订阅服务器放在真实 WAN 对端，而不是依靠 loopback 绕过捕获。夹具使用随机 URL，先确认没有可用订阅缓存，exec 后核对 validated cache 中的 URL 和响应正文，证明新映像在旧 `STOPPING` guard 下完成了未缓存 WAN 下载。到相同目标的普通其他 PID 请求在运行期、`STOPPING` 下载等待期及接管后都必须被显式 block 规则拒绝；daemon 身份通路不能扩大为其他进程的豁免。两种模式均只使用本地隔离网络，不访问外网。
+`--wan` 额外创建私有 `wan0` veth 和 `upstream` 网络命名空间，将 HTTP 订阅服务器放在真实 WAN 对端，而不是依靠 loopback 绕过捕获。夹具使用随机 URL，先确认没有可用订阅缓存，核对接受响应的 URL 和正文，确认目标在 Block 前完成未缓存 WAN 预取；输入准备后关闭服务器，正式 exec 不得再发请求。到相同目标的普通其他 PID 请求在运行期、预取等待期、Block 期间及接管后都必须被显式 block 规则拒绝；daemon 身份通路不能扩大为其他进程的豁免。两种模式均只使用本地隔离网络，不访问外网。
 
-内存按整个 daemon 进程树读取 `/proc/<pid>/smaps_rollup`，汇总 PSS 与 `Private_Clean + Private_Dirty`，分别记录稳定态和以 20 ms 间隔采样的替换峰值；包括临时预检和插件后代，而非只比较主 PID 的 RSS。采样峰值仍可能漏掉更短的瞬态，须同时报告采样间隔、进程数、配置/资源缓存状态及工具链。替换日志 `Replacement datapath ready` 的 `cutover` 字段给出封印继承描述到数据面 ready 的耗时，包括 API 排空，连续 DNS 的最大到达间隔另行报告，二者不能混用；DNS 间隔还包含调度、客户端超时和连接重建，跨故障恢复的总间隔也不能当作单次成功切换耗时。不要将最小 exec 夹具的 RSS、单独 BPF map 测量或某个旧进程的 RSS 当作完整替换的内存收益。
+内存按整个 daemon 进程树读取 `/proc/<pid>/smaps_rollup`，汇总 PSS 与 `Private_Clean + Private_Dirty`，分别记录稳定态和以 20 ms 间隔采样的替换峰值；包括临时预检和插件后代，而非只比较主 PID 的 RSS。采样峰值仍可能漏掉更短的瞬态，须同时报告采样间隔、进程数、配置/资源缓存状态及工具链。替换日志 `Replacement inputs prepared` 的 `duration` 从父进程开始预取计时，直到收到并验证封印包、撤销豁免并完成 `Wait`，`bytes` 是该输入包大小；此 duration 包含目标启动、探测、读取/下载、校验、用户态准备、封印及清理，不是纯磁盘/网络或本地构造耗时。`Replacement datapath ready` 的 `cutover` 字段给出最终描述封印 → 数据面 ready 的交割耗时，包含 API 排空、Block、旧业务关闭及 exec 后初始化，并非纯流量阻断时间；脚本分别输出 `preparation_ms`、`cutover_ms`，连续 DNS 的最大到达间隔另行报告，三者不能混用；DNS 间隔还包含调度、客户端超时和连接重建，跨故障恢复的总间隔也不能当作单次成功切换耗时。不要将最小 exec 夹具的 RSS、单独 BPF map 测量或某个旧进程的 RSS 当作完整替换的内存收益。
 
 `TestReplacementBlockAndIdleResetKernel` 在 Netkit/veth、LAN/WAN、IPv4/IPv6 组合下验证生产 BPF 程序：旧入口阻断捕获流量，旧空闲 TCP 和 backlog 通过未修改的回程收到 RST；随后安装新下游和位于旧入口之后的新 TCX 程序，解除防护后新 TCP/UDP 恢复。设置 `DAE_TEST_ISOLATED=1`，并使用独立 PID、网络、挂载 namespace 和私有 bpffs。
 
@@ -268,9 +278,9 @@ sudo python3 -I scripts/test-process-replacement.py "$PWD/dae" --wan
 
 `TestUDPRelayDoesNotCreateInboundConntrack` 经生产 Netkit/veth 回程验证 LAN/WAN、IPv4/IPv6：只删除测试流自己的 host CT，再发送合成回复。WAN 无正确 REPLY 证据时必须丢弃迟到回复，不能反向创建 CT；LAN 直接回程无需 host CT。之后客户端下一包仍须被捕获。此测试同样要求 `DAE_TEST_ISOLATED=1` 及独立 PID、网络、挂载 namespace 和私有 bpffs，不可在真实服务 namespace 中运行。
 
-daemon 的内核测试逐项使用新的测试进程及 namespace，不能在同一进程中复用已关闭的全局网络运行时。`TestReplacementFailureAfterBlockKernel` 和 `TestReplacementCloseFailureAfterBlockKernel` 运行目标测试 ELF 的真实 parser/plugin Preflight，断言不构造插件或加载资源；在可控预检窗口检查旧 API 可用、新配置操作返回 409，以及预检拒绝/取消后旧服务和实例锁仍保留；描述编码超限也必须在 API 排空及 Block 前失败，旧 API、导出和 guards 不变。坏 settings 不阻止轻量预检；最终 API drain 后才返回 503。Block 后分别注入取消和 shared plugin state 关闭错误，检查不执行 exec、不发布新导出，旧 ipset/nft、固定对象和 pinned guard 保留。`TestReplacementGuardsKernel` 使用自编写的最小 BPF 程序和不同布局的 maps，注入部分附件安装失败，关闭进程持有的 FD 后检查阻断 pin 仍然存在；恢复启动必须覆盖所有旧 hook 才能解除防护。`TestReplacementGuardBundleKernel` 检查入口 link 与必要 timer maps 的成组引用、重复 pin 的身份校验、部分失败回滚及清理顺序。`TestFailedRecoveryDoesNotExpandGuardsKernel` 验证 A+B → 失败 A+C → A+B 不会被错误尝试留下的新防护阻挡。`TestStoppingEntryAndExit`、`TestStoppingUDPAndFragments` 验证退出标记不覆盖停机状态，`STOPPING` 下拒绝捕获、不确定流量和非首分片而保留明确直连；恢复 `ONLINE` 后未知非 SYN 归为 native，新入站 TCP 回复保持可用。进程夹具持续发送捕获 DNS，并检查目标收到的来源，检测交接期间的意外直出。
+daemon 的内核测试逐项使用新的测试进程及 namespace，不能在同一进程中复用已关闭的全局网络运行时。`TestReplacementFailureAfterBlockKernel` 和 `TestReplacementCloseFailureAfterBlockKernel` 运行目标测试 ELF 的真实 parser/plugin Preflight 与用户态输入准备，断言活插件构造、`Warm` 和 Worker 仍被推迟；在可控预检窗口检查旧 API 可用、新配置操作返回 409，以及预检拒绝/取消后旧服务和实例锁仍保留；描述编码超限也必须在 API 排空及 Block 前失败，旧 API、导出和 guards 不变。坏 settings 不阻止用户态预取；最终 API drain 后才返回 503。Block 后分别注入取消和 shared plugin state 关闭错误，检查不执行 exec、不发布新导出，旧 ipset/nft、固定对象和 pinned guard 保留。`TestReplacementGuardsKernel` 使用自编写的最小 BPF 程序和不同布局的 maps，注入部分附件安装失败，关闭进程持有的 FD 后检查阻断 pin 仍然存在；恢复启动必须覆盖所有旧 hook 才能解除防护。`TestReplacementGuardBundleKernel` 检查入口 link 与必要 timer maps 的成组引用、重复 pin 的身份校验、部分失败回滚及清理顺序。`TestFailedRecoveryDoesNotExpandGuardsKernel` 验证 A+B → 失败 A+C → A+B 不会被错误尝试留下的新防护阻挡。`TestStoppingEntryAndExit`、`TestStoppingUDPAndFragments` 验证退出标记不覆盖停机状态，单代 `STOPPING` 下拒绝捕获、不确定流量和非首分片，同时按本代证据放行明确直连；这些用例不证明新旧私有 guard 重叠时的直连连续性。恢复 `ONLINE` 后未知非 SYN 归为 native，新入站 TCP 回复保持可用。进程夹具持续发送捕获 DNS，并检查目标收到的来源，检测交接期间的意外直出。
 
-通过 sealed exec state 校验恢复时，`Run` 不重复执行目标 ELF 已通过的 `CheckKernelFeatures`，但仍对重新加载的配置执行插件 Configure/Preflight 并实际加载、验证业务 BPF；普通冷启动和失败后重启仍完整检查，settings/Registry 仍仅在旧写者结束后的正式启动中读取，不引入内核能力缓存结构或配置。
+通过 sealed exec state 校验恢复时，`Run` 不重复执行目标 ELF 已通过的 `CheckKernelFeatures`，但仍对重放出的配置执行插件 Configure/Preflight 并实际加载、验证业务 BPF；普通冷启动和失败后重启仍完整检查，settings/Registry 仍只在旧写者结束后的正式启动中读取，不引入内核能力缓存结构或配置。
 
 `TestReplacementReadinessFailureKernel` 和 `TestReplacementReadinessCanceledKernel` 覆盖数据面已发布但固定对象仍被借用时的失败：READY 通知失败或启动取消必须在退出前重新阻断，保留固定对象和已发布集合；这是 `ONLINE` 后的失败处置，不是回滚旧进程或由 READY 确认的原子提交。原替换操作完成前仍拒绝新的配置操作。`TestReplacementReadinessSuccessKernel` 通过本地 Unix datagram 接收 READY，检查最终就绪成功才结束恢复保护、取得删除权。`TestReplacementClaimKeepsInterfaceFreezeUntilReady` 验证状态/拓扑校验失败保留 `privatePins` 与接口冻结，通知成功才释放；已提交运行时的冗余 bundle 清理失败则应告警而非令就绪失败，测试须将其与 fatal 的校验及旧 guard 撤除错误区分。随后正常关闭会删除已接管的固定网络对象、canonical pins 和 Unix socket。
 

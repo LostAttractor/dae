@@ -5,7 +5,7 @@ External plugins may use an independent Go module. Import
 `github.com/daeuniverse/dae/component/plugin` and export:
 
 ```go
-var Plugin = plugin.Definition{Configure: Configure, Commands: Commands}
+var Plugin = plugin.Definition{Configure: Configure, Resources: loadResources, Commands: Commands}
 
 func Configure(spec plugin.Spec) (plugin.Factory, error) {
     conf, err := parseConfig(spec.Config) // defaults and validation, no I/O
@@ -35,7 +35,8 @@ Both entry points reject duplicate and unknown settings. Decoder callbacks and
 validation errors must omit raw configuration values, which may contain
 credentials.
 
-Implement `Plan` and optional protocol interfaces. Copy
+Implement `Plan` and optional protocol interfaces, and declare the same effects
+through `Resources.Plan` before constructing the instance. Copy
 [plugins.cfg.example](../../plugins.cfg.example) to local `plugins.cfg`, add
 `type:Go/import/path`, then run `make`. The local selection and generated registry
 are ignored by Git.
@@ -60,23 +61,59 @@ checks before kernel setup or subscription/module downloads. Reload checks the
 candidate before refreshing resources; suspension reuses the active runtime.
 Probes must release their resources and leave persistent state unchanged.
 
-Plugins reading files or remote resources implement `Definition.Resources`:
+Every enabled plugin implements `Definition.Resources`, including plugins with no
+external inputs. The host must know the complete static plan before constructing
+an instance, VM or running `Warm`:
 
 | Result | Meaning |
 | --- | --- |
-| `Key` | Identity of all validated external contents, including dependencies |
+| `Plan` | Required `*plugin.Plan` declaring all static effects; `new(plugin.Plan)` explicitly declares no effects |
+| `Key` | Identity of all validated external contents affecting the instance or plan, including dependencies |
 | `Value` | Immutable prepared data passed to the factory as `Services.Prepared` |
 | `Config` | Optional parsed/defaulted configuration; otherwise compare `Spec.Config` |
 
-Resource preparation starts no workers, owns no closable handles and does not
-publish storage or metrics changes. Refresh errors reject the candidate unless a
-complete validated cache fallback is available.
+A nil `Plan` is a missing declaration, not an empty plan. Missing `Resources` or
+`Resources.Plan` produces a configuration error naming the instance. This also
+applies to external plugins: the host never constructs an instance just to call
+its `Plan()` as a fallback. `Plugin.Plan()` remains available for standalone
+consumers and must agree with the static declaration. Derive both from shared
+pure logic; do not construct a temporary engine or VM to discover its effects.
 
-Pass the configuration and previous host to `mitm.Load`. Equal type, ID and inputs
-retain the instance; only replacements invoke factories. Factories return a
-non-nil plugin, release partial resources on error and keep captured inputs
-immutable. [`Configuration.Prepare`](../pluginhost/configure.go) injects scoped
-logging, storage and metrics. The daemon owns activation and cleanup.
+Resource preparation starts no plugin workers, owns no closable handles after
+return and does not publish storage or metrics changes. Any temporary validation
+helper must be released before returning, including on error. Refresh errors
+reject the candidate unless a complete validated cache fallback is available.
+
+`Configuration.LoadResources(ctx, services)` returns a concrete
+`pluginhost.PreparedResources` containing process-local immutable data. Its
+`Plan()` aggregates declarations in order without live instances.
+`mitm.PreparePlan(options, plans...)` applies host validation and `DisableHTTP`
+filtering independently of instance construction; include any diagnostic plan
+explicitly. Filtering HTTP does not remove DNS middleware declarations.
+
+Call `PreparedResources.BuildInstances(liveCtx, services, previous)` or
+`mitm.Build(liveCtx, prepared, options, services, previousHost)` only when runtime
+construction is allowed. Equal type, ID and inputs retain the instance; only
+replacements invoke factories, in declaration order. Factories return a non-nil
+plugin, release partial resources on error and keep prepared inputs immutable.
+They receive the caller's live context and formal scoped logging, Storage,
+Metrics and SharedStates services, not the canceled resource-load context.
+The preparation object retains neither context nor Services. `Configuration.Prepare`
+and `mitm.Load` compose the same two steps for callers that need both.
+Candidate-local resource metadata is published by `CommitResources` only after
+acceptance, including when the instance is reused. The daemon owns worker
+activation and cleanup.
+
+For process replacement, the target ELF performs resource loading and static
+planning before Block. It records raw operation inputs through
+`common/resource`, not serialized `Config`/`Value` objects or runtime state.
+After exec, initialization strictly replays those inputs and rebuilds parsed
+objects. Use the supplied preparation context for input readers; never retain it
+in workers or mutable stores. `ErrInputRecording` and `ErrInputReplay` are fatal:
+propagate them with their identity intact, rather than treating them as optional
+resources, cache fallback or an empty declaration. Live plugin construction and
+`Warm` still happen after Block; workers start at activation. See the
+[replacement contract](../../docs/en/user-guide/reload-and-suspend.md#process-replacement).
 
 ## DNS contract
 

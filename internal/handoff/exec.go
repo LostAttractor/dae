@@ -31,13 +31,54 @@ func (w *stateWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-// SealState writes at most 64 KiB of JSON into an immutable, CLOEXEC memfd.
-func SealState(value any) (_ *os.File, resultErr error) {
-	fd, err := unix.MemfdCreate("dae-handoff", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+// NewSealableFile creates a private, initially empty CLOEXEC transport. A child
+// may fill and seal it through ExtraFiles without sending descriptors back.
+func NewSealableFile(name string) (*os.File, error) {
+	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(fd), "handoff-state")
+	return os.NewFile(uintptr(fd), name), nil
+}
+
+func SealFile(file *os.File) error {
+	if file == nil {
+		return errors.New("missing handoff descriptor")
+	}
+	if _, err := unix.FcntlInt(file.Fd(), unix.F_ADD_SEALS, stateSeals); err != nil {
+		return fmt.Errorf("seal handoff file: %w", err)
+	}
+	return nil
+}
+
+// SealedFileSize validates transport bounds without decoding its payload.
+func SealedFileSize(file *os.File, maxBytes int64) (int64, error) {
+	if file == nil || maxBytes <= 0 {
+		return 0, errors.New("missing handoff descriptor or invalid byte limit")
+	}
+	seals, err := unix.FcntlInt(file.Fd(), unix.F_GET_SEALS, 0)
+	if err != nil {
+		return 0, fmt.Errorf("get handoff file seals: %w", err)
+	}
+	if seals&stateSeals != stateSeals {
+		return 0, errors.New("unsealed handoff file")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxBytes {
+		return 0, errors.New("invalid handoff file size or type")
+	}
+	return info.Size(), nil
+}
+
+// SealState writes at most 64 KiB of JSON into an immutable, CLOEXEC memfd.
+func SealState(value any) (_ *os.File, resultErr error) {
+	file, err := NewSealableFile("dae-handoff")
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		if resultErr != nil {
 			file.Close()
@@ -46,32 +87,19 @@ func SealState(value any) (_ *os.File, resultErr error) {
 	if err := json.MarshalWrite(&stateWriter{file: file, remaining: maxStateSize}, value); err != nil {
 		return nil, fmt.Errorf("encode handoff state: %w", err)
 	}
-	if _, err := unix.FcntlInt(file.Fd(), unix.F_ADD_SEALS, stateSeals); err != nil {
-		return nil, fmt.Errorf("seal handoff state: %w", err)
+	if err := SealFile(file); err != nil {
+		return nil, err
 	}
 	return file, nil
 }
 
 // ReadState validates the transport, not the daemon's manifest or descriptor roles.
 func ReadState(file *os.File, value any) error {
-	if file == nil {
-		return errors.New("missing handoff state descriptor")
-	}
-	seals, err := unix.FcntlInt(file.Fd(), unix.F_GET_SEALS, 0)
-	if err != nil {
-		return fmt.Errorf("get handoff state seals: %w", err)
-	}
-	if seals&stateSeals != stateSeals {
-		return errors.New("unsealed handoff state")
-	}
-	info, err := file.Stat()
+	size, err := SealedFileSize(file, maxStateSize)
 	if err != nil {
 		return err
 	}
-	if info.Size() <= 0 || info.Size() > maxStateSize {
-		return errors.New("invalid handoff state size")
-	}
-	data := make([]byte, int(info.Size()))
+	data := make([]byte, int(size))
 	if _, err := file.ReadAt(data, 0); err != nil {
 		return fmt.Errorf("read handoff state: %w", err)
 	}

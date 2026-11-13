@@ -95,12 +95,15 @@ does not depend on a PID file.
 
 Install the new executable, then run `systemctl reload dae`. `ExecReload` must
 invoke the newly installed binary. Identical executable contents reload
-configuration; changed contents run lightweight target preflight, then close the
+configuration; changed contents run target preflight and userspace input
+preparation while the old dataplane and API continue serving, then close the
 old Runtime and exec the new binary in the same business process. There is no
 resident supervisor or separate worker. The service's PID and process starttime
-remain unchanged; its Go heap and goroutines do not. Full resource/plugin/BPF
-initialization happens after captured traffic is blocked, so replacement does not
-preserve sessions or guarantee a bounded service interruption. See
+remain unchanged; its Go heap and goroutines do not. After captured traffic is
+blocked, the new image strictly replays sealed inputs, reads final settings and
+rebuilds business BPF and plugin instances, including `Warm`. Missing replay inputs
+never trigger live downloads. Replacement still does not preserve sessions or
+guarantee an interruption below a fixed threshold. See
 [replacement behavior and failure boundaries](reload-and-suspend.md#process-replacement).
 
 Replacement does not require systemd or a `MainPID` transfer: foreground runs and

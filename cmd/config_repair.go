@@ -22,11 +22,11 @@ func loadConfig(ctx context.Context, cmd *cobra.Command, path *string) (*config.
 	input, inputOK := cmd.InOrStdin().(*os.File)
 	output, outputOK := cmd.ErrOrStderr().(*os.File)
 	if !inputOK || !outputOK || !term.IsTerminal(int(input.Fd())) || !term.IsTerminal(int(output.Fd())) {
-		return config.Load(*path)
+		return config.LoadContext(ctx, *path)
 	}
 	var reader *bufio.Reader
 	for {
-		conf, includes, err := config.Load(*path)
+		conf, includes, err := config.LoadContext(ctx, *path)
 		if err == nil {
 			return conf, includes, nil
 		}

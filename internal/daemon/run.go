@@ -170,11 +170,11 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		app.operations.active = op.ID
 		app.operations.replacing = true
 	}
-	loadCtx, refresh := app.resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
-	inputs, preparation, err := loadStartupInputs(loadCtx, datapath, conf, geoDirs, options.ConfigFile)
+	loadCtx, refresh := app.resources.Begin(startup.InitializationContext(), conf.Global.ResourceUpdateInterval, false)
+	inputs, err := loadControlInputs(loadCtx, conf, false, geoDirs, options.ConfigFile, nil)
 	var candidate *preparedPlane
 	if err == nil {
-		candidate, err = app.assemblePlane(loadCtx, preparation, conf, inputs, func(client *http.Client) (control.PreparedMITM, error) {
+		candidate, err = app.assemblePlane(ctx, conf, inputs, func(client *http.Client) (control.PreparedMITM, error) {
 			return loadMITM(loadCtx, conf, certificates.Authority(), client, worker, plugins, nil, geoDirs, datapath)
 		})
 	}
@@ -188,6 +188,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		}
 		return err
 	}
+	startup.inputs = nil
 	var local *apiserver.Server
 	if incoming != nil {
 		file := incoming.take("local")
