@@ -216,15 +216,28 @@ func ResolveFile(ctx context.Context, u *url.URL, configDir string) ([]byte, err
 		}
 		root = configDir
 	}
-	file, info, err := resource.OpenLocalFile(source.Location, root)
-	if err != nil {
-		return nil, err
+	read := func(ctx context.Context) ([]byte, error) {
+		file, info, err := resource.OpenLocalFile(source.Location, root)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		if info.Mode()&0037 > 0 {
+			return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", info.Mode()&0777, source.Location)
+		}
+		return readSubscriptionFile(ctx, file)
 	}
-	defer file.Close()
-	if info.Mode()&0037 > 0 {
-		return nil, fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", info.Mode()&0777, source.Location)
+	if !resource.HasInputs(ctx) {
+		data, err := read(ctx)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return data, err
 	}
-	return readSubscriptionFile(ctx, file)
+	if strings.ContainsRune(root, 0) || strings.ContainsRune(source.Location, 0) {
+		return nil, fmt.Errorf("subscription path contains NUL: %w", os.ErrInvalid)
+	}
+	return resource.ReadInput(ctx, "subscription/local:"+root+"\x00"+source.Location, read)
 }
 
 func readSubscriptionFile(ctx context.Context, f *os.File) (b []byte, err error) {
@@ -286,6 +299,9 @@ func validateSubscriptionNodes(ctx context.Context, nodes []string, validateNode
 			return nil, err
 		}
 		if err := validateNodeSafely(validateNode, node); err != nil {
+			if errors.Is(err, resource.ErrInputReplay) || errors.Is(err, resource.ErrInputRecording) {
+				return nil, err
+			}
 			invalidNodes++
 			if firstValidationErr == nil {
 				firstValidationErr = fmt.Errorf("node %d: %w", i+1, err)

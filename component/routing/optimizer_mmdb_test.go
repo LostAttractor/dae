@@ -3,6 +3,7 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/assets"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/oschwald/maxminddb-golang/v2"
 )
 
@@ -245,5 +247,36 @@ func BenchmarkMMDBLoad(b *testing.B) {
 		if len(params) != len(networks)/16 {
 			b.Fatal(len(params))
 		}
+	}
+}
+
+func TestMMDBInputReplayUsesFrozenLocationAndBytes(t *testing.T) {
+	path := writeTestMMDB(t, 4, []mmdbTestNetwork{{"192.0.2.0/24", 0}}, mmdbTestMap("country", mmdbTestString("CN")))
+	dir := filepath.Dir(path)
+	ctx, inputs := resource.WithInputRecording(t.Context())
+	reader := NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{dir}))
+	want, err := reader.loadMMDB("geoip", "country", "cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := inputs.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := resource.DecodeInputs(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	replay := NewDatReaderOptimizer(resource.WithInputReplay(t.Context(), saved), assets.NewLocationFinder([]string{dir}))
+	got, err := replay.loadMMDB("geoip", "country", "cn")
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("replay rediscovered or reopened MMDB: %v, %v", got, err)
+	}
+	missing := NewDatReaderOptimizer(resource.WithInputReplay(t.Context(), nil), assets.NewLocationFinder([]string{dir}))
+	if _, err := missing.loadMMDB("geoip", "country", "cn"); !errors.Is(err, resource.ErrInputReplay) {
+		t.Fatalf("missing MMDB input was not fatal: %v", err)
 	}
 }

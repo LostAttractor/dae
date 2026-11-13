@@ -6,6 +6,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -69,19 +71,28 @@ func NewMerger(entry string) *Merger {
 	}
 }
 
-func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, err error) {
+func (m *Merger) Merge() ([]*config_parser.Section, []string, error) {
+	return m.MergeContext(context.Background())
+}
+
+// MergeContext freezes file selection and validated source bytes, not parsed state.
+func (m *Merger) MergeContext(ctx context.Context) (sections []*config_parser.Section, entries []string, err error) {
 	if m.initErr != nil {
 		return nil, nil, fmt.Errorf("failed to resolve config entry path: %w", m.initErr)
 	}
-	opener, err := newSecureFileOpener(m.entryDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize config file opener for %v: %w", m.entryDir, err)
-	}
-	defer opener.Close()
+	var opener *secureFileOpener
+	defer func() {
+		if opener != nil {
+			_ = opener.Close()
+		}
+	}()
 	m.mergedBytes = 0
 	clear(m.entryToSectionMap)
 
-	err = m.dfsMerge(opener, m.entry, "", 0)
+	err = m.dfsMerge(ctx, &opener, m.entry, "", 0)
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -104,7 +115,7 @@ func (m *Merger) relativeEntryPath(entry string) (string, error) {
 	return relativePathWithin(m.entryDir, entry)
 }
 
-func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
+func (m *Merger) readEntry(ctx context.Context, opener **secureFileOpener, entry string) (err error) {
 	if len(m.entryToSectionMap) == maxConfigFiles {
 		return fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
 	}
@@ -113,35 +124,28 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	if !strings.HasSuffix(entry, ".dae") {
 		return &InvalidFilenameError{Path: entry}
 	}
-	var f *os.File
-	if entry == m.entry {
-		// The entry is explicitly selected by the user and may itself be a
-		// symlink managed by systems such as NixOS. Includes remain confined to
-		// the lexical entry directory below.
-		f, err = openConfigEntry(entry)
+	if strings.ContainsRune(entry, 0) {
+		return fmt.Errorf("config path contains NUL: %w", os.ErrInvalid)
+	}
+	read := func(ctx context.Context) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if *opener == nil {
+			var err error
+			*opener, err = newSecureFileOpener(m.entryDir)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize config file opener for %v: %w", m.entryDir, err)
+			}
+		}
+		return m.readConfigFile(*opener, entry)
+	}
+	var b []byte
+	if resource.HasInputs(ctx) {
+		b, err = resource.ReadInput(ctx, "config/file:"+m.entryDir+"\x00"+entry, read)
 	} else {
-		f, err = opener.Open(entry)
+		b, err = read(ctx)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to securely open config file %v: %w", entry, err)
-	}
-	defer f.Close()
-	// Check file access.
-	fi, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("config is not a regular file: %v", entry)
-	}
-	if fi.Mode()&0037 > 0 {
-		return &UnsafePermissionsError{Path: entry, Mode: fi.Mode()}
-	}
-	// Read and parse.
-	if fi.Size() > maxConfigFileSize {
-		return fmt.Errorf("config file %v exceeds %d bytes", entry, maxConfigFileSize)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
 	if err != nil {
 		return err
 	}
@@ -159,6 +163,46 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	config_parser.SetSourceFile(entrySections, entry)
 	m.entryToSectionMap[entry] = m.convertSectionsToMap(entrySections)
 	return nil
+}
+
+func (m *Merger) readConfigFile(opener *secureFileOpener, entry string) ([]byte, error) {
+	var f *os.File
+	var err error
+	if entry == m.entry {
+		// The entry is explicitly selected by the user and may itself be a
+		// symlink managed by systems such as NixOS. Includes remain confined to
+		// the lexical entry directory below.
+		f, err = openConfigEntry(entry)
+	} else {
+		f, err = opener.Open(entry)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to securely open config file %v: %w", entry, err)
+	}
+	defer f.Close()
+	// Check file access.
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("config is not a regular file: %v", entry)
+	}
+	if fi.Mode()&0037 > 0 {
+		return nil, &UnsafePermissionsError{Path: entry, Mode: fi.Mode()}
+	}
+	// Bound reads even if the file grows after Stat.
+	if fi.Size() > maxConfigFileSize {
+		return nil, fmt.Errorf("config file %v exceeds %d bytes", entry, maxConfigFileSize)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxConfigFileSize {
+		return nil, fmt.Errorf("config file %v exceeds %d bytes", entry, maxConfigFileSize)
+	}
+	return b, nil
 }
 
 func unsqueezeEntries(patternEntries []string, limit int) (unsqueezed []string, err error) {
@@ -278,7 +322,7 @@ func globConfigFiles(pattern string, limit int) ([]string, error) {
 	return matches, nil
 }
 
-func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry string, depth int) (err error) {
+func (m *Merger) dfsMerge(ctx context.Context, opener **secureFileOpener, entry string, fatherEntry string, depth int) (err error) {
 	if m.activeEntries[entry] {
 		return fmt.Errorf("%w: %v -> %v -> ... -> %v", ErrCircularInclude, fatherEntry, entry, fatherEntry)
 	}
@@ -290,7 +334,7 @@ func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry st
 	}
 	m.activeEntries[entry] = true
 	defer delete(m.activeEntries, entry)
-	if err = m.readEntry(opener, entry); err != nil {
+	if err = m.readEntry(ctx, opener, entry); err != nil {
 		return err
 	}
 	sectionMap := m.entryToSectionMap[entry]
@@ -314,13 +358,37 @@ func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry st
 		}
 	}
 	// DFS and merge children recursively.
-	childEntries, err := unsqueezeEntries(patterEntries, maxConfigFiles)
-	if err != nil {
-		return err
+	var childEntries []string
+	if resource.HasInputs(ctx) {
+		selection, readErr := resource.ReadInput(ctx, "config/includes:"+m.entryDir+"\x00"+entry, func(context.Context) ([]byte, error) {
+			children, err := unsqueezeEntries(patterEntries, maxConfigFiles)
+			if err != nil {
+				return nil, err
+			}
+			// Glob results are nonempty Linux paths; NUL preserves their raw bytes.
+			return []byte(strings.Join(children, "\x00")), nil
+		})
+		if readErr != nil {
+			return readErr
+		}
+		if len(selection) != 0 {
+			childEntries = strings.Split(string(selection), "\x00")
+		}
+	} else {
+		childEntries, err = unsqueezeEntries(patterEntries, maxConfigFiles)
+		if err != nil {
+			return err
+		}
+	}
+	if len(childEntries) > maxConfigFiles {
+		return fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
 	}
 	for _, nextEntry := range childEntries {
 		nextEntry = filepath.Clean(nextEntry)
-		if err = m.dfsMerge(opener, nextEntry, entry, depth+1); err != nil {
+		if _, err := m.relativeEntryPath(nextEntry); err != nil {
+			return err
+		}
+		if err = m.dfsMerge(ctx, opener, nextEntry, entry, depth+1); err != nil {
 			return err
 		}
 	}

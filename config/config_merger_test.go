@@ -6,10 +6,14 @@
 package config
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/common/resource"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -348,5 +352,137 @@ func TestUnsqueezeEntriesAllowsExactFileLimit(t *testing.T) {
 	want := []string{filepath.Join(dir, "a.dae"), filepath.Join(dir, "b.dae")}
 	if !slices.Equal(got, want) {
 		t.Fatalf("unsqueezeEntries = %v, want %v", got, want)
+	}
+}
+
+func TestLoadContextFreezesFilesAndIncludeSelection(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "config.dae")
+	child := filepath.Join(dir, "parts", "global.dae")
+	writeConfigFile(t, entry, "include { parts/*.dae future/*.dae }\nrouting { fallback:direct }\n")
+	writeConfigFile(t, child, "global { log_level: info }\n")
+	ctx, inputs := resource.WithInputRecording(t.Context())
+	want, files, err := LoadContext(ctx, entry)
+	if err != nil || len(files) != 2 {
+		t.Fatalf("capture: files=%v error=%v", files, err)
+	}
+	var encoded bytes.Buffer
+	if err := inputs.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := resource.DecodeInputs(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfigFile(t, entry, "invalid replacement")
+	writeConfigFile(t, child, "global { log_level: warn }\n")
+	writeConfigFile(t, filepath.Join(dir, "parts", "new.dae"), "invalid new include")
+	writeConfigFile(t, filepath.Join(dir, "future", "new.dae"), "invalid previously unmatched include")
+	replay := resource.WithInputReplay(t.Context(), saved)
+	for _, remove := range []bool{false, true} {
+		if remove {
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, selected, err := LoadContext(replay, entry)
+		if err != nil || !reflect.DeepEqual(got, want) || !slices.Equal(slices.Sorted(slices.Values(files)), slices.Sorted(slices.Values(selected))) {
+			t.Fatalf("remove=%v replay changed config or discovered files: files=%v error=%v", remove, selected, err)
+		}
+	}
+	if _, _, err := LoadContext(resource.WithInputReplay(t.Context(), nil), entry); !errors.Is(err, resource.ErrInputReplay) {
+		t.Fatalf("missing input tried live directory: %v", err)
+	}
+}
+
+func TestConfigPathsAndGlobPreserveNonUTF8Bytes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "parent-\xff")
+	entry := filepath.Join(dir, "config-\xfe.dae")
+	first := filepath.Join(dir, "parts", "part-\xff.dae")
+	second := filepath.Join(dir, "parts", "part-\xfe.dae")
+	writeConfigFile(t, entry, "include { parts/*.dae absent/*.dae }\n")
+	writeConfigFile(t, first, "global { log_level: info }\n")
+	writeConfigFile(t, second, "routing { fallback: direct }\n")
+	want, files, err := Load(entry)
+	if err != nil || len(files) != 3 {
+		t.Fatalf("live non-UTF-8 paths: %q, %v", files, err)
+	}
+	expected := []string{entry, first, second}
+	slices.Sort(expected)
+	slices.Sort(files)
+	if !slices.Equal(files, expected) {
+		t.Fatalf("glob changed raw paths: %q", files)
+	}
+	record, inputs := resource.WithInputRecording(t.Context())
+	got, _, err := LoadContext(record, entry)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("record non-UTF-8 paths: %v", err)
+	}
+	var encoded bytes.Buffer
+	if err := inputs.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := resource.DecodeInputs(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeConfigFile(t, entry, "invalid replacement")
+	writeConfigFile(t, filepath.Join(dir, "parts", "unexpected-\xfd.dae"), "invalid new include")
+	replay := resource.WithInputReplay(t.Context(), saved)
+	for _, remove := range []bool{false, true} {
+		if remove {
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, selected, err := LoadContext(replay, entry)
+		slices.Sort(selected)
+		if err != nil || !reflect.DeepEqual(got, want) || !slices.Equal(selected, expected) {
+			t.Fatalf("remove=%v changed frozen config/empty includes: %q, %v", remove, selected, err)
+		}
+	}
+}
+
+type cancelConfigReadContext struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c *cancelConfigReadContext) Err() error {
+	err := c.Context.Err()
+	c.cancel() // Model cancellation immediately after the file read's first check.
+	return err
+}
+
+func TestLiveConfigLoadHonorsCancellationDuringMerge(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "config.dae")
+	writeConfigFile(t, entry, "global {}\nrouting { fallback: direct }")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx = &cancelConfigReadContext{Context: ctx, cancel: cancel}
+	if _, _, err := LoadContext(ctx, entry); !errors.Is(err, context.Canceled) {
+		t.Fatalf("live merge returned a configuration after cancellation: %v", err)
+	}
+}
+
+func TestRecordingPreservesConfigPermissionAndSizeChecks(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "config.dae")
+	writeConfigFile(t, entry, "global {}\nrouting { fallback:direct }")
+	if err := os.Chmod(entry, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := resource.WithInputRecording(t.Context())
+	if _, _, err := LoadContext(ctx, entry); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("recording accepted insecure config: %v", err)
+	}
+	if err := os.Chmod(entry, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(entry, maxConfigFileSize+1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ = resource.WithInputRecording(t.Context())
+	if _, _, err := LoadContext(ctx, entry); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("recording accepted oversized config: %v", err)
 	}
 }

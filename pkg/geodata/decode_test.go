@@ -2,11 +2,13 @@ package geodata
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
@@ -131,6 +133,77 @@ func TestGeodataLoadersShareFastAndFallbackPaths(t *testing.T) {
 				}
 				if _, err := loader.load(path, "missing"); err == nil || err.Error() != "code missing not found in "+path {
 					t.Fatalf("fallback=%v missing code: %v", fallback, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGeodataContextFreezesFastAndCompatibilityBytes(t *testing.T) {
+	for _, loader := range []struct {
+		name string
+		data proto.Message
+		load func(context.Context, string, string) (proto.Message, error)
+	}{
+		{"ip", &GeoIPList{Entry: []*GeoIP{{CountryCode: "cn", InverseMatch: true}, {CountryCode: "us"}}}, func(ctx context.Context, path, code string) (proto.Message, error) {
+			return UnmarshalGeoIpContext(ctx, path, code)
+		}},
+		{"site", &GeoSiteList{Entry: []*GeoSite{{CountryCode: "cn", Domain: []*Domain{{Value: "accepted.test"}}}, {CountryCode: "us"}}}, func(ctx context.Context, path, code string) (proto.Message, error) {
+			return UnmarshalGeoSiteContext(ctx, path, code)
+		}},
+	} {
+		t.Run(loader.name, func(t *testing.T) {
+			for _, compatible := range []bool{false, true} {
+				data, err := proto.Marshal(loader.data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if compatible {
+					data = append([]byte{0x10, 1}, data...)
+				}
+				path := filepath.Join(t.TempDir(), "geo.dat")
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				ctx, inputs := resource.WithInputRecording(t.Context())
+				want, err := loader.load(ctx, path, "CN")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var encoded bytes.Buffer
+				if err := inputs.Encode(&encoded); err != nil {
+					t.Fatal(err)
+				}
+				saved, err := resource.DecodeInputs(&encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("changed invalid data"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if got, err := loader.load(ctx, path, "CN"); err != nil || !proto.Equal(got, want) {
+					t.Fatalf("recording reloaded changed bytes: %v, %v", got, err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				replay := resource.WithInputReplay(t.Context(), saved)
+				if got, err := loader.load(replay, path, "CN"); err != nil || !proto.Equal(got, want) {
+					t.Fatalf("compatibility=%v replay used live file: %v, %v", compatible, got, err)
+				}
+				if _, err := loader.load(replay, path, "US"); err != nil {
+					t.Fatalf("snapshot retained only selected entries, not raw file: %v", err)
+				}
+				mutable, err := loader.load(replay, path, "CN")
+				if err != nil {
+					t.Fatal(err)
+				}
+				proto.Reset(mutable)
+				if got, err := loader.load(replay, path, "CN"); err != nil || !proto.Equal(got, want) {
+					t.Fatalf("compatibility=%v caller mutated frozen data: %v, %v", compatible, got, err)
+				}
+				if _, err := loader.load(resource.WithInputReplay(t.Context(), nil), path, "CN"); !errors.Is(err, resource.ErrInputReplay) {
+					t.Fatalf("missing snapshot fell through compatibility loader: %v", err)
 				}
 			}
 		})

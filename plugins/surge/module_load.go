@@ -47,8 +47,9 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 	// Deterministic map encoding makes equivalent overrides share a snapshot.
 	key, err := json.Marshal(struct {
 		Source    string
+		Relative  bool              `json:",omitzero"`
 		Arguments map[string]string `json:",omitempty"`
-	}{source.Location, options.Arguments}, json.Deterministic(true))
+	}{source.Location, source.Relative, options.Arguments}, json.Deterministic(true))
 	if err != nil {
 		return nil, err
 	}

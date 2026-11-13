@@ -4,6 +4,8 @@ package geodata
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"io"
 	"os"
 	"slices"
@@ -115,6 +117,13 @@ func (c *geodataFileCache) decode(f *os.File, code string) ([]byte, error) {
 			break
 		}
 	}
+	return indexed.decode(code)
+}
+
+func (indexed *indexedGeodata) decode(code string) ([]byte, error) {
+	if errors.Is(indexed.err, errGeodataIndexLimit) {
+		return emitBytes(bytes.NewReader(indexed.data), code)
+	}
 	if indexed.err != nil {
 		return nil, indexed.err
 	}
@@ -126,7 +135,12 @@ func (c *geodataFileCache) decode(f *os.File, code string) ([]byte, error) {
 }
 
 func indexGeodata(data []byte) (map[string][]byte, error) {
+	return indexGeodataBounded(data, 0)
+}
+
+func indexGeodataBounded(data []byte, limit int) (map[string][]byte, error) {
 	entries := make(map[string][]byte)
+	var weight int
 	for len(data) > 0 {
 		if data[0] != 10 {
 			return nil, errInvalidGeodataFile
@@ -139,8 +153,15 @@ func indexGeodata(data []byte) (map[string][]byte, error) {
 		if ncode < 0 {
 			return nil, errInvalidGeodataFile
 		}
+		if limit > 0 && len(code)+128 > limit {
+			return nil, errGeodataIndexLimit
+		}
 		key := foldCode(string(code))
 		if _, exists := entries[key]; !exists {
+			weight += len(key) + 128
+			if limit > 0 && weight > limit {
+				return nil, errGeodataIndexLimit
+			}
 			entries[key] = entry // preserve first-match behavior for duplicate codes
 		}
 		data = data[n+1:]

@@ -8,12 +8,15 @@
 package geodata
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/daeuniverse/dae/common/assets"
+	"github.com/daeuniverse/dae/common/resource"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -23,6 +26,7 @@ var (
 	errInvalidGeodataFile           = errors.New("invalid geodata file")
 	errInvalidGeodataVarintLength   = errors.New("invalid geodata varint length")
 	errCodeNotFound                 = errors.New("code not found")
+	errGeodataIndexLimit            = errors.New("geodata index exceeds its size limit")
 )
 
 // Read only the selected entry, while bounding every length by its enclosing
@@ -112,6 +116,59 @@ func readGeodataLength(r io.Reader) (uint64, int, error) {
 }
 
 func Decode(filename, code string) ([]byte, error) {
+	return DecodeContext(context.Background(), filename, code)
+}
+
+// Serialize index construction so parallel files cannot each spend the budget.
+// Only this bookkeeping is mutable; published file bytes and indexes are not.
+type frozenGeodataBudget chan int
+
+// frozenGeodata owns a private, immutable copy shared only within this operation.
+// Public decoders return independent entries, never slices of its backing bytes.
+func frozenGeodata(ctx context.Context, filename string) (*indexedGeodata, error) {
+	return resource.DeriveInput(ctx, "geodata/index:"+filename, func(ctx context.Context) (*indexedGeodata, error) {
+		data, err := assets.ReadFileContext(ctx, filename)
+		if err != nil {
+			return nil, err
+		}
+		budget, err := resource.DeriveInput(ctx, "geodata/index-budget", func(context.Context) (frozenGeodataBudget, error) {
+			budget := make(frozenGeodataBudget, 1)
+			budget <- geodataCacheBytes
+			return budget, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		var remaining int
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case remaining = <-budget:
+		}
+		defer func() { budget <- remaining }()
+		indexed := &indexedGeodata{data: data, err: errGeodataIndexLimit}
+		if remaining > 0 {
+			indexed.entries, indexed.err = indexGeodataBounded(data, remaining)
+			for key := range indexed.entries {
+				remaining -= len(key) + 128
+			}
+		}
+		return indexed, nil
+	})
+}
+
+// DecodeContext indexes the frozen file when an operation carries input snapshots.
+func DecodeContext(ctx context.Context, filename, code string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if resource.HasInputs(ctx) {
+		indexed, err := frozenGeodata(ctx, filename)
+		if err != nil {
+			return nil, err
+		}
+		return indexed.decode(code)
+	}
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v: %w", filename, err)

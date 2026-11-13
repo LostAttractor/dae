@@ -4,12 +4,17 @@ package subscription
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/daeuniverse/dae/common/resource"
 	componentoutbound "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
 )
@@ -172,5 +177,177 @@ func TestDisabledRemoteSubscriptionCacheDoesNotReadOrWrite(t *testing.T) {
 				t.Fatalf("ordinary download changed existing cache: %v", err)
 			}
 		})
+	}
+}
+
+func TestLocalSubscriptionInputReplayKeepsValidatedSource(t *testing.T) {
+	for _, absolute := range []bool{false, true} {
+		base := t.TempDir()
+		targetDir := filepath.Join(base, "real")
+		if absolute {
+			targetDir = t.TempDir()
+		}
+		if err := os.MkdirAll(targetDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(targetDir, "nodes.sub")
+		want := testSSNode("accepted.example")
+		content := append([]byte("@ ignored instruction\n"), encodedSubscription(want)...)
+		if err := os.WriteFile(target, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+		link := "saved:file:real/nodes.sub"
+		if absolute {
+			linkPath := filepath.Join(base, "nodes.sub")
+			if err := os.Symlink(target, linkPath); err != nil {
+				t.Fatal(err)
+			}
+			link = "saved:" + (&url.URL{Scheme: "file", Path: linkPath}).String()
+		}
+		options := ResolveOptions{BaseDir: base}
+		validate := componentoutbound.NewNodeValidator(t.Context(), &config.Global{})
+		ctx, inputs := resource.WithInputRecording(t.Context())
+		tag, nodes, err := ResolveSubscriptionContext(ctx, http.DefaultClient, options, link, validate)
+		if err != nil || tag != "saved" || len(nodes) != 1 || nodes[0] != want {
+			t.Fatalf("absolute=%v initial source: tag=%q nodes=%v err=%v", absolute, tag, nodes, err)
+		}
+		var encoded bytes.Buffer
+		if err := inputs.Encode(&encoded); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := resource.DecodeInputs(&encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("invalid replacement"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0644); err != nil {
+			t.Fatal(err)
+		}
+		replay := resource.WithInputReplay(t.Context(), saved)
+		for _, remove := range []bool{false, true} {
+			if remove {
+				if err := os.RemoveAll(base); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.RemoveAll(targetDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tag, nodes, err = ResolveSubscriptionContext(replay, http.DefaultClient, options, link, validate)
+			if err != nil || tag != "saved" || len(nodes) != 1 || nodes[0] != want {
+				t.Fatalf("absolute=%v remove=%v replay reread or revalidated file: %v %v", absolute, remove, nodes, err)
+			}
+		}
+		if _, _, err := ResolveSubscriptionContext(resource.WithInputReplay(t.Context(), nil), http.DefaultClient, options, link, validate); !errors.Is(err, resource.ErrInputReplay) {
+			t.Fatalf("missing local subscription input was not fatal: %v", err)
+		}
+	}
+}
+
+func TestLocalSubscriptionPathsPreserveNonUTF8Bytes(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "parent-\xff")
+	if err := os.Mkdir(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"nodes-\xff.sub", "nodes-\xfe.sub"}
+	contents := [][]byte{encodedSubscription(testSSNode("one.example")), encodedSubscription(testSSNode("two.example"))}
+	for i, name := range names {
+		if err := os.WriteFile(filepath.Join(base, name), contents[i], 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(ctx context.Context) {
+		t.Helper()
+		for i, name := range names {
+			for _, raw := range []string{
+				"file:" + url.PathEscape(name),
+				(&url.URL{Scheme: "file", Path: filepath.Join(base, name)}).String(),
+			} {
+				u, err := url.Parse(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := ResolveFile(ctx, u, base)
+				if err != nil || !bytes.Equal(got, contents[i]) {
+					t.Fatalf("raw subscription %q: %q, %v", raw, got, err)
+				}
+			}
+		}
+	}
+	check(t.Context())
+	record, inputs := resource.WithInputRecording(t.Context())
+	check(record)
+	var encoded bytes.Buffer
+	if err := inputs.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := resource.DecodeInputs(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+	check(resource.WithInputReplay(t.Context(), saved))
+}
+
+func TestLocalSubscriptionRecordingRetainsSecurityChecks(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "nodes.sub")
+	if err := os.WriteFile(path, encodedSubscription(testSSNode("safe.example")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse("file:nodes.sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := resource.WithInputRecording(t.Context())
+	if _, err := ResolveFile(ctx, u, base); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("recording accepted unsafe permissions: %v", err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxRemoteSubscriptionSize+1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ = resource.WithInputRecording(t.Context())
+	if _, err := ResolveFile(ctx, u, base); err == nil {
+		t.Fatal("recording accepted oversized local subscription")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.sub")
+	if err := os.WriteFile(outside, encodedSubscription(testSSNode("outside.example")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ = resource.WithInputRecording(t.Context())
+	if _, err := ResolveFile(ctx, u, base); err == nil {
+		t.Fatal("recording followed a relative subscription outside its root")
+	}
+}
+
+func TestSubscriptionValidationCannotSkipFatalInputs(t *testing.T) {
+	for _, fatal := range []error{resource.ErrInputReplay, resource.ErrInputRecording} {
+		calls := 0
+		_, err := validateSubscriptionNodes(t.Context(), []string{"first", "second"}, func(string) error {
+			calls++
+			if calls == 1 {
+				return fatal
+			}
+			return nil
+		})
+		if !errors.Is(err, fatal) || calls != 1 {
+			t.Fatalf("fatal input was skipped: calls=%d err=%v", calls, err)
+		}
 	}
 }

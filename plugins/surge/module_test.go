@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/common/resource"
 )
 
 func TestModuleArgumentsAndHTTPPatterns(t *testing.T) {
@@ -242,6 +244,30 @@ func TestModuleLoadLocalAndDeduplicateScripts(t *testing.T) {
 			t.Fatalf("unexpected loaded module from %q: %+v", source, m)
 		}
 	}
+}
+
+func TestModuleLoadRecordsBothLocalSourceForms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "local.sgmodule")
+	if err := os.WriteFile(path, []byte("#!name=Local\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sources := []string{"file:local.sgmodule", (&url.URL{Scheme: "file", Path: path}).String()}
+	ctx, inputs := resource.WithInputRecording(t.Context())
+	load := func(ctx context.Context) {
+		t.Helper()
+		for _, source := range sources {
+			module, err := Load(ctx, source, nil, LoadOptions{BaseDir: dir})
+			if err != nil || module.Name != "Local" {
+				t.Fatalf("Load(%q) = %v, %v", source, module, err)
+			}
+		}
+	}
+	load(ctx)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	load(resource.WithInputReplay(t.Context(), inputs))
 }
 
 func TestModuleLoadRejectsUnsafeAndFailedDownloads(t *testing.T) {

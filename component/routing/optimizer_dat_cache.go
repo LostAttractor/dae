@@ -4,8 +4,10 @@ package routing
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"google.golang.org/protobuf/proto"
@@ -28,8 +30,11 @@ func (o *DatReaderOptimizer) cachedDatParams(path, code, kind, attribute string,
 	if err := o.contextErr(); err != nil {
 		return nil, err
 	}
-	data, err := geodata.Decode(path, code)
+	data, err := geodata.DecodeContext(o.context(), path, code)
 	if err != nil {
+		if errors.Is(err, resource.ErrInputRecording) || errors.Is(err, resource.ErrInputReplay) {
+			return nil, err
+		}
 		return build(nil)
 	}
 	key := datParamsKey{sha256.Sum256(data), kind, attribute}

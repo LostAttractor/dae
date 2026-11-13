@@ -8,20 +8,30 @@
 package geodata
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"strings"
 
+	"github.com/daeuniverse/dae/common/assets"
+	"github.com/daeuniverse/dae/common/resource"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 )
 
 func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
-	return unmarshalGeodata(filepath, code, "GeoIP", new(GeoIP), new(GeoIPList))
+	return UnmarshalGeoIpContext(context.Background(), filepath, code)
+}
+
+func UnmarshalGeoIpContext(ctx context.Context, filepath, code string) (*GeoIP, error) {
+	return unmarshalGeodata(ctx, filepath, code, "GeoIP", new(GeoIP), new(GeoIPList))
 }
 
 func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
-	return unmarshalGeodata(filepath, code, "GeoSite", new(GeoSite), new(GeoSiteList))
+	return UnmarshalGeoSiteContext(context.Background(), filepath, code)
+}
+
+func UnmarshalGeoSiteContext(ctx context.Context, filepath, code string) (*GeoSite, error) {
+	return unmarshalGeodata(ctx, filepath, code, "GeoSite", new(GeoSite), new(GeoSiteList))
 }
 
 func unmarshalGeodata[E interface {
@@ -30,7 +40,7 @@ func unmarshalGeodata[E interface {
 }, L interface {
 	proto.Message
 	GetEntry() []E
-}](filepath, code, kind string, entry E, list L) (E, error) {
+}](ctx context.Context, filepath, code, kind string, entry E, list L) (E, error) {
 	var zero E
 	decode := func(data []byte, target proto.Message) error {
 		if err := proto.Unmarshal(data, target); err != nil {
@@ -38,7 +48,7 @@ func unmarshalGeodata[E interface {
 		}
 		return nil
 	}
-	data, err := Decode(filepath, code)
+	data, err := DecodeContext(ctx, filepath, code)
 	switch err {
 	case nil:
 		if err := decode(data, entry); err != nil {
@@ -48,9 +58,17 @@ func unmarshalGeodata[E interface {
 	case errCodeNotFound:
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes, errInvalidGeodataFile, errInvalidGeodataVarintLength:
 		log.WithError(err).WithField("file", filepath).Debug("Reading geodata with the full protobuf decoder")
-		data, err = os.ReadFile(filepath)
-		if err != nil {
-			return zero, err
+		if resource.HasInputs(ctx) {
+			indexed, readErr := frozenGeodata(ctx, filepath)
+			if readErr != nil {
+				return zero, readErr
+			}
+			data = indexed.data
+		} else {
+			data, err = assets.ReadFileContext(ctx, filepath)
+			if err != nil {
+				return zero, err
+			}
 		}
 		if err := decode(data, list); err != nil {
 			return zero, err

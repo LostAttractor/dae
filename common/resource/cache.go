@@ -50,14 +50,23 @@ type cacheSnapshot struct {
 
 // Load validates a group using fresh reads or the refresh session's scheduled
 // resources. On failure it reruns load using the previous remote group exclusively;
-// local files are always current. A failed attempt never publishes a partial group.
-// load must be safe to retry and must not modify the returned byte slices.
+// local files are current during live loads. An explicit input context records the
+// accepted attempt, or strictly replays it without live reads or cache access.
+// A failed attempt never publishes a partial group. load must be safe to retry
+// and must not modify the returned byte slices.
 func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOptions, load func(ReadFunc) (T, error)) (value T, status CacheStatus, err error) {
 	defer func() { err = RedactError(err) }()
+	if binding, ok := boundInputs(ctx); ok {
+		return c.loadInputs(ctx, binding, client, opts, load)
+	}
+	return c.load(ctx, client, opts, load)
+}
+
+func (c Cache) load[T any](ctx context.Context, client *http.Client, opts LoadOptions, load func(ReadFunc) (T, error)) (value T, status CacheStatus, err error) {
 	if err := ctx.Err(); err != nil {
 		return value, status, err
 	}
-	if opts.MaxBytes <= 0 || opts.MaxBytes > 128<<20 {
+	if opts.MaxBytes <= 0 || opts.MaxBytes > MaxInputBytes {
 		return value, status, errors.New("resource group byte limit must be between 1 and 128 MiB")
 	}
 	refreshCtx := ctx

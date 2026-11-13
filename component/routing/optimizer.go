@@ -15,6 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"github.com/mohae/deepcopy"
@@ -183,12 +184,14 @@ func NewDatReaderOptimizer(ctx context.Context, locationFinder *assets.LocationF
 	}
 }
 
-func (o *DatReaderOptimizer) contextErr() error {
+func (o *DatReaderOptimizer) context() context.Context {
 	if o.ctx == nil {
-		return nil
+		return context.Background()
 	}
-	return o.ctx.Err()
+	return o.ctx
 }
+
+func (o *DatReaderOptimizer) contextErr() error { return o.context().Err() }
 
 func paramsFromSubnets(subnets []string) []*config_parser.Param {
 	params := make([]*config_parser.Param, 0, len(subnets))
@@ -202,7 +205,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := o.LocationFinder.GetLocationAsset(filename)
+	filePath, err := o.LocationFinder.GetLocationAssetContext(o.context(), filename)
 	if err != nil {
 		return nil, fmt.Errorf("read geosite %q: %w", filename, err)
 	}
@@ -211,7 +214,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	return o.cachedDatParams(filePath, code, "GeoSite", attr, func(data []byte) (params []*config_parser.Param, err error) {
 		geoSite := new(geodata.GeoSite)
 		if data == nil {
-			geoSite, err = geodata.UnmarshalGeoSite(filePath, code)
+			geoSite, err = geodata.UnmarshalGeoSiteContext(o.context(), filePath, code)
 		} else {
 			err = decodeDatEntry(data, geoSite, filePath, code, "GeoSite")
 		}
@@ -274,7 +277,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	if !strings.HasSuffix(filename, ".dat") {
 		filename += ".dat"
 	}
-	filePath, err := o.LocationFinder.GetLocationAsset(filename)
+	filePath, err := o.LocationFinder.GetLocationAssetContext(o.context(), filename)
 	if err != nil {
 		return nil, fmt.Errorf("read geoip %q: %w", filename, err)
 	}
@@ -282,7 +285,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	return o.cachedDatParams(filePath, code, "GeoIP", "", func(data []byte) (params []*config_parser.Param, err error) {
 		geoIp := new(geodata.GeoIP)
 		if data == nil {
-			geoIp, err = geodata.UnmarshalGeoIp(filePath, code)
+			geoIp, err = geodata.UnmarshalGeoIpContext(o.context(), filePath, code)
 		} else {
 			err = decodeDatEntry(data, geoIp, filePath, code, "GeoIP")
 		}
@@ -317,7 +320,7 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 		filename += ".mmdb"
 	}
 
-	filePath, err := o.LocationFinder.GetLocationAsset(filename)
+	filePath, err := o.LocationFinder.GetLocationAssetContext(o.context(), filename)
 	if err != nil {
 		return nil, fmt.Errorf("read mmdb %q: %w", filename, err)
 	}
@@ -335,7 +338,16 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 		}
 	}
 
-	db, err := maxminddb.Open(filePath)
+	var db *maxminddb.Reader
+	if resource.HasInputs(o.context()) {
+		data, readErr := assets.ReadFileContext(o.context(), filePath)
+		if readErr != nil {
+			return nil, readErr
+		}
+		db, err = maxminddb.OpenBytes(data)
+	} else {
+		db, err = maxminddb.Open(filePath)
+	}
 	if err != nil {
 		return nil, err
 	}

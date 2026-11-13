@@ -28,7 +28,11 @@ type Result struct {
 
 // Read reads one bounded resource without validating its content or caching it.
 // The caller supplies network routing and timeouts through ctx and client.
+// An explicit input context records this read or strictly replays its result.
 func Read(ctx context.Context, client *http.Client, source Source, opts ReadOptions) (Result, error) {
+	if binding, ok := boundInputs(ctx); ok {
+		return readInputResource(ctx, binding, client, source, opts)
+	}
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}

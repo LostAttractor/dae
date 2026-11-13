@@ -3,16 +3,19 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/assets"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"google.golang.org/protobuf/proto"
@@ -202,5 +205,130 @@ func BenchmarkDatParamsPreparation(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestDatOptimizerInputReplayAndFatalFailures(t *testing.T) {
+	for _, compatible := range []bool{false, true} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "geosite.dat")
+		writeDatFixture(t, path, &geodata.GeoSiteList{Entry: []*geodata.GeoSite{{CountryCode: "test", Domain: []*geodata.Domain{{Type: geodata.Domain_Full, Value: "accepted.test"}}}}})
+		if compatible {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append([]byte{0x10, 1}, data...), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx, inputs := resource.WithInputRecording(t.Context())
+		reader := NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{dir}))
+		if _, err := reader.loadGeoSite("geosite", "test"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		replay := NewDatReaderOptimizer(resource.WithInputReplay(t.Context(), inputs), assets.NewLocationFinder([]string{dir}))
+		got, err := replay.loadGeoSite("geosite", "test")
+		if err != nil || len(got) != 1 || got[0].Val != "accepted.test" {
+			t.Fatalf("compatible=%v replay changed dat: %v, %v", compatible, got, err)
+		}
+		missing := NewDatReaderOptimizer(resource.WithInputReplay(t.Context(), nil), assets.NewLocationFinder([]string{dir}))
+		called := false
+		_, err = missing.cachedDatParams(path, "test", "GeoSite", "", func([]byte) ([]*config_parser.Param, error) {
+			called = true
+			return nil, nil
+		})
+		if called || !errors.Is(err, resource.ErrInputReplay) {
+			t.Fatalf("fatal replay error invoked compatibility fallback: called=%v err=%v", called, err)
+		}
+	}
+}
+
+func TestDatOptimizersShareFrozenFileIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "geosite.dat")
+	writeDatFixture(t, path, &geodata.GeoSiteList{Entry: []*geodata.GeoSite{
+		{CountryCode: "one", Domain: []*geodata.Domain{{Type: geodata.Domain_Full, Value: "one.example"}}},
+		{CountryCode: "two", Domain: []*geodata.Domain{{Type: geodata.Domain_Full, Value: "two.example"}}},
+		{CountryCode: "padding", Domain: []*geodata.Domain{{Value: strings.Repeat("x", 8<<20)}}},
+	}})
+	record, inputs := resource.WithInputRecording(t.Context())
+	// A direct decoder and independent optimizers must share the same index.
+	if _, err := geodata.DecodeContext(record, path, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewDatReaderOptimizer(record, assets.NewLocationFinder([]string{dir})).loadGeoSite("geosite", "two"); err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := inputs.Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := resource.DecodeInputs(&encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	for name, ctx := range map[string]context.Context{"record": record, "replay": resource.WithInputReplay(t.Context(), saved)} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := geodata.DecodeContext(ctx, path, "one"); err != nil {
+				t.Fatal(err)
+			}
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for i := range 32 {
+				reader := NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{dir}))
+				code := []string{"one", "two"}[i%2]
+				for range 2 {
+					got, err := reader.loadGeoSite("geosite", code)
+					if err != nil || len(got) != 1 || got[0].Val != code+".example" {
+						t.Fatalf("new optimizer changed frozen entry: %v, %v", got, err)
+					}
+					got[0].Val = "caller-mutated"
+				}
+			}
+			runtime.ReadMemStats(&after)
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+				t.Fatalf("independent optimizers copied the 8 MiB file: %d bytes allocated", allocated)
+			}
+			var workers sync.WaitGroup
+			for i := range 16 {
+				workers.Go(func() {
+					reader := NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{dir}))
+					code := []string{"one", "two"}[i%2]
+					got, err := reader.loadGeoSite("geosite", code)
+					if err != nil || len(got) != 1 || got[0].Val != code+".example" {
+						t.Errorf("parallel optimizer changed entry: %v, %v", got, err)
+					}
+				})
+			}
+			workers.Wait()
+		})
+	}
+}
+
+func TestDatOptimizerCaptureLimitCannotFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.dat")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, resource.MaxInputBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := resource.WithInputRecording(t.Context())
+	reader := NewDatReaderOptimizer(ctx, assets.NewLocationFinder(nil))
+	called := false
+	_, err := reader.cachedDatParams(path, "test", "GeoSite", "", func([]byte) ([]*config_parser.Param, error) {
+		called = true
+		return nil, nil
+	})
+	if called || !errors.Is(err, resource.ErrInputRecording) {
+		t.Fatalf("capture limit invoked compatibility fallback: called=%v err=%v", called, err)
 	}
 }
