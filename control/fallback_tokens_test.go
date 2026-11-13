@@ -50,7 +50,7 @@ func TestFallbackTokensFollowTheirGeneration(t *testing.T) {
 	generation := netproxy.NewLease(netproxy.NewResourceRef())
 	network := common.NetworkTCP4.NetworkType()
 	value := func(update outbound.Connectivity, behavior consts.OutboundIndex) bpfOutboundConnectivity {
-		return core.outboundConnectivityValue(update, false, behavior)
+		return core.projectOutboundConnectivity(outboundConnectivityValue(update, false, behavior)).bpfOutboundConnectivity
 	}
 	unavailable := outbound.Connectivity{Network: network, Fallback: generation}
 	if value(outbound.Connectivity{Network: network}, consts.OutboundDirect).Fallback != 0 ||

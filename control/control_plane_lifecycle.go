@@ -15,9 +15,40 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// BindKernel consumes private kernel resources after userspace preparation.
+// No downloads or readers may still use the plane while bindings are installed.
+func (c *ControlPlane) BindKernel(preparation *ControlPlanePreparation) error {
+	core := c.core
+	core.lifecycleMu.Lock()
+	defer core.lifecycleMu.Unlock()
+	if core.closed.Err() != nil {
+		return net.ErrClosed
+	}
+	if core.bpf != nil {
+		return errors.New("control plane already has kernel bindings")
+	}
+	if c.settings == nil {
+		return errors.New("runtime settings are required for kernel installation")
+	}
+	bpf, isReload, err := preparation.take()
+	if err != nil {
+		return err
+	}
+	core.bindBPF(bpf, isReload)
+	c.planeTraffic = newPlaneTraffic(c.ctx, &bpf.tcpConnections, bpf.udpEndpoints)
+	c.routingGeneration, c.deviceRoutes = bpf.routingGeneration, bpf.deviceRoutes
+	if c.routingState != nil {
+		c.routingState.bpf = bpf
+	}
+	return nil
+}
+
 // PrepareKernel populates only this generation's private routing environment.
 // It is safe to discard a failed candidate while Runtime keeps serving traffic.
 func (c *ControlPlane) PrepareKernel() error {
+	if c.Runtime() == nil {
+		return errors.New("control plane has no runtime kernel bindings")
+	}
 	if c.kernelReady {
 		return nil
 	}
@@ -119,13 +150,20 @@ func (c *ControlPlane) restoreDomainRegistry() error {
 // Reload adopts memory and the predecessor's files; cold starts restore them.
 func (c *ControlPlane) SetDomainRegistryDir(dir string) { c.domainRegistryDir = dir }
 
-func (c *ControlPlane) Runtime() *Runtime { return c.core.bpf.Runtime }
+func (c *ControlPlane) Runtime() *Runtime {
+	if c.core.bpf == nil {
+		return nil
+	}
+	return c.core.bpf.Runtime
+}
 
 // StopAndAbortConnections interrupts traffic without waiting for peer EOF or
 // handlers to finish. Close must join control-plane users before freeing state.
 func (c *ControlPlane) StopAndAbortConnections() {
 	c.interruptTraffic()
-	c.udpEndpoints.closeAll()
+	if c.udpEndpoints != nil {
+		c.udpEndpoints.closeAll()
+	}
 }
 
 func (c *ControlPlane) interruptTraffic() {
@@ -141,12 +179,13 @@ func (c *ControlPlane) retireTraffic() error {
 	// Runtime's current plane while MITM drains.
 	var ingressErr error
 	c.stopSetups()
-	if c.abortConnections.Load() {
-		// StopAndAbortConnections performs an initial sweep. Repeat after the
-		// task drain to catch an endpoint published by an already-accepted task.
-		c.udpEndpoints.closeGeneration(c.routingGeneration)
-	} else {
-		c.udpEndpoints.removePending(c)
+	if c.udpEndpoints != nil {
+		if c.abortConnections.Load() {
+			// Repeat after draining tasks that may have published an endpoint.
+			c.udpEndpoints.closeGeneration(c.routingGeneration)
+		} else {
+			c.udpEndpoints.removePending(c)
+		}
 	}
 	if host := c.MITMHost(); host != nil {
 		host.StopWorkers()
@@ -156,7 +195,9 @@ func (c *ControlPlane) retireTraffic() error {
 		ingressErr = errors.Join(ingressErr, host.Close())
 	}
 	c.retiredHosts.Wait()
-	c.tcpConnections.waitForAbort()
+	if c.tcpConnections != nil {
+		c.tcpConnections.waitForAbort()
+	}
 	c.cancel()
 	return ingressErr
 }
@@ -176,6 +217,7 @@ func (c *ControlPlane) Close() (err error) {
 	}
 	err = errors.Join(err, c.cleanups.close())
 	err = errors.Join(err, c.core.closeLocked())
+	c.pendingMITM = nil
 	c.closeErr = err
 	c.closedDone.Store(true)
 	return err

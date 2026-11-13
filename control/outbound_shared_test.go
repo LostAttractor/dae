@@ -22,7 +22,7 @@ routing {
  dport(2) -> different_check
  fallback: automatic
 }`)
-	core := &controlPlaneCore{closed: t.Context()}
+	core := &controlPlaneCore{closed: t.Context(), outboundResources: &outbound.Resources{}}
 	builder, err := core.buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundBlock)
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 )
 
 func TestOutboundPruningKernelIntegration(t *testing.T) {
@@ -36,7 +37,7 @@ routing {
  policy { inactive { dport(22) -> unused
                      fallback: unused } }
 }`)
-	built, err := new(controlPlaneCore).buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
+	built, err := (&controlPlaneCore{outboundResources: &outbound.Resources{}}).buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
 	if err != nil {
 		t.Fatal(err)
 	}

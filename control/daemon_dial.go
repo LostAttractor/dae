@@ -14,22 +14,41 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-// Internal requests have the daemon's process identity and no client/interface.
-func daemonProcessIdentity() routingResult {
+// ProcessIdentity is a logical routing identity, not a kernel PID exemption.
+type ProcessIdentity struct {
+	PID  uint32
+	Name string
+}
+
+func CurrentProcessIdentity() ProcessIdentity {
 	name, err := os.ReadFile("/proc/self/comm")
 	if err != nil {
 		name = []byte(filepath.Base(os.Args[0]))
 	}
-	identity := routingResult{Pid: uint32(os.Getpid()), SourceOrigin: uint8(plugin.SourceLocal)}
-	copy(identity.Pname[:], strings.TrimSpace(string(name)))
+	return ProcessIdentity{PID: uint32(os.Getpid()), Name: strings.TrimSpace(string(name))}
+}
+
+func (p ProcessIdentity) routingResult() routingResult {
+	identity := routingResult{Pid: p.PID, SourceOrigin: uint8(plugin.SourceLocal)}
+	copy(identity.Pname[:], p.Name)
 	return identity
+}
+
+// Internal requests have no client/interface identity.
+func daemonProcessIdentity() routingResult { return CurrentProcessIdentity().routingResult() }
+
+func (c *ControlPlane) daemonIdentity() routingResult {
+	if c.processIdentity != nil {
+		return c.processIdentity.routingResult()
+	}
+	return daemonProcessIdentity()
 }
 
 // DNSResolverDialer uses the same destination, flow and routing decision as
 // daemon downloads, and the DNS transport's existing leases/accounting. Only
 // internal resolver traffic enters here; it publishes no client DNS evidence.
 func (c *ControlPlane) DNSResolverDialer() netutils.ResolverDialContext {
-	identity := daemonProcessIdentity()
+	identity := c.daemonIdentity()
 	return func(parent context.Context, network string, server netip.AddrPort) (net.Conn, error) {
 		if network != "udp" && network != "tcp" {
 			return nil, net.UnknownNetworkError(network)

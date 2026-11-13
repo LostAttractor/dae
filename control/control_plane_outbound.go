@@ -83,12 +83,6 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	for _, group := range b.outbounds {
 		b.releases = append(b.releases, group.Close)
 	}
-	var resources *outbound.Resources
-	if core.bpf != nil && core.bpf.Runtime != nil {
-		resources = &core.bpf.outboundResources
-	} else {
-		resources = &outbound.Resources{}
-	}
 	// Compile groups and all routing target references before assigning outbound
 	// IDs. Policyless groups remain compile-time templates unless routing uses
 	// them as an exact-one target.
@@ -101,7 +95,7 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	if err != nil {
 		return nil, fmt.Errorf("compile proxy groups: %w", err)
 	}
-	b.materializer = outbound.NewGroupMaterializer(b.compiler, resources, global)
+	b.materializer = outbound.NewGroupMaterializer(b.compiler, core.outboundResources, global)
 	b.validationOutbounds = maps.Clone(b.nameToID)
 	for _, name := range routingTargets {
 		if outbound.IsReservedTargetName(name) {

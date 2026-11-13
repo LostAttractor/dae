@@ -12,7 +12,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/fsnotify/fsnotify"
@@ -51,9 +50,6 @@ func setHostSysctl(name, path, value string) (previous string, changed bool, err
 	previous = strings.TrimSpace(string(current))
 	if previous == value {
 		return previous, false, nil
-	}
-	if sysctl != nil && sysctl.preparing.Load() {
-		return previous, false, fmt.Errorf("required sysctl %s changed; prepare it before replacing the executable", name)
 	}
 	if err := os.WriteFile(path, []byte(value), 0644); err != nil {
 		return previous, false, &os.PathError{Op: "write", Path: name, Err: err}
@@ -117,7 +113,6 @@ const SysctlPrefixPath = "/proc/sys/"
 var sysctl *SysctlManager
 
 type SysctlManager struct {
-	preparing    atomic.Bool
 	mux          sync.Mutex
 	watcher      *fsnotify.Watcher
 	expectations map[string]string

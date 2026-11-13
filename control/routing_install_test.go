@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -26,7 +27,7 @@ func TestRoutingInstallationDerivesSniffingFromProgram(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			conf := outboundUsageConfig(t, "global {}\nrouting { fallback: direct }")
 			conf.Global.DNSRetentionWindow = 0
-			core := &controlPlaneCore{closed: t.Context()}
+			core := &controlPlaneCore{closed: t.Context(), outboundResources: &outbound.Resources{}}
 			outbounds, err := core.buildOutbounds(t.Context(), nil, nil, &conf.Routing, &conf.Global, consts.OutboundBlock)
 			if err != nil {
 				t.Fatal(err)

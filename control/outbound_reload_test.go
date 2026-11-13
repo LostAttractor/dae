@@ -19,7 +19,7 @@ node { one: 'socks5://127.0.0.1:1080' two: 'socks5://127.0.0.1:1081' }
 group { stable { node(one) policy: selector } changed { node(one) policy: `+policy+` } }
 routing { dport(80) -> stable fallback: changed }`)
 		ctx, cancel := context.WithCancel(t.Context())
-		core := &controlPlaneCore{closed: ctx, bpf: &BPFState{Runtime: runtime}}
+		core := &controlPlaneCore{closed: ctx, outboundResources: &runtime.outboundResources}
 		builder, err := core.buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundBlock)
 		if err != nil {
 			cancel()

@@ -17,6 +17,9 @@ func newPlaneTraffic(parent context.Context, connections *tcpConnectionSet, endp
 
 func (c *planeTraffic) interruptSetups() {
 	c.abortConnections.Store(true)
+	if c.tcpConnections == nil {
+		return // Userspace preparation has no ingress tasks.
+	}
 	// Stop this generation's admission before aborting Runtime-owned sockets.
 	c.tcpConnections.abort()
 	c.cancelTCPSetups()
@@ -25,6 +28,9 @@ func (c *planeTraffic) interruptSetups() {
 
 func (c *planeTraffic) stopSetups() {
 	c.udpDraining.Store(true)
+	if c.tcpConnections == nil {
+		return
+	}
 	c.tcpConnections.stopAccepting()
 	c.cancelTCPSetups()
 	c.udpTaskPool.close()

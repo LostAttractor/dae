@@ -24,7 +24,7 @@ group { stable {
 } }
 routing { fallback: stable }`, async))
 		ctx, cancel := context.WithCancel(t.Context())
-		core := &controlPlaneCore{closed: ctx, bpf: &BPFState{Runtime: runtime}}
+		core := &controlPlaneCore{closed: ctx, outboundResources: &runtime.outboundResources}
 		builder, err := core.buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundBlock)
 		if err != nil {
 			cancel()

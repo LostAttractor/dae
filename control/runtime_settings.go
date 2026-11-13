@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/settings"
 	log "github.com/sirupsen/logrus"
 )
@@ -101,6 +102,15 @@ func (c *ControlPlane) clientMembershipChanges(current, next settings.Snapshot) 
 	return changes, affected
 }
 
+// PreparationSelectorHints copies only in-memory preferences for helper routing.
+// A successor still reads its own settings after the old writer has closed.
+func (c *ControlPlane) PreparationSelectorHints() map[string]*selector.Path {
+	if c.settings == nil {
+		return nil
+	}
+	return c.settings.Selections()
+}
+
 // Restore before checks/downloads, and once more after draining the old API on
 // reload. Missing references remain saved so a later reload can restore them.
 func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
@@ -111,7 +121,10 @@ func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
 		if !group.IsSelector() {
 			continue
 		}
-		saved := c.settings.Selection(group.Name)
+		saved := c.selectorHints[group.Name]
+		if c.settings != nil {
+			saved = c.settings.Selection(group.Name)
+		}
 		id, status := group.ResolveSelection(saved)
 		if reportMissing && saved != nil && status != "matched" {
 			log.WithFields(log.Fields{"group": group.Name, "path": saved.String(), "status": status}).Warn("Saved selector path unavailable; retaining preference and temporarily using the startup choice")
@@ -128,7 +141,10 @@ func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
 
 func (c *ControlPlane) restoreClientSets() error {
 	for _, name := range c.routingState.ClientSets() {
-		members := c.settings.Members(name)
+		var members [][6]byte
+		if c.settings != nil {
+			members = c.settings.Members(name)
+		}
 		if err := c.routingState.SetClientMembers(name, members, c.kernelReady); err != nil {
 			return err
 		}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
@@ -25,7 +26,9 @@ import (
 // ControlPlane composes generation-owned capabilities. Kernel resources keep
 // their separate publication and retirement boundary in controlPlaneCore.
 type ControlPlane struct {
-	core *controlPlaneCore
+	core            *controlPlaneCore
+	processIdentity *ProcessIdentity
+	selectorHints   map[string]*selector.Path
 	planeOutbounds
 	planeTraffic
 	planeHTTP
@@ -57,6 +60,7 @@ type ControlPlane struct {
 	hostReconcileCh           chan struct{}
 	hostReconcileDone         chan struct{}
 	autoConfigKernelParameter bool
+	skipConnectivityWait      bool
 
 	// Close is serialized by core.lifecycleMu, including asynchronous retirement.
 	cleanups   cleanupStack
@@ -85,6 +89,56 @@ func NewControlPlane(
 	conf *config.Config,
 	runtimeSettings *settings.Store,
 	loadMITM func(*http.Client) (PreparedMITM, error),
+) (*ControlPlane, error) {
+	if runtimeSettings == nil {
+		return nil, errors.New("runtime settings are required")
+	}
+	if preparation == nil || preparation.bpf == nil {
+		return nil, errors.New("control plane preparation has no BPF state")
+	}
+	resources := UserspaceResources{}
+	if runtime := preparation.bpf.Runtime; runtime != nil {
+		var err error
+		resources.Interfaces, err = runtime.Interfaces()
+		if err != nil {
+			return nil, err
+		}
+		resources.Outbounds = &runtime.outboundResources
+	}
+	plane, err := newControlPlane(startupCtx, resources, preparation, loadedRules, nodes, conf, runtimeSettings, loadMITM)
+	if err != nil {
+		return nil, err
+	}
+	if err := plane.BuildServices(startupCtx); err != nil {
+		return nil, errors.Join(err, plane.Close())
+	}
+	return plane, nil
+}
+
+// NewUserspaceControlPlane prepares the same routing and outbounds without
+// loading or attaching business BPF. The caller supplies socket identity
+// protection before construction and closes the plane after input preparation.
+func NewUserspaceControlPlane(
+	startupCtx context.Context,
+	resources UserspaceResources,
+	loadedRules *PreparedRules,
+	nodes []outbound.NodeDescriptor,
+	conf *config.Config,
+	runtimeSettings *settings.Store,
+	loadMITM func(*http.Client) (PreparedMITM, error),
+) (*ControlPlane, error) {
+	return newControlPlane(startupCtx, resources, nil, loadedRules, nodes, conf, runtimeSettings, loadMITM)
+}
+
+func newControlPlane(
+	startupCtx context.Context,
+	resources UserspaceResources,
+	preparation *ControlPlanePreparation,
+	loadedRules *PreparedRules,
+	nodes []outbound.NodeDescriptor,
+	conf *config.Config,
+	runtimeSettings *settings.Store,
+	loadMITM func(*http.Client) (PreparedMITM, error),
 ) (_ *ControlPlane, err error) {
 	global := new(conf.Global)
 	plane, err := configuredControlPlane(conf, global, runtimeSettings)
@@ -95,15 +149,21 @@ func NewControlPlane(
 		return nil, errors.New("prepared routing rules are required")
 	}
 	preparedRules := loadedRules.copy()
-	bpf, isReload, err := preparation.take()
+	core, err := newControlPlaneCore(resources)
 	if err != nil {
 		return nil, err
 	}
-	core, err := newControlPlaneCore(bpf, isReload)
-	if err != nil {
-		return nil, errors.Join(err, bpf.Close())
-	}
 	plane.initialize(core)
+	plane.skipConnectivityWait = resources.SkipConnectivityWait
+	if resources.ProcessIdentity != nil {
+		plane.processIdentity = new(*resources.ProcessIdentity)
+	}
+	if runtimeSettings == nil {
+		plane.selectorHints = make(map[string]*selector.Path, len(resources.SelectorHints))
+		for group, path := range resources.SelectorHints {
+			plane.selectorHints[group] = path.Clone()
+		}
+	}
 	defer func() {
 		if err != nil {
 			// A failed candidate has no admitted traffic. Cancel preparation work
@@ -112,13 +172,16 @@ func NewControlPlane(
 			err = errors.Join(err, plane.Close())
 		}
 	}()
-	// WAN egress recognizes dae by the owner of the sending socket, which is
-	// recorded when the socket is created or connected. Attach the hooks before
-	// outbounds and connectivity checks open sockets that live on, such as
-	// pooled mux sessions.
-	if len(plane.wanInterface) > 0 || plane.autoWan {
-		if err := core.setupSkPidMonitor(); err != nil {
-			return nil, fmt.Errorf("setup WAN socket identity monitor: %w", err)
+	if preparation != nil {
+		if err := plane.BindKernel(preparation); err != nil {
+			return nil, err
+		}
+		// Until the host owns these hooks independently, formal construction
+		// installs them before any potentially persistent outbound socket.
+		if len(plane.wanInterface) > 0 || plane.autoWan {
+			if err := core.setupSkPidMonitor(); err != nil {
+				return nil, fmt.Errorf("setup WAN socket identity monitor: %w", err)
+			}
 		}
 	}
 	outboundBuilder, err := core.buildOutbounds(startupCtx, nodes, conf.Group, preparedRules.routing, global, plane.noConnectivityOutbound)

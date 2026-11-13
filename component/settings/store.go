@@ -218,6 +218,17 @@ func (s *Store) Selection(group string) *selector.Path {
 	return s.state.Selectors[group].Clone()
 }
 
+// Selections copies all in-memory preferences, including currently unused groups.
+func (s *Store) Selections() map[string]*selector.Path {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	selections := make(map[string]*selector.Path, len(s.state.Selectors))
+	for group, path := range s.state.Selectors {
+		selections[group] = path.Clone()
+	}
+	return selections
+}
+
 func (s *Store) Members(name string) [][6]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

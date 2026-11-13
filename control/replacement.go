@@ -623,7 +623,6 @@ func (r *Runtime) CommitReplacement(ctx context.Context) (err error) {
 	if err := r.pruneUDPTimerPins(true); err != nil {
 		log.WithError(err).Warn("Retire unreferenced runtime timer pins")
 	}
-	sysctl.preparing.Store(false)
 	return nil
 }
 

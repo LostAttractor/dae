@@ -92,6 +92,40 @@ func TestSelectionCopiesAndFailedEdits(t *testing.T) {
 	}
 }
 
+func TestSelectionsCopyAllInMemoryPreferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-state.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pruned := savedPath("saved")
+	pruned.Mark = new(uint32(32))
+	for group, selection := range map[string]*selector.Path{"active": savedPath("current"), "pruned": pruned} {
+		if err := store.SetSelection(group, selection); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := store.Selections()
+	if len(snapshot) != 2 || !pruned.Matches(snapshot["pruned"], true) {
+		t.Fatalf("in-memory selection missing: %+v", snapshot)
+	}
+	snapshot["pruned"].Nodes[0].Name = "edited"
+	*snapshot["pruned"].Mark = 64
+	delete(snapshot, "active")
+	if !pruned.Matches(store.Selection("pruned"), true) || store.Selection("active") == nil {
+		t.Fatal("snapshot mutation changed the store")
+	}
+	if err := store.SetSelection("pruned", savedPath("newer")); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot["pruned"].Nodes[0].Name != "edited" || *snapshot["pruned"].Mark != 64 {
+		t.Fatal("store update changed a previously captured snapshot")
+	}
+}
+
 func TestStorePersistence(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	path := filepath.Join(dir, "runtime-state.json")
@@ -342,6 +376,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 			}
 			s.MITM(mac)
 			s.Selection("group-0")
+			s.Selections()
 			s.Members("set-0")
 		})
 	}

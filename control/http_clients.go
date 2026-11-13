@@ -90,7 +90,11 @@ func (c *ControlPlane) httpClientAllowed(ip netip.Addr, mac [6]byte) bool {
 }
 
 func (c *ControlPlane) restoreHTTPClients() error {
-	policy := c.mitmClients.Compile(c.settings.MITMOverrides())
+	var overrides map[[6]byte]bool
+	if c.settings != nil {
+		overrides = c.settings.MITMOverrides()
+	}
+	policy := c.mitmClients.Compile(overrides)
 	if c.kernelReady {
 		table, err := httpClientMap(policy)
 		if err != nil {

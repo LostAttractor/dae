@@ -26,9 +26,6 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 			return nil, fmt.Errorf("mitm client_source_address: %w", err)
 		}
 	}
-	if runtimeSettings == nil {
-		return nil, fmt.Errorf("runtime settings are required")
-	}
 	if err = common.ValidateSoMarkFromDae(global.SoMarkFromDae); err != nil {
 		return nil, err
 	}
@@ -89,9 +86,6 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 func (c *ControlPlane) initialize(core *controlPlaneCore) {
 	c.core = core
 	c.ctx, c.cancel = context.WithCancel(context.Background())
-	c.planeTraffic = newPlaneTraffic(c.ctx, &core.bpf.tcpConnections, core.bpf.udpEndpoints)
-	c.routingGeneration = core.bpf.routingGeneration
-	c.deviceRoutes = core.bpf.deviceRoutes
 	c.dnsRelay = newDNSRelay()
 	c.hostReconcileCh = make(chan struct{}, 1)
 	c.realDomainSet = bloom.NewWithEstimates(2048, 0.001)

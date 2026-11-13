@@ -41,6 +41,7 @@ type planeTraffic struct {
 
 type planeHTTP struct {
 	mitmHost         *mitm.Host
+	pendingMITM      *PreparedMITM
 	pluginStatus     api.PluginStatus
 	mitmPlan         plugin.Plan // Accepted, expanded routing inputs; immutable.
 	mitmMu           sync.RWMutex

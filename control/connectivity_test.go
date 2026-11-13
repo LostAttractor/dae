@@ -8,13 +8,19 @@ package control
 import (
 	"context"
 	"errors"
+	"net"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
@@ -157,7 +163,7 @@ func TestCandidateConnectivityUpdatesUserspaceWithoutBPF(t *testing.T) {
 	defer cancel()
 	core := &controlPlaneCore{
 		closed:                     closed,
-		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]outboundConnectivity),
 	}
 	var recoveries int
 	core.setOutboundRecoveryCallback(func() { recoveries++ })
@@ -203,7 +209,7 @@ func TestUnavailableTCPFamilyAdmitsNamesForItsPeer(t *testing.T) {
 	for _, override := range []bool{false, true} {
 		core := &controlPlaneCore{
 			closed:                     context.Background(),
-			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]outboundConnectivity),
 		}
 		id := uint8(consts.OutboundUserDefinedMin)
 		callback := core.outboundAliveChangeCallback(id, "proxy", false, override, consts.OutboundBlock)
@@ -240,7 +246,7 @@ func TestUnavailableGroupAdmission(t *testing.T) {
 	for _, whilePossible := range []bool{false, true} {
 		core := &controlPlaneCore{
 			closed:                     context.Background(),
-			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+			outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]outboundConnectivity),
 		}
 		id := uint8(consts.OutboundUserDefinedMin)
 		callback := core.outboundAliveChangeCallback(id, "proxy", whilePossible, false, consts.OutboundDirect)
@@ -279,7 +285,7 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 		bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 			OutboundConnectivityMap: m,
 		}}},
-		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity),
+		outboundConnectivityValues: make(map[bpfOutboundConnectivityQuery]outboundConnectivity),
 	}
 	id := uint8(consts.OutboundUserDefinedMin)
 	key := bpfOutboundConnectivityQuery{Outbound: id, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
@@ -328,5 +334,69 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 	}
 	if core.outboundConnectivityPublished || len(core.outboundConnectivityValues) != 1 {
 		t.Fatal("failed publication discarded prepared connectivity")
+	}
+}
+
+func TestSkipConnectivityWaitStartsProbesWithoutBlocking(t *testing.T) {
+	// Accept TCP connections without replying so SOCKS5 health probes stay pending.
+	stallingServer, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stallingServer.Close()
+	go func() {
+		for {
+			conn, err := stallingServer.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+		}
+	}()
+	sections, err := config_parser.Parse(`
+global { check_interval: 300s }
+node { stalled: 'socks5://` + stallingServer.Addr().String() + `' }
+group { proxy { policy: min_moving_avg probe_timeout: 10s selection_timeout: 10s } }
+routing { fallback: proxy }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := config.New(sections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []outbound.NodeDescriptor{{Name: conf.Node[0].Name, Link: conf.Node[0].Link, Required: true}}
+	started := time.Now()
+	plane, err := NewUserspaceControlPlane(
+		t.Context(),
+		UserspaceResources{SkipConnectivityWait: true},
+		&PreparedRules{rules: preparedRules{routing: &conf.Routing}},
+		nodes,
+		conf,
+		store,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plane.Close()
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("SkipConnectivityWait blocked startup for %v", elapsed)
+	}
+	key := bpfOutboundConnectivityQuery{
+		Outbound:  uint8(consts.OutboundUserDefinedMin),
+		L4proto:   unix.IPPROTO_TCP,
+		Ipversion: 4,
+	}
+	plane.core.outboundCallbackMu.Lock()
+	state := plane.core.outboundConnectivityValues[key].State
+	plane.core.outboundCallbackMu.Unlock()
+	if state != outboundConnectivityNoAliveUserspace {
+		t.Fatalf("pending probe state = %d, want userspace election (%d)", state, outboundConnectivityNoAliveUserspace)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/internal/routingabi"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -70,13 +71,24 @@ func admitsUnavailable(network common.NetworkIndex, electing bool, available fun
 	return electing || whilePossible || dialTargetOverride && peer.Valid() && available(peer)
 }
 
-// The kernel forwards a group's direct fallback itself. Its token ties those
-// flows to the group's fallback generation, so connection policies end them
-// with the generation's relays.
-func (c *controlPlaneCore) outboundConnectivityValue(update outbound.Connectivity, admitted bool, noConnectivityOutbound consts.OutboundIndex) bpfOutboundConnectivity {
-	value := bpfOutboundConnectivity{State: encodeOutboundConnectivity(update.Available, admitted, noConnectivityOutbound)}
+// Keep the logical lease until kernel publication can issue its token. The
+// embedded value is the last projection, also used for transactional rollback.
+type outboundConnectivity struct {
+	bpfOutboundConnectivity
+	lease *netproxy.Lease
+}
+
+func outboundConnectivityValue(update outbound.Connectivity, admitted bool, noConnectivityOutbound consts.OutboundIndex) outboundConnectivity {
+	value := outboundConnectivity{State: encodeOutboundConnectivity(update.Available, admitted, noConnectivityOutbound)}
+	if value.State == outboundConnectivityNoAliveDirect {
+		value.lease = update.Fallback
+	}
+	return value
+}
+
+func (c *controlPlaneCore) projectOutboundConnectivity(value outboundConnectivity) outboundConnectivity {
 	if value.State == outboundConnectivityNoAliveDirect && c.bpf != nil && c.bpf.Runtime != nil {
-		value.Fallback = c.bpf.fallbacks.token(update.Fallback)
+		value.Fallback = c.bpf.fallbacks.token(value.lease)
 	}
 	return value
 }
@@ -113,7 +125,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 		if peer := tcpPeer(index); peer.Valid() && latest[peer] != nil {
 			networks = append(networks, peer)
 		}
-		values := make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity, len(networks))
+		values := make(map[bpfOutboundConnectivityQuery]outboundConnectivity, len(networks))
 		for _, network := range networks {
 			key := bpfOutboundConnectivityQuery{
 				Outbound:  id,
@@ -121,7 +133,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 				Ipversion: network.NetworkType().IpVersion.ToIpVersion(),
 			}
 			admitted := admitsUnavailable(network, latest[network].Electing, available, whilePossible, dialTargetOverride)
-			values[key] = c.outboundConnectivityValue(*latest[network], admitted, noConnectivityOutbound)
+			values[key] = outboundConnectivityValue(*latest[network], admitted, noConnectivityOutbound)
 		}
 		wasAvailable := c.anyOutboundAvailable(index)
 		if err := c.writeOutboundConnectivity(values); err != nil {
@@ -138,19 +150,21 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(id uint8, outboundName st
 
 // writeOutboundConnectivity applies all values or none. Before publication it
 // only prepares them for publishOutboundConnectivity.
-func (c *controlPlaneCore) writeOutboundConnectivity(values map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity) error {
+func (c *controlPlaneCore) writeOutboundConnectivity(values map[bpfOutboundConnectivityQuery]outboundConnectivity) error {
 	if c.outboundConnectivityPublished {
 		var written []bpfOutboundConnectivityQuery
 		for key, value := range values {
+			value = c.projectOutboundConnectivity(value)
+			values[key] = value
 			if previous, ok := c.outboundConnectivityValues[key]; ok && previous == value {
 				continue
 			}
 			written = append(written, key)
-			if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+			if err := c.bpf.OutboundConnectivityMap.Update(key, value.bpfOutboundConnectivity, ebpf.UpdateAny); err != nil {
 				err = fmt.Errorf("protocol %d, IPv%d (state %d): %w", key.L4proto, key.Ipversion, value.State, err)
 				for _, key := range written {
 					if previous, ok := c.outboundConnectivityValues[key]; ok {
-						err = errors.Join(err, c.bpf.OutboundConnectivityMap.Update(key, previous, ebpf.UpdateAny))
+						err = errors.Join(err, c.bpf.OutboundConnectivityMap.Update(key, previous.bpfOutboundConnectivity, ebpf.UpdateAny))
 					}
 				}
 				return err
@@ -158,7 +172,7 @@ func (c *controlPlaneCore) writeOutboundConnectivity(values map[bpfOutboundConne
 		}
 	}
 	if c.outboundConnectivityValues == nil {
-		c.outboundConnectivityValues = make(map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity)
+		c.outboundConnectivityValues = make(map[bpfOutboundConnectivityQuery]outboundConnectivity)
 	}
 	maps.Copy(c.outboundConnectivityValues, values)
 	return nil
@@ -176,9 +190,11 @@ func (c *controlPlaneCore) publishOutboundConnectivity() error {
 		return nil
 	}
 	for key, value := range c.outboundConnectivityValues {
-		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+		value = c.projectOutboundConnectivity(value)
+		if err := c.bpf.OutboundConnectivityMap.Update(key, value.bpfOutboundConnectivity, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("publish outbound %d connectivity (protocol %d, IPv%d): %w", key.Outbound, key.L4proto, key.Ipversion, err)
 		}
+		c.outboundConnectivityValues[key] = value
 	}
 	c.outboundConnectivityPublished = true
 	return nil
@@ -307,6 +323,9 @@ func (c *ControlPlane) startConnectivity(startupCtx context.Context) error {
 	waiters, err := startConnectivityChecks(c.outbounds, c.outboundCheckAsync)
 	if err != nil {
 		return err
+	}
+	if c.skipConnectivityWait {
+		return nil
 	}
 	remaining := max(initialConnectivityTimeout-time.Since(connectivityStarted), 0)
 	if err := waitForStartupConnectivity(waiters, remaining, startupCtx.Done()); err != nil {

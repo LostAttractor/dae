@@ -10,14 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/network"
+	"github.com/daeuniverse/dae/component/outbound"
 )
 
 type controlPlaneCore struct {
@@ -42,11 +42,12 @@ type controlPlaneCore struct {
 	// bump/routing value, so user space and BPF stay in sync.
 	domainRegistry *DomainRegistry
 
-	closed          context.Context
-	close           context.CancelFunc
-	ifmgr           *network.InterfaceScope
-	ownedInterfaces *network.InterfaceManager
-	netmon          *network.HostNetworkMonitor
+	closed            context.Context
+	close             context.CancelFunc
+	ifmgr             *network.InterfaceScope
+	ownedInterfaces   *network.InterfaceManager
+	netmon            *network.HostNetworkMonitor
+	outboundResources *outbound.Resources
 
 	outboundCallbackMu sync.Mutex
 	outboundRecovery   func()
@@ -54,19 +55,31 @@ type controlPlaneCore struct {
 	// private BPF projection before its programs can be published. Values hold
 	// the latest projection, pending until then and mirrored afterwards.
 	outboundConnectivityPublished bool
-	outboundConnectivityValues    map[bpfOutboundConnectivityQuery]bpfOutboundConnectivity
+	outboundConnectivityValues    map[bpfOutboundConnectivityQuery]outboundConnectivity
 }
 
-func newControlPlaneCore(
-	bpf *BPFState,
-	isReload bool,
-) (*controlPlaneCore, error) {
+// UserspaceResources are borrowed for the lifetime of a prepared plane. Nil
+// fields give a standalone preparation its own interfaces and outbound state.
+type UserspaceResources struct {
+	Interfaces *network.InterfaceManager
+	Outbounds  *outbound.Resources
+	// ProcessIdentity keeps preparation routing independent of the helper's
+	// executable filename and real PID, which only the kernel exemption uses.
+	ProcessIdentity *ProcessIdentity
+	// Input-only preparation may borrow selector hints, never a disk baseline.
+	SelectorHints map[string]*selector.Path
+	// SkipConnectivityWait launches initial probes without blocking on startup
+	// convergence, avoiding multi-second delays while replacement ingress is blocked
+	// or when no remote plugin preparation needs routed outbounds.
+	SkipConnectivityWait bool
+}
+
+func newControlPlaneCore(resources UserspaceResources) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
-	var source, ownedInterfaces *network.InterfaceManager
+	source := resources.Interfaces
+	var ownedInterfaces *network.InterfaceManager
 	var err error
-	if bpf.Runtime != nil {
-		source, err = bpf.Runtime.Interfaces()
-	} else {
+	if source == nil {
 		source, err = network.NewInterfaceManager()
 		ownedInterfaces = source
 	}
@@ -84,37 +97,43 @@ func newControlPlaneCore(
 		}
 		return nil, err
 	}
+	if resources.Outbounds == nil {
+		resources.Outbounds = &outbound.Resources{}
+	}
 	core := &controlPlaneCore{
-		kernelLinks:     &bpf.kernelLinks,
-		bpf:             bpf,
-		isReload:        isReload,
-		ifmgr:           ifmgr,
-		ownedInterfaces: ownedInterfaces,
-		netmon:          netmon,
-		closed:          closed,
-		close:           toClose,
+		ifmgr:             ifmgr,
+		ownedInterfaces:   ownedInterfaces,
+		netmon:            netmon,
+		outboundResources: resources.Outbounds,
+		closed:            closed,
+		close:             toClose,
 	}
-	core.hostBinder = &hostBinder{kernelLinks: &bpf.kernelLinks, bpf: bpf, ifmgr: ifmgr, closed: closed, wanBindings: make(map[int]*wanBinding)}
-	// The kernel-side capacity is read back from the map itself so it can
-	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
-	capacity := 0
-	if bpf.DomainRoutingMap != nil {
-		capacity = int(bpf.DomainRoutingMap.MaxEntries())
-	}
-	core.domainRegistry = newDomainRegistry(
-		capacity,
-		consts.DefaultDNSRetentionWindow,
-		core.writeDomainBitmaps, core.deleteDomainBitmaps,
-	)
-	core.domainRegistry.kernel.batchUpdate = core.writeDomainBitmapBatch
-	if bpf.Runtime != nil {
-		core.domainRegistry.activityLag = tcpMonitorInterval
-	}
-	core.domainRegistry.Start()
+	core.domainRegistry = newDomainRegistry(0, consts.DefaultDNSRetentionWindow, nil, nil)
 	core.addCleanup(core.closeBpf)
 	core.addCleanup(core.tableReader.Close)
 	core.addCleanup(core.domainRegistry.Close)
 	return core, nil
+}
+
+// bindBPF takes ownership once; callers serialize installation and Close.
+func (c *controlPlaneCore) bindBPF(bpf *BPFState, isReload bool) {
+	c.outboundCallbackMu.Lock()
+	c.bpf, c.kernelLinks, c.isReload = bpf, &bpf.kernelLinks, isReload
+	c.outboundCallbackMu.Unlock()
+	c.hostBinder = &hostBinder{kernelLinks: &bpf.kernelLinks, bpf: bpf, ifmgr: c.ifmgr, closed: c.closed, wanBindings: make(map[int]*wanBinding)}
+	registry := c.domainRegistry
+	registry.mu.Lock()
+	// Read actual capacity; preparation never loads a business map for it.
+	if bpf.DomainRoutingMap != nil {
+		registry.kernel.max = int(bpf.DomainRoutingMap.MaxEntries())
+	}
+	registry.kernel.update, registry.kernel.remove = c.writeDomainBitmaps, c.deleteDomainBitmaps
+	registry.kernel.batchUpdate = c.writeDomainBitmapBatch
+	if bpf.Runtime != nil {
+		registry.activityLag = tcpMonitorInterval
+	}
+	registry.mu.Unlock()
+	registry.Start()
 }
 
 func (c *controlPlaneCore) addCleanup(cleanup func() error) {
@@ -132,6 +151,9 @@ func (c *controlPlaneCore) takeCleanups() []func() error {
 
 // closeBpf releases only this generation's descriptors.
 func (c *controlPlaneCore) closeBpf() error {
+	if c.bpf == nil {
+		return nil
+	}
 	return c.bpf.Close()
 }
 
@@ -176,55 +198,8 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 	return c.closeErr
 }
 
-var socketIdentityAttachTypes = [...]ebpf.AttachType{
-	ebpf.AttachCGroupInetSockCreate,
-	ebpf.AttachCGroupInet4Connect,
-	ebpf.AttachCGroupInet6Connect,
-	ebpf.AttachCGroupUDP4Sendmsg,
-	ebpf.AttachCGroupUDP6Sendmsg,
-}
-
 func (c *controlPlaneCore) setupSkPidMonitor() error {
-	c.kernelLinks.mu.Lock()
-	defer c.kernelLinks.mu.Unlock()
-	if len(c.pidLinks) != 0 {
-		return nil
-	}
-	/// Set-up SrcPidMapper to support pname routing.
-	cgroupPath, err := detectCgroupPath()
-	if err != nil {
-		return err
-	}
-	programs := []*ebpf.Program{c.bpf.TproxyWanCgSockCreate, c.bpf.TproxyWanCgConnect4, c.bpf.TproxyWanCgConnect6, c.bpf.TproxyWanCgSendmsg4, c.bpf.TproxyWanCgSendmsg6}
-	for i, prog := range programs {
-		var attached ciliumLink.Link
-		path := filepath.Join(c.pinPath, fmt.Sprintf("pid_%d", socketIdentityAttachTypes[i]))
-		if c.pinPath != "" && !c.privatePins {
-			attached, err = ciliumLink.LoadPinnedLink(path, nil)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("load socket identity hook: %w", err)
-			}
-		}
-		if attached != nil {
-			if err := attached.Update(prog); err != nil {
-				return errors.Join(fmt.Errorf("update socket identity hook: %w", err), attached.Close())
-			}
-		} else {
-			attached, err = ciliumLink.AttachCgroup(ciliumLink.CgroupOptions{
-				Path: cgroupPath, Attach: socketIdentityAttachTypes[i], Program: prog,
-			})
-			if err != nil {
-				return fmt.Errorf("AttachCgroup: %v: %w", prog.String(), err)
-			}
-			if c.pinPath != "" && !c.privatePins {
-				if err := attached.Pin(path); err != nil {
-					return errors.Join(fmt.Errorf("pin socket identity hook: %w", err), attached.Close())
-				}
-			}
-		}
-		c.pidLinks = append(c.pidLinks, attached)
-	}
-	return nil
+	return c.kernelLinks.attachSocketIdentity([]*ebpf.Program{c.bpf.TproxyWanCgSockCreate, c.bpf.TproxyWanCgConnect4, c.bpf.TproxyWanCgConnect6, c.bpf.TproxyWanCgSendmsg4, c.bpf.TproxyWanCgSendmsg6})
 }
 
 func (c *controlPlaneCore) setupExitHandler() (err error) {

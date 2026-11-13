@@ -87,6 +87,7 @@ type Runtime struct {
 	replacementDescriptors []ReplacementLink
 
 	kernelLinks       kernelLinks
+	socketIdentity    *socketIdentity
 	tcpConnections    tcpConnectionSet
 	udpEndpoints      *UdpEndpointPool
 	deviceRoutes      *deviceRoutes
@@ -458,7 +459,8 @@ func (r *Runtime) Close() error {
 			// Keep the timer pins the retained programs still reference.
 			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false))
 		}
-		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain), r.closeIdentityHooks())
+		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain), r.closeIdentityHooks(), r.socketIdentity.Close())
+		r.socketIdentity = nil
 		r.replacementLinks, r.replacementDescriptors = nil, nil
 		r.tcpMonitor.close()
 		for _, m := range r.shared {

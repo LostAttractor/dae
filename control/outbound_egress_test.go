@@ -30,7 +30,7 @@ routing {
  dport(3) -> v4
  fallback: fixed
 }`)
-	core := &controlPlaneCore{closed: t.Context()}
+	core := &controlPlaneCore{closed: t.Context(), outboundResources: &outbound.Resources{}}
 	b, err := core.buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundBlock)
 	if err != nil {
 		t.Fatal(err)

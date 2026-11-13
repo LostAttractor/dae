@@ -111,7 +111,7 @@ func (t *workerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 // Downloads originate in the daemon, before any client socket exists. Match
 // its process name and an unspecified source, never a fabricated LAN device.
 func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
-	process := daemonProcessIdentity()
+	process := c.daemonIdentity()
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		target, err := parseHTTPTarget(address)
 		if err != nil {

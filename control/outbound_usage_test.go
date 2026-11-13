@@ -51,13 +51,9 @@ func outboundUsagePlane(t *testing.T, conf *config.Config, store *settings.Store
 			t.Fatal(err)
 		}
 	}
-	preparation := &ControlPlanePreparation{
-		bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: NewRuntime()},
-		isReload: true,
-	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	plane, err := NewControlPlane(ctx, preparation, &PreparedRules{rules: preparedRules{routing: &conf.Routing}}, outboundUsageNodes(conf), conf, store, load)
+	plane, err := NewUserspaceControlPlane(ctx, UserspaceResources{}, &PreparedRules{rules: preparedRules{routing: &conf.Routing}}, outboundUsageNodes(conf), conf, store, load)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +188,7 @@ func TestUnusedOutboundDefinitionsStillValidated(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conf := outboundUsageConfig(t, "global {}\ngroup {\n"+tc.groups+"\n}\nrouting {\nfallback: direct\npolicy { inactive {\n"+tc.rule+"\nfallback: direct\n} }\n}")
-			built, err := new(controlPlaneCore).buildOutbounds(t.Context(), nil, conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
+			built, err := (&controlPlaneCore{outboundResources: &outbound.Resources{}}).buildOutbounds(t.Context(), nil, conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
 			if err == nil {
 				defer built.close()
 				_, err = compileTestRouting(preparedRules{routing: &conf.Routing, validationOutbounds: built.validationOutbounds}, built.nameToID, nil, nil)
@@ -237,13 +233,40 @@ routing {
 	if err := pruned.restoreRuntimeSettings(true); err != nil {
 		t.Fatal(err)
 	}
+	hints := pruned.PreparationSelectorHints()
+	if !first.settings.Selection("selected").Matches(hints["selected"], true) {
+		t.Fatal("preflight omitted a saved preference for the pruned selector")
+	}
 	if err := pruned.Close(); err != nil {
 		t.Fatal(err)
 	}
 	conf.Routing.Default = "enabled"
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	prefetch, err := NewUserspaceControlPlane(ctx, UserspaceResources{SelectorHints: hints},
+		&PreparedRules{rules: preparedRules{routing: &conf.Routing}}, outboundUsageNodes(conf), conf, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prefetch.Close() })
+	if len(prefetch.outbounds) != 3 || prefetch.outbounds[2].Selection() != saved {
+		t.Fatal("preflight did not restore the saved choice after pruning")
+	}
 	restored := outboundUsagePlane(t, conf, first.settings, nil)
 	if got := restored.Selectors()[0]; got.NodeID != saved || !got.Overridden {
 		t.Fatalf("saved choice not restored after pruning: %+v", got)
+	}
+	// Hints do not replace the settings read after the old writer finishes.
+	latest := selector.Nodes[0].ID
+	if _, err := restored.Select("selected", latest, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Close(); err != nil {
+		t.Fatal(err)
+	}
+	final := outboundUsagePlane(t, conf, first.settings, nil)
+	if final.Selectors()[0].NodeID != latest || prefetch.outbounds[2].Selection() != saved {
+		t.Fatal("prefetch hints replaced final settings or changed with later edits")
 	}
 }
 

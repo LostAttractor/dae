@@ -9,15 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
-	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/rlimit"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/internal/kernel"
 	"github.com/daeuniverse/dae/internal/routingabi"
 	log "github.com/sirupsen/logrus"
 )
@@ -62,39 +59,21 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if runtime.offline {
 		return nil, net.ErrClosed
 	}
-	if err := runtime.checkSocketMark(soMarkFromDae); err != nil {
-		return nil, err
-	}
-	if err := kernel.CheckVersion(); err != nil {
-		return nil, err
-	}
-	if err = rlimit.RemoveMemlock(); err != nil {
-		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
-	}
-
-	runtime.kernelOwned = true
-	InitDaeNetns()
-	if err = InitSysctlManager(); err != nil {
-		return nil, err
-	}
-	if runtime.staged {
-		sysctl.preparing.Store(true)
-		if err := GetDaeNetns().inheritSysctls(); err != nil {
-			return nil, fmt.Errorf("validate inherited namespace sysctls: %w", err)
-		}
-	}
-	if err = GetDaeNetns().Setup(); err != nil {
-		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
+	if err := runtime.prepareHost(ctx, soMarkFromDae); err != nil {
 		return nil, err
 	}
 
+	if err := runtime.prepareKernelPins(); err != nil {
+		return nil, err
+	}
 	pinPath := kernelPinPath()
-	if err := runtime.prepareKernelPinsAt(pinPath); err != nil {
-		return nil, err
+	mapReplacements := maps.Clone(runtime.shared)
+	if mapReplacements == nil {
+		mapReplacements = make(map[string]*ebpf.Map)
 	}
-	mapReplacements := runtime.shared
+	if runtime.socketIdentity != nil {
+		mapReplacements["socket_owner_map"] = runtime.socketIdentity.SocketOwner
+	}
 	var previousRoutes *ebpf.Map
 	if len(runtime.shared) == 0 && !runtime.kernelLinks.privatePins {
 		if err := runtime.pruneUDPTimerPins(false); err != nil {
@@ -106,7 +85,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		}
 		if previousRoutes != nil {
 			defer previousRoutes.Close()
-			mapReplacements = map[string]*ebpf.Map{"device_routes_map": previousRoutes}
+			mapReplacements["device_routes_map"] = previousRoutes
 		}
 	}
 
@@ -132,6 +111,12 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
+	// The full generation now owns the socket map descriptor; pinned links keep
+	// the early writers alive without retaining their preparation descriptors.
+	if err := runtime.socketIdentity.Close(); err != nil {
+		return nil, errors.Join(err, bpf.Close())
+	}
+	runtime.socketIdentity = nil
 	if err := bpf.RoutingGeneration.Set(bpf.routingGeneration); err != nil {
 		return nil, errors.Join(err, bpf.Close())
 	}
@@ -189,25 +174,4 @@ func (p *ControlPlanePreparation) Close() error {
 	bpf := p.bpf
 	p.bpf = nil
 	return bpf.Close()
-}
-
-func (r *Runtime) prepareKernelPinsAt(pinPath string) error {
-	if !r.IsReload() && !r.staged {
-		for _, name := range []string{replacementMarker, "guards"} {
-			if _, err := os.Stat(filepath.Join(pinPath, name)); err == nil {
-				r.recoveringGuards = true
-				break
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		}
-	}
-	r.kernelLinks.privatePins = r.kernelLinks.privatePins || r.staged || r.recoveringGuards
-	if err := os.MkdirAll(pinPath, 0755); err != nil {
-		return fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
-	}
-	if err := r.kernelLinks.preparePins(pinPath); err != nil {
-		return err
-	}
-	return nil
 }
