@@ -5,16 +5,19 @@ package mitm
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 func testDefinition(prepare func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error)) plugin.Definition {
-	return plugin.Definition{Configure: func(spec plugin.Spec) (plugin.Factory, error) {
+	return plugin.Definition{Resources: emptyPlanResources, Configure: func(spec plugin.Spec) (plugin.Factory, error) {
 		return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
 			return prepare(ctx, spec, services)
 		}, nil
@@ -59,7 +62,7 @@ func TestConfigureAggregatesErrorsWithoutPreparing(t *testing.T) {
 
 func TestConfigureParsesOnceAndDefersResources(t *testing.T) {
 	parsed, prepared := 0, 0
-	definitions := map[string]plugin.Definition{"fixture": {Configure: func(plugin.Spec) (plugin.Factory, error) {
+	definitions := map[string]plugin.Definition{"fixture": {Resources: emptyPlanResources, Configure: func(plugin.Spec) (plugin.Factory, error) {
 		parsed++
 		return func(context.Context, plugin.Services) (plugin.Plugin, error) {
 			prepared++
@@ -116,5 +119,62 @@ func TestHostInjectsSharedBodyBudgetAcrossReload(t *testing.T) {
 	}
 	if err := old.Close(); err != nil || budget.Status().Limit != 8192 {
 		t.Fatalf("host retirement leaked a budget limit: %v", err)
+	}
+}
+
+func emptyPlanResources(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+	return plugin.Resources{Plan: new(plugin.Plan)}, nil
+}
+
+func TestStaticHostPlanMatchesBuiltHost(t *testing.T) {
+	plan := plugin.Plan{
+		RequiredOutbounds: []string{"direct"},
+		DNS:               []plugin.DNSScope{{}},
+		Scopes:            []plugin.HTTPScope{{Scope: testScope("example.test"), PreserveRoute: true}},
+		EarlyRoutes:       []*config_parser.RoutingRule{{Outbound: config_parser.Function{Name: "block"}}},
+		Routes:            []*config_parser.RoutingRule{{Outbound: config_parser.Function{Name: "direct"}}},
+	}
+	factories := 0
+	definition := testDefinition(func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
+		factories++
+		return &testPlugin{plan: plan}, nil
+	})
+	definition.Resources = func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+		return plugin.Resources{Plan: &plan}, nil
+	}
+	configuration, err := pluginhost.Configure(map[string]plugin.Definition{"fixture": definition}, []plugin.Spec{{ID: "one", Type: "fixture"}, {ID: "two", Type: "fixture"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := configuration.LoadResources(t.Context(), plugin.Services{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(t.Context(), prepared, Options{}, plugin.Services{}, nil); err == nil || factories != 0 {
+		t.Fatal("missing authority was not rejected before factories")
+	}
+	if _, err := Build(t.Context(), prepared, Options{DisableHTTP: true, BufferMemoryLimit: -1}, plugin.Services{}, nil); err == nil || factories != 0 {
+		t.Fatal("invalid buffer limit was not rejected before factories")
+	}
+	for _, disabled := range []bool{false, true} {
+		options := Options{DisableHTTP: disabled, Authority: &localca.Authority{}}
+		static, err := PreparePlan(options, prepared.Plan())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(static.DNS) != 2 || len(static.EarlyRoutes) != 2 || len(static.Routes) != 2 || len(static.RequiredOutbounds) != 2 || (len(static.Scopes) == 0) != disabled {
+			t.Fatalf("static aggregation/filter changed non-HTTP effects: %+v", static)
+		}
+		host, err := Build(t.Context(), prepared, options, plugin.Services{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = host.Close() })
+		if !reflect.DeepEqual(static, host.Plan()) {
+			t.Fatalf("built host plan differs from static plan: %+v != %+v", host.Plan(), static)
+		}
+	}
+	if len(prepared.Plan().Scopes) != 2 || len(plan.Scopes) != 1 {
+		t.Fatal("HTTP filtering mutated prepared declarations")
 	}
 }

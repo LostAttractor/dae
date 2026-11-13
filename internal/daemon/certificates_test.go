@@ -55,6 +55,9 @@ func TestCertificatePreparationLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := prepared.Build(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		if enabled {
 			if prepared.Host == nil || prepared.Host.Authority() != first.Authority() {
 				t.Fatal("MITM did not borrow daemon CA")

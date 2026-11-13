@@ -105,7 +105,7 @@ func (a *application) reload(ctx context.Context, suspend, abort bool) (string, 
 // Automatic and API refreshes use the accepted configuration. Only reload reads
 // configuration edits from disk. All publication paths share this transaction.
 func (a *application) apply(ctx context.Context, next *config.Config, suspend, abort, dueOnly bool) (result string, err error) {
-	ctx, refresh := a.resources.Begin(ctx, next.Global.ResourceUpdateInterval, dueOnly)
+	loadCtx, refresh := a.resources.Begin(ctx, next.Global.ResourceUpdateInterval, dueOnly)
 	defer func() {
 		if count := refresh.Fallbacks(); err == nil && count > 0 {
 			result += fmt.Sprintf("; %d resource groups kept previous contents", count)
@@ -145,7 +145,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	inputs := a.inputs
 	if !suspend {
 		a.report("Refreshing configuration resources...")
-		inputs, err = loadControlInputs(ctx, next, true, a.geoDirs, a.options.ConfigFile, a.inputs)
+		inputs, err = loadControlInputs(loadCtx, next, true, a.geoDirs, a.options.ConfigFile, a.inputs)
 		if err != nil {
 			return "", fmt.Errorf("refresh resources: %w", err)
 		}
@@ -153,7 +153,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	previous := a.plane.MITMHost()
 	var prepared control.PreparedMITM
 	load := func(client *http.Client) (control.PreparedMITM, error) {
-		return loadMITM(ctx, next, certificates.Authority(), client, a.workerClient, plugins, previous, a.geoDirs, a.datapath)
+		return loadMITM(loadCtx, next, certificates.Authority(), client, a.workerClient, plugins, previous, a.geoDirs, a.datapath)
 	}
 	takePrepared := func(*http.Client) (control.PreparedMITM, error) {
 		host := prepared
@@ -202,7 +202,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if result, err := a.replaceServices(next, inputs, server, certificates, &prepared, pauseAPI, observability); result != "" || err != nil {
+		if result, err := a.replaceServices(ctx, next, inputs, server, certificates, &prepared, pauseAPI, observability); result != "" || err != nil {
 			if err == nil {
 				refresh.Commit()
 			}
@@ -235,9 +235,12 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 
 // replaceServices returns an empty result when changed plugin capture rules
 // require a new control plane. Otherwise it commits the in-place service update.
-func (a *application) replaceServices(next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func(), observability *observabilityUpdate) (string, error) {
+func (a *application) replaceServices(ctx context.Context, next *config.Config, inputs *controlInputs, server netip.AddrPort, certificates *certificates, prepared *control.PreparedMITM, pauseAPI func(), observability *observabilityUpdate) (string, error) {
 	if !a.plane.CanReplaceMITM(*prepared) {
 		return "", nil
+	}
+	if err := prepared.Build(ctx); err != nil {
+		return "", err
 	}
 	unchanged := a.plane.MITMHost().SameRuntime(prepared.Host)
 	if !unchanged || a.certificates != certificates || a.conf.Global.APIKey != next.Global.APIKey {

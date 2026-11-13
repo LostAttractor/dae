@@ -36,7 +36,11 @@ type Instance struct {
 }
 
 func Adopt(id, typ string, implementation plugin.Plugin) *Instance {
-	return &Instance{ID: id, Type: typ, Plugin: implementation, Plan: implementation.Plan(), refs: 1,
+	return adopt(id, typ, implementation, implementation.Plan())
+}
+
+func adopt(id, typ string, implementation plugin.Plugin, plan plugin.Plan) *Instance {
+	return &Instance{ID: id, Type: typ, Plugin: implementation, Plan: plan, refs: 1,
 		logger: log.WithField("plugin_instance", id)}
 }
 

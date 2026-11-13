@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 
 	"github.com/daeuniverse/dae/common"
@@ -64,28 +65,21 @@ func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Autho
 	var err error
 
 	options := mitm.Options{DisableHTTP: !m.Enabled, BufferMemoryLimit: m.BufferMemoryLimit, Authority: authority, HTTPClient: background, Logger: log.NewEntry(log.StandardLogger()), Metrics: &pluginMetrics}
+	var diagnosticPlan plugin.Plan
+	var targets [2]netip.Addr
+	var addresses []net.Addr
 	if authority != nil && conf.Global.APIPort != 0 {
-		targets, err := mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6)
+		targets, err = mitmverify.ParseTargets(conf.Global.APIMITMTestIPv4, conf.Global.APIMITMTestIPv6)
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}
-		addresses, err := net.InterfaceAddrs()
+		addresses, err = net.InterfaceAddrs()
 		if err != nil {
 			return control.PreparedMITM{}, err
 		}
-		diagnostic, err := mitmverify.New(authority.Fingerprint(), targets, addresses)
+		diagnosticPlan, err = mitmverify.PreparePlan(targets, addresses)
 		if err != nil {
 			return control.PreparedMITM{}, err
-		}
-		for _, instance := range previous.Instances() {
-			if service, ok := instance.Plugin.(*mitmverify.Service); ok && service.SameConfiguration(diagnostic) {
-				options.Diagnostic = instance
-				break
-			}
-		}
-		if options.Diagnostic == nil {
-			options.Diagnostic = pluginhost.Adopt(mitmverify.InstanceID, "mitm-test", diagnostic)
-			defer options.Diagnostic.Release()
 		}
 	}
 
@@ -101,9 +95,40 @@ func loadMITM(ctx context.Context, conf *config.Config, authority *localca.Autho
 	if conf.Global.ResourceCache {
 		services.ResourceCacheDir = filepath.Join(base, "resources")
 	}
-	host, err := mitm.Load(ctx, plugins, options, services, previous)
+	resources, err := plugins.LoadResources(ctx, services)
 	if err != nil {
 		return control.PreparedMITM{}, err
 	}
-	return control.PrepareMITM(ctx, host, geoDirs)
+	plan, err := mitm.PreparePlan(options, diagnosticPlan, resources.Plan())
+	if err != nil {
+		return control.PreparedMITM{}, err
+	}
+	prepared, err := control.PrepareMITMPlan(ctx, plan, geoDirs)
+	if err != nil {
+		return control.PreparedMITM{}, err
+	}
+	// The preparation client is joined before final routing is installed. Live
+	// factories receive no download transport or expired resource-load context.
+	services.PrepareClient = nil
+	prepared.BuildHost = func(liveCtx context.Context) (*mitm.Host, error) {
+		options := options
+		if len(diagnosticPlan.Scopes) != 0 {
+			diagnostic, err := mitmverify.New(authority.Fingerprint(), targets, addresses)
+			if err != nil {
+				return nil, err
+			}
+			for _, instance := range previous.Instances() {
+				if service, ok := instance.Plugin.(*mitmverify.Service); ok && service.SameConfiguration(diagnostic) {
+					options.Diagnostic = instance
+					break
+				}
+			}
+			if options.Diagnostic == nil {
+				options.Diagnostic = pluginhost.Adopt(mitmverify.InstanceID, "mitm-test", diagnostic)
+				defer options.Diagnostic.Release()
+			}
+		}
+		return mitm.Build(liveCtx, resources, options, services, previous)
+	}
+	return prepared, nil
 }

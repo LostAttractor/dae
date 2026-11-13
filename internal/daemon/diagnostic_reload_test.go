@@ -41,6 +41,9 @@ func TestReloadRetainsDiagnosticAndDNSCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := prepared.Build(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		t.Cleanup(func() { prepared.Host.Close() })
 		return prepared.Host
 	}

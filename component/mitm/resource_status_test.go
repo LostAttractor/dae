@@ -23,7 +23,7 @@ func TestReusedPluginPublishesOnlyAcceptedResourceStatus(t *testing.T) {
 			return func(context.Context, plugin.Services) (plugin.Plugin, error) { return p, nil }, nil
 		},
 		Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
-			return plugin.Resources{Key: "same-content", Value: value}, nil
+			return plugin.Resources{Key: "same-content", Value: value, Plan: new(plugin.Plan)}, nil
 		},
 	}
 	configuration, err := pluginhost.Configure(map[string]plugin.Definition{"fixture": definition}, []plugin.Spec{{ID: "fixture", Type: "fixture"}})

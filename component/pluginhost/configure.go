@@ -100,9 +100,89 @@ func (c *Configuration) Preflight(ctx context.Context) error {
 	return nil
 }
 
-// Prepare refreshes resources and borrows unchanged instances. On success the
-// caller owns one reference per result; errors release only candidate references.
-func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, previous []*Instance) (instances []PreparedInstance, err error) {
+// PreparedResources contains immutable, process-local inputs, not runtime state
+// or loading contexts. It can build multiple candidates with their own services.
+type PreparedResources struct {
+	configuration *Configuration
+	resources     []plugin.Resources
+}
+
+// Plan returns the complete static declaration without constructing instances.
+func (p *PreparedResources) Plan() plugin.Plan {
+	if p == nil {
+		return plugin.Plan{}
+	}
+	plans := make([]plugin.Plan, len(p.resources))
+	for i, resource := range p.resources {
+		plans[i] = *resource.Plan
+	}
+	return plugin.MergePlans(plans...)
+}
+
+func instanceServices(services plugin.Services, spec plugin.Spec) (plugin.Services, error) {
+	if services.Logger == nil {
+		services.Logger = log.NewEntry(log.StandardLogger())
+	}
+	services.Logger = services.Logger.WithField("plugin_instance", spec.ID)
+	var err error
+	services.SharedStates, err = scopeStates(services.SharedStates, services.BaseDir, spec)
+	if err != nil {
+		return plugin.Services{}, fmt.Errorf("plugins.%s shared states: %w", spec.ID, err)
+	}
+	return services, nil
+}
+
+// LoadResources refreshes and validates all static declarations concurrently.
+// No factory runs; failed loads cancel and join all admitted resource work.
+func (c *Configuration) LoadResources(ctx context.Context, services plugin.Services) (*PreparedResources, error) {
+	if c == nil {
+		return &PreparedResources{}, nil
+	}
+	prepared := &PreparedResources{configuration: c, resources: make([]plugin.Resources, len(c.instances))}
+	group, loadCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrentResourceLoads)
+	for i, configured := range c.instances {
+		group.Go(func() error {
+			if err := loadCtx.Err(); err != nil {
+				return err
+			}
+			if configured.resources == nil {
+				return fmt.Errorf("plugins.%s: static Plan declaration is required; plugin must implement Resources", configured.spec.ID)
+			}
+			local, err := instanceServices(services, configured.spec)
+			if err != nil {
+				return err
+			}
+			resource, err := configured.resources(loadCtx, configured.spec, local)
+			if err != nil {
+				return fmt.Errorf("plugins.%s resources: %w", configured.spec.ID, err)
+			}
+			if resource.Plan == nil {
+				return fmt.Errorf("plugins.%s: Resources returned no static Plan declaration", configured.spec.ID)
+			}
+			prepared.resources[i] = resource
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return prepared, nil
+}
+
+// Prepare composes resource loading and instance construction for ordinary reload.
+func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, previous []*Instance) ([]PreparedInstance, error) {
+	prepared, err := c.LoadResources(ctx, services)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.BuildInstances(ctx, services, previous)
+}
+
+// BuildInstances borrows unchanged instances or builds in declaration order using
+// the caller's live context and services, never the resource group's context.
+// The caller owns one reference per result; errors release candidate references.
+func (p *PreparedResources) BuildInstances(ctx context.Context, services plugin.Services, previous []*Instance) (instances []PreparedInstance, err error) {
 	defer func() {
 		if err != nil {
 			for _, instance := range instances {
@@ -111,54 +191,23 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 			instances = nil
 		}
 	}()
-	if c == nil {
+	if p == nil || p.configuration == nil {
 		return nil, nil
 	}
-	locals := make([]plugin.Services, len(c.instances))
-	resources := make([]plugin.Resources, len(c.instances))
-	group, loadCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maxConcurrentResourceLoads)
-	for i, configured := range c.instances {
-		local := services
-		if local.Logger == nil {
-			local.Logger = log.NewEntry(log.StandardLogger())
-		}
-		local.Logger = local.Logger.WithField("plugin_instance", configured.spec.ID)
-		local.SharedStates, err = scopeStates(services.SharedStates, local.BaseDir, configured.spec)
-		if err != nil {
-			// Join any resource loads already admitted before returning.
-			return nil, errors.Join(fmt.Errorf("plugins.%s shared states: %w", configured.spec.ID, err), group.Wait())
-		}
-		locals[i] = local
-		if configured.resources != nil {
-			group.Go(func() error {
-				if err := loadCtx.Err(); err != nil {
-					return err
-				}
-				var err error
-				resources[i], err = configured.resources(loadCtx, configured.spec, local)
-				if err != nil {
-					return fmt.Errorf("plugins.%s resources: %w", configured.spec.ID, err)
-				}
-				return nil
-			})
-		}
-	}
-	if err = group.Wait(); err != nil {
-		return nil, err
-	}
-	// Factories keep their original context and declaration order. The resource
-	// group's context expires after Wait and must not own plugin runtime state.
 	old := make(map[string]*Instance, len(previous))
 	for _, instance := range previous {
 		old[instance.ID] = instance
 	}
-	for i, configured := range c.instances {
+	for i, configured := range p.configuration.instances {
 		if err = ctx.Err(); err != nil {
 			return instances, err
 		}
 		spec := configured.spec
-		local, resource := locals[i], resources[i]
+		resource := p.resources[i]
+		local, localErr := instanceServices(services, spec)
+		if localErr != nil {
+			return instances, localErr
+		}
 		configuration := resource.Config
 		if configuration == nil {
 			configuration = spec.Config
@@ -184,7 +233,7 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		if implementation == nil {
 			return instances, fmt.Errorf("plugins.%s: factory returned a nil plugin", spec.ID)
 		}
-		instance := Adopt(spec.ID, spec.Type, implementation)
+		instance := adopt(spec.ID, spec.Type, implementation, *resource.Plan)
 		instance.input, instance.Metrics, instance.logger = input, registry, local.Logger
 		instances = append(instances, PreparedInstance{instance, resource.Value})
 	}

@@ -3,10 +3,12 @@
 package dnscache
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -37,5 +39,31 @@ func TestCacheSettingsDefaultsAndListForms(t *testing.T) {
 		if err != nil || conf.Size != 32768 || conf.MemoryLimit != 67108864 || fixed["example.test."] != 60 {
 			t.Fatalf("defaults/list syntax changed: %+v, %v, %v", conf, fixed, err)
 		}
+	}
+}
+
+func TestCacheStaticPlanMatchesInstance(t *testing.T) {
+	sections, err := config_parser.Parse("cache {}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := pluginhost.Configure(map[string]plugin.Definition{"cache": Plugin}, []plugin.Spec{{ID: "cache", Type: "cache", Config: sections[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := configuration.LoadResources(t.Context(), plugin.Services{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prepared.Plan(), plugin.Plan{DNS: []plugin.DNSScope{{}}}) {
+		t.Fatalf("unexpected static DNS cache plan: %+v", prepared.Plan())
+	}
+	instances, err := prepared.BuildInstances(t.Context(), plugin.Services{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instances[0].Release()
+	if !reflect.DeepEqual(prepared.Plan(), instances[0].Plugin.Plan()) {
+		t.Fatal("static cache plan differs from live plan")
 	}
 }

@@ -139,7 +139,7 @@ func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Ser
 		}
 		digest.Write([]byte{0})
 	}
-	return plugin.Resources{Config: conf, Key: hex.EncodeToString(digest.Sum(nil)), Value: expanded}, nil
+	return plugin.Resources{Config: conf, Key: hex.EncodeToString(digest.Sum(nil)), Value: expanded, Plan: new(dnsPlan())}, nil
 }
 
 func expandRules(ctx context.Context, conf policy.Config, baseDir string) (policy.Config, error) {
@@ -204,7 +204,8 @@ func (r *Router) Close() (err error) {
 	return err
 }
 
-func (*Router) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func dnsPlan() plugin.Plan        { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func (*Router) Plan() plugin.Plan { return dnsPlan() }
 
 func (r *Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, servers []string) (_ *plugin.DNSResponse, err error) {
 	defer func(parent context.Context, started time.Time) {

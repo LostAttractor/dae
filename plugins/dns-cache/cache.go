@@ -19,7 +19,9 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-var Plugin = plugin.Definition{Configure: Configure}
+var Plugin = plugin.Definition{Configure: Configure, Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+	return plugin.Resources{Plan: new(dnsPlan())}, nil
+}}
 
 type settings struct {
 	Size        int
@@ -76,7 +78,8 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 	return conf, fixed, nil
 }
 
-func (*Cache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func dnsPlan() plugin.Plan       { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
+func (*Cache) Plan() plugin.Plan { return dnsPlan() }
 
 func cacheKey(request *plugin.DNSExchange) (key, bool) {
 	query, ok := queryKey(request)

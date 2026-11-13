@@ -279,7 +279,7 @@ func TestReloadReusesInstancesWorkersAndMetrics(t *testing.T) {
 		if versions[spec.ID] == "error" {
 			return plugin.Resources{}, errors.New("refresh failed")
 		}
-		return plugin.Resources{Key: versions[spec.ID]}, nil
+		return plugin.Resources{Key: versions[spec.ID], Plan: new(plugin.Plan)}, nil
 	}
 	load := func(previous *Host, wantError bool) *Host {
 		t.Helper()

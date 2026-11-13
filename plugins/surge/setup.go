@@ -132,6 +132,10 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 		}
 		status.Modules[i] = module.Status()
 	}
+	modules, err = prepareModuleScopes(modules)
+	if err != nil {
+		return nil, err
+	}
 	logger.WithFields(log.Fields{"modules": len(modules), "duration": time.Since(started)}).Debug("Loaded Surge modules")
 	return modules, nil
 }
@@ -174,7 +178,7 @@ func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Ser
 	for _, module := range modules {
 		key.WriteString(module.contentKey)
 	}
-	return plugin.Resources{Config: conf, Key: key.String(), Value: modules}, nil
+	return plugin.Resources{Config: conf, Key: key.String(), Value: modules, Plan: new(modulePlan(conf.HTTPPolicies, modules))}, nil
 }
 
 func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (*Engine, error) {

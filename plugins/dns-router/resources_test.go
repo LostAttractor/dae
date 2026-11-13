@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/daeuniverse/dae/component/network"
@@ -45,11 +46,21 @@ func TestReloadRefreshesGeodata(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		instances, err := conf.Prepare(t.Context(), services, previous)
+		prepared, err := conf.LoadResources(t.Context(), services)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(prepared.Plan(), plugin.Plan{DNS: []plugin.DNSScope{{}}}) {
+			t.Fatalf("unexpected static router plan: %+v", prepared.Plan())
+		}
+		instances, err := prepared.BuildInstances(t.Context(), services, previous)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { instances[0].Release() })
+		if !reflect.DeepEqual(prepared.Plan(), instances[0].Plugin.Plan()) {
+			t.Fatal("static router plan differs from live plan")
+		}
 		return instances[0]
 	}
 	rejects := func(instance pluginhost.PreparedInstance, domain string) bool {

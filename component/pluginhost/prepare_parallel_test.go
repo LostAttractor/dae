@@ -31,7 +31,7 @@ func TestPrepareParallelResourcesPreserveFactoryOrderAndContext(t *testing.T) {
 			if services.Logger.Data["plugin_instance"] != spec.ID {
 				return plugin.Resources{}, fmt.Errorf("wrong instance logger")
 			}
-			return plugin.Resources{Value: spec.ID}, nil
+			return plugin.Resources{Value: spec.ID, Plan: new(plugin.Plan)}, nil
 		},
 		Configure: func(spec plugin.Spec) (plugin.Factory, error) {
 			return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
@@ -132,9 +132,9 @@ func TestPrepareFactoryFailureReleasesCandidateReferences(t *testing.T) {
 	fresh := new(interfaceSourcePlugin)
 	failure := errors.New("factory failed")
 	configuration := &Configuration{instances: []configuredPlugin{
-		{spec: plugin.Spec{ID: "shared", Type: "fixture"}},
-		{spec: plugin.Spec{ID: "new"}, factory: func(context.Context, plugin.Services) (plugin.Plugin, error) { return fresh, nil }},
-		{spec: plugin.Spec{ID: "failure"}, factory: func(context.Context, plugin.Services) (plugin.Plugin, error) { return nil, failure }},
+		{spec: plugin.Spec{ID: "shared", Type: "fixture"}, resources: emptyPlanResources},
+		{spec: plugin.Spec{ID: "new"}, resources: emptyPlanResources, factory: func(context.Context, plugin.Services) (plugin.Plugin, error) { return fresh, nil }},
+		{spec: plugin.Spec{ID: "failure"}, resources: emptyPlanResources, factory: func(context.Context, plugin.Services) (plugin.Plugin, error) { return nil, failure }},
 	}}
 	existing.input.config = configuration.instances[0].spec.Config
 	instances, err := configuration.Prepare(t.Context(), plugin.Services{}, []*Instance{existing})
@@ -146,5 +146,35 @@ func TestPrepareFactoryFailureReleasesCandidateReferences(t *testing.T) {
 	}
 	if err := existing.Release(); err != nil || !shared.closed {
 		t.Fatal("candidate leaked shared reference")
+	}
+}
+
+func TestLoadResourcesCancellationJoinsBeforeReturning(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	entered, exited := make(chan struct{}), make(chan struct{})
+	configuration := &Configuration{instances: []configuredPlugin{{
+		spec: plugin.Spec{ID: "waiting"},
+		resources: func(ctx context.Context, _ plugin.Spec, _ plugin.Services) (plugin.Resources, error) {
+			close(entered)
+			<-ctx.Done()
+			defer close(exited)
+			return plugin.Resources{}, ctx.Err()
+		},
+	}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := configuration.LoadResources(ctx, plugin.Services{})
+		done <- err
+	}()
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("LoadResources = %v", err)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("LoadResources returned before its canceled load exited")
 	}
 }

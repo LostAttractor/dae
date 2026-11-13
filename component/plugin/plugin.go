@@ -62,6 +62,20 @@ type Plan struct {
 	EarlyRoutes, Routes []*config_parser.RoutingRule
 }
 
+// MergePlans preserves declaration order without modifying its read-only inputs.
+func MergePlans(plans ...Plan) Plan {
+	var merged Plan
+	for _, plan := range plans {
+		merged.RequiredOutbounds = append(merged.RequiredOutbounds, plan.RequiredOutbounds...)
+		merged.DNS = append(merged.DNS, plan.DNS...)
+		merged.Scopes = append(merged.Scopes, plan.Scopes...)
+		merged.Destinations = append(merged.Destinations, plan.Destinations...)
+		merged.EarlyRoutes = append(merged.EarlyRoutes, plan.EarlyRoutes...)
+		merged.Routes = append(merged.Routes, plan.Routes...)
+	}
+	return merged
+}
+
 // HTTPScope couples an interception scope with its routing effect. Requests
 // are processed before routing unless the plugin declares that it preserves
 // the target and cannot answer locally. Effects cannot expand the scope.
@@ -146,8 +160,8 @@ type Services struct {
 	Metrics prometheus.Registerer
 }
 
-// Factory prepares resources without starting workers. On error it must release
-// its own partial state; on success the host takes ownership of the plugin.
+// Factory constructs an instance without starting plugin workers. On error it
+// must release its partial state; on success the host takes ownership.
 type Factory func(context.Context, Services) (Plugin, error)
 
 // Resources identifies a complete, validated set of external inputs. Key must
@@ -159,6 +173,9 @@ type Resources struct {
 	Config any
 	Key    string
 	Value  any
+	// Plan declares all effects before Factory runs. Nil is a missing declaration;
+	// plugins without effects must return an explicit empty plan.
+	Plan *Plan
 }
 
 // ResourceObserver accepts refreshed metadata after its candidate is published,

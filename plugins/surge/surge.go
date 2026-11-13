@@ -51,19 +51,32 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 	return newEngine(context.Background(), o)
 }
 
-func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
-	o.Modules = slices.Clone(o.Modules)
-	for i, module := range o.Modules {
+func prepareModuleScopes(modules []*Module) ([]*Module, error) {
+	prepared := slices.Clone(modules)
+	for i, module := range modules {
 		if module.regexRules() > maxModuleRegexRules {
 			return nil, fmt.Errorf("surge: module exceeds %d regular expression rules", maxModuleRegexRules)
+		}
+		if module.scope != nil {
+			continue
 		}
 		scope, err := moduleScope(module.Hostnames)
 		if err != nil {
 			return nil, err
 		}
-		prepared := *module
-		prepared.scope = &scope
-		o.Modules[i] = &prepared
+		copy := *module
+		copy.scope = &scope
+		prepared[i] = &copy
+	}
+	return prepared, nil
+}
+
+func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
+	o.Modules, err = prepareModuleScopes(o.Modules)
+	if err != nil {
+		return nil, err
+	}
+	for _, module := range o.Modules {
 		if len(module.Scripts)+len(module.TaskScripts) != 0 && o.Runtime == nil {
 			return nil, errors.New("surge: scripts require a JavaScript runtime")
 		}
@@ -156,8 +169,12 @@ func (e *Engine) forConnection(host string, port uint16) *Engine {
 // Plan exports one complete compatibility engine as one host plugin. Modules
 // remain inside this engine, preserving their per-direction first-script rule.
 func (e *Engine) Plan() plugin.Plan {
-	plan := plugin.Plan{RequiredOutbounds: e.options.HTTPPolicies}
-	for _, module := range e.options.Modules {
+	return modulePlan(e.options.HTTPPolicies, e.options.Modules)
+}
+
+func modulePlan(httpPolicies []string, modules []*Module) plugin.Plan {
+	plan := plugin.Plan{RequiredOutbounds: httpPolicies}
+	for _, module := range modules {
 		if len(module.DNSHosts) != 0 {
 			plan.DNS = append(plan.DNS, plugin.DNSScope{})
 		}

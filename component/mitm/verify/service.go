@@ -61,8 +61,15 @@ func ParseTargets(ip4, ip6 string) ([2]netip.Addr, error) {
 }
 
 func New(fingerprint string, targets [2]netip.Addr, addresses []net.Addr) (*Service, error) {
-	s := &Service{generation: rand.Text(), fingerprint: fingerprint, targets: targets,
-		tests: make(map[string]*challenge)}
+	if _, err := PreparePlan(targets, addresses); err != nil {
+		return nil, err
+	}
+	return &Service{generation: rand.Text(), fingerprint: fingerprint, targets: targets,
+		tests: make(map[string]*challenge)}, nil
+}
+
+// PreparePlan validates capture targets without creating diagnostic state.
+func PreparePlan(targets [2]netip.Addr, addresses []net.Addr) (plugin.Plan, error) {
 	for _, address := range addresses {
 		prefix, err := netip.ParsePrefix(address.String())
 		if err != nil {
@@ -70,11 +77,11 @@ func New(fingerprint string, targets [2]netip.Addr, addresses []net.Addr) (*Serv
 		}
 		for _, target := range targets {
 			if prefix.Contains(target) {
-				return nil, fmt.Errorf("MITM test target %s overlaps local subnet %s; select an unused routed address with api_mitm_test_ipv4/api_mitm_test_ipv6", target, prefix)
+				return plugin.Plan{}, fmt.Errorf("MITM test target %s overlaps local subnet %s; select an unused routed address with api_mitm_test_ipv4/api_mitm_test_ipv6", target, prefix)
 			}
 		}
 	}
-	return s, nil
+	return targetPlan(targets), nil
 }
 
 func (s *Service) Generation() string {
@@ -110,9 +117,11 @@ func httpsOrigin(target netip.AddrPort) string {
 	return "https://" + address
 }
 
-func (s *Service) Plan() plugin.Plan {
-	scope := make(plugin.Scope, 0, len(s.targets))
-	for _, host := range s.targets {
+func (s *Service) Plan() plugin.Plan { return targetPlan(s.targets) }
+
+func targetPlan(targets [2]netip.Addr) plugin.Plan {
+	scope := make(plugin.Scope, 0, len(targets))
+	for _, host := range targets {
 		scope = append(scope, plugin.HostRule{Host: host.String(), Ports: []uint16{443}})
 	}
 	return plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope}}}

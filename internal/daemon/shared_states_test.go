@@ -31,7 +31,9 @@ func TestLoadMITMSharesRuntimeStatesAcrossGenerations(t *testing.T) {
 	runtime := control.NewRuntime()
 	t.Cleanup(func() { _ = runtime.Close() })
 	conf := mitmConfigForTest(t, `mitm { enabled: false } plugins { fixture { type: fixture } }`)
-	definition := plugin.Definition{Configure: func(plugin.Spec) (plugin.Factory, error) {
+	definition := plugin.Definition{Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+		return plugin.Resources{Plan: new(plugin.Plan)}, nil
+	}, Configure: func(plugin.Spec) (plugin.Factory, error) {
 		return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
 			if services.SharedStates == nil {
 				t.Fatal("daemon did not supply runtime shared states")
@@ -52,6 +54,9 @@ func TestLoadMITMSharesRuntimeStatesAcrossGenerations(t *testing.T) {
 		// No previous host forces distinct plugin instances, as a changed config does.
 		prepared, err := loadMITM(t.Context(), conf, nil, http.DefaultClient, http.DefaultClient, configured, nil, nil, runtime)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.Build(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = prepared.Host.Close() })

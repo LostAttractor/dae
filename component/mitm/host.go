@@ -30,7 +30,25 @@ type DialContext func(context.Context, string, string) (net.Conn, error)
 // host is read-only during preparation; unchanged instances retain their state.
 func Load(ctx context.Context, configuration *pluginhost.Configuration, options Options, services plugin.Services, previous *Host) (*Host, error) {
 	services.BodyMemory = options.bodyMemory()
-	instances, err := configuration.Prepare(ctx, services, previous.Instances())
+	prepared, err := configuration.LoadResources(ctx, services)
+	if err != nil {
+		return nil, err
+	}
+	return Build(ctx, prepared, options, services, previous)
+}
+
+// Build constructs the host from already-loaded resources. Static validation
+// precedes factories; the prior host remains read-only until publication.
+func Build(ctx context.Context, prepared *pluginhost.PreparedResources, options Options, services plugin.Services, previous *Host) (*Host, error) {
+	var diagnosticPlan plugin.Plan
+	if options.Diagnostic != nil {
+		diagnosticPlan = options.Diagnostic.Plan
+	}
+	if _, err := PreparePlan(options, diagnosticPlan, prepared.Plan()); err != nil {
+		return nil, err
+	}
+	services.BodyMemory = options.bodyMemory()
+	instances, err := prepared.BuildInstances(ctx, services, previous.Instances())
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +218,22 @@ func (h *Host) SameRuntime(other *Host) bool {
 	return first.Fingerprint() == second.Fingerprint()
 }
 
+// PreparePlan aggregates declarations, filters HTTP interception and validates
+// host requirements without instances. Include any diagnostic plan explicitly.
+func PreparePlan(options Options, plans ...plugin.Plan) (plugin.Plan, error) {
+	if options.BufferMemoryLimit < 0 {
+		return plugin.Plan{}, errors.New("mitm: buffer memory limit must be positive")
+	}
+	plan := plugin.MergePlans(plans...)
+	if options.DisableHTTP {
+		plan.Scopes = nil
+	}
+	if len(plan.Scopes) > 0 && options.Authority == nil {
+		return plugin.Plan{}, errors.New("mitm: HTTPS scopes require a certificate authority")
+	}
+	return plan, nil
+}
+
 // New takes ownership of the instances and their plans on success. Plans remain read-only
 // for the lifetime of the host; construction is the only mutation phase.
 func New(options Options, instances ...Instance) (*Host, error) {
@@ -220,6 +254,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	if options.Diagnostic != nil {
 		h.diagnosticScopes = options.Diagnostic.Plan.Scopes
 	}
+	plans := make([]plugin.Plan, len(h.instances))
 	for i := range h.instances {
 		instance := &h.instances[i]
 		if instance.owner == nil {
@@ -232,15 +267,12 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		if _, ok := instance.Plugin.(plugin.DNSUpstreamCache); ok {
 			h.dnsCaches = append(h.dnsCaches, instance)
 		}
-		h.plan.DNS = append(h.plan.DNS, instance.plan.DNS...)
-		h.plan.RequiredOutbounds = append(h.plan.RequiredOutbounds, instance.plan.RequiredOutbounds...)
-		h.plan.Scopes = append(h.plan.Scopes, instance.plan.Scopes...)
-		h.plan.Destinations = append(h.plan.Destinations, instance.plan.Destinations...)
-		h.plan.EarlyRoutes = append(h.plan.EarlyRoutes, instance.plan.EarlyRoutes...)
-		h.plan.Routes = append(h.plan.Routes, instance.plan.Routes...)
+		plans[i] = instance.plan
 	}
-	if len(h.plan.Scopes) > 0 && options.Authority == nil {
-		return nil, errors.New("mitm: HTTPS scopes require a certificate authority")
+	var err error
+	h.plan, err = PreparePlan(options, plans...)
+	if err != nil {
+		return nil, err
 	}
 	registry := prometheus.NewRegistry()
 	h.metrics = registry

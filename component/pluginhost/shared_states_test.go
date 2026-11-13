@@ -63,7 +63,7 @@ func (p *leasedStatePlugin) Close() error    { return p.release() }
 
 func TestPreparationSharesStatesAcrossOverlappingGenerations(t *testing.T) {
 	var pool StatePool
-	definition := plugin.Definition{Configure: func(plugin.Spec) (plugin.Factory, error) {
+	definition := plugin.Definition{Resources: emptyPlanResources, Configure: func(plugin.Spec) (plugin.Factory, error) {
 		return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
 			state, release, err := services.SharedStates.Acquire(ctx, "state", func() (io.Closer, error) { return new(poolTestState), nil })
 			if err != nil {
@@ -121,7 +121,7 @@ func TestPreparationFailureReleasesOwnedLeases(t *testing.T) {
 	var pool StatePool
 	failure := errors.New("factory failed")
 	var states []*poolTestState
-	definition := plugin.Definition{Configure: func(spec plugin.Spec) (plugin.Factory, error) {
+	definition := plugin.Definition{Resources: emptyPlanResources, Configure: func(spec plugin.Spec) (plugin.Factory, error) {
 		return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
 			state, release, err := services.SharedStates.Acquire(ctx, "state", func() (io.Closer, error) { return new(poolTestState), nil })
 			if err != nil {
@@ -154,7 +154,7 @@ func TestPreparationFailureReleasesOwnedLeases(t *testing.T) {
 }
 
 func TestPreparationDoesNotReuseDifferentStatePool(t *testing.T) {
-	definition := plugin.Definition{Configure: func(plugin.Spec) (plugin.Factory, error) {
+	definition := plugin.Definition{Resources: emptyPlanResources, Configure: func(plugin.Spec) (plugin.Factory, error) {
 		return func(context.Context, plugin.Services) (plugin.Plugin, error) { return new(interfaceSourcePlugin), nil }, nil
 	}}
 	configuration, err := Configure(map[string]plugin.Definition{"kind": definition}, []plugin.Spec{{Type: "kind", ID: "one"}})

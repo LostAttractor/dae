@@ -133,7 +133,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 		}, nil
 	}, Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
 		content, err := os.ReadFile(resourcePath)
-		return plugin.Resources{Key: string(content)}, err
+		return plugin.Resources{Key: string(content), Plan: &plan}, err
 	}}}
 	resolver, err := InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
 	if err != nil {

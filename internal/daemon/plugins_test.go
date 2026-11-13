@@ -32,6 +32,9 @@ func loadTestMITM(ctx context.Context, conf *config.Config, client, background *
 		return nil, err
 	}
 	prepared, err := loadMITM(ctx, conf, certificates.Authority(), client, background, plugins, nil, nil, nil)
+	if err == nil {
+		err = prepared.Build(ctx)
+	}
 	return prepared.Host, err
 }
 
@@ -73,7 +76,7 @@ func TestDisabledPluginStatusAcceptsWithoutHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := app.replaceServices(&next, nil, netip.AddrPort{}, nil, &prepared, func() {
+		result, err := app.replaceServices(t.Context(), &next, nil, netip.AddrPort{}, nil, &prepared, func() {
 			t.Fatal("disabled-only change replaced the API handler")
 		}, observability)
 		observability.Close()

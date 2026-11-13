@@ -24,7 +24,9 @@ func TestMetricsEndpointPublishesPluginLifecycle(t *testing.T) {
 	t.Cleanup(func() { startMetricsServer(0) })
 	t.Setenv("DAE_LOCATION_CACHE", t.TempDir())
 	var current *endpointMetricsPlugin
-	definitions := map[string]plugin.Definition{"fixture": {Configure: func(plugin.Spec) (plugin.Factory, error) {
+	definitions := map[string]plugin.Definition{"fixture": {Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+		return plugin.Resources{Plan: new(plugin.Plan)}, nil
+	}, Configure: func(plugin.Spec) (plugin.Factory, error) {
 		return func(_ context.Context, services plugin.Services) (plugin.Plugin, error) {
 			current = &endpointMetricsPlugin{counter: prometheus.NewCounter(prometheus.CounterOpts{Name: "fixture_events_total", Help: "Endpoint fixture events."})}
 			return current, services.Metrics.Register(current.counter)

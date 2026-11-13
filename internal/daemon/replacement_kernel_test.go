@@ -148,6 +148,9 @@ func testReplacementKernel(t *testing.T, mode string) {
 		state.err = closeErr
 	}
 	definitions := map[string]plugin.Definition{"fixture": {
+		Resources: func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error) {
+			return plugin.Resources{Plan: new(plugin.Plan)}, nil
+		},
 		Configure: func(plugin.Spec) (plugin.Factory, error) {
 			return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
 				shared, release, err := services.SharedStates.Acquire(ctx, "fixture", func() (io.Closer, error) { return state, nil })
