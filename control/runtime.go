@@ -456,7 +456,9 @@ func (r *Runtime) Close() error {
 		retain := retainedCrash || r.kernelLinks.transferred || r.kernelLinks.privatePins
 		if retainedCrash {
 			log.Warn("Startup did not go online; keeping the kernel datapath left by the previous unexpected exit")
-			// Keep the timer pins the retained programs still reference.
+		}
+		if retain {
+			// Keep only the timer pins that retained entries still reference.
 			r.closeErr = errors.Join(r.closeErr, r.pruneUDPTimerPins(false))
 		}
 		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close(retain), r.closeIdentityHooks(), r.socketIdentity.Close())

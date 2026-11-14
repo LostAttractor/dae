@@ -136,6 +136,12 @@ actual UDP GC after closing map FDs with only program references versus addition
 map pins. `TestReplacementGuardsKernel` and
 `TestFailedRecoveryDoesNotExpandGuardsKernel` check blocking after process-owned
 FDs close and prevent failed recovery from expanding the required hook set.
+`TestFailedRecoveryPrunesUDPTimerPinsKernel` checks that failed candidates release
+unused timer pins while preserving references from attached guards, including
+partially cleaned bundles. `TestFailedRecoveryTimerPinsKernel` runs two separate
+daemon processes whose live plugin constructors fail; neither may leave unused
+runtime timer pins or disturb the existing DROP guard. Run each in fresh private
+PID/network/mount namespaces with private `/run` and bpffs.
 `TestUDPRepliesReleaseRetiredTimerPrograms` checks UDP timer callback retirement
 without introducing TCP timer state. Use isolated maps, PID/network/mount namespaces
 and private bpffs; never use a running daemon's pins.

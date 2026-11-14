@@ -16,7 +16,7 @@
 
 普通 restart 复用兼容的 canonical pins，保留固定 ABI、设备 epoch、fallback 发行序号及失败接管保护；同进程配置 reload 共享 Runtime maps。只有进程替换或遗留 guard 恢复创建私有业务 maps，不复用前任业务 pins，因而不要求两代私有业务 map 布局兼容。成功提交显式发布自身 canonical pins，正常运行继续持久化；私有初始化不等于业务 maps 永不 pin。
 
-阻断防护以 `/sys/fs/bpf/dae/guards/<link-id>/` 下的 bundle 持有入口 link、两张 UDP timer maps（`udp_conn_state_map`、`udp_routing_cache_map`）、该代 socket 身份 writer links、exit hook 和 `daemon_identity_map`。TCP 没有 timer。内核 UDP timer 需要 map FD 或 map pin，仅有 link→program→map 引用不足以继续回收过期记录。撤除旧 guard 时必须实际释放 canonical 与 guard 两处引用；旧身份 writer 不能通过同名 pin 的 `Update` 被新程序替换。guard maps 不是后继运行时的业务状态源。
+阻断防护以 `/sys/fs/bpf/dae/guards/<link-id>/` 下的 bundle 持有入口 link、两张 UDP timer maps（`udp_conn_state_map`、`udp_routing_cache_map`）、该代 socket 身份 writer links、exit hook 和 `daemon_identity_map`。TCP 没有 timer。内核 UDP timer 需要 map FD 或 map pin，仅有 link→program→map 引用不足以继续回收过期记录。撤除旧 guard 时必须实际释放 canonical 与 guard 两处引用；旧身份 writer 不能通过同名 pin 的 `Update` 被新程序替换。guard maps 不是后继运行时的业务状态源。失败启动关闭时，依据仍挂载入口和 guard 的实际 map 引用回收无用的 `runtime_*` timer pins，避免反复失败累积未使用的 maps；引用检查失败则保守保留并返回错误，不影响仍在保护流量的 guard。
 
 共享网络对象的 BPF link 通过 FD 保留。导出快照先将 Runtime 的原始 links 标记为冻结状态再借用（避免在跨 exec 复制与校验期间长期持有互斥锁），为每个附件复制一份 FD 并将其所有权交给替换流程；阻塞提交或释放快照时解除冻结，未移交的 FD 在释放快照时关闭。
 

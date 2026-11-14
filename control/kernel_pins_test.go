@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/internal/routingabi"
@@ -96,6 +97,28 @@ func TestRuntimeCloseKeepsTimerPinsIfLinkReleaseFails(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("failed link release removed timer ownership: %v", err)
+	}
+}
+
+func TestRuntimeCloseKeepsTimerPinsIfGuardInspectionFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "runtime_fixture", "udp_conn_state_map")
+	for _, directory := range []string{filepath.Dir(path), filepath.Join(root, "guards", "broken", "link")} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime()
+	r.kernelLinks.pinPath = filepath.Join(root, "links")
+	r.kernelLinks.privatePins = true
+	if err := r.Close(); err == nil {
+		t.Fatal("private recovery accepted an unreadable guard link")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("failed guard inspection removed timer ownership: %v", err)
 	}
 }
 
@@ -969,6 +992,131 @@ func TestHostlessReplacementFailureForcesPrivateRecoveryKernel(t *testing.T) {
 	defer recovery.Close()
 	if err := recovery.prepareKernelPinsAt(root); err != nil || !recovery.recoveringGuards || !recovery.kernelLinks.privatePins {
 		t.Fatalf("hostless recovery tried to reuse canonical pins: %v", err)
+	}
+}
+
+func TestFailedRecoveryPrunesUDPTimerPinsKernel(t *testing.T) {
+	if os.Geteuid() != 0 || os.Getenv("DAE_TEST_ISOLATED") != "1" {
+		t.Skip("requires root in isolated PID, network and mount namespaces")
+	}
+	for _, mode := range []string{"private", "staged", "recovering", "online-before-ready", "transferred"} {
+		t.Run(mode, func(t *testing.T) {
+			must := func(err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			spec, err := parsedBPFSpec()
+			must(err)
+			newRuntime := func() *Runtime {
+				t.Helper()
+				r := NewRuntime()
+				r.kernelLinks.privatePins = true
+				must(r.kernelLinks.preparePins(kernelPinPath()))
+				for _, name := range udpTimerMapNames {
+					mapSpec := spec.Maps[name].Copy()
+					mapSpec.Pinning = ebpf.PinNone
+					m, err := ebpf.NewMap(mapSpec)
+					must(err)
+					r.shared[name] = m
+				}
+				must(r.pinUDPTimers())
+				t.Cleanup(func() { _ = r.Close() })
+				return r
+			}
+			device := &netlink.Dummy{Name: "timer-guard"}
+			must(netlink.LinkAdd(device))
+			t.Cleanup(func() { _ = netlink.LinkDel(device); _ = os.RemoveAll(kernelPinPath()) })
+			needed := make(map[ebpf.MapID]bool)
+			var guards []*link.Info
+			attachGuard := func(r *Runtime) {
+				t.Helper()
+				var instructions asm.Instructions
+				for _, name := range udpTimerMapNames {
+					m := r.shared[name]
+					info, err := m.Info()
+					must(err)
+					id, _ := info.ID()
+					needed[id] = true
+					instructions = append(instructions, asm.LoadMapPtr(asm.R1, m.FD()))
+				}
+				instructions = append(instructions, asm.Mov.Imm(asm.R0, 2), asm.Return())
+				program, err := ebpf.NewProgram(&ebpf.ProgramSpec{Type: ebpf.SchedCLS, License: "GPL", Instructions: instructions})
+				must(err)
+				defer program.Close()
+				attached, err := link.AttachTCX(link.TCXOptions{Interface: device.Index, Attach: ebpf.AttachTCXIngress, Program: program})
+				must(err)
+				r.kernelLinks.ownHostTCXLink(hostTCXLink{linkIndex: device.Index, role: hostTCXLanIngress, link: attached, close: attached.Close})
+				_, err = pinReplacementGuard(attached, hostTCXLanIngress)
+				must(err)
+				info, err := attached.Info()
+				must(err)
+				guards = append(guards, info)
+			}
+			assertPins := func() {
+				t.Helper()
+				count := 0
+				for _, directory := range runtimeTimerDirectories(t) {
+					for _, name := range udpTimerMapNames {
+						m, err := ebpf.LoadPinnedMap(filepath.Join(directory, name), nil)
+						must(err)
+						info, err := m.Info()
+						must(errors.Join(err, m.Close()))
+						id, _ := info.ID()
+						if !needed[id] {
+							t.Fatalf("failed recovery retained unreferenced timer map %d at %s", id, directory)
+						}
+						count++
+					}
+				}
+				if count != len(needed) {
+					t.Fatalf("retained timer maps = %d, want %d", count, len(needed))
+				}
+				for _, guard := range guards {
+					l, err := link.LoadPinnedLink(filepath.Join(replacementGuardDirectory(guard.ID), "link"), nil)
+					must(err)
+					info, err := l.Info()
+					must(errors.Join(err, l.Close()))
+					if info.ID != guard.ID || info.Program != guard.Program || info.TCX().Ifindex != uint32(device.Index) {
+						t.Fatalf("failed recovery changed retained guard: %+v", info)
+					}
+				}
+			}
+			predecessor := newRuntime()
+			attachGuard(predecessor)
+			must(predecessor.Close())
+			// An interrupted bundle may rely on the original runtime's timer pins.
+			for _, name := range udpTimerMapNames {
+				must(os.Remove(filepath.Join(replacementGuardDirectory(guards[0].ID), name)))
+			}
+			for attempt := range 3 {
+				r := newRuntime()
+				// Failure can occur before any new entry or after a new guard is pinned.
+				if attempt == 1 {
+					attachGuard(r)
+				}
+				r.staged = mode == "staged"
+				if r.staged || mode == "recovering" {
+					r.kernelLinks.privatePins = false
+					must(r.prepareKernelPins())
+					if !r.kernelLinks.privatePins || r.recoveringGuards != (mode == "recovering") {
+						t.Fatal("startup did not isolate the replacement's kernel pins")
+					}
+				}
+				r.online = mode == "online-before-ready"
+				r.kernelLinks.transferred = mode == "transferred"
+				r.kernelLinks.privatePins = !r.kernelLinks.transferred
+				must(r.Close())
+				assertPins()
+			}
+			must(netlink.LinkDel(device))
+			r := newRuntime()
+			must(r.Close())
+			if directories := runtimeTimerDirectories(t); len(directories) != 0 {
+				t.Fatalf("detached guards retained timer pins: %v", directories)
+			}
+		})
 	}
 }
 

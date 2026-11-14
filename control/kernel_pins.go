@@ -322,35 +322,56 @@ func (k *kernelLinks) hostMapIDs() (map[ebpf.MapID]bool, error) {
 	defer k.mu.Unlock()
 	ids := make(map[ebpf.MapID]bool)
 	seen := make(map[ebpf.ProgramID]bool)
-	for _, owned := range k.hostTCXLinks {
-		info, err := owned.link.Info()
+	collect := func(attached link.Link) error {
+		info, err := attached.Info()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if info.TCX() == nil {
-			return nil, errors.New("host attachment is not a TCX link")
+			return errors.New("host attachment is not a TCX link")
 		}
-		if info.TCX().Ifindex == 0 {
-			continue
-		}
-		if seen[info.Program] {
-			continue
+		if info.TCX().Ifindex == 0 || seen[info.Program] {
+			return nil
 		}
 		seen[info.Program] = true
 		program, err := ebpf.NewProgramFromID(info.Program)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		programInfo, err := program.Info()
 		if err = errors.Join(err, program.Close()); err != nil {
-			return nil, err
+			return err
 		}
 		mapIDs, ok := programInfo.MapIDs()
 		if !ok {
-			return nil, errors.New("host program map IDs are unavailable")
+			return errors.New("host program map IDs are unavailable")
 		}
 		for _, id := range mapIDs {
 			ids[id] = true
+		}
+		return nil
+	}
+	for _, owned := range k.hostTCXLinks {
+		if err := collect(owned.link); err != nil {
+			return nil, err
+		}
+	}
+	// A private recovery has not adopted the predecessor's guarding links.
+	guards := filepath.Join(filepath.Dir(k.pinPath), "guards")
+	entries, err := os.ReadDir(guards)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range entries {
+		attached, err := link.LoadPinnedLink(filepath.Join(guards, entry.Name(), "link"), nil)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := errors.Join(collect(attached), attached.Close()); err != nil {
+			return nil, err
 		}
 	}
 	return ids, nil

@@ -271,7 +271,10 @@ normal operation publishes canonical pins, and ordinary restart reuses compatibl
 pins. Each guard bundle retains its entry link, UDP connection-state and routing-cache
 timer maps, socket-owner writer links, exit hook and daemon identity map. There is
 no TCP timer. Retirement releases both canonical and guard references; old identity
-writers are not replaced through same-name pin updates.
+writers are not replaced through same-name pin updates. Failed startup reclaims
+private runtime timer pins that no attached entry or guard references, so repeated
+failures do not accumulate unused maps. If references cannot be inspected, cleanup
+keeps the pins and reports the error rather than risking an active guard.
 Failed handoffs never silently choose restart or bypass traffic protection. During
 cold recovery, old guards still block ordinary captured traffic. The newly
 registered daemon identity may fetch startup resources through its restricted
