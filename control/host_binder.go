@@ -442,7 +442,7 @@ func (b *wanBinding) setName(name string) {
 func autoWanTargets(snapshot network.HostNetworkSnapshot) map[int]string {
 	desired := make(map[int]string, len(snapshot.Interfaces))
 	for _, intf := range snapshot.Interfaces {
-		if intf.Index != consts.LoopbackIfIndex && (intf.IPv4Default || intf.IPv6Default) {
+		if intf.Index != consts.LoopbackIfIndex && intf.MainDefault {
 			desired[intf.Index] = intf.Name
 		}
 	}

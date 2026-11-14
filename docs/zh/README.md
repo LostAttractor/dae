@@ -244,6 +244,9 @@ routing {
 }
 ```
 
+`wan_interface: auto` 跟随主路由表中的 IPv4 和 IPv6 默认路由接口。
+仅在策略路由表中存在的默认路由不会启用自动捕获；需要捕获这些接口时，请显式填写接口名。
+
 核心按普通路由透明转发捕获到的 TCP/UDP 53 端口 DNS。
 高级上游选择和应答缓存通过可选 [DNS 插件](configuration/dns.md) 提供。
 

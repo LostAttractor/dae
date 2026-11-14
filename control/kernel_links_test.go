@@ -59,15 +59,16 @@ func TestReloadKeepsWANAttachmentsWhileDiscoveryRetries(t *testing.T) {
 			t.Fatalf("reload lost inherited WAN while discovery retried: closed=%d retry=%v err=%v", closed, retry, err)
 		}
 		core.beginRebind()
-		replacement := &network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{{Index: 3, Name: "new-wan", IPv4Default: true}}}
+		replacement := &network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{{Index: 3, Name: "new-wan", IPv4Default: true, MainDefault: true}}}
 		core.reconcileWanWith(replacement, nil, func(int) (netlink.Link, error) {
 			return nil, errors.New("replacement interface temporarily unavailable")
 		})
 		if err := core.finishRebind(); err != nil || closed != 0 {
 			t.Fatalf("reload dropped the old WAN before its replacement was ready: closed=%d err=%v", closed, err)
 		}
-		// The eventual authoritative snapshot can remove provisional ownership.
-		core.reconcileWanWith(&network.HostNetworkSnapshot{}, nil, lookup)
+		// A policy-only default must not retain inherited automatic capture.
+		policyOnly := &network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{{Index: 2, Name: "wan0", IPv4Default: true}}}
+		core.reconcileWanWith(policyOnly, nil, lookup)
 		if closed != 2 {
 			t.Fatalf("discovery retained obsolete WAN attachments: closed=%d", closed)
 		}

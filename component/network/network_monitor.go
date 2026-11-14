@@ -36,6 +36,7 @@ type DefaultRouteInterface struct {
 	Name        string
 	IPv4Default bool
 	IPv6Default bool
+	MainDefault bool // Only main-table defaults opt interfaces into automatic WAN capture.
 	IPv4Source  string
 	IPv6Source  string
 }
@@ -527,7 +528,7 @@ func normalizeIPv6Rules(rules []netlink.Rule, err error) ([]netlink.Rule, error)
 }
 
 func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
-	type routeFamilies struct{ ipv4, ipv6 bool }
+	type routeFamilies struct{ ipv4, ipv6, main bool }
 	families := make(map[int]routeFamilies)
 	linkGroups := make(map[int]uint32, len(data.links))
 	for _, link := range data.links {
@@ -560,6 +561,7 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 				} else {
 					family.ipv6 = true
 				}
+				family.main = family.main || route.Table == unix.RT_TABLE_MAIN
 				families[index] = family
 			}
 			fingerprints = append(fingerprints, routeFingerprint(route))
@@ -585,6 +587,7 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 			Name:        attrs.Name,
 			IPv4Default: family.ipv4,
 			IPv6Default: family.ipv6,
+			MainDefault: family.main,
 		}
 		if linkOperational(attrs) {
 			if family.ipv4 {

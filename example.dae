@@ -69,7 +69,8 @@ global {
     #lan_interface: docker0
 
     # The WAN interface to bind. Use it if you want to proxy localhost.
-    # Multiple interfaces split by ",". Use "auto" to auto detect.
+    # Multiple interfaces split by ",". "auto" follows IPv4/IPv6 default routes in the main table.
+    # Interfaces with defaults only in policy-routing tables must be listed explicitly.
     wan_interface: auto
 
     # Automatically configure Linux kernel parameters like ip_forward and send_redirects. Check out

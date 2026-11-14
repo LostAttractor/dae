@@ -183,6 +183,62 @@ func TestBuildHostNetworkSnapshotIncludesReachableCustomRouteTables(t *testing.T
 	}
 }
 
+func TestBuildHostNetworkSnapshotIdentifiesMainDefaults(t *testing.T) {
+	policyRule := testLookupRule(10)
+	policyRule.Mark, policyRule.Mask = 0x1000000, new(uint32(0x1000000))
+	data := hostNetworkData{
+		links: []netlink.Link{
+			&netlink.Dummy{Index: 2, Name: "wan4"},
+			&netlink.Dummy{Index: 3, Name: "cu", Flags: net.FlagUp, RawFlags: unix.IFF_LOWER_UP, OperState: netlink.OperUp},
+			&netlink.Dummy{Index: 4, Name: "wan6"},
+			&netlink.Dummy{Index: 5, Name: "policy6"},
+			&netlink.Dummy{Index: 6, Name: "lan0"},
+		},
+		routes4: []netlink.Route{
+			{LinkIndex: 2, Table: unix.RT_TABLE_MAIN, Type: unix.RTN_UNICAST},
+			{LinkIndex: 2, Table: 10, Type: unix.RTN_UNICAST},
+			{LinkIndex: 3, Table: 10, Type: unix.RTN_UNICAST},
+			{LinkIndex: 6, Table: unix.RT_TABLE_MAIN, Type: unix.RTN_UNICAST,
+				Dst: &net.IPNet{IP: net.ParseIP("192.0.2.0"), Mask: net.CIDRMask(24, 32)}},
+		},
+		routes6: []netlink.Route{
+			{LinkIndex: 4, Table: 10, Type: unix.RTN_UNICAST},
+			{LinkIndex: 4, Table: unix.RT_TABLE_MAIN, Type: unix.RTN_UNICAST,
+				Dst: &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}},
+			{LinkIndex: 5, Table: 10, Type: unix.RTN_UNICAST},
+		},
+		rules4: []netlink.Rule{testLookupRule(unix.RT_TABLE_MAIN), policyRule},
+		rules6: []netlink.Rule{testLookupRule(unix.RT_TABLE_MAIN), policyRule},
+		addrs4: map[int][]netlink.Addr{
+			3: {{IPNet: &net.IPNet{IP: net.ParseIP("192.0.2.2"), Mask: net.CIDRMask(24, 32)}}},
+		},
+	}
+	snapshot := buildHostNetworkSnapshot(data)
+	if len(snapshot.Interfaces) != 4 {
+		t.Fatalf("default interfaces = %+v", snapshot.Interfaces)
+	}
+	for _, intf := range snapshot.Interfaces {
+		if want := intf.Index == 2 || intf.Index == 4; intf.MainDefault != want {
+			t.Errorf("%s: main default = %v, want %v", intf.Name, intf.MainDefault, want)
+		}
+	}
+	if !snapshot.Ready() {
+		t.Fatal("policy-only connectivity no longer makes the network ready")
+	}
+
+	data.routes4 = data.routes4[1:]
+	data.routes6 = append(data.routes6[:1], data.routes6[2:]...)
+	withoutMain := buildHostNetworkSnapshot(data)
+	for _, intf := range withoutMain.Interfaces {
+		if intf.MainDefault {
+			t.Errorf("%s retained a removed main-table default", intf.Name)
+		}
+	}
+	if !withoutMain.Ready() || !withoutMain.ConnectivityChanged(snapshot) {
+		t.Fatal("main-table removal lost policy connectivity or its change notification")
+	}
+}
+
 func TestBuildHostNetworkSnapshotTracksMultipathRecovery(t *testing.T) {
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
 		Index: 5, Name: "eth0", Flags: net.FlagUp, OperState: netlink.OperUp,

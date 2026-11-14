@@ -277,6 +277,10 @@ routing {
 }
 ```
 
+`wan_interface: auto` follows IPv4 and IPv6 default-route interfaces in the main
+routing table. Default routes found only in policy-routing tables do not enable
+automatic capture; list those interfaces explicitly when needed.
+
 Core transparently relays captured DNS on TCP/UDP port 53 using ordinary routing.
 Advanced upstream selection and response caching use optional [DNS plugins](configuration/dns.md).
 

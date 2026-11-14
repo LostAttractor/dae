@@ -124,10 +124,12 @@ func TestPrepareBPFRejectsChangedSoMark(t *testing.T) {
 
 func TestAutoWanTargetsUseOneOwnerPerInterface(t *testing.T) {
 	got := autoWanTargets(network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
-		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
-		{Index: 2, Name: "eth0", IPv4Default: true},
-		{Index: 3, Name: "eth1", IPv6Default: true},
-		{Index: 4, Name: "ppp0", IPv4Default: true, IPv6Default: true},
+		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true, MainDefault: true},
+		{Index: 2, Name: "eth0", IPv4Default: true, MainDefault: true},
+		{Index: 3, Name: "eth1", IPv6Default: true, MainDefault: true},
+		{Index: 4, Name: "ppp0", IPv4Default: true, IPv6Default: true, MainDefault: true},
+		{Index: 5, Name: "cu", IPv4Default: true},
+		{Index: 6, Name: "policy6", IPv6Default: true},
 	}})
 	want := map[int]string{2: "eth0", 3: "eth1", 4: "ppp0"}
 	if !reflect.DeepEqual(got, want) {
@@ -186,8 +188,8 @@ func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 	closed := t.Context()
 	core := &hostBinder{kernelLinks: new(kernelLinks), closed: closed, wanBindings: make(map[int]*wanBinding)}
 	snapshot := network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
-		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
-		{Index: 2, Name: "eth0", IPv4Default: true},
+		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true, MainDefault: true},
+		{Index: 2, Name: "eth0", IPv4Default: true, MainDefault: true},
 		{Index: 3, Name: "lan0"},
 		{Index: 4, Name: "docker0"},
 		{Index: 5, Name: "tailscale0"},
