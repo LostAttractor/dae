@@ -227,7 +227,9 @@ SUDO="sudo -n" OUT=/tmp/qexp-ab scripts/tests/queueing/matrix.sh /tmp/before.tes
 
 ## 进程热替换
 
-目标 ELF 在 Block 前运行配置解析、插件 Preflight 和内核能力检查，再构造不绑定业务 BPF 的用户态 plane，读取配置/include、订阅、模块和依赖、geodata 与完整静态 Plan。此阶段不构造活插件、VM 或执行 `Warm`/Worker，不读取 settings/Registry；旧数据面与 API 继续服务。handoff 协议为 4：父进程经 `ExtraFiles` 交给目标一份独立输入 memfd，目标写入并封印，父进程先撤销 PID 豁免再 `Wait`；64 KiB 的交接描述与输入包分开，单输入/完整资源组上限为 128 MiB，整个输入包上限为 512 MiB。
+`TestRestoredProcessNameRoutesInternalRequests` 验证非 leader Go 线程恢复进程名后，内部 DNS 和资源请求仍匹配固定的 `pname()` 规则。真实 exec 夹具检查进程名和实例锁 inode 跨替换不变，并在替换及崩溃恢复后重试第二个 `dae run`，确认始终拒绝额外业务实例。
+
+目标 ELF 在 Block 前运行配置解析、插件 Preflight 和内核能力检查，再构造不绑定业务 BPF 的用户态 plane，读取配置/include、订阅、模块和依赖、geodata 与完整静态 Plan。此阶段不构造活插件、VM 或执行 `Warm`/Worker，不读取 settings/Registry；旧数据面与 API 继续服务。handoff 协议为 5：父进程经 `ExtraFiles` 交给目标一份独立输入 memfd，目标写入并封印，父进程先撤销 PID 豁免再 `Wait`；64 KiB 的交接描述与输入包分开，单输入/完整资源组上限为 128 MiB，整个输入包上限为 512 MiB。
 
 正式 exec 仅为初始化 reader 绑定严格回放，保留配置/include/glob 选择、资产位置和 bytes、完整 cache 组的成功/失败/fallback，以及跳过订阅的决定；缺项、损坏、解释不符或超限不能退回 live I/O，也不能被兼容解码或 skip 吞掉。正式 Runtime 先安装必要的最小 socket-owner hooks，再允许持久代理 socket；用户态准备完成后才加载业务 BPF、构造插件和 `Warm`。连通性保存原 lease，绑定后才发行内核 token。选择器只使用旧内存 hints，准备路由的逻辑 PID/pname 不等于取得临时豁免的真实 kernel TGID。settings 在旧 API 关闭、exec 后首次读取，Registry 在本地 Commit 恢复，Surge store 仍惰性读取；运行期 ctx 和后续 reload 不携带本次 reader 快照。旧写者必须先关闭并完成最终 flush，新写者才读取最终状态并启用持久化，保持单写者约束。完整状态边界见[进程热替换设计](../design/process-replacement.md)。
 

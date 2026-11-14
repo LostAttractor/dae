@@ -298,8 +298,8 @@ without reinstalling the handler. Management reads/writes receive 503 during the
 operation queries may time out or disconnect while only listener FDs survive exec.
 The API barrier freezes daemon writers, not external file editors.
 
-The internal handoff protocol version is 5. Same-PID exec retains only whitelisted
-FDs. The handoff description remains a sealed memfd bounded to 64 KiB; operation
+The internal handoff protocol version is 6. Same-PID exec retains only whitelisted
+FDs and carries the original process name in the sealed description. The handoff description remains a sealed memfd bounded to 64 KiB; operation
 inputs use a separate memfd created by the parent, written and sealed by the
 target through `ExtraFiles`. A single input or complete resource group is limited
 to 128 MiB; the whole archive, including its header, index, payload and digest, is
@@ -307,6 +307,12 @@ limited to 512 MiB. Recovery validates seals, size, protocol, PID,
 the original deadline, FD roles/uniqueness and lock/namespace/link identities, then
 restores CLOEXEC before plugins can inherit FDs. There is no resident supervisor,
 predecessor-pidfd wait, adopted business worker or commit-authorization message.
+Before initialization, startup restores the process leader's `/proc/self/comm`;
+FD-based exec must not change the identity used by `pname()` routing.
+`TestRestoredProcessNameRoutesInternalRequests` checks restoration from a non-leader
+Go thread and fixed-name rules for internal DNS and resource requests. The exec
+fixture checks the name and lock inode across replacements and retries concurrent
+`dae run` after replacement and crash recovery.
 Old heap/goroutines disappear, so Runtime close, flush and descendant reaping must
 finish before exec. Stop signals and the remaining transaction deadline are checked
 at that boundary; the deadline does not reset. Permanently stuck ELF loading or

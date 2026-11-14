@@ -21,11 +21,11 @@ type ProcessIdentity struct {
 }
 
 func CurrentProcessIdentity() ProcessIdentity {
-	name, err := os.ReadFile("/proc/self/comm")
-	if err != nil {
-		name = []byte(filepath.Base(os.Args[0]))
+	name := filepath.Base(os.Args[0])
+	if comm, err := os.ReadFile("/proc/self/comm"); err == nil {
+		name = strings.TrimSuffix(string(comm), "\n")
 	}
-	return ProcessIdentity{PID: uint32(os.Getpid()), Name: strings.TrimSpace(string(name))}
+	return ProcessIdentity{PID: uint32(os.Getpid()), Name: name}
 }
 
 func (p ProcessIdentity) routingResult() routingResult {

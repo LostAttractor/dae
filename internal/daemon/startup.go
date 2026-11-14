@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common/resource"
@@ -70,6 +71,9 @@ func OpenStartup() (_ *Startup, err error) {
 		}
 		s.lock = s.incoming.take("lock")
 		s.setPreparationDeadline(s.incoming.manifest.Deadline)
+		if err := restoreProcessName(s.incoming.manifest.ProcessName); err != nil {
+			return nil, err
+		}
 		inputs := s.incoming.take("inputs")
 		s.inputs, err = readPreparedInputs(s.ctx, inputs)
 		_ = inputs.Close()
@@ -123,6 +127,18 @@ func OpenStartup() (_ *Startup, err error) {
 		return nil, fmt.Errorf("enable descendant cleanup: %w", err)
 	}
 	return s, nil
+}
+
+// FD-based exec names the new image after the descriptor. Write the group leader's
+// comm: PR_SET_NAME would only rename whichever Go thread runs this goroutine.
+func restoreProcessName(name string) error {
+	if name == "" || len(name) > 15 || strings.ContainsRune(name, 0) {
+		return errors.New("invalid inherited process name")
+	}
+	if err := os.WriteFile("/proc/self/comm", []byte(name), 0600); err != nil {
+		return fmt.Errorf("restore daemon process name: %w", err)
+	}
+	return nil
 }
 
 func (s *Startup) Context() context.Context { return s.ctx }

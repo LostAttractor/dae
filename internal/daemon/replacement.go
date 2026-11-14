@@ -30,6 +30,7 @@ const replacementTimeout = 3 * time.Minute
 type replacementManifest struct {
 	Protocol             int
 	PID                  int
+	ProcessName          string
 	Deadline             time.Time
 	CutoverAt            time.Time
 	Operation            api.Operation
@@ -258,7 +259,8 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 	status, _ := a.operations.Operation(id)
 	ns := control.GetDaeNetns()
 	manifest := replacementManifest{Protocol: handoff.Protocol, PID: os.Getpid(), Deadline: deadline,
-		Operation: status, Files: make(map[string]int), Links: snapshot.Links,
+		ProcessName: control.CurrentProcessIdentity().Name,
+		Operation:   status, Files: make(map[string]int), Links: snapshot.Links,
 		HostIndex: ns.Dae0().Attrs().Index, PeerIndex: ns.Dae0Peer().Attrs().Index,
 		LAN: a.conf.Global.LanInterface, WAN: a.conf.Global.WanInterface}
 	var files []*os.File

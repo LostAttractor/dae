@@ -8,6 +8,8 @@
 
 `dae run` 直接运行业务，正常运行只有一个 dae 业务进程，没有常驻 supervisor 或主进程/worker 拆分。替换通过关闭旧业务后同 PID exec 已打开的目标 ELF 完成；PID 和 `/proc/<pid>/stat` 的 starttime 不变，但旧 Go heap、goroutine 和用户态连接全部消失。exec 不运行旧映像的 defer，因此 Runtime 关闭、持久化 flush、API 排空和插件子进程回收必须在 exec 前显式完成。
 
+`dae run` 在读取配置前取得 `/var/run/dae.lock` 的排他文件锁。同一运行目录下的第二个实例会被拒绝，启动和 exec 期间也不例外；修改运行中的实例应使用 `dae reload`。锁 FD 跨 exec 保留，最后一个持有者退出时由内核释放锁；遗留但未上锁的文件不影响启动，不应删除运行中实例的锁文件。CLI 命令和短暂预检进程不是额外业务实例。
+
 短生命周期预检进程运行目标 ELF 的配置解析器、`plugin.Preflight` 和内核能力检查，并构造不绑定业务 BPF 的用户态控制平面，读取和校验操作输入及插件静态 Plan；它不构造完整 Runtime、活插件实例或执行 `Warm`/Worker。daemon 自身持有实例锁并设置 Linux subreaper，以便在插件正常关闭和已有 `exec.Cmd.Wait` 完成后检查残余后代。预检进程只借用同一打开文件描述，不能主动解锁。预检使用独立的 `replacement_pid_map` 临时豁免，正常路径先撤销再 `Wait`；撤销失败时不能回收并释放仍被豁免的 PID。daemon 或候选异常退出时，内核退出 hook 也会清除临时豁免，防止 PID 复用。残余存活后代须有界终止、回收并使替换失败，不能带入新映像。
 
 固定的 `dae0`、`dae0peer`、`daens`、实例锁及未变更的 API/observability 监听器通过 FD 跨 exec 保留身份，新运行时在数据面提交和最终就绪检查均成功前只借用固定对象，不拥有删除权。监听 FD 不等于 HTTP 服务连续可用：旧 Go server 关闭后、新 server 恢复前，请求可能超时或断连。
@@ -18,7 +20,7 @@
 
 共享网络对象的 BPF link 通过 FD 保留。导出快照先将 Runtime 的原始 links 标记为冻结状态再借用（避免在跨 exec 复制与校验期间长期持有互斥锁），为每个附件复制一份 FD 并将其所有权交给替换流程；阻塞提交或释放快照时解除冻结，未移交的 FD 在释放快照时关闭。
 
-内部 handoff 协议版本为 5。描述包含原 PID、事务期限、交割起点、operation、FD 角色、link 身份及固定拓扑，在 API 排空和 Block 前写入最多 64 KiB 的 sealed memfd；编码、超限或封印失败不影响旧服务。恢复时校验大小、封印、版本、同 PID、原期限、FD 唯一性/类型、实例锁、namespace 和 link 身份；非法内部入口直接拒绝，不降级为普通启动。环境变量只定位继承 FD，不能单独授权。exec 前以 `CLOSE_RANGE_CLOEXEC` 保护全部非标准 FD，只对白名单清除 CLOEXEC；新映像接收后立即恢复 CLOEXEC，避免泄漏给插件。没有前任 pidfd 等待、候选收养或跨进程提交授权消息。
+内部交接双方必须使用相同的 `handoff.Protocol`。描述包含原 PID、进程名、事务期限、交割起点、operation、FD 角色、link 身份及固定拓扑，在 API 排空和 Block 前写入最多 64 KiB 的 sealed memfd；编码、超限或封印失败不影响旧服务。恢复时校验大小、封印、版本、同 PID、原期限、FD 唯一性/类型、实例锁、namespace 和 link 身份；非法内部入口直接拒绝，不降级为普通启动。环境变量只定位继承 FD，不能单独授权。exec 前以 `CLOSE_RANGE_CLOEXEC` 保护全部非标准 FD，只对白名单清除 CLOEXEC；新映像接收后立即恢复 CLOEXEC，避免泄漏给插件。没有前任 pidfd 等待、候选收养或跨进程提交授权消息。通过 FD exec 后，启动流程在路由与资源初始化之前恢复线程组主线程的 `/proc/self/comm`，使内部 DNS、资源下载和 worker 的 `pname()` 规则继续匹配原身份；不依赖 `argv[0]` 或只影响当前 Go 线程的 `PR_SET_NAME`。
 
 原始操作输入通过另一份独立 memfd 传输，不塞入 64 KiB 的 handoff 描述，也不序列化已解析的配置、`Resources.Config`/`Value` 或 Go 对象。父进程建立空的可封印文件，经 `ExtraFiles` 交给目标 ELF 写入并封印，再验证封印和大小后加入正式 exec 的 FD 白名单。单项输入或完整资源组上限为 128 MiB，完整包（含头、索引、原始 bytes 和摘要）上限为 512 MiB。正式启动严格回放；缺项、身份/解释不符、损坏或超限均失败，不退回 live 文件或网络。
 

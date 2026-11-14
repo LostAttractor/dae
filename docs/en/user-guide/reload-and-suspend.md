@@ -125,6 +125,14 @@ both preflight and exec, not the invoking CLI's environment. No executable path
 is accepted over the API. Remote API reloads remain configuration-only; remote
 `--replace` is rejected.
 
+`dae run` takes an exclusive `/var/run/dae.lock` file lock before reading the
+configuration. Another instance using the same runtime directory is rejected,
+even during startup or exec; use `dae reload` to change the running instance.
+The lock FD survives exec and the kernel releases the lock when its last owner
+exits. A leftover unlocked file does not prevent startup; do not delete a live
+instance's lock file. CLI commands and the temporary preflight helper are not
+additional business instances.
+
 A short-lived target ELF process runs its parser, plugin `Preflight` and kernel
 checks, then prepares a userspace control plane without business BPF. Before
 Block, it reads and validates configuration/include selections, subscriptions,
@@ -155,7 +163,10 @@ queries are not available throughout replacement: exec retains listener FDs,
 not Go HTTP servers, so requests may time out or disconnect before the new
 servers resume. The CLI retries operation reads, not the submission. Fixed
 `dae0`, `dae0peer`, `daens` and unchanged API/observability listeners retain their
-identity through inherited FDs.
+identity through inherited FDs. The sealed handoff also carries the daemon's
+process name. Startup restores it before any routing or resource initialization,
+so `pname()` rules for internal DNS, resource downloads and workers keep matching
+after FD-based exec.
 
 Before closing old connections, the daemon sets its entry programs to
 `STOPPING`: only proven explicit-direct traffic, necessary control protocols and

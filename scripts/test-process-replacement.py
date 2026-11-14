@@ -344,6 +344,8 @@ def main(binary, wan=False):
         def assert_image(executable, preparing=False):
             assert master.poll() is None and main_identity() == main_initial
             assert os.path.samefile(f"/proc/{master.pid}/exe", executable)
+            assert Path(f"/proc/{master.pid}/comm").read_bytes() == initial_process_name, "exec changed the daemon routing process name"
+            assert Path("/run/dae.lock").stat().st_ino == initial_lock, "replacement changed the instance lock inode"
             assert Path(f"/proc/{master.pid}/cmdline").read_bytes().split(b"\0")[1:2] == [b"run"]
             helpers = 0
             for child in process_tree(master.pid) - {master.pid}:
@@ -458,6 +460,7 @@ def main(binary, wan=False):
                 if ports == (18080, 18081, 18082):
                     assert listener_identity(ports) == initial_listeners
                 if expected:
+                    duplicate_run()
                     traffic()
                     window = arrivals[arrival_start:]
                     exec_dns_gaps.append({"kind": "forced" if "--replace" in flags else "different-ELF", "dns_max_gap_ms": round(max(right - left for left, right in zip(window, window[1:])) * 1000, 1)})
@@ -471,6 +474,8 @@ def main(binary, wan=False):
                 wait_for(lambda: ready() or master.poll() is not None)
                 assert master.poll() is None, log.read_text()
                 main_initial = main_identity()
+                initial_process_name = Path(f"/proc/{master.pid}/comm").read_bytes()
+                initial_lock = Path("/run/dae.lock").stat().st_ino
                 initial = identity()
                 initial_listeners = listener_identity(ports)
                 assert_image(binary)
@@ -615,6 +620,7 @@ def main(binary, wan=False):
                     assert master.poll() is None, log.read_text()
                     main_initial, initial = main_identity(), identity()
                     assert_image(binary)
+                    duplicate_run()
                     traffic()
                     listeners()
                     assert exported_members("clients") == {member}
