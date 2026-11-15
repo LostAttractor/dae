@@ -142,7 +142,7 @@ dae plugins surge configure 'file:modules/youtube.sgmodule' \
   --name youtube > youtube-module.dae
 ```
 
-The command displays the module description and arguments. Press Enter to inherit a default, enter an explicit value to pin it, or use `""` for an empty string. Arguments without defaults require a value. Only explicit values are written to the configuration; inheriting every default generates the shorthand form. `--name` defaults to `module`.
+The command displays the module description and arguments. Press Enter to inherit a default, enter an explicit value to pin it, or use `""` for an empty string. Arguments without defaults require a value. Only explicit argument and isolation overrides are written to the configuration; with neither, the command generates the shorthand form. `--name` defaults to `module`.
 
 Prompts go to stderr. Place the `module` section written to stdout inside the corresponding Surge instance in `plugins`. For example:
 
@@ -158,7 +158,42 @@ module {
 }
 ```
 
-You can also enter `'name=value'` manually; `'name='` specifies an empty value. The command reads only the module text, without downloading dependencies or writing caches. It uses the host network and `HTTP_PROXY` / `HTTPS_PROXY`; source syntax is the same as in the table above.
+You can also enter `'name=value'` manually; `'name='` specifies an empty value. The command reads the module and its enabled scripts after argument substitution and condition filtering. Relative script paths use the module's final URL or local directory, and repeated script URLs are read only once. Other resources, such as Host sets and Map Local files, are not loaded. Scripts are never executed, source maps are not read, and no configuration, script storage, or disk cache is written. Reads use the host network and `HTTP_PROXY` / `HTTPS_PROXY`, with the existing resource limits and timeout budgets. Source syntax is the same as in the table above. A script read failure stops generation without a configuration fragment.
+
+### Storage Isolation Prompts
+
+Isolation settings appear only when syntax analysis recognizes an unshadowed `$persistentStore.read(...)` or `.write(...)` call, including a `"read"` or `"write"` string-literal subscript. Comments, strings, regular expressions, and same-name local bindings do not count. This is evidence of a call expression, not proof that its branch executes. Aliases, dynamic property names, and generated code may remain unconfirmed; `eval`, `with`, or apparent API replacement can also prevent confirmation. Unsupported syntax produces a warning rather than a claim that the script is stateless. `$prefs` and Web Storage are not dae storage interfaces. No confirmed calls means no isolation prompts or generated isolation overrides; existing inheritance remains intact.
+
+When at least one script has a confirmed call, choose a module policy, then optionally select individual scripts:
+
+```text
+Module isolation [inherit/isolate/share, Enter=inherit, cancel]: share
+Script override [Enter=done, list, <number>, cancel]: list
+1  "capture" (http-request) [inherit]
+2  "refresh" (cron) [inherit]
+Script override [Enter=done, list, <number>, cancel]: 1
+Policy for "capture" (inherit from module) [inherit/isolate/share, Enter=inherit, cancel]: isolate
+Script override [Enter=done, list, <number>, cancel]:
+```
+
+The script list contains only confirmed names, sorted by name. Ambiguity is checked against all scripts, including unconfirmed ones; an ambiguous name cannot receive an individual override. `inherit` removes an override, `isolate` writes `isolate_lan: true`, and `share` writes `isolate_lan: false`. Explicit choices are retained even when they match a parent setting. Revisit a script to change it; Enter keeps its current policy. Enter at the script selector finishes, while `cancel` at an isolation prompt cancels the entire fragment. EOF before completion is an error, not a default answer. The argument stage still treats `cancel` as an ordinary value.
+
+The module policy applies to **every script in the module**, including unconfirmed scripts; filtering only controls the interactive choices. `share` uses the same script state for LAN clients and local execution, potentially sharing cookies and tokens. The command warns when sharing is first selected, but never migrates, merges, or deletes existing data. Local execution remains local. Instance settings are not read or edited: module inheritance uses the instance setting when the fragment is loaded. Manually written descriptors remain available for scripts whose storage use cannot be confirmed statically.
+
+For a module named `accounts`, the selections above generate:
+
+```text
+module {
+  accounts {
+    link: 'file:modules/accounts.sgmodule'
+    isolate_lan: false
+    script {
+      name: 'capture'
+      isolate_lan: true
+    }
+  }
+}
+```
 
 ## Module Conditions and Comments
 

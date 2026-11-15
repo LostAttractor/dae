@@ -142,7 +142,7 @@ dae plugins surge configure 'file:modules/youtube.sgmodule' \
   --name youtube > youtube-module.dae
 ```
 
-命令显示模块说明和参数，直接回车继承默认值，显式输入固定该值，`""` 表示空字符串；无默认值必须填写。仅显式值写入配置，全部继承时生成简写。`--name` 默认 `module`。
+命令显示模块说明和参数，直接回车继承默认值，显式输入固定该值，`""` 表示空字符串；无默认值必须填写。仅显式参数值和隔离覆盖写入配置，两者都未设置时生成简写。`--name` 默认 `module`。
 
 提示写入 stderr，stdout 输出的 `module` 段放入 `plugins` 中对应的 Surge 实例。例如：
 
@@ -158,7 +158,42 @@ module {
 }
 ```
 
-也可手工填写 `'名称=值'`，`'名称='` 表示空值。命令只读取模块文本，不下载依赖或写缓存；使用主机网络及 `HTTP_PROXY` / `HTTPS_PROXY`，来源语法与上表一致。
+也可手工填写 `'名称=值'`，`'名称='` 表示空值。命令读取模块，以及参数替换、条件过滤后启用的脚本。相对脚本路径以模块最终 URL 或本地目录为基准，重复脚本 URL 只读取一次；不加载 Host 集合、Map Local 等其他资源。脚本不会执行，source map 不会读取，也不会写入配置、脚本存储或磁盘缓存。读取使用主机网络及 `HTTP_PROXY` / `HTTPS_PROXY`，并沿用现有资源上限和超时预算；来源语法与上表一致。任一脚本读取失败都会终止生成，不输出配置片段。
+
+### 存储隔离问答
+
+只有语法分析识别到未被局部绑定遮蔽的 `$persistentStore.read(...)` 或 `.write(...)` 调用时，才显示隔离选项；也支持方法名为 `"read"` 或 `"write"` 字符串字面量的下标调用。注释、字符串、正则表达式和同名局部绑定不算命中。这只证明存在调用表达式，不证明相应分支一定执行。别名、动态属性名、生成代码可能无法确认；`eval`、`with` 或明显 API 改写也可能阻止确认。不支持的语法会产生警告，不等于证明脚本无状态。`$prefs` 和 Web Storage 不是 dae 的存储接口。没有确认的调用时，跳过隔离问答，不生成隔离覆盖，保留原有继承关系。
+
+至少一个脚本命中时，先选择模块策略，再按需选择单个脚本：
+
+```text
+Module isolation [inherit/isolate/share, Enter=inherit, cancel]: share
+Script override [Enter=done, list, <number>, cancel]: list
+1  "capture" (http-request) [inherit]
+2  "refresh" (cron) [inherit]
+Script override [Enter=done, list, <number>, cancel]: 1
+Policy for "capture" (inherit from module) [inherit/isolate/share, Enter=inherit, cancel]: isolate
+Script override [Enter=done, list, <number>, cancel]:
+```
+
+脚本目录只包含确认命中的名称，并按名称排序。歧义检查覆盖所有脚本，包括未确认项；歧义名称不能设置单脚本覆盖。`inherit` 删除覆盖，`isolate` 写入 `isolate_lan: true`，`share` 写入 `isolate_lan: false`；显式选择即使与父层当前值相同也保留。可重复选择脚本进行修改，回车保留当前策略；在脚本选择处回车结束，在隔离问答中输入 `cancel` 取消整个配置片段。完成前遇到 EOF 会报错，不视为默认答案。参数问答仍把 `cancel` 当作普通参数值。
+
+模块策略作用于**模块内的所有脚本**，包括未确认项；过滤只限制交互选择入口。`share` 让 LAN 客户端与本机执行共享状态，可能混用 Cookie 和 token。首次选择共享时会提示风险，但不会迁移、合并或删除已有数据。本机执行仍保持本机身份。命令不读取或修改实例设置；模块继承在片段加载时使用实例策略。无法静态确认存储调用的脚本，仍可手写已有描述符。
+
+以 `accounts` 模块为例，上述选择生成：
+
+```text
+module {
+  accounts {
+    link: 'file:modules/accounts.sgmodule'
+    isolate_lan: false
+    script {
+      name: 'capture'
+      isolate_lan: true
+    }
+  }
+}
+```
 
 ## 模块条件与注释
 

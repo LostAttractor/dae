@@ -312,6 +312,28 @@ func TestRuntimeErrors(t *testing.T) {
 	}
 }
 
+func TestRuntimePersistentStoreGlobalVar(t *testing.T) {
+	for _, directive := range []string{"", `"use strict";`} {
+		t.Run(directive, func(t *testing.T) {
+			r := testRuntime(t, RuntimeOptions{StorePath: filepath.Join(t.TempDir(), "store.json")})
+			result, err := r.Run(t.Context(), directive+`
+				if (!$persistentStore.write("value", "key")) throw Error("store failed");
+				var $persistentStore;
+				$done({body: $persistentStore.read("key")});
+			`, Invocation{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Body == nil || string(result.Body.Bytes()) != "value" {
+				t.Fatalf("global var replaced the host store: %#v", result)
+			}
+			if got, err := r.data.read(t.Context(), testLocalScope, "key"); err != nil || got != "value" {
+				t.Fatalf("host store read = %v, %v; want value, nil", got, err)
+			}
+		})
+	}
+}
+
 func TestRuntimePersistentStoreConcurrentReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	a := testRuntime(t, RuntimeOptions{StorePath: path})

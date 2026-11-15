@@ -19,7 +19,7 @@
   # Executables that plugins look up in PATH at runtime, such as ffmpeg.
   runtimeInputs ? [ ],
   # Depends on `pluginModules`.
-  vendorHash ? "sha256-rt5VKQnJEYXdojJXnVaUAcFthcehXm0DXZGsl5Veg8Y=",
+  vendorHash ? "sha256-ip2TlBamahK/YV2ijG9/kqfeeuby+kr1GyLYuMvxXAg=",
 }:
 
 let
