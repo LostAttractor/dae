@@ -190,7 +190,7 @@ are still used to bundle the Web interface during either build.
 
 There is no runtime configuration switch. Node builds accept `node_path` to
 locate the executable. Scripts can inspect `$environment['dae-runtime']`.
-See the [Surge configuration](../../zh/configuration/surge-module.md#nodejs-后端)
+See the [Surge configuration](../configuration/surge-module.md#nodejs-backend)
 for process lifetime, API scope and memory limits.
 
 Root `go.mod` records dependencies for both build variants; the selected build

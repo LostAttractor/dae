@@ -87,7 +87,7 @@ was published means the move took effect but durability could not be confirmed. 
 also do not prove that nothing changed; the command never retries automatically.
 Cross-process file locks serialize individual updates, not another process's
 whole script execution; stop other writers sharing the file before migration.
-See [usage and limits](../../docs/zh/configuration/surge-module.md#mac-变更后的数据迁移).
+See [usage and limits](../../docs/en/configuration/surge-module.md#migrating-data-after-a-mac-change).
 
 The single JSON file maps bucket names to key/string maps, with 64 MiB total and
 4 MiB per value. Reads reuse the decoded snapshot until file identity, size or
@@ -165,7 +165,7 @@ queries read cached values without process I/O. Sample coverage and age identify
 partial/stale data. Console and notification log messages are limited to 4096
 UTF-8 bytes per entry; truncated entries carry `truncated=true`.
 
-See [configuration](../../docs/zh/configuration/surge-module.md),
+See [configuration](../../docs/en/configuration/surge-module.md),
 [supported features](../../docs/zh/configuration/surge-module-support.md), and
 [the common plugin contract](../../component/plugin/README.md).
 The [script compatibility boundaries](../../docs/zh/development/surge-compatibility.md)

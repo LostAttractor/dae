@@ -303,7 +303,7 @@ and aggregate memory grows with the evidence, and capacity selection cost grows
 with the IP count. Queued activity uses space per distinct observation key in a
 batch, and reusable maps retain their allocated capacity. Applying observations
 advances the monotonic watermark and checks for due collection. See
-the [DNS architecture](../../zh/design/project-structure.md#dns) for component
+the [DNS architecture](../design/project-structure.md#dns) for component
 responsibilities and lifecycle.
 
 ### CDN tradeoff and observation gaps
