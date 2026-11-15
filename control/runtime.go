@@ -92,6 +92,7 @@ type Runtime struct {
 	outboundResources outbound.Resources
 	pluginStates      pluginhost.StatePool
 	interfaces        *network.InterfaceManager
+	clientNetlink     *clientNetlink
 }
 
 func NewRuntime() *Runtime {

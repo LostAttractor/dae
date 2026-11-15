@@ -68,37 +68,37 @@ func TestSurgeModuleSourcesRejectInvalidDeclarations(t *testing.T) {
 		{
 			name:      "expanded duplicate link",
 			body:      `module { test { link: 'file:first' link: 'file:second' } }`,
-			errorText: "duplicate link",
+			errorText: `duplicate setting "link"`,
 		},
 		{
 			name:      "expanded unknown field",
 			body:      `module { test { link: 'file:test' unknown: true } }`,
-			errorText: "expected a literal link",
+			errorText: `unknown setting "unknown"`,
 		},
 		{
 			name:      "expanded unknown section",
 			body:      `module { test { link: 'file:test' option {} } }`,
-			errorText: `unknown section "option"`,
+			errorText: `unknown setting "option"`,
 		},
 		{
 			name:      "expanded annotated link",
 			body:      `module { test { link: 'file:test' [enabled: true] } }`,
-			errorText: "expected a literal link without annotations",
+			errorText: "expected settings without annotations",
 		},
 		{
 			name:      "expanded function link",
 			body:      `module { test { link: name(test) } }`,
-			errorText: "expected a literal link",
+			errorText: `invalid value for setting "link"`,
 		},
 		{
 			name:      "duplicate arguments section",
 			body:      `module { test { link: 'file:test' arguments {} arguments {} } }`,
-			errorText: "duplicate arguments section",
+			errorText: `duplicate setting "arguments"`,
 		},
 		{
 			name:      "scalar arguments",
 			body:      `module { test { link: 'file:test' arguments: 'key=value' } }`,
-			errorText: "expected a literal link",
+			errorText: `setting "arguments" requires a section`,
 		},
 		{
 			name:      "duplicate argument",
@@ -274,7 +274,7 @@ func decodedSurge(t *testing.T, conf *config.Config) Config {
 func TestSurgePluginDefaultsAndLimits(t *testing.T) {
 	c := parseConfig(t, `global {} plugins { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
 	s := decodedSurge(t, c)
-	if !s.Store || s.NodePath != "node" || s.ScriptTimeout != DefaultScriptTimeout || s.MaxBodySize != defaultMaxBodySize || s.MemoryLimit != defaultMemoryLimit || s.MaxConcurrentScripts != defaultMaxConcurrentScripts {
+	if !s.Store || !s.IsolateLAN || s.NodePath != "node" || s.ScriptTimeout != DefaultScriptTimeout || s.MaxBodySize != defaultMaxBodySize || s.MemoryLimit != defaultMemoryLimit || s.MaxConcurrentScripts != defaultMaxConcurrentScripts {
 		t.Fatalf("defaults: %+v", s)
 	}
 	for _, limit := range []string{"script_timeout: 0s", "script_timeout: 61s", "memory_limit: 0", "memory_limit: 1", "memory_limit: 1073741825", "max_body_size: 0", "max_body_size: 268435457", "max_concurrent_scripts: 0", "max_concurrent_scripts: 257", "ca_cert: 'x'", "client_source_address: all", "store: 'old-store.json'", "store: ''"} {
@@ -306,7 +306,7 @@ func TestSurgePluginOverrides(t *testing.T) {
 	}
 	want := Config{
 		Modules: []ModuleSource{{Link: "file:module.sgmodule"}},
-		Store:   false, NodePath: "node", ScriptTimeout: 250 * time.Millisecond,
+		Store:   false, IsolateLAN: true, NodePath: "node", ScriptTimeout: 250 * time.Millisecond,
 		MemoryLimit: 64 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 2,
 	}
 	if !reflect.DeepEqual(got, want) {

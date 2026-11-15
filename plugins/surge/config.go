@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,13 +20,16 @@ type ModuleSource struct {
 	Name string
 	Link string
 	// Arguments override module defaults using raw string values, including empty values.
-	Arguments map[string]string
+	Arguments                 map[string]string
+	IsolateLAN, IsolateLANSet bool
+	ScriptIsolation           map[string]bool
 }
 
 // Config configures modules for HTTP processing, routing and IP rewrites. Sizes are bytes.
 type Config struct {
 	Modules              []ModuleSource `mapstructure:"_"`
 	Store                bool           `mapstructure:"store"`
+	IsolateLAN           bool           `mapstructure:"isolate_lan"`
 	NodePath             string         `mapstructure:"node_path"`
 	ScriptTimeout        time.Duration  `mapstructure:"script_timeout"`
 	MemoryLimit          int64          `mapstructure:"memory_limit"`
@@ -47,6 +51,7 @@ func ParseConfig(section *config_parser.Section) (Config, error) {
 	}
 	c := Config{
 		Store:                true,
+		IsolateLAN:           true,
 		NodePath:             "node",
 		ScriptTimeout:        DefaultScriptTimeout,
 		MemoryLimit:          defaultMemoryLimit,
@@ -128,34 +133,43 @@ func parseModuleSources(modules *[]ModuleSource, section *config_parser.Section)
 
 func parseExpandedModuleSource(section *config_parser.Section) (ModuleSource, error) {
 	source := ModuleSource{Name: section.Name}
-	var linkSet, argumentsSet bool
+	settings := &config_parser.Section{Name: section.Name}
+	var linkSet bool
 	for _, item := range section.Items {
-		switch value := item.Value.(type) {
-		case *config_parser.Param:
-			if value.Key != "link" || value.AndFunctions != nil || len(value.Annotation) != 0 {
-				return ModuleSource{}, fmt.Errorf("module %q: expected a literal link without annotations", section.Name)
+		if script, ok := item.Value.(*config_parser.Section); ok && script.Name == "script" {
+			var name string
+			var isolate bool
+			if err := plugin.DecodeSettingsFields(script, map[string]any{"name": &name, "isolate_lan": &isolate}); err != nil {
+				return ModuleSource{}, fmt.Errorf("module %q script: %w", section.Name, err)
 			}
-			if linkSet {
-				return ModuleSource{}, fmt.Errorf("module %q: duplicate link", section.Name)
+			if strings.TrimSpace(name) == "" || len(script.Items) != 2 {
+				return ModuleSource{}, fmt.Errorf("module %q: script requires name and isolate_lan", section.Name)
 			}
-			source.Link = value.Val
-			linkSet = true
-		case *config_parser.Section:
-			if value.Name != "arguments" {
-				return ModuleSource{}, fmt.Errorf("module %q: unknown section %q", section.Name, value.Name)
+			if _, exists := source.ScriptIsolation[name]; exists {
+				return ModuleSource{}, fmt.Errorf("module %q: duplicate script override %q", section.Name, name)
 			}
-			if argumentsSet {
-				return ModuleSource{}, fmt.Errorf("module %q: duplicate arguments section", section.Name)
+			if source.ScriptIsolation == nil {
+				source.ScriptIsolation = make(map[string]bool)
 			}
-			arguments, err := parseModuleArguments(value)
-			if err != nil {
-				return ModuleSource{}, fmt.Errorf("module %q: %w", section.Name, err)
-			}
-			source.Arguments = arguments
-			argumentsSet = true
-		default:
-			return ModuleSource{}, fmt.Errorf("module %q: expected link or arguments section, got %s", section.Name, item.TypeName())
+			source.ScriptIsolation[name] = isolate
+			continue
 		}
+		if param, ok := item.Value.(*config_parser.Param); ok {
+			linkSet = linkSet || param.Key == "link"
+			source.IsolateLANSet = source.IsolateLANSet || param.Key == "isolate_lan"
+		}
+		settings.Items = append(settings.Items, item)
+	}
+	if err := plugin.DecodeSettingsFields(settings, map[string]any{
+		"link":        &source.Link,
+		"isolate_lan": &source.IsolateLAN,
+		"arguments": func(section *config_parser.Section) error {
+			var err error
+			source.Arguments, err = parseModuleArguments(section)
+			return err
+		},
+	}); err != nil {
+		return ModuleSource{}, fmt.Errorf("module %q: %w", section.Name, err)
 	}
 	if !linkSet {
 		return ModuleSource{}, fmt.Errorf("module %q: missing link", section.Name)
@@ -221,30 +235,49 @@ func FormatModuleSource(source ModuleSource) (string, error) {
 	var b strings.Builder
 	line := func(depth int, value string) { b.WriteString(strings.Repeat("  ", depth) + value + "\n") }
 	line(0, "module {")
-	if len(source.Arguments) == 0 {
+	if len(source.Arguments) == 0 && !source.IsolateLANSet && len(source.ScriptIsolation) == 0 {
 		line(1, (&config_parser.Param{Key: source.Name, Val: source.Link}).String(true, true))
 	} else {
 		if source.Name == "" {
-			return "", fmt.Errorf("module arguments require a module name")
+			return "", fmt.Errorf("module settings require a module name")
 		}
 		line(1, source.Name+" {")
 		line(2, (&config_parser.Param{Key: "link", Val: source.Link}).String(true, true))
-		line(2, "arguments {")
-		names := make([]string, 0, len(source.Arguments))
-		for name := range source.Arguments {
-			if strings.TrimSpace(name) == "" || strings.Contains(name, "=") {
-				return "", fmt.Errorf("argument name must be non-empty and cannot contain '='")
+		if len(source.Arguments) != 0 {
+			line(2, "arguments {")
+			names := make([]string, 0, len(source.Arguments))
+			for name := range source.Arguments {
+				if strings.TrimSpace(name) == "" || strings.Contains(name, "=") {
+					return "", fmt.Errorf("argument name must be non-empty and cannot contain '='")
+				}
+				if name != strings.TrimSpace(name) {
+					return "", fmt.Errorf("argument name cannot have leading or trailing whitespace")
+				}
+				names = append(names, name)
 			}
-			if name != strings.TrimSpace(name) {
-				return "", fmt.Errorf("argument name cannot have leading or trailing whitespace")
+			slices.Sort(names)
+			for _, name := range names {
+				line(3, (&config_parser.Param{Val: name + "=" + source.Arguments[name]}).String(true, true))
+			}
+			line(2, "}")
+		}
+		if source.IsolateLANSet {
+			line(2, "isolate_lan: "+strconv.FormatBool(source.IsolateLAN))
+		}
+		names := make([]string, 0, len(source.ScriptIsolation))
+		for name := range source.ScriptIsolation {
+			if strings.TrimSpace(name) == "" {
+				return "", fmt.Errorf("script name must be non-empty")
 			}
 			names = append(names, name)
 		}
 		slices.Sort(names)
 		for _, name := range names {
-			line(3, (&config_parser.Param{Val: name + "=" + source.Arguments[name]}).String(true, true))
+			line(2, "script {")
+			line(3, (&config_parser.Param{Key: "name", Val: name}).String(true, true))
+			line(3, "isolate_lan: "+strconv.FormatBool(source.ScriptIsolation[name]))
+			line(2, "}")
 		}
-		line(2, "}")
 		line(1, "}")
 	}
 	line(0, "}")

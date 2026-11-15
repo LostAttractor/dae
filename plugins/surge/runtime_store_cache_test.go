@@ -24,7 +24,7 @@ func TestRuntimeStoreRejectsFIFO(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				read = func() error { _, err := store.read(t.Context(), "key"); return err }
+				read = func() error { _, err := store.read(t.Context(), testDeviceScope, "key"); return err }
 			}
 			if err := unix.Mkfifo(path, 0600); err != nil {
 				t.Fatal(err)
@@ -74,21 +74,21 @@ func TestRuntimeStoreCacheExternalChanges(t *testing.T) {
 	}
 	read := func(want any) {
 		t.Helper()
-		if got, err := store.read(t.Context(), "cookie"); err != nil || got != want {
+		if got, err := store.read(t.Context(), testDeviceScope, "cookie"); err != nil || got != want {
 			t.Fatalf("cookie=%v, error=%v; want %v", got, err, want)
 		}
 	}
 	read(nil)
-	replace(`{"cookie":"old"}`)
+	replace(`{"02:00:00:00:00:01":{"cookie":"old"}}`)
 	read("old")
 	for range 10 {
 		read("old")
 	}
-	replace(`{"cookie":"new"}`)
+	replace(`{"02:00:00:00:00:01":{"cookie":"new"}}`)
 	read("new")
 	// Also recognize in-place edits with a changed mtime, without relying on
 	// the wall clock or the filesystem's timestamp precision.
-	if err := os.WriteFile(path, []byte(`{"cookie":"edit"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"02:00:00:00:00:01":{"cookie":"edit"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, stamp.Add(time.Second), stamp.Add(time.Second)); err != nil {
@@ -99,24 +99,24 @@ func TestRuntimeStoreCacheExternalChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	read(nil)
-	replace(`{"cookie":"back"}`)
+	replace(`{"02:00:00:00:00:01":{"cookie":"back"}}`)
 	read("back")
 	for _, invalid := range []string{`{`, strings.Repeat("x", maxStoreSize+1)} {
 		replace(invalid)
 		for range 2 {
-			if got, err := store.read(t.Context(), "cookie"); err == nil || got != nil {
+			if got, err := store.read(t.Context(), testDeviceScope, "cookie"); err == nil || got != nil {
 				t.Fatalf("invalid external store returned cached data: %v, %v", got, err)
 			}
 		}
 	}
 	// A writer must refresh as well, even without a preceding read. Invalid
 	// reloads must not prevent recovery once a valid snapshot is committed.
-	replace(`{"cookie":"latest"}`)
-	if !store.write(t.Context(), "result", "signed", false) {
+	replace(`{"02:00:00:00:00:01":{"cookie":"latest"}}`)
+	if !store.write(t.Context(), testDeviceScope, "result", "signed", false) {
 		t.Fatal("write after external update failed")
 	}
 	values, _, err := readRuntimeStoreSnapshot(path)
-	if err != nil || values["cookie"] != "latest" || values["result"] != "signed" {
+	if err != nil || values[testDeviceName]["cookie"] != "latest" || values[testDeviceName]["result"] != "signed" {
 		t.Fatalf("writer lost external data: %v, %v", values, err)
 	}
 	read("latest")
@@ -133,12 +133,12 @@ func BenchmarkRuntimeStoreCachedRead(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			if !store.write(b.Context(), "cookie", "token", false) || !store.write(b.Context(), "cached", strings.Repeat("x", size), false) {
+			if !store.write(b.Context(), testDeviceScope, "cookie", "token", false) || !store.write(b.Context(), testDeviceScope, "cached", strings.Repeat("x", size), false) {
 				b.Fatal("initialize persistent store")
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				if got, err := store.read(b.Context(), "cookie"); err != nil || got != "token" {
+				if got, err := store.read(b.Context(), testDeviceScope, "cookie"); err != nil || got != "token" {
 					b.Fatalf("cookie=%v, err=%v", got, err)
 				}
 			}

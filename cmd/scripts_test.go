@@ -19,8 +19,8 @@ import (
 
 func TestSurgeRunCommandSelection(t *testing.T) {
 	snapshot := []plugin.InstanceStatus{
-		{ID: "personal", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"sign","type":"cron"}]},{"name":"another","tasks":[{"name":"sign","type":"generic"}]}]}`)},
-		{ID: "work", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"sign","type":"cron"}]}]}`)},
+		{ID: "personal", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"sign","scope":"local","type":"cron"}]},{"name":"another","tasks":[{"name":"sign","scope":"local","type":"generic"}]}]}`)},
+		{ID: "work", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"sign","scope":"local","type":"cron"}]}]}`)},
 	}
 	for _, test := range []struct {
 		name, instance, module, script, errorText string
@@ -53,13 +53,13 @@ func TestSurgeRunCommandSelection(t *testing.T) {
 				},
 				TriggerScript: func(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
 					calls++
-					if ctx != t.Context() || instance != test.instance || request.Module != test.module || request.Script != test.script {
+					if ctx != t.Context() || instance != test.instance || request.Module != test.module || request.Script != test.script || request.MAC != "" {
 						t.Errorf("wrong execution request: %s %+v", instance, request)
 					}
 					if test.triggerErr != nil {
 						return nil, test.triggerErr
 					}
-					return &api.ScriptRunResponse{Instance: instance, Module: request.Module, Run: 2, Status: api.ScriptTaskStatus{Name: request.Script, Type: test.scriptType, State: "waiting", LastTrigger: "http-api"}}, nil
+					return &api.ScriptRunResponse{Instance: instance, Module: request.Module, Run: 2, Status: api.ScriptTaskStatus{Name: request.Script, Type: test.scriptType, Scope: "local", State: "waiting", LastTrigger: "http-api"}}, nil
 				},
 			})
 			var output bytes.Buffer
@@ -85,10 +85,10 @@ func TestSurgeRunCommandSelection(t *testing.T) {
 			}
 			if test.raw {
 				var response api.ScriptRunResponse
-				if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Instance != test.instance || response.Module != test.module || response.Run != 2 || response.Status.Type != test.scriptType || response.Status.State != "waiting" || response.Status.LastTrigger != "http-api" || response.Status.LastResult != "" {
+				if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Instance != test.instance || response.Module != test.module || response.Run != 2 || response.Status.Type != test.scriptType || response.Status.State != "waiting" || response.Status.LastTrigger != "http-api" || response.Status.LastResult != "" || response.Status.Scope != "local" || response.Status.MAC != "" {
 					t.Fatalf("invalid acceptance snapshot: %+v %v", response, err)
 				}
-			} else if !strings.Contains(output.String(), fmt.Sprintf("Accepted %s %s/%s/%s (run 2)", test.scriptType, test.instance, test.module, test.script)) {
+			} else if !strings.Contains(output.String(), fmt.Sprintf("Accepted %s %s/%s/%s (local, run 2)", test.scriptType, test.instance, test.module, test.script)) {
 				t.Fatalf("missing acceptance: %s", &output)
 			}
 		})
@@ -97,8 +97,8 @@ func TestSurgeRunCommandSelection(t *testing.T) {
 
 func TestSurgeListCommandDiscovery(t *testing.T) {
 	snapshot := []plugin.InstanceStatus{
-		{ID: "personal", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"签到任务","type":"cron","cronexp":"5 9 * * *","state":"scheduled"}]},{"name":"another","tasks":[{"name":"签到任务","type":"generic","state":"ready"}]},{"name":"http-only","scripts":1}],"notifications":[{"title":"private-notification"}]}`)},
-		{ID: "work", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"签到任务","type":"cron","cronexp":"5 9 * * *","state":"running"}]}]}`)},
+		{ID: "personal", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"签到任务","scope":"local","type":"cron","cronexp":"5 9 * * *","state":"scheduled"}]},{"name":"another","tasks":[{"name":"签到任务","scope":"local","type":"generic","state":"ready"}]},{"name":"http-only","scripts":1}],"notifications":[{"title":"private-notification"}]}`)},
+		{ID: "work", Type: "surge", Details: []byte(`{"enabled":true,"modules":[{"name":"account","tasks":[{"name":"签到任务","scope":"local","type":"cron","cronexp":"5 9 * * *","state":"running"}]}]}`)},
 	}
 	for _, test := range []struct {
 		name                    string

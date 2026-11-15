@@ -15,14 +15,18 @@ import (
 
 // Control tests exercise the host contract without a concrete plugin runtime.
 type controlTestPlugin struct {
-	plan    plugin.Plan
-	handle  func(*plugin.Exchange, plugin.Handler) (*plugin.Response, error)
-	details any
+	plan        plugin.Plan
+	handle      func(*plugin.Exchange, plugin.Handler) (*plugin.Response, error)
+	observeFlow func(plugin.Flow)
+	details     any
 }
 
 func (p *controlTestPlugin) Plan() plugin.Plan { return p.plan }
 
-func (p *controlTestPlugin) Wrap(_ plugin.Flow, next plugin.Handler) plugin.Handler {
+func (p *controlTestPlugin) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
+	if p.observeFlow != nil {
+		p.observeFlow(flow)
+	}
 	if p.handle == nil {
 		return next
 	}

@@ -26,6 +26,7 @@ func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolv
 	options.DeviceStatus = c.DeviceStatus
 	if host := c.MITMHost(); host != nil {
 		options.Scripts = host
+		options.ScriptStorage = host
 	}
 	options.Certificates = certificates
 	if tests := c.MITMTests(); tests != nil {

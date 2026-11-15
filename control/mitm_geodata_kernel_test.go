@@ -75,11 +75,6 @@ func TestMITMGeodataReloadKernelCapture(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-				// Fresh tuples avoid established TCP and cached UDP from previous inputs.
-				src := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(47000+generation*100+i))
-				packet, ipProto := routingKernelPacket(src, dst, proto)
-				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
-				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 				capture := netip.MustParsePrefix(data.subnet).Contains(dst.Addr()) && test.domain == data.domain && dst.Port() == 443
 				if test.name == "API bypass" && proto == consts.L4ProtoType_TCP {
 					capture = false
@@ -88,7 +83,12 @@ func TestMITMGeodataReloadKernelCapture(t *testing.T) {
 				if capture {
 					want = 7
 				}
-				for _, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+				for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					// Use separate connections per generation and source to avoid inheriting earlier routing-cache entries.
+					src := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(47000+generation*100+i+n*1000))
+					packet, ipProto := routingKernelPacket(src, dst, proto)
+					key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
+					key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 					verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256)})
 					if err != nil || verdict != want {
 						t.Fatalf("generation=%d %s %s %v: verdict=%d, err=%v, want=%d", generation, test.name, name, proto, verdict, err, want)

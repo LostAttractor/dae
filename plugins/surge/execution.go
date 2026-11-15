@@ -43,6 +43,9 @@ func (e *Engine) runInvocation(ctx context.Context, module *Module, script *Scri
 	defer func(started time.Time) {
 		e.metrics.duration.WithLabelValues(script.Type).Observe(time.Since(started).Seconds())
 	}(time.Now())
+	if script.Type == "http-request" || script.Type == "http-response" {
+		invocation.Scope = e.requestScope(ctx, script)
+	}
 	invocation.ModuleName = module.Name
 	invocation.ScriptName, invocation.ScriptType, invocation.ScriptPath = script.Name, script.Type, script.Path
 	invocation.Argument, invocation.ArgumentSet = script.Argument, script.ArgumentSet

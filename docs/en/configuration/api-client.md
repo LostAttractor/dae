@@ -41,7 +41,7 @@ The standalone client also supports this, for example
 `watch --color -n 2 'dae-client status --recent --color always'`.
 
 Commands that wait for API responses (`status`, `selector`, `client`, `explain`,
-and plugin status/list/run commands) show a spinner on terminal stderr after
+and plugin status/list/run/store migrate commands) show a spinner on terminal stderr after
 150 ms. It clears before results or errors are printed. Animation is disabled
 for `--json`, redirected stderr, and `TERM=dumb`; stdout remains available for
 pipes and redirection. Script run commands wait for acceptance, not script completion.
@@ -207,6 +207,19 @@ The Web address is `http://ROUTER_IP:<api_port>/`, or `https://ROUTER_IP:<api_po
 
 `dae plugins status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_KEY`; filter reports with `--instance`. The standalone entry point explicitly registers Surge’s lightweight client package, providing `plugins status` for any plugin report and `plugins surge status` for Surge tables without loading runtime plugins. `status` and `status --recent` show daemon state; runtime and worker statistics appear in `plugins surge status` and `plugins status --verbose`. Report commands emit an object containing the process-wide `buffer_memory` budget and filtered `plugins` array with `--json`; `status --json` emits the complete daemon snapshot.
 
+`dae plugins surge list` flattens cron/generic effective scopes: every definition has a local row, and isolated scripts add device rows. Text explicitly distinguishes local/device MAC/unknown rather than inferring local from an empty MAC. Count and resolve definitions by instance/module/name, not rows. `dae plugins surge run demo.tool --instance surge --module tools` always executes locally, never automatically selecting a sole LAN device. For isolated scripts, add `--mac 02:00:00:00:00:50` to select a currently MITM-enabled device. MAC on a shared script returns 400 and asks to omit it; unavailable discovery returns 503; disabled devices or busy same-scope tasks return 409. Acceptance contains `status.scope` and device-only `status.mac`. Local work needs no LAN discovery, MITM or CA; status/list read snapshots without discovery I/O. Notifications group by instance, scope, MAC, module, script and type, displaying 3 per group. Terminal text is escaped; JSON preserves original values. See [Surge isolation, sharing risks and execution semantics](../../zh/configuration/surge-module.md#手动触发).
+
+Both command entry points support device storage migration:
+
+```sh
+dae plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge
+dae-client plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge --json
+```
+
+Arguments are old MAC then new MAC. Without `--instance`, exactly one Surge instance must exist in the scoped status snapshot; zero or multiple instances fail without mutation. Module/task lists and device eligibility do not participate in selection. The command normalizes and validates distinct nonzero unicast six-byte MACs, then sends exactly one mutation. `--json` prints `instance`, `from_mac`, `to_mac` and `keys_moved`; text output escapes terminal controls. The daemon moves the whole device partition, not individual scripts, and never merges or overwrites an existing destination, even an empty one.
+
+First stop old-MAC traffic/background eligibility and other processes writing the same store, then verify the target MAC and absence of target data. Authorization changes are separate. No current device presence or MITM permission is required; local data, notifications, counters and isolation configuration are untouched. Memory-only mode moves current runtime data without enabling persistence or preserving it across reloads; no active storage runtime returns `503`. Existing target or executing source/target scripts return `409`; a later old-MAC execution may recreate its partition. A published-but-durability-unconfirmed `500` means the move took effect. Timeout or connection failure also does not prove data was unchanged: do not automatically retry. See [storage API semantics](api.md#api), including cross-process limits.
+
 The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `internal/daemon/api.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
 ## Architecture
@@ -248,6 +261,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `GET /api/resources` | `ResourceRefreshStatus`; admin; latest API/automatic refresh and next check |
 | `POST /api/operations` | `202` + `Operation`; admin; submit reload, suspend or refresh and receive a unique ID |
 | `GET /api/operations/{id}` | `Operation`; admin; `404` for unknown or expired IDs |
+| `POST /api/plugins/{instance}/store/migrate` | `200` + `ScriptStoreMigrateResponse`; admin, `ScriptStoreMigrateRequest` with `from_mac` and `to_mac`; synchronous, no values returned |
 | `GET /api/device` | `DeviceState`; direct identifiable LAN caller, TCP only |
 | `GET /api/device/status` | `DeviceStatus`; MAC-attributed upstream traffic, connections and used outbounds for the direct LAN caller |
 | `POST /api/device/mitm-tests` | `201` + `MITMTest`; empty body, creates a short-lived browser challenge |
@@ -307,6 +321,8 @@ Traffic totals are bytes. Each traffic history contains up to 12 completed five-
 Checked groups have ten six-minute history buckets over the last hour, oldest first. Each bucket records the worst observed state: unavailable, available, or unknown if unobserved. Unchecked groups have no connectivity history.
 
 Create an `api/client.Client`, reuse it across requests, and pass cancelable contexts. Use `Status`, `Selectors`, `SelectNode`, `ResetSelector`, `Probe`, `Device`, `SetMembership`, `SetMITM`, `ResetMITM` and `Certificate` as needed. `SetMITM(ctx, false, fingerprint)` explicitly disables it; `ResetMITM(ctx, fingerprint)` restores configuration.
+
+`MigrateScriptStore(ctx, "surge", api.ScriptStoreMigrateRequest{FromMAC: "02:00:00:00:00:11", ToMAC: "02:00:00:00:00:22"})` moves one device partition synchronously. It returns `*api.ScriptStoreMigrateResponse` with canonical MACs and `KeysMoved`, never stored values. Invalid/equal MACs return `400`, missing instance/source `404`, existing destination or executing source/target `409`, unavailable storage or canceled/timed-out lock waits `503`. The server uses a fixed five-second cancellable lock-wait budget. A published-but-durability-unconfirmed error is `500` and must not be retried automatically; nor should a timeout or lost response be interpreted as proof of no change.
 
 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})` requests a one-shot probe. Empty/omitted NodeID targets the whole outbound. `ProbeResponse` contains `outbound` and accepted `node_ids`; `202` includes coalescing with queued/running checks, not a completed test result. It uses configured DNS probes, timeouts and concurrency bounds for any instantiated, checked outbound. Arbitrary URLs and per-request probe configuration are not supported. Poll selectors for selector results, and status for other outbound health/latency.
 

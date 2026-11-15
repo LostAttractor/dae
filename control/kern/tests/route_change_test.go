@@ -208,7 +208,8 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		if err := obj.UdpRoutingCacheMap.Lookup(source, &decision); err != nil || decision.Result.RouteEpoch != 1 || decision.Result.Outbound != 2 {
 			t.Fatalf("new UDP route %+v: %v", decision, err)
 		}
-		if err := obj.UdpBindingsMap.Update(source, uint64(1), ebpf.UpdateAny); err != nil {
+		binding := bpftestUdpBinding{RouteEpoch: 1, Mac: decision.Result.Mac, SourceOrigin: decision.Result.SourceOrigin}
+		if err := obj.UdpBindingsMap.Update(source, binding, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
 		epoch(2, 0)

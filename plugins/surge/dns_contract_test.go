@@ -15,19 +15,22 @@ import (
 	"github.com/miekg/dns"
 )
 
-func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
+func TestDNSScriptCacheIsolatedByDevice(t *testing.T) {
 	runtimeFakeClockTest(t, func(t *testing.T) {
 		module := moduleScopeModule(t, "dns", "", "[Host]\nscript.test=script:answer\n[Script]\nanswer=type=dns,script-path=answer.js", map[string]string{"answer": `
           const count = Number($persistentStore.read("count") || "0") + 1;
           $persistentStore.write(String(count), "count");
           $done({addresses:["192.0.2."+count,"2001:db8::1"],ttl:10});`})
 		engine := moduleScopeEngine(t, module)
+		engine.options.Devices = newTestDevices(testDeviceMAC)
+		engine.options.IsolateLAN = true
 		handler := engine.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			t.Error("unexpected downstream query")
 			return nil, errors.New("downstream")
 		})
 		query := hostDNSRequest(t, "script.test.", dns.TypeA)
 		query.Chain = 1
+		query.SourceOrigin, query.SourceMAC = plugin.SourceLAN, testDeviceMAC
 		query.Source = netip.MustParseAddrPort("192.0.2.1:40001")
 		first, err := handler(t.Context(), query)
 		if err != nil {
@@ -37,11 +40,17 @@ func TestDNSScriptSharesClientsWithinConfiguration(t *testing.T) {
 		otherID := query.MessageCopy()
 		otherID.Id++
 		query.DNSPacket = plugin.DNSMessage(otherID)
-		query.Source = netip.MustParseAddrPort("192.0.2.2:40002")
+		query.Source = netip.MustParseAddrPort("[2001:db8::1]:40002")
 		cached, err := handler(t.Context(), query)
 		if err != nil || !cached.Cached || cached.MessageCopy().Id != otherID.Id || cached.MessageCopy().Answer[0].Header().Ttl != 7 || !cached.ReceivedAt.Equal(first.ReceivedAt) {
 			t.Fatalf("cached response: %+v %v", cached, err)
 		}
+		query.SourceMAC = [6]byte{2, 0, 0, 0, 0, 2}
+		other, err := handler(t.Context(), query)
+		if err != nil || other.Cached || other.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.1" {
+			t.Fatalf("device cache or store collision: %+v %v", other, err)
+		}
+		query.SourceOrigin, query.SourceMAC = plugin.SourceLAN, testDeviceMAC
 		query.Chain = 2
 		isolated, err := handler(t.Context(), query)
 		if err != nil || isolated.Cached || isolated.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.2" {

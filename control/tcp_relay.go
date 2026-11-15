@@ -25,6 +25,7 @@ type tcpRelay struct {
 	outboundOrigin netproxy.FailureOrigin
 	statsPath      stats.Path
 	deviceMAC      [6]byte
+	sourceOrigin   plugin.SourceOrigin
 	fallback       bool
 	routeLease     *netproxy.Lease
 	policyLease    *netproxy.Lease
@@ -74,7 +75,7 @@ func (r *tcpRelay) runMITM() error {
 		_ = r.lConn.Close()
 	})
 	defer stop()
-	return r.mitm.admission.ServeConn(r.lConn, plugin.Flow{Host: r.domain, Port: r.dst.Port(), SourceMAC: r.deviceMAC}, mitmPlannerWithLease(r.mitm.planner, lease))
+	return r.mitm.admission.ServeConn(r.lConn, plugin.Flow{Host: r.domain, Port: r.dst.Port(), SourceMAC: r.deviceMAC, SourceOrigin: r.sourceOrigin}, mitmPlannerWithLease(r.mitm.planner, lease))
 }
 
 // copyTCP coordinates the two copy workers independently of their copy method.

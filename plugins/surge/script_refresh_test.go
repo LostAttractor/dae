@@ -83,19 +83,19 @@ func TestDebugScriptRereadsBeforeEachInvocation(t *testing.T) {
 	script := &module.TaskScripts[0]
 	for _, body := range []string{"new", "latest"} {
 		write("$persistentStore.write('" + body + "', 'debug'); $done();")
-		result, err := e.runInvocation(t.Context(), module, script, Invocation{})
+		result, err := e.runInvocation(t.Context(), module, script, Invocation{Scope: testDeviceScope})
 		if err != nil {
 			t.Fatal(err)
 		}
 		result.Close()
-		if got, err := r.data.read(t.Context(), "debug"); err != nil || got != body {
+		if got, err := r.data.read(t.Context(), testDeviceScope, "debug"); err != nil || got != body {
 			t.Errorf("debug source: %q, %v", got, err)
 		}
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := e.runInvocation(t.Context(), module, script, Invocation{}); err == nil {
+	if result, err := e.runInvocation(t.Context(), module, script, Invocation{Scope: testDeviceScope}); err == nil {
 		result.Close()
 		t.Fatal("missing debug file used a stale script")
 	}

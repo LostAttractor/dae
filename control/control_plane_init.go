@@ -69,6 +69,7 @@ func configuredControlPlane(conf *config.Config, global *config.Global, runtimeS
 		apiPort:                   global.APIPort,
 		clients:                   clients,
 		mitmClients:               mitmClients,
+		mitmEnabled:               conf.MITM.Enabled,
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		noConnectivityOutbound:    noConnectivityOutbound,
 		unexpectedExitOutbound:    unexpectedExitOutbound,

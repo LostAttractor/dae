@@ -36,7 +36,7 @@ watch --color -n 2 'dae status --recent --color always'
 
 独立客户端同样支持，例如 `watch --color -n 2 'dae-client status --recent --color always'`。
 
-等待 API 响应的命令（`status`、`selector`、`client`、`explain` 及插件的 status/list/run 命令）在等待超过 150 ms 后，通过终端 stderr 显示加载动画，并在输出结果或错误前清除。`--json`、stderr 重定向或 `TERM=dumb` 时禁用动画，stdout 可正常用于管道和重定向。脚本 run 命令只等待请求被接受，不等待脚本执行结束。
+等待 API 响应的命令（`status`、`selector`、`client`、`explain` 及插件的 status/list/run/store migrate 命令）在等待超过 150 ms 后，通过终端 stderr 显示加载动画，并在输出结果或错误前清除。`--json`、stderr 重定向或 `TERM=dumb` 时禁用动画，stdout 可正常用于管道和重定向。脚本 run 命令只等待请求被接受，不等待脚本执行结束。
 
 ### 管理 selector
 
@@ -135,6 +135,19 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_KEY` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。`status` 和 `status --recent` 展示本体状态；脚本运行时和进程池统计通过 `plugins surge status` 或 `plugins status --verbose` 查看。报告命令的 `--json` 输出包含进程级 `buffer_memory` 和筛选后 `plugins` 实例数组的对象，`status --json` 输出完整 daemon 快照。
 
+`dae plugins surge list` 按有效执行域平铺 cron/generic：每个定义有本机行，隔离脚本另有设备行；文本明确显示 local/device MAC/unknown，不凭空 MAC 猜本机。计数和名称消歧按实例/模块/名称，不按行数。`dae plugins surge run demo.tool --instance surge --module tools` 恒在本机执行，不自动选择唯一设备；开启隔离时可加 `--mac 02:00:00:00:00:50` 选择当前 MITM 启用设备。关闭隔离却指定 MAC 返回 400 并要求省略；设备发现不可用返回 503，禁用设备或同执行域任务忙碌返回 409。受理快照 `status.scope` 标识有效域，仅 device 有 `status.mac`。本机无需 LAN 发现、MITM 或 CA，status/list 只读快照不做发现 I/O。通知按实例、scope、MAC、模块、脚本及类型分组，默认每组 3 条；终端文本转义，JSON 保留原值。详细隔离配置、共享风险与执行语义见 [Surge 配置](surge-module.md#手动触发)。
+
+两个命令入口均支持设备存储迁移：
+
+```sh
+dae plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge
+dae-client plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge --json
+```
+
+位置参数依次为旧 MAC、新 MAC。省略 `--instance` 时，scoped status 中恰好一个 Surge 实例才自动选择；零个或多个均在变更前报错。不按模块/任务猜实例，也不查询设备资格。命令校验并规范化两个不同的非零单播六字节 MAC，只发一次变更请求。`--json` 输出 `instance`、`from_mac`、`to_mac`、`keys_moved`，文本会转义终端控制字符。daemon 移动整个设备分区，不按脚本筛选，目标分区即使为空也拒绝覆盖或合并。
+
+先停用旧 MAC 的流量及后台资格，停止其他进程对同一存储的脚本写入，核对新 MAC 和目标无数据，再执行迁移。设备授权须单独调整；两个设备均不要求在线或启用 MITM。本机数据、通知、计数及隔离配置不变，内存模式仅移动当前 Runtime 数据，不因此启用持久化或跨重载保留；没有活动存储 Runtime 为 `503`。目标存在或源/目标脚本执行中为 `409`；旧 MAC 后续执行仍可能新建分区。提示已发布但持久性未确认的 `500` 表示迁移已经生效，超时或断线也不证明数据未变，均不得自动重试。详见 [API 存储语义](api.md#api) 及跨进程限制。
+
 端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`internal/daemon/api.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
 ## 代码边界
@@ -186,6 +199,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/resources` | `ResourceRefreshStatus` | 管理权限；查询最近一次 API/自动刷新结果和下次检查时间 |
 | `POST /api/operations` | `202` + `Operation` | 管理权限；提交 reload、suspend 或 refresh，立即返回唯一 ID |
 | `GET /api/operations/{id}` | `Operation` | 管理权限；按 ID 查询，未知或过期 ID 返回 `404` |
+| `POST /api/plugins/{instance}/store/migrate` | `200` + `ScriptStoreMigrateResponse` | 管理权限；`ScriptStoreMigrateRequest` 含 `from_mac`、`to_mac`；同步移动，不返回存储值 |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
 | `GET /api/device/status` | `DeviceStatus` | 当前设备设置、用户态上游流量与连接、按网络/出站汇总；仅直连 LAN |
 | `POST /api/device/mitm-tests` | `201` + `MITMTest` | 空正文；创建当前浏览器的短期透明 MITM 挑战 |
@@ -203,6 +217,8 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。设备空闲且最近一分钟历史过期后回收；再次出现时累计值重新开始，`started_at` 表示本次观察周期起点，无观察记录时为零时间。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
 
 CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以同一 API 端口的 HTTPS GET `/api/certificate/tests/{id}` 校验 ID 和 CA 指纹。POST 签发仅存内存的临时证书和新密钥，不修改持久化管理证书。GET 要求该源 IP 与路由器 IP 使用本次或更新挑战证书的握手，管理证书或更早挑战的连接返回 `409` 后关闭；重试仍须由被测浏览器执行。证明成功后消费挑战，已消费或过期的 ID 返回 `404`。挑战一分钟过期；该地址对没有剩余挑战后，新连接恢复管理证书。共享源 IP 的连接会临时使用同一组挑战证书。不要求设备身份，仅 CA 指纹变化时清除结果。浏览器成功和服务端观测都不能证明整个设备信任 CA。
+
+迁移 SDK 为 `MigrateScriptStore(ctx, "surge", api.ScriptStoreMigrateRequest{FromMAC: "02:00:00:00:00:11", ToMAC: "02:00:00:00:00:22"})`，同步返回 `*api.ScriptStoreMigrateResponse`，含规范化 MAC 和 `KeysMoved`，不返回存储值。非法/相同 MAC 为 `400`，实例/源不存在为 `404`，目标存在或源/目标执行中为 `409`，存储不可用或锁等待取消/超时为 `503`。服务端使用固定五秒可取消锁等待预算；文件 I/O 不保证被硬中断。已发布但持久性未确认返回 `500`，不能自动重试；超时或连接中断亦不能作为未发生变更的证明。
 
 统一探测接口使用 `ProbeRequest`，SDK 为 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})`。响应 `ProbeResponse` 包含 `outbound`、`node_ids`，`202` 表示已受理；排队或进行中的重复请求会合并。使用出站配置的 DNS 探测、超时和并发限制，支持所有已实例化的受检测出站，不接受任意 URL 或请求级配置覆盖。selector 的结果继续从 `/api/selectors` 获取，其他出站从 `/api/status` 查看健康与延迟。
 

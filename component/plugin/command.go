@@ -31,9 +31,10 @@ type Definition struct {
 // CommandServices supports daemon queries/actions and configuration helpers.
 // Status is scoped by type and --instance. BaseDir resolves local resources.
 type CommandServices struct {
-	BaseDir       string
-	Status        func(context.Context) (api.PluginStatus, error)
-	TriggerScript func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
+	BaseDir            string
+	Status             func(context.Context) (api.PluginStatus, error)
+	TriggerScript      func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
+	MigrateScriptStore func(context.Context, string, api.ScriptStoreMigrateRequest) (*api.ScriptStoreMigrateResponse, error)
 }
 
 // InstanceStatus carries host state and the plugin's Report.

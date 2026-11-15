@@ -18,6 +18,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -206,7 +207,7 @@ func TestBridgePhysinif(t *testing.T) {
 						if proto == unix.IPPROTO_UDP && !tc.capture {
 							var cached bpftestUdpRoutingCacheValue
 							must(obj.UdpRoutingCacheMap.Lookup(bpftestUdpRoutingCacheKey{Sip: key.Sip, Sport: key.Sport}, &cached))
-							if cached.Result.Physinif != member || cached.Result.Ifindex != uint32(bridge.Index) || cached.Result.Must != 0 || cached.Result.Mark != mark || cached.Result.Outbound != 0 || cached.Result.CaptureFlags != 0 {
+							if cached.Result.Physinif != member || cached.Result.Ifindex != uint32(bridge.Index) || cached.Result.Must != 0 || cached.Result.Mark != mark || cached.Result.Outbound != 0 || cached.Result.CaptureFlags != 0 || cached.Result.SourceOrigin != uint8(plugin.SourceLAN) {
 								t.Fatalf("%s: lost cached identity: %+v", name, cached.Result)
 							}
 						} else if !tc.capture {
@@ -217,7 +218,7 @@ func TestBridgePhysinif(t *testing.T) {
 							if tc.capture {
 								wantOutbound, wantCapture = uint8(consts.OutboundControlPlaneRouting), 2
 							}
-							if result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.Mark != wantMark || result.Outbound != wantOutbound || result.Must != 0 || result.CaptureFlags != wantCapture {
+							if result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.Mark != wantMark || result.Outbound != wantOutbound || result.Must != 0 || result.CaptureFlags != wantCapture || result.SourceOrigin != uint8(plugin.SourceLAN) {
 								t.Fatalf("%s: lost handoff identity: %+v", name, result)
 							}
 						}
@@ -233,7 +234,7 @@ func TestBridgePhysinif(t *testing.T) {
 						must(err)
 						var result bpftestRoutingResult
 						must(lookupHandoff(obj.RoutingTuplesMap, key, &result))
-						if status != 7 || result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.CaptureFlags != 2 {
+						if status != 7 || result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.CaptureFlags != 2 || result.SourceOrigin != uint8(plugin.SourceLAN) {
 							t.Fatalf("%s: cache hit changed identity/decision: status=%d result=%+v", name, status, result)
 						}
 					}

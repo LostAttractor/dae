@@ -84,6 +84,7 @@ type scriptExecutionLog struct {
 	finished bool
 	outcome  string
 	reason   string
+	scope    ScriptScope
 }
 
 func (e *Engine) traceScript(r *http.Request, s *Script) *scriptExecutionLog {
@@ -92,9 +93,12 @@ func (e *Engine) traceScript(r *http.Request, s *Script) *scriptExecutionLog {
 	return entry
 }
 
-func (l *scriptExecutionLog) start() {
+func (l *scriptExecutionLog) start(ctx context.Context) {
 	l.executed = true
-	l.engine.traceRequest(l.request, "script_start", "script", l.script.Name, "phase", l.script.Type)
+	if l.engine.tracing() && l.request != nil {
+		l.scope = l.engine.requestScope(ctx, l.script)
+	}
+	l.engine.traceRequest(l.request, "script_start", "script", l.script.Name, "phase", l.script.Type, "scope", l.scope.name(), "mac", l.scope.deviceName())
 }
 
 func (l *scriptExecutionLog) failed(err error) {
@@ -121,7 +125,7 @@ func (l *scriptExecutionLog) finish(err error) {
 	if !l.engine.tracing() {
 		return
 	}
-	fields := []any{"script", l.script.Name, "phase", l.script.Type, "outcome", l.outcome, "elapsed_ms", time.Since(l.started).Milliseconds()}
+	fields := []any{"script", l.script.Name, "phase", l.script.Type, "scope", l.scope.name(), "mac", l.scope.deviceName(), "outcome", l.outcome, "elapsed_ms", time.Since(l.started).Milliseconds()}
 	if l.reason != "" {
 		fields = append(fields, "reason", l.reason)
 	}

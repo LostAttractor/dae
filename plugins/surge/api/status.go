@@ -52,14 +52,16 @@ type NodeJSRuntimeStatus struct {
 }
 
 // SurgeNotification is explicit script output, independent of runtime success.
-// Each script (module/name/type) retains up to 50 entries within an instance-wide
-// 1 MiB conservative JSON budget; longer histories are trimmed first.
+// Each scope and script (scope/MAC/module/name/type) retains at most 50 entries.
+// An instance shares a conservative 1 MiB JSON budget, trimming longer histories first.
 // IDs are per instance, increase in arrival order and reset on reload.
 type SurgeNotification struct {
 	Instance   string    `json:"instance,omitempty"` // Added by clients combining reports.
 	ID         uint64    `json:"id"`
 	CreatedAt  time.Time `json:"created_at"`
 	Module     string    `json:"module"`
+	Scope      string    `json:"scope"`
+	MAC        string    `json:"mac,omitempty"`
 	Script     string    `json:"script"`
 	ScriptType string    `json:"script_type"`
 	Title      string    `json:"title"`

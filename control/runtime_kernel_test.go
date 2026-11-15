@@ -101,8 +101,8 @@ func TestRuntimeKernelGenerationIsolationAndLinkUpdate(t *testing.T) {
 			t.Fatal(err)
 		}
 		unbind()
-		var epoch uint64
-		if err := r.shared["udp_bindings_map"].Lookup(udpSourceKey(source), &epoch); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		var binding bpfUdpBinding
+		if err := r.shared["udp_bindings_map"].Lookup(udpSourceKey(source), &binding); !errors.Is(err, ebpf.ErrKeyNotExist) {
 			t.Fatalf("retired generation could not release its UDP binding: %v", err)
 		}
 		old = next

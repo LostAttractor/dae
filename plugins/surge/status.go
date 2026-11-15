@@ -3,7 +3,12 @@
 package surge
 
 import (
+	"bytes"
+	"cmp"
+	"fmt"
+	"maps"
 	"slices"
+	"time"
 
 	surgeapi "github.com/daeuniverse/dae/plugins/surge/api"
 )
@@ -75,8 +80,31 @@ func (e *Engine) Status() surgeapi.SurgeStatus {
 		e.tasks.mu.Lock()
 		defer e.tasks.mu.Unlock()
 		for _, job := range e.tasks.jobs {
-			if index, ok := indices[job.module]; ok {
-				status.Modules[index].Tasks = append(status.Modules[index].Tasks, job.status)
+			index, ok := indices[job.module]
+			if !ok {
+				continue
+			}
+			lanFailed := e.tasks.active && e.tasks.lanQueryFailed && job.isolateLAN
+			hasLAN := false
+			for _, scope := range slices.SortedFunc(maps.Keys(job.targets), func(a, b ScriptScope) int {
+				return cmp.Or(cmp.Compare(a.Kind, b.Kind), bytes.Compare(a.MAC[:], b.MAC[:]))
+			}) {
+				target := job.targets[scope]
+				entry := target.status
+				if scope.Kind == ScriptScopeDevice {
+					hasLAN = true
+					if lanFailed && !target.busy {
+						entry.State, entry.LastError = "unavailable", "device_query_failed"
+					}
+				}
+				entry.NextRun = job.status.NextRun
+				if !e.tasks.enabledScope(job, scope) {
+					entry.NextRun = time.Time{}
+				}
+				status.Modules[index].Tasks = append(status.Modules[index].Tasks, entry)
+			}
+			if lanFailed && !hasLAN {
+				status.Modules[index].Warnings = append(status.Modules[index].Warnings, fmt.Sprintf("script %q: LAN targets unavailable (device_query_failed)", job.script.Name))
 			}
 		}
 	}

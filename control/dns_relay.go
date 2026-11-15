@@ -101,7 +101,7 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 		bypass = bypass || must
 	}
 	request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: network,
-		Source: src, OriginalDestination: dst, Destination: target, Interface: identity.Ifindex}
+		Source: src, SourceMAC: identity.Mac, SourceOrigin: identity.sourceOrigin(), OriginalDestination: dst, Destination: target, Interface: identity.Ifindex}
 	request.RouteUpstream = func(ctx context.Context, query *plugin.DNSExchange, upstream plugin.DNSUpstream) (*plugin.DNSExchange, error) {
 		option, err := c.dnsUpstreamOption(ctx, upstream.Network, upstream.Address.String(), upstream.Hostname, query, identity)
 		if err != nil {

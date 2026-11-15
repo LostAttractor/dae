@@ -156,6 +156,16 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 	}
 }
 
+type storeTestDevices struct{}
+
+func (storeTestDevices) Identify(_ context.Context, _ netip.Addr, mac [6]byte) [6]byte {
+	return mac
+}
+
+func (storeTestDevices) MITMEnabled(context.Context) ([][6]byte, error) {
+	return nil, nil
+}
+
 func TestMITMInstancesDefaultStoreIsolation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
@@ -177,13 +187,24 @@ plugins {
  first {type:surge module {'file:first.sgmodule'}}
  second {type:surge module {'file:second.sgmodule'}}
  }`)
-	host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+	definition := surge.Plugin
+	definition.Configure = func(spec plugin.Spec) (plugin.Factory, error) {
+		factory, err := surge.Plugin.Configure(spec)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
+			services.Devices = storeTestDevices{}
+			return factory(ctx, services)
+		}, nil
+	}
+	host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": definition})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
 	for i, id := range []string{"first", "second", "first"} {
-		handler, closeTransport := host.Handler("http", id+".test", 80, nil)
+		handler, closeTransport := host.HandlerForFlow("http", plugin.Flow{Host: id + ".test", Port: 80, SourceOrigin: plugin.SourceLAN, SourceMAC: [6]byte{2, 0, 0, 0, 0, 1}}, nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "http://"+id+".test/", nil))
 		closeTransport()

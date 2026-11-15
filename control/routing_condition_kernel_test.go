@@ -58,23 +58,24 @@ func TestConditionalUseKernelIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-				src := netip.AddrPortFrom(netip.MustParseAddr(test.source), uint16(43000+i))
-				packet, ipProto := routingKernelPacket(src, dst, proto)
-				version := uint8(4)
-				if dst.Addr().Is6() {
-					version = 6
-				}
-				connectivity := bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: version, L4proto: ipProto}
-				if err := collection.Maps["outbound_connectivity_map"].Update(connectivity, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny); err != nil {
-					t.Fatal(err)
-				}
-				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
-				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 				proxy, http, must := test.proxy, test.http, test.must
 				if test.name == "API bypass" && proto == consts.L4ProtoType_TCP {
 					proxy, http, must = false, false, false
 				}
-				for _, program := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+				for n, program := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					// LAN and local connections must not reuse each other's UDP decisions.
+					src := netip.AddrPortFrom(netip.MustParseAddr(test.source), uint16(43000+i+n*1000))
+					packet, ipProto := routingKernelPacket(src, dst, proto)
+					version := uint8(4)
+					if dst.Addr().Is6() {
+						version = 6
+					}
+					connectivity := bpfOutboundConnectivityQuery{Outbound: uint8(consts.OutboundUserDefinedMin), Ipversion: version, L4proto: ipProto}
+					if err := collection.Maps["outbound_connectivity_map"].Update(connectivity, bpfOutboundConnectivity{State: outboundConnectivityAlive}, ebpf.UpdateAny); err != nil {
+						t.Fatal(err)
+					}
+					key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
+					key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 					want := ^uint32(0) // TCX_NEXT: kernel direct.
 					if proxy || http {
 						want = 7 // TC_ACT_REDIRECT.

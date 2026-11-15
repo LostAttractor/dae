@@ -51,7 +51,10 @@ func SelectMITM(fetch MITMSource, kind string, instance *string) MITMSource {
 type ScriptTrigger func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
 
 // MITMCommands registers a plugin's client commands without runtime resources.
-type MITMCommands func(MITMSource, ScriptTrigger) []*cobra.Command
+type MITMCommands func(MITMSource, ScriptTrigger, ScriptStoreMigrator) []*cobra.Command
+
+// ScriptStoreMigrator invokes the host's optional device storage capability.
+type ScriptStoreMigrator func(context.Context, string, api.ScriptStoreMigrateRequest) (*api.ScriptStoreMigrateResponse, error)
 
 // NewMITMCommand exposes opaque reports and explicitly registered client commands.
 func NewMITMCommand(commands map[string]MITMCommands) *cobra.Command {
@@ -63,7 +66,9 @@ func NewMITMCommand(commands map[string]MITMCommands) *cobra.Command {
 	factory := func(kind string, fetch MITMSource) (*cobra.Command, bool) {
 		var register func(MITMSource) []*cobra.Command
 		if create := commands[kind]; create != nil {
-			register = func(scoped MITMSource) []*cobra.Command { return create(scoped, connection.TriggerScript) }
+			register = func(scoped MITMSource) []*cobra.Command {
+				return create(scoped, connection.TriggerScript, connection.MigrateScriptStore)
+			}
 		}
 		return NewMITMPluginCommand(kind, fetch, register)
 	}

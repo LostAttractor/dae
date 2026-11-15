@@ -37,7 +37,7 @@ Use --instance and --module to narrow the list, then run a script by its SCRIPT 
 				return err
 			}
 			if len(tasks) != 0 {
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "\nRun a script with:\n  %srun <SCRIPT> --instance <INSTANCE> --module <MODULE>\n",
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "\nRun a script with:\n  %srun <SCRIPT> --instance <INSTANCE> --module <MODULE> [--mac <MAC>]\n",
 					strings.TrimSuffix(cmd.CommandPath(), "list"))
 			}
 			return err
@@ -50,13 +50,14 @@ Use --instance and --module to narrow the list, then run a script by its SCRIPT 
 
 // NewSurgeRunCommand requires non-nil daemon status and trigger callbacks.
 func NewSurgeRunCommand(fetch cli.MITMSource, trigger cli.ScriptTrigger) *cobra.Command {
-	var module string
+	var module, mac string
 	var raw bool
 	command := &cobra.Command{
 		Use: "run <script>", Short: "Trigger one configured cron or generic script in the daemon.",
 		Long: `Trigger an existing cron or generic script in the running daemon and return its acceptance.
 Use list to discover script names and status to inspect completion.
---module and --instance select ambiguous names.`,
+--module and --instance select ambiguous names. Without --mac, execution is always local.
+--mac selects a MITM-enabled device only for scripts with LAN isolation enabled.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("script name is required; use %q to list configured script tasks", strings.TrimSuffix(cmd.CommandPath(), "run")+"list")
@@ -66,7 +67,7 @@ Use list to discover script names and status to inspect completion.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			response, err := cli.WithProgress(cmd, "Submitting script run...", func() (*api.ScriptRunResponse, error) {
-				return triggerSurgeScript(cmd.Context(), fetch, trigger, api.ScriptRunRequest{Module: module, Script: args[0]})
+				return triggerSurgeScript(cmd.Context(), fetch, trigger, api.ScriptRunRequest{Module: module, Script: args[0], MAC: mac})
 			})
 			if err != nil {
 				return err
@@ -74,11 +75,12 @@ Use list to discover script names and status to inspect completion.
 			if raw {
 				return json.MarshalWrite(cmd.OutOrStdout(), response)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Accepted %s %s/%s/%s (run %d).\n", terminaltext.Line(response.Status.Type), terminaltext.Line(response.Instance), terminaltext.Line(response.Module), terminaltext.Line(response.Status.Name), response.Run)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Accepted %s %s/%s/%s (%s, run %d).\n", terminaltext.Line(response.Status.Type), terminaltext.Line(response.Instance), terminaltext.Line(response.Module), terminaltext.Line(response.Status.Name), surgeScopeLabel(response.Status.Scope, response.Status.MAC), response.Run)
 			return err
 		},
 	}
 	command.Flags().StringVar(&module, "module", "", "Select a module when the script name is not unique")
+	command.Flags().StringVar(&mac, "mac", "", "Select a MITM-enabled device for an isolated script; omit for local execution")
 	command.Flags().BoolVar(&raw, "json", false, "Print the acceptance snapshot as JSON")
 	return command
 }
@@ -95,7 +97,8 @@ func triggerSurgeScript(ctx context.Context, fetch cli.MITMSource, trigger cli.S
 		if task.Name != request.Script {
 			continue
 		}
-		if selected != nil {
+		// Scope rows for one definition are not ambiguous; the daemon validates device selection.
+		if selected != nil && (task.Instance != selected.Instance || task.Module != selected.Module) {
 			return nil, fmt.Errorf("script task %q is ambiguous; specify --instance and --module", request.Script)
 		}
 		selected = task

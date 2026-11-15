@@ -15,7 +15,20 @@ events; [`runtime_http.go`](runtime_http.go) owns script HTTP requests, Fetch
 redirects and bounded response decoding.
 [`tasks.go`](tasks.go) runs cron and generic scripts through the host's Worker
 lifecycle and routed HTTP client, sharing execution slots and persistent storage.
-Generic tasks run only on demand; cron tasks also have a timer schedule.
+Generic tasks run only on demand; omitted MAC always means local execution.
+Cron runs once locally and, when the script isolates LAN clients, once per
+currently MITM-enabled LAN MAC. Shared scripts run only once locally. Local work
+requires neither device discovery, global MITM nor a CA; slow or failed LAN
+discovery does not delay local admission or dispatch. Automatic discovery has one
+in-flight query; repeated ticks for a pending script coalesce instead of building
+an unbounded backlog. Device execution is admitted only after its batch's query
+succeeds, then rechecks eligibility before running. The execution timeout starts
+at admission and includes slot waiting, revalidation, JS and HTTP, not the earlier
+batch discovery. Device targets require global MITM and a ready CA.
+Explicitly enabled MACs need not be online; `all`, IP and CIDR selectors expand
+only over host-known LAN devices. State and busy detection belong to the task's
+effective scope; all scopes share instance slots. Background HTTP uses daemon
+routing, not the selected device's routing identity.
 [`module_load.go`](module_load.go) uses [`resource.Cache`](../../common/resource/cache.go)
 for validated module/dependency snapshots. [`module_dependencies.go`](module_dependencies.go)
 resolves scripts, Host sets and Map Local files through one bounded dependency reader.
@@ -24,19 +37,72 @@ and refresh requests read them again. `global.resource_cache` controls disk snap
 the active resource set and its refresh schedule remain in memory independently.
 The plugin's CLI [`list` and `run` commands](client/scripts.go) discover
 configured cron/generic tasks and request manual execution through the daemon API.
-`list` supports instance/module filtering and JSON; `run` returns an acceptance snapshot. Manual and
-timer execution share `runTask` under the active worker's lifetime.
+`list` supports instance/module filtering and JSON, always including a local row
+and adding device rows only for isolated scripts. Local rows precede devices,
+which are ordered by MAC. Counts and name resolution use instance/module/name,
+not row count. `run --mac` selects a MITM-enabled device only for isolated scripts;
+shared scripts return 400 and require omitting MAC. Malformed MACs return 400,
+disabled devices or busy scope tasks 409, and unavailable discovery 503.
+Acceptance reports `status.scope`; only device scope has `status.mac`.
+Status reads the target snapshot refreshed at activation, cron ticks and manual
+requests without discovery I/O. Discovery failure marks idle known device rows
+unavailable, or adds module warnings when none exist, without corrupting local
+state. Confirmed removal of idle devices drops their in-memory task counters.
+Manual and timer execution share `runTask` under the active worker's lifetime.
 The [plugin host](../../component/mitm/host.go) supplies instance-scoped resource
 services. File stores merge writes under a context-bounded cross-process sidecar lock.
 Script persistence defaults to `store: true`, at
 `BaseDir/plugins/<instance ID>/surge-store.json`; `store: false` is memory-only.
-Reads reuse the decoded snapshot until the file identity, size or mtime changes.
-[`notification.go`](notification.go) keeps the latest 50 notifications per script
-(module/name/type) within each runtime, subject to a conservative 1 MiB JSON
-budget per instance. The longest histories lose their oldest entries first;
-ties remove the oldest entry. Reports include all retained messages
-independently of log filtering; histories reset on reload. CLI text shows the
-latest 3 per script by default; `surge status -v` and `plugins status -v` show all.
+Instance `isolate_lan` defaults to true. In dae's named module block, optional
+`isolate_lan` sets the module policy, and repeated
+`script { name: 'script.name' isolate_lan: false }` blocks override individual
+scripts. Precedence is script > module > instance; sgmodule and JS stay unchanged.
+Names match exactly after module arguments and conditions are resolved. Missing,
+ambiguous or duplicate overrides fail preparation. Policy changes rebuild the
+instance without changing download identity; unchanged descriptors permit reuse.
+This applies to HTTP, DNS, cron and generic scripts independently of persistence.
+Local calls always share the instance's local bucket. Isolated LAN calls use a
+host-confirmed directly connected MAC bucket; unknown identity reads null and
+writes/deletes false. With isolation disabled, every source uses the local bucket.
+Keys remain unchanged and are shared across scripts/modules within a bucket;
+omitted keys use the resolved script path. Capture and cron scripts must use the
+same isolation policy and effective scope to read the same Cookie/token. Shared
+mode intentionally exposes those values to other clients using that bucket.
+Changing policy never migrates, merges or deletes existing buckets. MACs identify
+devices, not authenticated users; MAC reuse can inherit a bucket.
+
+`dae plugins surge store migrate OLD_MAC NEW_MAC --instance surge` moves all keys
+in one device bucket through the running daemon's admin API. The independent
+client provides the same command. An existing target (even empty) is rejected;
+there is no overwrite or merge mode. Source or target executions must finish
+before migration, including overlapping reload generations. Other scopes do not
+cause a busy rejection. Stop old-device traffic and background eligibility first:
+new executions under the old MAC can recreate its bucket. Migration does not
+change authorization, routing, task targets, local data, or notification history.
+It invalidates device DNS script cache generations, not local or upstream caches.
+`--json` reports instance, normalized MACs and keys moved, never stored values.
+With `store: false` it only moves current runtime memory; no script runtime means
+503 rather than opening historical files. A 500 error stating that the migration
+was published means the move took effect but durability could not be confirmed. Timeouts/disconnects
+also do not prove that nothing changed; the command never retries automatically.
+Cross-process file locks serialize individual updates, not another process's
+whole script execution; stop other writers sharing the file before migration.
+See [usage and limits](../../docs/zh/configuration/surge-module.md#mac-变更后的数据迁移).
+
+The single JSON file maps bucket names to key/string maps, with 64 MiB total and
+4 MiB per value. Reads reuse the decoded snapshot until file identity, size or
+mtime changes. DNS script answers key by effective scope, script, domain and
+plugin chain; unknown bypasses the cache, while shared calls reuse local entries.
+[`notification.go`](notification.go) retains up to 50 messages per effective
+scope and script (scope/MAC/module/name/type), with a conservative 1 MiB JSON
+budget per instance including scope and MAC bytes. The longest histories lose
+their oldest entries first; ties remove the oldest entry. Reports include all
+retained messages independently of log filtering; histories reset on reload.
+CLI text shows the latest 3 per scope and script; `surge status -v` and
+`plugins status -v` show all. Explicit local/device/unknown labels never infer
+local from an empty MAC. Scope describes the effective bucket, not raw origin:
+a shared LAN invocation reports local. Only device scope carries a MAC, and
+MAC attribution is not a Prometheus label.
 [`runtime_vm.go`](runtime_vm.go) defines the VM contract. Build with
 `make SURGE_RUNTIME=quickjs` (default) for the native adapter in
 [`internal/quickjs`](internal/quickjs), or `make SURGE_RUNTIME=nodejs` for

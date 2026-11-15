@@ -53,6 +53,7 @@ type Module struct {
 type Script struct {
 	Name, Type, Pattern, Path, Source, Argument string
 	ArgumentSet                                 bool
+	IsolateLAN, IsolateLANSet                   bool // Set only by dae module descriptors, not sgmodule parameters.
 	FullHeaderMode                              bool
 	CronExp                                     string
 	RequiresBody, BinaryBodyMode                bool

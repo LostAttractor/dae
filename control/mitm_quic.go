@@ -26,7 +26,7 @@ func (c *ControlPlane) newMITMQUIC(ctx context.Context, budget *netproxy.PacketB
 		packetPlan := mitmPlannerWithLease(route.planner, lease)
 		plan := c.mitmUpstreamPlanner("tcp", p.Domain, p.Src, p.Dest, *p.routingResult, nil)
 		plan = mitmPlannerWithLease(plan, lease)
-		flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest, SourceMAC: p.routingResult.Mac}
+		flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest, SourceMAC: p.routingResult.Mac, SourceOrigin: p.routingResult.sourceOrigin()}
 		go func() {
 			defer route.Release()
 			defer stop()

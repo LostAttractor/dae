@@ -9,6 +9,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestDestinationCaptureDefersRoute(t *testing.T) {
@@ -60,7 +61,7 @@ func TestDestinationUDPOwnershipSurvivesRuleRemoval(t *testing.T) {
 	}
 	key := bpftestUdpRoutingCacheKey{Sport: binary.NativeEndian.Uint16(packet[34:36])}
 	key.Sip.U6Addr8 = netip.AddrFrom4([4]byte(packet[26:30])).As16()
-	if err := obj.UdpBindingsMap.Update(key, uint64(0), ebpf.UpdateAny); err != nil {
+	if err := obj.UdpBindingsMap.Update(key, bpftestUdpBinding{SourceOrigin: uint8(plugin.SourceLocal)}, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
 	if err := obj.RoutingMap.Update(uint32(0), bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0}, ebpf.UpdateAny); err != nil {

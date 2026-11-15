@@ -14,6 +14,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
 
@@ -50,11 +51,12 @@ func TestUDPFragmentRoutingCacheMetadata(t *testing.T) {
 		{"IPv6", obj.TestpktgenIpv6FirstUdpFragmentDirect},
 	} {
 		for _, network := range []struct {
-			name  string
-			entry *ebpf.Program
+			name   string
+			entry  *ebpf.Program
+			origin plugin.SourceOrigin
 		}{
-			{"LAN", obj.LanIngressL2},
-			{"WAN", obj.TproxyWanEgressL2},
+			{"LAN", obj.LanIngressL2, plugin.SourceLAN},
+			{"WAN", obj.TproxyWanEgressL2, plugin.SourceLocal},
 		} {
 			for _, fragmented := range []bool{true, false} {
 				name := family.name + "/" + network.name
@@ -96,7 +98,7 @@ func TestUDPFragmentRoutingCacheMetadata(t *testing.T) {
 						t.Fatalf("missing cache: %v", iter.Err())
 					}
 					result := cached.Result
-					if result.Protocol != 2 || result.Dscp != dscp || result.Ifindex != ifindex || result.ProfileId != profileID || result.Generation != generation || result.Mac != mac {
+					if result.Protocol != 2 || result.Dscp != dscp || result.Ifindex != ifindex || result.ProfileId != profileID || result.Generation != generation || result.Mac != mac || result.SourceOrigin != uint8(network.origin) {
 						t.Fatalf("incomplete source metadata: %+v", result)
 					}
 				})
@@ -168,11 +170,12 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 		return rule
 	}
 	for _, network := range []struct {
-		name string
-		prog *ebpf.Program
+		name   string
+		prog   *ebpf.Program
+		origin plugin.SourceOrigin
 	}{
-		{"LAN", obj.LanIngressL2},
-		{"WAN", obj.TproxyWanEgressL2},
+		{"LAN", obj.LanIngressL2, plugin.SourceLAN},
+		{"WAN", obj.TproxyWanEgressL2, plugin.SourceLocal},
 	} {
 		t.Run(network.name, func(t *testing.T) {
 			for _, test := range []struct {
@@ -222,7 +225,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 						if result.Outbound != wantOutbound || result.Mark != wantMark || result.Must != wantMust || result.CaptureFlags != test.capture {
 							t.Fatalf("lost cached routing decision: %+v", result)
 						}
-						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.Generation != generation {
+						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.Generation != generation || result.SourceOrigin != uint8(network.origin) {
 							t.Fatalf("lost initial source metadata: %+v", result)
 						}
 					}
@@ -237,7 +240,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 					if !iter.Next(&cacheKey, &cached) {
 						t.Fatalf("missing routing cache: %v", iter.Err())
 					}
-					if cached.CachedUntil == 0 || cached.Result.Outbound != wantOutbound || cached.Result.Mark != wantMark || cached.Result.Must != wantMust || cached.Result.CaptureFlags != test.capture {
+					if cached.CachedUntil == 0 || cached.Result.Outbound != wantOutbound || cached.Result.Mark != wantMark || cached.Result.Must != wantMust || cached.Result.CaptureFlags != test.capture || cached.Result.SourceOrigin != uint8(network.origin) {
 						t.Fatalf("incomplete cached decision: %+v", cached)
 					}
 					cached.CachedUntil = math.MaxUint64
@@ -253,7 +256,9 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 					deleteHandoff(t)
 					laterPacket := append([]byte(nil), packet...)
 					laterPacket[15] = 8 << 2
-					laterPacket[11] ^= 1
+					if network.origin == plugin.SourceLocal {
+						laterPacket[11] ^= 1
+					}
 					status, _, _, err = runBpfProgram(network.prog, laterPacket, ctx)
 					if err != nil || status != 7 {
 						t.Fatalf("cache hit: status=%d err=%v", status, err)

@@ -94,7 +94,7 @@ func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 func TestSurgeTaskStatusWireAndTable(t *testing.T) {
 	next := time.Date(2026, time.September, 29, 9, 5, 0, 0, time.FixedZone("CST", 8*60*60))
 	status := surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{Name: "youpin", State: "loaded", Scripts: 2, Tasks: []api.ScriptTaskStatus{{
-		Name: "有品签到", Type: "cron", CronExp: "5 9 * * *", Timezone: "Asia/Shanghai", TimeoutSeconds: 60,
+		Name: "有品签到", Scope: "device", MAC: "02:00:00:00:00:50", Type: "cron", CronExp: "5 9 * * *", Timezone: "Asia/Shanghai", TimeoutSeconds: 60,
 		State: "scheduled", NextRun: next, LastStartedAt: next.Add(-24 * time.Hour),
 		LastFinishedAt: next.Add(-24*time.Hour + time.Minute), LastDurationMS: 60000,
 		LastResult: "failed", LastError: "timeout", Runs: 3, Failures: 1, Skipped: 2,
@@ -108,16 +108,16 @@ func TestSurgeTaskStatusWireAndTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := report.Modules[0].Tasks[0]
-	if job.Runs != 3 || job.Skipped != 2 || !job.NextRun.Equal(next) || job.LastError != "timeout" {
+	if job.Scope != "device" || job.MAC != "02:00:00:00:00:50" || job.Runs != 3 || job.Skipped != 2 || !job.NextRun.Equal(next) || job.LastError != "timeout" {
 		t.Fatalf("cron state lost in wire roundtrip: %+v", job)
 	}
 	output := RenderSurge(report, false)
-	for _, want := range []string{"Surge script tasks:", "Last script runs:", "personal", "youpin", "有品签到", "5 9 * * *", "Asia/Shanghai", "60s", "scheduled", "2026-09-29T09:05:00+08:00", "failed/timeout", "60000ms", "RUNS", "FAILED", "SKIPPED"} {
+	for _, want := range []string{"Surge script tasks:", "Last script runs:", "MAC", "02:00:00:00:00:50", "personal", "youpin", "有品签到", "5 9 * * *", "Asia/Shanghai", "60s", "scheduled", "2026-09-29T09:05:00+08:00", "failed/timeout", "60000ms", "RUNS", "FAILED", "SKIPPED"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("cron table missing %q:\n%s", want, output)
 		}
 	}
-	status.Modules[0].Tasks = []api.ScriptTaskStatus{{Name: "manual", Type: "generic", State: "ready"}}
+	status.Modules[0].Tasks = []api.ScriptTaskStatus{{Name: "manual", Scope: "local", Type: "generic", State: "ready"}}
 	detail, err = json.Marshal(status)
 	if err != nil || strings.Contains(string(detail), "0001-") || strings.Contains(string(detail), "cronexp") || strings.Contains(string(detail), "timezone") {
 		t.Fatalf("generic includes schedule fields: %s (%v)", detail, err)
@@ -128,12 +128,34 @@ func TestSurgeTaskStatusWireAndTable(t *testing.T) {
 	}
 }
 
+func TestSurgeTaskCountUsesDefinitions(t *testing.T) {
+	output := RenderSurge(surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{
+		Instance: "personal", Name: "tools", State: "loaded", Scripts: 2,
+		Tasks: []api.ScriptTaskStatus{
+			{Name: "job", Scope: "local", Type: "generic", State: "ready"},
+			{Name: "job", Scope: "device", MAC: "02:00:00:00:00:50", Type: "generic", State: "ready"},
+			{Name: "job", Scope: "device", MAC: "02:00:00:00:00:51", Type: "generic", State: "ready"},
+			{Name: "timer", Scope: "local", Type: "cron", State: "scheduled"},
+		},
+	}}}, false)
+	lines := strings.Split(output, "\n")
+	fields := strings.Fields(lines[2])
+	if len(fields) < 5 || fields[3] != "2" || fields[4] != "2" {
+		t.Fatalf("device rows changed definition counts: %s", output)
+	}
+	for _, want := range []string{"MAC", "02:00:00:00:00:50", "02:00:00:00:00:51", "local"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q: %s", want, output)
+		}
+	}
+}
+
 func TestSurgeNotificationStatusWireAndDisplay(t *testing.T) {
 	now := time.Date(2026, time.September, 29, 9, 5, 0, 0, time.UTC)
 	var instances []api.PluginInstanceStatus
 	for i, instance := range []string{"personal", "work"} {
 		detail, err := json.Marshal(surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{Name: "account", State: "loaded"}}, Notifications: []surgeapi.SurgeNotification{{
-			Instance: "untrusted", ID: 1, CreatedAt: now.Add(time.Duration(i) * time.Second), Module: "account", Script: "sign", ScriptType: "cron",
+			Instance: "untrusted", Scope: "device", MAC: "02:00:00:00:00:50", ID: 1, CreatedAt: now.Add(time.Duration(i) * time.Second), Module: "account", Script: "sign", ScriptType: "cron",
 			Title: "签到成功", Subtitle: "账户一", Body: "余额 1.2\n\x1b[31m明日继续\x1b[0m\r\x00", Truncated: i == 1,
 		}}})
 		if err != nil {
@@ -142,11 +164,11 @@ func TestSurgeNotificationStatusWireAndDisplay(t *testing.T) {
 		instances = append(instances, api.PluginInstanceStatus{ID: instance, Type: "surge", Details: detail})
 	}
 	report, err := Surge(instances)
-	if err != nil || len(report.Notifications) != 2 || report.Notifications[0].Instance != "work" || report.Notifications[1].Instance != "personal" || !strings.Contains(report.Notifications[0].Body, "\x1b[31m") {
+	if err != nil || len(report.Notifications) != 2 || report.Notifications[0].Instance != "work" || report.Notifications[1].Instance != "personal" || report.Notifications[0].Scope != "device" || report.Notifications[0].MAC != "02:00:00:00:00:50" || !strings.Contains(report.Notifications[0].Body, "\x1b[31m") {
 		t.Fatalf("notification identity/order/text lost: %+v %v", report, err)
 	}
 	output := RenderSurge(report, false)
-	for _, want := range []string{"Recent Surge notifications:", "2026-09-29T09:05:01Z", "work/account/sign (#1, cron) [truncated]", "personal/account/sign", "Title: 签到成功", "Subtitle: 账户一", "Body: 余额 1.2\n    明日继续"} {
+	for _, want := range []string{"Recent Surge notifications:", "2026-09-29T09:05:01Z", "work/account/sign (#1, cron) [device MAC 02:00:00:00:00:50] [truncated]", "personal/account/sign", "Title: 签到成功", "Subtitle: 账户一", "Body: 余额 1.2\n    明日继续"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("notification display missing %q:\n%s", want, output)
 		}
@@ -162,11 +184,14 @@ func TestSurgeNotificationStatusWireAndDisplay(t *testing.T) {
 
 func TestSurgeNotificationsDisplayLimitAndVerbose(t *testing.T) {
 	scripts := []surgeapi.SurgeNotification{
-		{Instance: "personal", Module: "account", Script: "sign", ScriptType: "cron"},
+		{Instance: "personal", Scope: "unknown", Module: "account", Script: "sign", ScriptType: "cron"},
+		{Instance: "personal", Scope: "local", Module: "account", Script: "sign", ScriptType: "cron"},
 		{Instance: "work", Module: "account", Script: "sign", ScriptType: "cron"},
 		{Instance: "personal", Module: "other", Script: "sign", ScriptType: "cron"},
 		{Instance: "personal", Module: "account", Script: "other", ScriptType: "cron"},
 		{Instance: "personal", Module: "account", Script: "sign", ScriptType: "http-request"},
+		{Instance: "personal", Scope: "device", MAC: "02:00:00:00:00:50", Module: "account", Script: "sign", ScriptType: "cron"},
+		{Instance: "personal", Scope: "device", MAC: "02:00:00:00:00:51", Module: "account", Script: "sign", ScriptType: "cron"},
 	}
 	report := surgeapi.SurgeStatus{Enabled: true}
 	for revision := 4; revision >= 0; revision-- {
@@ -187,11 +212,36 @@ func TestSurgeNotificationsDisplayLimitAndVerbose(t *testing.T) {
 				}
 			}
 		}
-		if !strings.Contains(output, "quiet-notice") || strings.Contains(output, "10 older notifications hidden. Use --verbose") == verbose {
+		if !strings.Contains(output, "[device MAC 02:00:00:00:00:50]") || !strings.Contains(output, "[device MAC 02:00:00:00:00:51]") {
+			t.Fatalf("notification device identity missing: %s", output)
+		}
+		if !strings.Contains(output, "quiet-notice") || strings.Contains(output, "16 older notifications hidden. Use --verbose") == verbose {
 			t.Fatalf("verbose=%t: quiet notification or hidden-count hint lost:\n%s", verbose, output)
 		}
 	}
 	if !slices.Equal(report.Notifications, before) {
 		t.Fatal("text rendering modified the full notification report")
+	}
+}
+
+func TestSurgeScopeLabelsUseExplicitScope(t *testing.T) {
+	for _, test := range []struct{ scope, mac, want string }{
+		{"local", "", "local"},
+		{"local", "spoofed", "local"},
+		{"device", "02:00:00:00:00:50", "device MAC 02:00:00:00:00:50"},
+		{"unknown", "", "unknown"},
+		{"", "", "unknown"},
+		{"", "02:00:00:00:00:50", "unknown"},
+	} {
+		if got := surgeScopeLabel(test.scope, test.mac); got != test.want {
+			t.Errorf("scope=%q mac=%q: got %q, want %q", test.scope, test.mac, got, test.want)
+		}
+		task := api.ScriptTaskStatus{Name: "job", Scope: test.scope, MAC: test.mac}
+		if output := RenderSurgeScriptTasks([]SurgeScriptTask{{ScriptTaskStatus: task}}); !strings.Contains(output, test.want) {
+			t.Errorf("missing scope label: %s", output)
+		}
+		if output := renderSurgeNotifications([]surgeapi.SurgeNotification{{Scope: test.scope, MAC: test.mac}}, false); !strings.Contains(output, "["+test.want+"]") {
+			t.Errorf("missing notification scope: %s", output)
+		}
 	}
 }

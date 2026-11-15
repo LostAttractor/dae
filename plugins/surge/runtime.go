@@ -98,6 +98,12 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if in.Scope.Kind == ScriptScopeDevice && in.Scope.valid() {
+		if err := r.data.beginExecution(ctx, in.Scope.MAC); err != nil {
+			return nil, err
+		}
+		defer r.data.endExecution(in.Scope.MAC)
+	}
 	vm, err := r.backend.newVM(ctx)
 	if err != nil {
 		return nil, err
@@ -113,7 +119,7 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 		runtime: r, ctx: ctx, client: &sessionClient, timeout: timeout,
 		sessionID:  sessionID,
 		moduleName: in.ModuleName, scriptName: in.ScriptName, scriptType: in.ScriptType,
-		bodyMemory: in.BodyMemory, bodyLimit: in.BodyLimit,
+		bodyMemory: in.BodyMemory, bodyLimit: in.BodyLimit, scope: in.Scope,
 		httpCancels: make(map[int]context.CancelFunc),
 		dom:         newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
 		events:      make(chan runtimeEvent),

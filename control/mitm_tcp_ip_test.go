@@ -44,10 +44,12 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 	for _, test := range []struct {
 		name, destination, sni       string
 		scope                        plugin.Scope
+		origin                       plugin.SourceOrigin
 		h2, excluded, ssh, intercept bool
 	}{
-		{name: "IPv4 TLS 1.2", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, intercept: true},
-		{name: "IPv6 TLS 1.3 h2", destination: "[2001:db8::20]:8443", scope: plugin.Scope{{Host: "2001:db8::20", Ports: []uint16{8443}}}, h2: true, intercept: true},
+		{name: "IPv4 TLS 1.2", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, origin: plugin.SourceLocal, intercept: true},
+		{name: "IPv6 TLS 1.3 h2", destination: "[2001:db8::20]:8443", scope: plugin.Scope{{Host: "2001:db8::20", Ports: []uint16{8443}}}, origin: plugin.SourceLAN, h2: true, intercept: true},
+		{name: "unknown source", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, intercept: true},
 		{name: "wrong port", destination: "192.0.2.20:443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}},
 		{name: "unrelated IP", destination: "192.0.2.21:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}},
 		{name: "domain scope only", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "service.example", Ports: []uint16{8443}}}},
@@ -78,9 +80,14 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 				}
 			}
 			src, dst := param.Src, netip.MustParseAddrPort(test.destination)
+			extension.observeFlow = func(flow plugin.Flow) {
+				if flow.SourceOrigin != test.origin || flow.SourceMAC != [6]byte{} || flow.Source != src || flow.Destination != dst {
+					t.Errorf("TCP lost source identity: %+v", flow)
+				}
+			}
 			key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_TCP}
 			key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
-			if err := tuples.Update(key, testRoutingHandoff(t, bpfRoutingResult{Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP, Mark: 37}), ebpf.UpdateAny); err != nil {
+			if err := tuples.Update(key, testRoutingHandoff(t, bpfRoutingResult{Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP, Mark: 37, SourceOrigin: uint8(test.origin)}), ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			result, err := retrieveRoutingResult(tuples, src, dst, unix.IPPROTO_TCP)

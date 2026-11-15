@@ -32,7 +32,7 @@ func TestPreparePrewarmsNodeWithoutScriptSideEffects(t *testing.T) {
 		t.Fatalf("preparation did not prewarm: %+v", n)
 	}
 	r := e.options.Runtime
-	if value, err := r.data.read(t.Context(), "side-effect"); err != nil || value != nil {
+	if value, err := r.data.read(t.Context(), testLocalScope, "side-effect"); err != nil || value != nil {
 		t.Fatalf("warmup executed a user script: value=%v err=%v", value, err)
 	}
 	result, err := r.Run(t.Context(), `$done()`, Invocation{})

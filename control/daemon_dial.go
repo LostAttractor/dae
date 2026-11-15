@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 // Internal requests have the daemon's process identity and no client/interface.
@@ -19,7 +20,7 @@ func daemonProcessIdentity() routingResult {
 	if err != nil {
 		name = []byte(filepath.Base(os.Args[0]))
 	}
-	identity := routingResult{Pid: uint32(os.Getpid())}
+	identity := routingResult{Pid: uint32(os.Getpid()), SourceOrigin: uint8(plugin.SourceLocal)}
 	copy(identity.Pname[:], strings.TrimSpace(string(name)))
 	return identity
 }

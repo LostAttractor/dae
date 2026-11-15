@@ -143,7 +143,8 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `PUT /api/selectors/{name}` | `{"node_id":"状态返回的 ID"}` 选择节点 |
 | `DELETE /api/selectors/{name}` | 恢复显式 `selector(n)`；未配置默认时返回 `409` |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"节点 ID"}` 探测单节点；省略或留空 `node_id` 探测整个出站；返回 `202` 和接受的节点 ID |
-| `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
+| `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool","mac":"02:00:00:00:00:50"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
+| `POST /api/plugins/{instance}/store/migrate` | 需要管理权限；`{"from_mac":"02:00:00:00:00:11","to_mac":"02:00:00:00:00:22"}` 移动设备存储分区；同步 `200` 返回 `instance`、规范化 MAC 和 `keys_moved`，不返回值 |
 | `POST /api/resources/refresh` | 需要管理权限；空正文，立即尝试刷新当前配置的订阅、模块与依赖；返回 `202` 和受理状态 |
 | `GET /api/resources` | 需要管理权限；最近一次 API/自动刷新状态和下次自动检查时间 |
 | `POST /api/operations` | 需要管理权限；提交 reload、suspend 或 refresh，返回 `202` 和唯一操作 ID |
@@ -163,17 +164,25 @@ MITM 的 `override` 为 `null` 时继承配置；`default` 是配置对该设备
 
 `node_id` 是当前实际使用的运行时节点 ID。有保存偏好时，`overridden` 为 `true`，并返回 `saved_selection` 的 `name` 和 `status`（`matched`、`missing`、`ambiguous`）。后两种状态表示保留偏好并使用临时初始选择；客户端不能把当前 `node_id` 误当作新的保存偏好。
 
-脚本执行的 `202` 仅表示受理，任务使用 daemon 后台路由客户端，HTTP 响应结束后继续执行。通过 `/api/status` 的 `plugins[].details.modules[].tasks` 查询完成情况，`type` 为 `cron` 或 `generic`，`runs` 标识最新尝试，`last_trigger` 为 `cron` 或 `http-api`。generic 没有定时计划，空闲时为 `ready`。仅保留最近一次尝试，计数与历史随重载重置。手动执行不改变 cron 的下次定时时间。实例/任务不存在 `404`，省略 module 导致同名歧义 `400`，已在等待/运行 `409`，worker 未激活或已停止 `503`。不接受脚本文本或参数覆盖，API 客户端不自动重试执行请求。
+脚本执行的 `202` 仅表示受理；`status.scope` 为有效执行域，只有 device 有 `status.mac`。省略请求 `mac` 恒为本机，不自动选择唯一 LAN 设备；本机不依赖 LAN 发现、MITM 或 CA。显式 MAC 只可用于开启 LAN 隔离的脚本，并须当前 MITM 启用。cron 每次本机一次，开启隔离时另对启用 LAN 设备每 MAC 一次；共享脚本仅本机一次。显式启用 MAC 不要求在线，all/IP/CIDR 只枚举宿主已知 LAN。后台 HTTP 始终使用 daemon 路由，响应结束后任务继续。
+
+通过 `/api/status` 的 `plugins[].details.modules[].tasks` 查询完成情况。每个定义始终有 `scope: "local"` 行，开启隔离时另有 `scope: "device"` 行并携带 MAC，本机在前、设备按 MAC 排序；unknown 不是执行目标。status/list 只读快照，不触发设备发现。LAN 查询失败只影响设备行或模块 Warnings，不阻断本机、不复用旧 LAN 目标。`type` 为 cron/generic，`runs` 属于本任务本执行域，`last_trigger` 为 `cron`/`http-api`。generic 无计划且空闲时 ready，按实例/模块/名称计数与消歧。只保留最新尝试，重载重置计数，手动执行不改变 cron 计划。不存在为 `404`；名称歧义、非法 MAC 或未隔离脚本指定 MAC 为 `400`（要求省略 MAC）；禁用设备或同域任务忙碌为 `409`；worker 未激活/停止或设备发现不可用为 `503`。不接受源代码或参数覆盖，不自动重试。
+
+Surge 实例 `isolate_lan` 默认 true；dae 模块描述符中的 `isolate_lan` 和 `script { name: '脚本名' isolate_lan: false }` 提供模块级及逐脚本覆盖，优先级为脚本 > 模块 > 实例，不改 sgmodule 语法。本机始终使用本机分区；开启隔离的 LAN 按可信直连 MAC 分区，未知身份 read=null、write/删除=false，DNS 脚本答案不缓存。关闭隔离所有来源共享本机分区及 DNS 脚本缓存，scope 显示 local 而非原始来源。capture 与 cron 须采用一致策略与执行域才能共享 Cookie；关闭隔离会跨客户端共享 Cookie/token，更改设置不自动迁移、合并或删除旧分区。`store` 只控制持久化，单一文件为分区 → keys → strings，实例合计 64 MiB、单值 4 MiB。
+
+显式存储迁移移动所选实例旧 MAC 分区的全部 `$persistentStore` 键值，并删除旧分区。不覆盖或合并：目标分区只要存在（包括空分区）就返回 `409`；当前 daemon 及重载重叠代际中源/目标有脚本执行，也返回 `409`。非法或相同 MAC 为 `400`，实例/源分区不存在为 `404`，能力或 Runtime 不可用、锁等待取消/超时为 `503`。两个地址须为不同的非零单播六字节 MAC，不能选择 local/unknown；不要求设备在线或启用 MITM。固定五秒 context 预算约束可取消的锁等待，不保证硬中断文件 I/O。
+
+迁移前先停用旧 MAC 的流量和后台执行资格，核对目标地址及目标无数据，并停止其他进程对同一文件的脚本写入，再运行 `dae plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge`。设备分区跨脚本共享，因此不按模块/脚本筛选。不移动本机数据、通知、计数或排队任务，不修改设备授权、路由或隔离配置；旧 MAC 再次执行仍可建立新分区。内存模式只移动当前 Runtime 数据，不开启持久化或增加跨重载保留。若 `500` 明确提示 `script store migration was published, but durability is unconfirmed`，表示已迁移，但持久性未确认；超时或连接中断同样不证明数据未变。API/CLI 不自动重试，应先核实结果。跨进程文件锁只串行化提交，不保护其他进程的整段脚本执行。
 
 先用 `dae plugins surge list` 查看可手动执行的 cron/generic 脚本，可用 `--instance`、`--module` 筛选或 `--json` 获取任务数组。再用 `dae plugins surge run demo.tool --instance surge --module tools` 触发，需要 daemon 已运行。`run --json` 返回受理快照，执行结果通过插件状态查询；CLI/API 手动触发的 `last_trigger` 为 `http-api`。详见[手动触发](surge-module.md#手动触发)。
 
-Surge 的 `plugins[].details.notifications` 包含每个实例按脚本各保留的最近 50 条 `$notification.post` 通知，最新在前，没有通知时省略。脚本身份由 `module`、`script` 和 `script_type` 共同确定。字段为 `id`、`created_at`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。记录独立于日志级别和脚本成功与否，重载后清空。`dae plugins surge status` 默认每脚本显示 3 条；`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
+Surge 的 `plugins[].details.notifications` 按 scope、MAC、module、script、script_type 分组，各保留最多 50 条 `$notification.post`，最新在前、为空时省略。每条含 `id`、`created_at`、`scope`（local/device/unknown）、设备专用 `mac`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。本机和 unknown 不混组，共享 LAN 显示 local。记录独立于日志级别和执行成功与否，重载清空；文本默认每组 3 条，`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
 
 daemon 的状态 schema 为 15，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且在用户态成功建立的连接，内核直连转发的 fallback 流与其他内核直通流量一样不计入；路径、组和节点统计不含 fallback 字段。`tables` 报告内核表和用户态资源池，提供 `scope`（`kernel` / `userspace`）、`on_full`（`evict` / `reject` / `omit` / `unlimited`）和可选 `error`。`limit: 0` 表示无容量上限；非空 `error` 表示 `used` 不可用，而不是零。LRU 满载时正常淘汰，与拒绝新增的资源池不同。域名表另报告时间 GC、内核候选数量和等待重试的投影变更。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`compiled_plugins` 列出运行进程已注册的插件类型，不含系统 MITM diagnostic。`plugins` 列出已接受配置的实例 ID、类型、`enabled`、宿主生命周期状态和规则数量，并保留系统诊断实例。`declared_scopes` 是实例声明的 HTTP 范围数量，`scopes` 是应用 HTTP 总开关后的有效数量；disabled 实例不求值声明，数量为零且无 `details`。`http_active` 表示 scope 可参与 HTTP 处理，不保证设备截获或 worker 健康；生效时 `http_reason` 为空，否则为 `disabled`、`no_scopes`、`mitm_disabled`、`prepared`、`draining` 或 `unavailable`。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
 
 `dae plugins status --json` 输出进程级 `compiled_plugins`、`buffer_memory` 和完整 `plugins`，没有活动实例或按实例筛选时仍保留编入清单和内存统计；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
 
-通知另受每实例 1 MiB 保守 JSON 编码预算限制，文本按最坏转义长度计费。超限时先从记录最多的脚本删除最旧记录，数量相同时删除最旧的一条，因此每脚本实际保留数量可能少于 50 条。verbose/JSON 返回预算内全部记录。
+通知另受每实例 1 MiB 保守 JSON 编码预算限制，scope、MAC 及文本按最坏转义长度计费。超限先从最长执行域/脚本历史删除最旧记录，数量相同则删除最旧的一条，每组实际可能少于 50 条。verbose/JSON 返回预算内全部记录；MAC 不加入 Prometheus 标签。
 
 ### 资源刷新
 

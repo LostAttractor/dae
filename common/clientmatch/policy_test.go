@@ -48,6 +48,45 @@ func TestCompiledPolicyPreservesOrderedSelectors(t *testing.T) {
 	}
 }
 
+func TestPolicyAllowsMACWithoutIP(t *testing.T) {
+	mac := [6]byte{2, 0, 0, 0, 0, 1}
+	for _, tc := range []struct {
+		name  string
+		rules []string
+		want  bool
+	}{
+		{"empty", nil, false},
+		{"all", []string{"all"}, true},
+		{"IP exclusion before all", []string{"-192.0.2.0/24", "all"}, false},
+		{"IPv6 exclusion before all", []string{"-2001:db8::/32", "all"}, false},
+		{"all before exclusion", []string{"all", "-192.0.2.0/24"}, true},
+		{"MAC before exclusion", []string{"02:00:00:00:00:01", "-192.0.2.0/24"}, true},
+		{"exclusion before MAC", []string{"-192.0.2.0/24", "02:00:00:00:00:01"}, false},
+		{"MAC excluded", []string{"-02:00:00:00:00:01", "all"}, false},
+		{"all before MAC denial", []string{"all", "-02:00:00:00:00:01"}, true},
+		{"IP allow alone", []string{"192.0.2.0/24"}, false},
+		{"shadowed IP exclusion", []string{"192.0.2.0/24", "-192.0.2.1", "all"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matcher, err := Parse(tc.rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := matcher.Compile(nil).AllowsMAC(mac); got != tc.want {
+				t.Fatalf("AllowsMAC = %v, want %v", got, tc.want)
+			}
+			for _, override := range []bool{false, true} {
+				if got := matcher.Compile(map[[6]byte]bool{mac: override}).AllowsMAC(mac); got != override {
+					t.Fatalf("override = %v, want %v", got, override)
+				}
+			}
+		})
+	}
+	if (*Policy)(nil).AllowsMAC(mac) || (Matcher{}).Compile(nil).AllowsMAC([6]byte{}) {
+		t.Fatal("unknown policy or MAC allowed")
+	}
+}
+
 func TestCompiledPrefixKeepsEarlierNarrowRule(t *testing.T) {
 	entries := []string{"-10.1.2.0/24", "10.0.0.0/8", "-10.1.0.0/16", "10.1.2.3"}
 	matcher, _ := Parse(entries)

@@ -25,7 +25,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	t.Setenv("DAE_API_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("DAE_API_KEY", "report-secret")
 	instances := []api.PluginInstanceStatus{
-		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"],"tasks":[{"name":"有品签到","type":"cron","cronexp":"5 9 * * *","state":"scheduled","timeout_seconds":60,"next_run":"2026-09-29T09:05:00+08:00","last_result":"success","runs":1}]}],"notifications":[{"id":1,"created_at":"2026-09-29T09:05:00+08:00","module":"shared","script":"有品签到","script_type":"cron","title":"签到成功","subtitle":"账户一","body":"余额 1.2"}]}`)},
+		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"],"tasks":[{"name":"有品签到","scope":"local","type":"cron","cronexp":"5 9 * * *","state":"scheduled","timeout_seconds":60,"next_run":"2026-09-29T09:05:00+08:00","last_result":"success","runs":1}]}],"notifications":[{"id":1,"created_at":"2026-09-29T09:05:00+08:00","module":"shared","scope":"local","script":"有品签到","script_type":"cron","title":"签到成功","subtitle":"账户一","body":"余额 1.2"}]}`)},
 		{ID: "work", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded"}]}`)},
 		{ID: "native", Type: "demo", State: "active", Details: jsonv1.RawMessage(`{"running":7,"tasks":[{"name":"hidden-in-summary"}]}`)},
 	}
@@ -102,6 +102,66 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 				const summary = "Body buffers (process): 1.00 / 64.00 MiB; peak=2.00 MiB; denied=3"
 				if strings.Count(output.String(), summary) != 1 {
 					t.Fatalf("process memory summary missing or duplicated: %s", output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestSurgeRunSelectsDefinitionsNotScopeRows(t *testing.T) {
+	const mac = "02:00:00:00:00:50"
+	for _, test := range []struct {
+		name, mac string
+		modules   []surgeapi.ModuleStatus
+		ambiguous bool
+	}{
+		{name: "local and device rows", mac: mac, modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "local"}, {Name: "job", Scope: "device", MAC: mac}}}}},
+		{name: "one device never auto selected", modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "local"}, {Name: "job", Scope: "device", MAC: mac}}}}},
+		{name: "multiple devices", mac: mac, modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "device", MAC: mac}, {Name: "job", Scope: "device", MAC: "02:00:00:00:00:51"}}}}},
+		{name: "omitted MAC remains local with multiple devices", modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "device", MAC: mac}, {Name: "job", Scope: "device", MAC: "02:00:00:00:00:51"}}}}},
+		{name: "no devices still selects definition", modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "local", State: "ready"}}}}},
+		{name: "different modules remain ambiguous", ambiguous: true, modules: []surgeapi.ModuleStatus{{Name: "tools", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "device", MAC: mac}}}, {Name: "other", Tasks: []api.ScriptTaskStatus{{Name: "job", Scope: "device", MAC: mac}}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			details, err := json.Marshal(surgeapi.SurgeStatus{Enabled: true, Modules: test.modules})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fetch := func(context.Context) (api.PluginStatus, error) {
+				return api.PluginStatus{Plugins: []api.PluginInstanceStatus{{ID: "personal", Type: "surge", Details: details}}}, nil
+			}
+			calls := 0
+			command := NewSurgeRunCommand(fetch, func(_ context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
+				calls++
+				if instance != "personal" || request.Module != "tools" || request.Script != "job" || request.MAC != test.mac {
+					t.Fatalf("selection changed: instance=%s request=%+v", instance, request)
+				}
+				scope := "local"
+				if request.MAC != "" {
+					scope = "device"
+				}
+				return &api.ScriptRunResponse{Instance: instance, Module: request.Module, Status: api.ScriptTaskStatus{Name: request.Script, Type: "generic", Scope: scope, MAC: request.MAC}}, nil
+			})
+			var output bytes.Buffer
+			command.SetOut(&output)
+			command.SetErr(&output)
+			args := []string{"job"}
+			if test.mac != "" {
+				args = append(args, "--mac", test.mac)
+			}
+			command.SetArgs(args)
+			err = command.ExecuteContext(t.Context())
+			if test.ambiguous {
+				if err == nil || !strings.Contains(err.Error(), "ambiguous") || calls != 0 {
+					t.Fatalf("ambiguous definition triggered: calls=%d err=%v", calls, err)
+				}
+			} else {
+				want := "local"
+				if test.mac != "" {
+					want = "device MAC " + test.mac
+				}
+				if err != nil || calls != 1 || !strings.Contains(output.String(), "("+want+",") {
+					t.Fatalf("scope selection failed: calls=%d err=%v output=%s", calls, err, &output)
 				}
 			}
 		})

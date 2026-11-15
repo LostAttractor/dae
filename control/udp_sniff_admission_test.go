@@ -9,10 +9,12 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	quic "github.com/daeuniverse/quic-go"
 )
@@ -21,7 +23,7 @@ import (
 // the routing and dial that follow sniffing wait for it.
 func TestUDPSniffingBuffersWithoutSetupCapacity(t *testing.T) {
 	initials := splitQUICInitials(t)
-	bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", 8)
+	bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", uint32(unsafe.Sizeof(bpfUdpBinding{})))
 	decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
 	var endpoints UdpEndpointPool
 	defer endpoints.closeAll()
@@ -40,7 +42,7 @@ func TestUDPSniffingBuffersWithoutSetupCapacity(t *testing.T) {
 		outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), group},
 	}
 	source, dst := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("192.0.2.20:443")
-	result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), Ifindex: 7, ProfileId: matcher.defaultProfileID}
+	result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), Ifindex: 7, ProfileId: matcher.defaultProfileID, SourceOrigin: uint8(plugin.SourceLocal)}
 	send := func(packet []byte) {
 		t.Helper()
 		if err := plane.handlePkt(t.Context(), packet, source, dst, result); err != nil {

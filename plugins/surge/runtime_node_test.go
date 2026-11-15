@@ -73,7 +73,7 @@ $httpClient.get("https://task.test/", () => $done());`}, 1)
 		time.Sleep(time.Millisecond)
 	}
 	request := api.ScriptRunRequest{Script: "job"}
-	if _, err := host.TriggerScript("test", request); err != nil {
+	if _, err := host.TriggerScript(t.Context(), "test", request); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -81,10 +81,10 @@ $httpClient.get("https://task.test/", () => $done());`}, 1)
 	case <-time.After(5 * time.Second):
 		t.Fatal("Node task did not reach the host HTTP client")
 	}
-	if _, err := host.TriggerScript("test", request); !errors.Is(err, plugin.ErrScriptBusy) {
+	if _, err := host.TriggerScript(t.Context(), "test", request); !errors.Is(err, plugin.ErrScriptBusy) {
 		t.Fatalf("overlapping task accepted: %v", err)
 	}
-	if got, err := e.options.Runtime.data.read(t.Context(), "state"); err != nil || got != "started" {
+	if got, err := e.options.Runtime.data.read(t.Context(), testLocalScope, "state"); err != nil || got != "started" {
 		t.Fatalf("task storage: %q, %v", got, err)
 	}
 	if err := host.Close(); err != nil {
@@ -99,7 +99,7 @@ $httpClient.get("https://task.test/", () => $done());`}, 1)
 	if status.Runs != 1 || status.State != "stopped" || status.LastError != "canceled" || len(e.slots) != 0 {
 		t.Fatalf("retired task: %+v", status)
 	}
-	if _, err := host.TriggerScript("test", request); !errors.Is(err, plugin.ErrScriptInactive) {
+	if _, err := host.TriggerScript(t.Context(), "test", request); !errors.Is(err, plugin.ErrScriptInactive) {
 		t.Fatalf("retired host accepted task: %v", err)
 	}
 }

@@ -18,6 +18,15 @@ import (
 	logrus "github.com/sirupsen/logrus"
 )
 
+// SourceOrigin comes only from verified ingress, never inferred from a MAC, IP or PID.
+type SourceOrigin uint8
+
+const (
+	SourceUnknown SourceOrigin = iota
+	SourceLocal
+	SourceLAN
+)
+
 // Flow retains the original captured Source/Destination tuple. Host/Port identify
 // the incoming authority admitted before middleware; H2/H3 fronting can select a
 // different business host on the same connection. It is not proof of TLS identity.
@@ -27,7 +36,8 @@ type Flow struct {
 	Source, Destination netip.AddrPort
 	// SourceMAC is the original kernel ingress identity, or zero for callers
 	// without LAN metadata. It is independent of per-destination IP selection.
-	SourceMAC [6]byte
+	SourceMAC    [6]byte
+	SourceOrigin SourceOrigin
 }
 
 // Exchange belongs to one synchronous invocation. Background work must copy
@@ -97,12 +107,21 @@ type SharedStates interface {
 	Acquire(context.Context, string, func() (io.Closer, error)) (io.Closer, func() error, error)
 }
 
+// DeviceService provides host-verified identities and MITM-enabled devices across reloads.
+// Identify returns a zero MAC for unverified direct clients; MITMEnabled returns a detached, deduplicated snapshot.
+type DeviceService interface {
+	Identify(context.Context, netip.Addr, [6]byte) [6]byte
+	MITMEnabled(context.Context) ([][6]byte, error)
+}
+
 // Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
 	// Interfaces is a borrowed host event source. Plugins own NewScope results
 	// and close those scopes, never the source. Nil supports standalone factories.
 	Interfaces *network.InterfaceManager
+	// Devices is host-owned; without it, LAN identities and background device targets cannot be verified.
+	Devices DeviceService
 	// Prepared contains the immutable value returned by Definition.Resources.
 	Prepared any
 	// ResourceCacheDir is empty when global resource caching is disabled.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
 
@@ -115,10 +116,17 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	if spec.Maps["udp_routing_scratch_map"] != nil {
 		t.Fatal("UDP insertion must reuse ingress scratch, not a standalone map")
 	}
+	if unsafe.Offsetof(result.SourceOrigin) != 31 {
+		t.Fatalf("source_origin offset = %d, want 31", unsafe.Offsetof(result.SourceOrigin))
+	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
 	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 40 || unsafe.Sizeof(value) != 72 || unsafe.Sizeof(value.Result) != 40 {
 		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
+	}
+	binding := spec.Maps["udp_bindings_map"]
+	if binding.KeySize != cache.KeySize || binding.ValueSize != 16 || unsafe.Sizeof(bpfUdpBinding{}) != 16 {
+		t.Fatalf("UDP binding layout: key=%d value=%d", binding.KeySize, binding.ValueSize)
 	}
 	// Validate every member against compiled C BTF, including tail padding.
 	// Equal sizeof alone would miss reordered fields or generated padding bytes.
@@ -128,6 +136,7 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 		"tcp_flow_state":          reflect.TypeFor[bpfTcpFlowState](),
 		"udp_routing_cache_value": reflect.TypeFor[bpfUdpRoutingCacheValue](),
 		"udp_routing_scratch":     reflect.TypeFor[bpfUdpRoutingScratch](),
+		"udp_binding":             reflect.TypeFor[bpfUdpBinding](),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var layout *btf.Struct
@@ -158,6 +167,26 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 			}
 			t.Logf("C/Go size=%d bytes, no alignment holes", offset)
 		})
+	}
+}
+
+func TestRoutingResultSourceOrigin(t *testing.T) {
+	for value := range 256 {
+		want := plugin.SourceUnknown
+		switch value {
+		case 1:
+			want = plugin.SourceLocal
+		case 2:
+			want = plugin.SourceLAN
+		}
+		for _, mac := range [][6]byte{{}, {2, 0, 0, 0, 0, 1}} {
+			for _, pid := range []uint32{0, uint32(os.Getpid())} {
+				result := routingResult{Pid: pid, SourceOrigin: uint8(value), Mac: mac}
+				if got := result.sourceOrigin(); got != want {
+					t.Fatalf("source_origin=%d mac=%v pid=%d: got %v, want %v", value, mac, pid, got, want)
+				}
+			}
+		}
 	}
 }
 

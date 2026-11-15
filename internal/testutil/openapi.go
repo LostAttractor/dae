@@ -20,6 +20,7 @@ type Schema struct {
 	Ref        string             `json:"$ref"`
 	Type       string             `json:"type"`
 	Format     string             `json:"format"`
+	Enum       []any              `json:"enum"`
 	Properties map[string]Schema  `json:"properties"`
 	Required   requiredProperties `json:"required"`
 	Items      *Schema            `json:"items"`

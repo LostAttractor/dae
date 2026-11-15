@@ -135,7 +135,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *plugin.Res
 		defer body.Close()
 		message.Body = body.Bytes()
 	}
-	execution.start()
+	execution.start(ctx)
 	result, err := e.runInvocation(ctx, module, s, Invocation{Request: message, HTTPClient: client})
 	if err != nil {
 		execution.failed(err)
@@ -246,7 +246,7 @@ func (e *Engine) processResponse(response *plugin.Response, client *http.Client)
 	if len(r.Trailer) != 0 {
 		message.Trailers = r.Trailer
 	}
-	execution.start()
+	execution.start(ctx)
 	result, err := e.runInvocation(ctx, module, s, Invocation{Request: requestMessage(r.Request), Response: message, HTTPClient: client})
 	if err != nil {
 		execution.failed(err)

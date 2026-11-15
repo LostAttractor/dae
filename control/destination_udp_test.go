@@ -11,10 +11,12 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	quic "github.com/daeuniverse/quic-go"
 )
@@ -77,7 +79,7 @@ func destinationQUICInitial(t *testing.T) []byte {
 func TestDestinationUDPKeepsSniffedQUICClassification(t *testing.T) {
 	for _, isQUIC := range []bool{false, true} {
 		t.Run(fmt.Sprint(isQUIC), func(t *testing.T) {
-			bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", 8)
+			bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", uint32(unsafe.Sizeof(bpfUdpBinding{})))
 			decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
 			var endpoints UdpEndpointPool
 			defer endpoints.closeAll()
@@ -103,7 +105,7 @@ func TestDestinationUDPKeepsSniffedQUICClassification(t *testing.T) {
 			if isQUIC {
 				packet = destinationQUICInitial(t)
 			}
-			result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: matcher.defaultProfileID}
+			result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: matcher.defaultProfileID, SourceOrigin: uint8(plugin.SourceLocal)}
 			for i, dst := range []netip.AddrPort{first, second} {
 				if err := plane.handlePkt(t.Context(), packet, source, dst, result); err != nil {
 					t.Fatal(err)
@@ -124,7 +126,7 @@ func TestDestinationUDPKeepsSniffedQUICClassification(t *testing.T) {
 func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 	for _, rewritten := range []bool{false, true} {
 		t.Run(fmt.Sprint(rewritten), func(t *testing.T) {
-			bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", 8)
+			bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", uint32(unsafe.Sizeof(bpfUdpBinding{})))
 			decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
 			var endpoints UdpEndpointPool
 			defer endpoints.closeAll()
@@ -157,7 +159,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			send := func() {
 				t.Helper()
-				result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: profileID}
+				result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: profileID, SourceOrigin: uint8(plugin.SourceLocal)}
 				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, result); err != nil {
 					t.Fatal(err)
 				}
@@ -212,8 +214,8 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			if !ok || fresh == endpoint || fresh.destinations[original].target != newTarget || fresh.destinationParam.routingResult.Mark != 91 || fresh.destinationParam.routingResult.ProfileId != profileID || len(recorder.targets) != 2 || recorder.targets[1] != newTarget.String() {
 				t.Fatalf("new lifetime did not use current target/policy: endpoint=%+v dials=%v", fresh, recorder.targets)
 			}
-			var epoch uint64
-			if err := bindings.Lookup(udpSourceKey(source), &epoch); err != nil {
+			var binding bpfUdpBinding
+			if err := bindings.Lookup(udpSourceKey(source), &binding); err != nil {
 				t.Fatalf("replacement source binding missing: %v", err)
 			}
 		})

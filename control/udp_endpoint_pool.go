@@ -115,6 +115,7 @@ type UdpEndpoint struct {
 	pending      *udpSetup
 	firstDst     netip.AddrPort
 	firstIfindex uint32
+	binding      bpfUdpBinding  // Immutable after publication; queued packets cannot inherit another source's association.
 	writeDst     netip.AddrPort // source key lock
 	writeAddr    *net.UDPAddr
 }

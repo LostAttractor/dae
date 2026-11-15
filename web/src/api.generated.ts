@@ -722,9 +722,29 @@ export interface paths {
         put?: never;
         /**
          * Trigger an existing cron or generic task
-         * @description Requires administration. Returns 202 with an acceptance snapshot and per-task run number; execution belongs to the daemon and continues after the HTTP response. Inspect the plugin status for completion. Concurrent triggers for a waiting/running task return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name: 400; inactive worker: 503. No inline scripts, source URLs, argument overrides or automatic retries.
+         * @description Requires administration. Returns 202 with an acceptance snapshot, status.scope, device-only status.mac and a per-scope task run number; execution uses daemon routing and continues after the HTTP response. Inspect plugin status for completion. Omitted mac always selects local execution without requiring LAN discovery, MITM or a CA. Explicit mac selects a currently MITM-enabled device only when the script isolates LAN clients; otherwise omit mac. Concurrent triggers for the same waiting/running scope or an explicitly selected disabled device return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name, invalid MAC or MAC selection on a non-isolated script: 400; inactive worker, unavailable device discovery, or canceled/timed-out admission: 503. Admission follows request and worker cancellation and has its own script-timeout budget, separate from accepted execution; discovery does not count as a run. Accepted tasks survive request cancellation. No inline scripts, source URLs, argument overrides or automatic retries.
          */
         post: operations["triggerScript"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{instance}/store/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move one device script storage partition
+         * @description Requires administration and a live plugin storage runtime. Synchronously moves all persistentStore keys from one device MAC to another in this instance, preserving keys and values and removing the source partition. No merging or overwriting: even an empty destination partition conflicts. Stop old-MAC traffic and background eligibility first. Device authorization, isolation, local storage, notifications and task counters are unchanged. A later execution for the old MAC can create a new partition. Source and destination need not be online or MITM-enabled. In-memory mode moves only current runtime data. The fixed five-second context bounds cancellable lock waits, not filesystem I/O. Busy protection covers this daemon and overlapping reload generations; stop script writers in other processes sharing the file. No automatic retries: timeout or connection loss does not prove the data was unchanged. A published-but-durability-unconfirmed error means the move already took effect.
+         */
+        post: operations["migrateScriptStore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1598,6 +1618,8 @@ export interface components {
             status: "matched" | "missing" | "ambiguous";
         };
         ScriptRunRequest: {
+            /** @description MITM-enabled target device MAC for a script with LAN isolation enabled. Omission always selects local execution. Scripts with LAN isolation disabled reject MAC selection; omit mac. */
+            mac?: string;
             /** @description Required when the script name is not unique within the instance. */
             module?: string;
             script: string;
@@ -1608,30 +1630,48 @@ export interface components {
             run: number;
             status: components["schemas"]["ScriptTaskStatus"];
         };
-        /** @description A plugin-managed script task. Times describe the latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload. */
+        ScriptStoreMigrateRequest: {
+            /** @description Source device: a nonzero unicast six-byte MAC, distinct from to_mac. */
+            from_mac: string;
+            /** @description Destination device: a nonzero unicast six-byte MAC with no existing storage partition. */
+            to_mac: string;
+        };
+        ScriptStoreMigrateResponse: {
+            /** @description Canonical source MAC. */
+            from_mac: string;
+            instance: string;
+            keys_moved: number;
+            /** @description Canonical destination MAC. */
+            to_mac: string;
+        };
+        /** @description One effective execution-scope row for a plugin-managed script definition. Surge always includes a local row and adds device rows only for scripts with LAN isolation enabled; unknown is not an executable target. Times and counters describe this scope's latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload. */
         ScriptTaskStatus: {
             cronexp?: string;
             failures: number;
             /** Format: int64 */
             last_duration_ms: number;
-            /** @description Stable failure category, such as timeout, canceled, error or http_client_unavailable. No raw script exceptions or response bodies. */
+            /** @description Stable failure or skip category, such as timeout, canceled, error, http_client_unavailable, device_disabled or device_query_failed. No raw script exceptions or response bodies. */
             last_error?: string;
             /** Format: date-time */
             last_finished_at?: string;
             /** @enum {string} */
-            last_result?: "success" | "failed";
+            last_result?: "success" | "failed" | "skipped";
             /** Format: date-time */
             last_started_at?: string;
             /** @enum {string} */
             last_trigger?: "cron" | "http-api";
+            /** @description Host-confirmed target device MAC; present only when scope is device. */
+            mac?: string;
             name: string;
             /** Format: date-time */
             next_run?: string;
             runs: number;
-            /** @description Schedule ticks skipped because this task was still waiting or running. */
+            /** @description Effective execution scope, not original request origin. Surge reports local or device explicitly; shared LAN execution is local. */
+            scope: string;
+            /** @description Schedule ticks merged during pending discovery or while this task was waiting/running, plus admitted tasks skipped because device eligibility was revoked or device discovery failed. */
             skipped: number;
             /** @enum {string} */
-            state: "pending" | "ready" | "scheduled" | "waiting" | "running" | "unscheduled" | "stopped";
+            state: "unavailable" | "pending" | "ready" | "scheduled" | "waiting" | "running" | "unscheduled" | "stopped";
             timeout_seconds: number;
             timezone?: string;
             /** @enum {string} */
@@ -2189,6 +2229,45 @@ export interface operations {
                     "application/json": components["schemas"]["ScriptRunResponse"];
                 };
             };
+            default: components["responses"]["Error"];
+        };
+    };
+    migrateScriptStore: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Dae-API": "1";
+            };
+            path: {
+                instance: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScriptStoreMigrateRequest"];
+            };
+        };
+        responses: {
+            /** @description Partition moved; no stored values are returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScriptStoreMigrateResponse"];
+                };
+            };
+            /** @description Invalid JSON or MACs, including equal MACs */
+            400: components["responses"]["Error"];
+            /** @description Instance or source partition not found */
+            404: components["responses"]["Error"];
+            /** @description Destination partition exists or a source/destination script is executing */
+            409: components["responses"]["Error"];
+            /** @description Migration failed, or was published but durability is unconfirmed; do not automatically retry */
+            500: components["responses"]["Error"];
+            /** @description Storage capability/runtime unavailable, retired instance or canceled/timed-out lock wait */
+            503: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };

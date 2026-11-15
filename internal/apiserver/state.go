@@ -2,6 +2,7 @@
 package apiserver
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 
@@ -19,7 +20,11 @@ type ProbeStore interface {
 }
 
 type ScriptStore interface {
-	TriggerScript(string, contract.ScriptRunRequest) (contract.ScriptRunResponse, error)
+	TriggerScript(context.Context, string, contract.ScriptRunRequest) (contract.ScriptRunResponse, error)
+}
+
+type ScriptStoreMigrator interface {
+	MigrateScriptStore(context.Context, string, contract.ScriptStoreMigrateRequest) (contract.ScriptStoreMigrateResponse, error)
 }
 
 // DeviceStore owns membership, MITM overrides, and atomic persistence.

@@ -97,7 +97,6 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 					srcIP = netip.MustParseAddr("2001:db8::1")
 				}
 				src := netip.AddrPortFrom(srcIP, uint16(46000+i))
-				packet, ipProto := routingKernelPacket(src, dst, proto)
 				capture, flags, mark := test.capture, test.flags, test.mark
 				if test.name == "API bypass" && proto == consts.L4ProtoType_UDP {
 					capture, flags, mark = true, 8, 37
@@ -109,7 +108,10 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 				if test.block {
 					want = 2
 				}
-				for _, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+				for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					// Policy cases must not reuse another origin's live UDP source.
+					src := netip.AddrPortFrom(src.Addr(), src.Port()+uint16(n)*1000)
+					packet, ipProto := routingKernelPacket(src, dst, proto)
 					verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
 					if err != nil || verdict != want {
 						t.Fatalf("%s proto=%d: verdict=%d want=%d error=%v", name, proto, verdict, want, err)
@@ -174,7 +176,8 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 					t.Fatalf("%s bound=%v target=%s result=%+v", name, bound, test.target, result)
 				}
 				if bound && dst.Port() == 443 {
-					if err := collection.Maps["udp_bindings_map"].Update(cacheKey, uint64(0), ebpf.UpdateAny); err != nil {
+					binding := bpfUdpBinding{RouteEpoch: result.RouteEpoch, Mac: result.Mac, SourceOrigin: result.SourceOrigin}
+					if err := collection.Maps["udp_bindings_map"].Update(cacheKey, binding, ebpf.UpdateAny); err != nil {
 						t.Fatal(err)
 					}
 				}

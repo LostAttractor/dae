@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
 
@@ -20,6 +21,18 @@ type routingResult struct {
 	bpfRoutingResult
 	Pid   uint32
 	Pname [16]byte
+}
+
+func (r *routingResult) sourceOrigin() plugin.SourceOrigin {
+	// The kernel ABI uses 0/1/2; unrecognized values stay unknown, never local.
+	switch r.SourceOrigin {
+	case 1:
+		return plugin.SourceLocal
+	case 2:
+		return plugin.SourceLAN
+	default:
+		return plugin.SourceUnknown
+	}
 }
 
 func tuplesKey(src, dst netip.AddrPort, l4proto uint8) bpfTuplesKey {

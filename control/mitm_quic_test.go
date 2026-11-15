@@ -121,13 +121,18 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: base}), &dialer.GlobalOption{}, &dialer.Property{Name: t.Name()}, false, "")
 	defer d.Close()
 	source, destination := netip.MustParseAddrPort("192.0.2.10:56000"), netip.MustParseAddrPort("198.51.100.10:443")
+	extension.observeFlow = func(flow plugin.Flow) {
+		if flow.SourceOrigin != plugin.SourceLAN || flow.SourceMAC != [6]byte{} || flow.Source != source || flow.Destination != destination {
+			t.Errorf("HTTP/3 lost source identity: %+v", flow)
+		}
+	}
 	option := &DialOption{Dialer: d, connectionDialer: selected, DialTarget: upstreamPackets.LocalAddr().String(), Outbound: &outbound.DialerGroup{Name: "direct"}, NetworkType: *common.NetworkUDP4.NetworkType()}
 	plane := &ControlPlane{mitmHost: host}
 	release, err := d.Retain()
 	if err != nil {
 		t.Fatal(err)
 	}
-	param := &RouteParam{Src: source, Dest: destination, Domain: "video.example", routingResult: &routingResult{}}
+	param := &RouteParam{Src: source, Dest: destination, Domain: "video.example", routingResult: &routingResult{SourceOrigin: uint8(plugin.SourceLAN)}}
 	bridge, err := plane.newMITMQUIC(t.Context(), nil, param, &mitmRoute{admission: testMITMAdmission(t, host), planner: plane.mitmUpstreamPlanner("udp", param.Domain, source, destination, *param.routingResult, option), releaseDialer: release}, nil)
 	if err != nil {
 		t.Fatal(err)

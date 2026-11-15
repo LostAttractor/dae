@@ -156,7 +156,7 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			for path, contents := range map[string]string{
 				modulePath: module,
 				scriptPath: script,
-				storePath:  `{"counter":"5","seed":"on-disk"}`,
+				storePath:  `{"02:00:00:00:00:01":{"counter":"5","seed":"on-disk"}}`,
 			} {
 				if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 					t.Fatal(err)
@@ -165,13 +165,14 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			conf := Config{
 				Modules:       []ModuleSource{{Link: "file:modules/example.sgmodule"}},
 				Store:         true,
+				IsolateLAN:    true,
 				ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 				MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 			}
 			if test.absolute {
 				conf.Modules = []ModuleSource{{Link: "file://" + modulePath}}
 			}
-			engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: envDir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
+			engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: envDir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger()), Devices: newTestDevices(testDeviceMAC)}, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,7 +180,7 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 				t.Fatal("module MITM hostname was not loaded")
 			}
 			upstreamCalled := false
-			handler, closeTransport := proxyTestHost(t, engine).Handler("https", "example.test", 443, testUpstream(func(context.Context, string, string) (net.Conn, error) {
+			handler, closeTransport := proxyTestHost(t, engine).HandlerForFlow("https", plugin.Flow{Host: "example.test", Port: 443, SourceOrigin: plugin.SourceLAN, SourceMAC: testDeviceMAC}, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 				upstreamCalled = true
 				return nil, errors.New("script should return a synthetic response")
 			}))
@@ -193,11 +194,11 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			if err != nil {
 				t.Fatal(err)
 			}
-			var stored map[string]string
+			var stored map[string]map[string]string
 			if err := json.Unmarshal(data, &stored); err != nil {
 				t.Fatal(err)
 			}
-			if stored["counter"] != "6" || stored["seed"] != "on-disk" {
+			if stored[testDeviceName]["counter"] != "6" || stored[testDeviceName]["seed"] != "on-disk" {
 				t.Fatalf("persistent store was not updated at %s: %s", storePath, data)
 			}
 			entries, err := os.ReadDir(configDir)

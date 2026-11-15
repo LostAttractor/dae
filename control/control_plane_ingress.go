@@ -238,7 +238,10 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 			}
 			if c != nil && c.udpDraining.Load() && exists {
 				r.mu.Unlock()
-				r.udpEndpoints.deliverMITM(src, dst, endpoint.(*UdpEndpoint).firstIfindex, buf[:n])
+				ue := endpoint.(*UdpEndpoint)
+				if (dst.Port() != 53 || routingResult.Must != 0) && ue.acceptsRoutingSource(routingResult) {
+					r.udpEndpoints.deliverMITM(src, dst, ue.firstIfindex, buf[:n])
+				}
 				continue
 			}
 			if c != nil {

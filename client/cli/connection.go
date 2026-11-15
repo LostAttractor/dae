@@ -53,6 +53,15 @@ func (c *Connection) TriggerScript(ctx context.Context, instance string, request
 	return remote.TriggerScript(ctx, instance, request)
 }
 
+func (c *Connection) MigrateScriptStore(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (*api.ScriptStoreMigrateResponse, error) {
+	remote, err := c.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer remote.Close()
+	return remote.MigrateScriptStore(ctx, instance, request)
+}
+
 // Open creates a client using the bound flags and API credentials. The caller closes it.
 func (c *Connection) Open() (*client.Client, error) {
 	return client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})

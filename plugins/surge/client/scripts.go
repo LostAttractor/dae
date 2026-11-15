@@ -5,6 +5,7 @@ package client
 import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/clitable"
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
@@ -22,8 +23,19 @@ func RenderSurgeScriptTasks(tasks []SurgeScriptTask) string {
 	}
 	rows := make([]table.Row, 0, len(tasks))
 	for _, task := range tasks {
-		rows = append(rows, table.Row{task.Instance, task.Module, task.Name, task.Type, task.State, task.CronExp})
+		rows = append(rows, table.Row{task.Instance, task.Module, task.Name, surgeScopeLabel(task.Scope, task.MAC), task.Type, task.State, task.CronExp})
 	}
 	return "Surge scripts supporting manual execution:\n" + clitable.RenderLog(
-		table.Row{"INSTANCE", "MODULE", "SCRIPT", "TYPE", "STATE", "EXPRESSION"}, rows)
+		table.Row{"INSTANCE", "MODULE", "SCRIPT", "SCOPE", "TYPE", "STATE", "EXPRESSION"}, rows)
+}
+
+func surgeScopeLabel(scope, mac string) string {
+	switch scope {
+	case "local":
+		return "local"
+	case "device":
+		return "device MAC " + terminaltext.Line(mac)
+	default:
+		return "unknown"
+	}
 }

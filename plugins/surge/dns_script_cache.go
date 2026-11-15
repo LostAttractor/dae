@@ -15,12 +15,13 @@ const maxDNSScriptCacheEntries = 4096
 
 // Only address results are cached. Scripts see the domain, not DNS wire fields;
 // each hit constructs a fresh reply for the current ID, flags and question type.
-// A script's TTL publishes its domain result to clients of the same plugin chain,
-// across reloads that keep it.
+// Results are reused only within the same effective scope and plugin chain.
 type dnsScriptCacheKey struct {
-	script *Script
-	domain string
-	chain  uint64
+	script     *Script
+	domain     string
+	chain      uint64
+	scope      ScriptScope
+	generation uint64
 }
 
 type dnsScriptCache struct {
@@ -37,6 +38,9 @@ func dnsScriptKey(script *Script, request *plugin.DNSExchange) dnsScriptCacheKey
 }
 
 func (c *dnsScriptCache) get(key dnsScriptCacheKey, request *plugin.DNSExchange) *plugin.DNSResponse {
+	if !key.scope.valid() {
+		return nil
+	}
 	entry, ok := c.store.Get(key, time.Now())
 	if !ok {
 		return nil
@@ -47,7 +51,7 @@ func (c *dnsScriptCache) get(key dnsScriptCacheKey, request *plugin.DNSExchange)
 }
 
 func (c *dnsScriptCache) put(key dnsScriptCacheKey, addresses []netip.Addr, ttl uint32, received time.Time) {
-	if ttl == 0 || ttl > 1<<31-1 || len(addresses) == 0 {
+	if !key.scope.valid() || ttl == 0 || ttl > 1<<31-1 || len(addresses) == 0 {
 		return
 	}
 	bytes := 16*len(addresses) + len(key.domain) + 512

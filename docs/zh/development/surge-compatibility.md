@@ -6,7 +6,8 @@
 
 - 插件解析 sgmodule，在匹配的请求/响应上通过编译时选定的 QuickJS 或 Node.js 后端执行脚本，并应用脚本结果。两种后端共享宿主 API 和出站客户端；每个二进制只包含一种后端。
 - HTTP/TLS、连接生命周期和实际选路由 dae 宿主负责；脚本 HTTP 请求使用宿主提供的路由客户端。
-- DNS 脚本通过 Host 引用执行；cron/generic 通过 daemon 的后台任务执行器运行，与 HTTP 脚本共享实例存储和执行名额。
+- DNS 脚本通过 Host 引用执行；cron 每次本机运行一次，开启 LAN 隔离时另对当前 MITM 启用设备每 MAC 一次，关闭隔离仅本机一次；generic 不指定 MAC 恒为本机。本机不依赖 LAN 发现、MITM 或 CA。实例 isolate_lan 默认 true，dae 模块描述符允许模块级及按精确脚本名覆盖，优先级为脚本 > 模块 > 实例，不扩展 sgmodule 语法；本机始终使用本机分区，隔离 LAN 使用宿主确认的直连 MAC，关闭隔离所有来源共享本机分区。同有效执行域的 HTTP/DNS/cron/generic 按 key 共享；隔离模式未知身份 read 为 null、write/删除为 false，DNS 脚本缓存绕过。所有执行域共享实例名额，后台 HTTP 仍按 daemon 路由。
+- scope 表示有效执行域而非原始来源；本机、设备和未知明确区分，只有 device 带 MAC。capture 与 cron 的隔离策略须一致才能共享状态；关闭隔离有跨客户端 Cookie/token 共享风险，设置变化不自动迁移已有分区。
 - 运行时统一处理完成协议、超时、取消、正文预算和通知。脚本正常调用 `$done()` 表示执行完成，不保证业务操作成功。
 
 ## MITM 与内核直通

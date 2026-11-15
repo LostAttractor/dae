@@ -16,11 +16,11 @@ import (
 
 func TestSurgeTextSinksRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
 	const payload = "name\x1b]52;c;YWJj\a\r\u009b2J"
-	task := api.ScriptTaskStatus{Name: "probe", Type: "generic"}
+	task := api.ScriptTaskStatus{Name: "probe", Scope: "device", MAC: payload, Type: "generic"}
 	status := surgeapi.SurgeStatus{Enabled: true,
 		Modules:       []surgeapi.ModuleStatus{{Name: payload, Error: payload, Warnings: []string{payload}, Tasks: []api.ScriptTaskStatus{task}}},
 		Runtimes:      []surgeapi.SurgeRuntimeStatus{{Instance: payload, Backend: payload}},
-		Notifications: []surgeapi.SurgeNotification{{Module: payload, Title: payload, Body: payload}},
+		Notifications: []surgeapi.SurgeNotification{{Module: payload, Scope: "device", MAC: payload, Title: payload, Body: payload}},
 	}
 	details, err := json.Marshal(status)
 	if err != nil {
@@ -44,6 +44,7 @@ func TestSurgeTextSinksRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
 		}
 	}
 	assertSafe(RenderSurge(status, true))
+	assertSafe(RenderSurgeScriptTasks([]SurgeScriptTask{{Module: payload, ScriptTaskStatus: task}}))
 	for _, raw := range []bool{false, true} {
 		command := NewSurgeRunCommand(fetch, trigger)
 		var output bytes.Buffer
@@ -59,7 +60,7 @@ func TestSurgeTextSinksRemoveTerminalControlsAndPreserveJSON(t *testing.T) {
 		}
 		if raw {
 			var response api.ScriptRunResponse
-			if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Module != payload {
+			if err := json.Unmarshal(output.Bytes(), &response); err != nil || response.Module != payload || response.Status.MAC != payload {
 				t.Fatalf("JSON lost original text: %s %v", output.String(), err)
 			}
 		} else {

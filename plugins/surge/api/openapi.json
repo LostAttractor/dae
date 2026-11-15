@@ -11,6 +11,7 @@
         "properties": {
           "tasks": {
             "type": "array",
+            "description": "Flat effective-scope rows for cron/generic definitions, always including local and adding device rows only for scripts with LAN isolation enabled. Local rows precede device rows, ordered by MAC. Unknown is not an executable target. Status reads cached targets without discovery I/O. Count definitions by instance, module and name, not row count.",
             "items": {
               "$ref": "../../../docs/api/openapi.json#/components/schemas/ScriptTaskStatus"
             }
@@ -96,7 +97,7 @@
           },
           "notifications": {
             "type": "array",
-            "description": "All retained explicit script notifications for this instance, newest first. Each script (module, script name and script type) retains up to 50 messages within a shared conservative 1 MiB JSON budget. The longest histories lose their oldest entries first; ties remove the oldest entry, so fewer than 50 messages may remain per script. CLI text defaults to 3 per script; --verbose and JSON show all retained messages. In-memory history resets on reload and is independent of the log level and script success.",
+            "description": "All retained explicit script notifications for this instance, newest first. Each scope and script (scope, MAC, module, script name and script type) retains up to 50 messages within a shared conservative 1 MiB JSON budget including scope and MAC bytes. The longest histories lose their oldest entries first; ties remove the oldest entry, so fewer than 50 messages may remain per scope and script. CLI text defaults to 3 per scope and script; --verbose and JSON show all retained messages. In-memory history resets on reload and is independent of the log level and script success.",
             "items": {
               "$ref": "#/components/schemas/SurgeNotification"
             }
@@ -247,6 +248,15 @@
           "script": {
             "type": "string"
           },
+          "scope": {
+            "type": "string",
+            "enum": ["local", "device", "unknown"],
+            "description": "Effective execution scope, not original source. LAN requests with isolation disabled report local."
+          },
+          "mac": {
+            "type": "string",
+            "description": "Host-confirmed device owning the invocation; present only when scope is device."
+          },
           "script_type": {
             "type": "string",
             "enum": [
@@ -274,6 +284,7 @@
         "required": [
           "id",
           "created_at",
+          "scope",
           "module",
           "script",
           "script_type",

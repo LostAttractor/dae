@@ -27,13 +27,17 @@ func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 	var taskRows, runRows []table.Row
 	var errors, warnings []string
 	for _, module := range status.Modules {
+		definitions := make(map[string]struct{})
+		for _, task := range module.Tasks {
+			definitions[task.Name] = struct{}{}
+		}
 		rows = append(rows, table.Row{
-			module.Instance, module.Name, module.State, module.Scripts, len(module.Tasks), module.Hostnames, module.HostMappings,
+			module.Instance, module.Name, module.State, module.Scripts, len(definitions), module.Hostnames, module.HostMappings,
 			module.URLRewrites, module.HeaderRewrites, module.BodyRewrites,
 			module.MapLocals, module.Rules, len(module.Warnings),
 		})
 		for _, job := range module.Tasks {
-			taskRows = append(taskRows, table.Row{module.Instance, module.Name, job.Name, job.Type, job.CronExp,
+			taskRows = append(taskRows, table.Row{module.Instance, module.Name, job.Name, surgeScopeLabel(job.Scope, job.MAC), job.Type, job.CronExp,
 				job.Timezone, fmt.Sprintf("%gs", job.TimeoutSeconds), job.State, surgeTimestamp(job.NextRun)})
 			result := job.LastResult
 			if result == "" {
@@ -42,7 +46,7 @@ func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 			if job.LastError != "" {
 				result += "/" + job.LastError
 			}
-			runRows = append(runRows, table.Row{module.Instance, module.Name, job.Name, job.Type,
+			runRows = append(runRows, table.Row{module.Instance, module.Name, job.Name, surgeScopeLabel(job.Scope, job.MAC), job.Type,
 				surgeTimestamp(job.LastStartedAt), surgeTimestamp(job.LastFinishedAt),
 				fmt.Sprintf("%dms", job.LastDurationMS), job.LastTrigger, result, job.Runs, job.Failures, job.Skipped})
 		}
@@ -63,9 +67,9 @@ func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 	}, rows)}
 	if len(taskRows) > 0 {
 		sections = append(sections, "Surge script tasks:\n"+clitable.RenderLog(table.Row{
-			"INSTANCE", "MODULE", "SCRIPT", "TYPE", "EXPRESSION", "TIMEZONE", "TIMEOUT", "STATE", "NEXT RUN",
+			"INSTANCE", "MODULE", "SCRIPT", "SCOPE", "TYPE", "EXPRESSION", "TIMEZONE", "TIMEOUT", "STATE", "NEXT RUN",
 		}, taskRows), "Last script runs:\n"+clitable.RenderLog(table.Row{
-			"INSTANCE", "MODULE", "SCRIPT", "TYPE", "STARTED", "FINISHED", "DURATION", "TRIGGER", "RESULT", "RUNS", "FAILED", "SKIPPED",
+			"INSTANCE", "MODULE", "SCRIPT", "SCOPE", "TYPE", "STARTED", "FINISHED", "DURATION", "TRIGGER", "RESULT", "RUNS", "FAILED", "SKIPPED",
 		}, runRows))
 	}
 	if len(errors) > 0 {
@@ -95,11 +99,11 @@ const displayedNotificationsPerScript = 3
 func renderSurgeNotifications(notifications []surgeapi.SurgeNotification, verbose bool) string {
 	var output strings.Builder
 	output.WriteString("Recent Surge notifications:")
-	counts := make(map[[4]string]int)
+	counts := make(map[[6]string]int)
 	hidden := 0
 	for _, notification := range notifications {
 		if !verbose {
-			key := [4]string{notification.Instance, notification.Module, notification.Script, notification.ScriptType}
+			key := [6]string{notification.Instance, notification.Scope, notification.MAC, notification.Module, notification.Script, notification.ScriptType}
 			if counts[key] >= displayedNotificationsPerScript {
 				hidden++
 				continue
@@ -116,6 +120,7 @@ func renderSurgeNotifications(notifications []surgeapi.SurgeNotification, verbos
 		fmt.Fprintf(&output, "\n%s  %s (#%d, %s)", surgeTimestamp(notification.CreatedAt),
 			strings.ReplaceAll(notificationDisplayText(identity), "\n", " "), notification.ID,
 			strings.ReplaceAll(notificationDisplayText(notification.ScriptType), "\n", " "))
+		fmt.Fprintf(&output, " [%s]", surgeScopeLabel(notification.Scope, notification.MAC))
 		if notification.Truncated {
 			output.WriteString(" [truncated]")
 		}
@@ -128,7 +133,7 @@ func renderSurgeNotifications(notifications []surgeapi.SurgeNotification, verbos
 		}
 	}
 	if hidden > 0 {
-		fmt.Fprintf(&output, "\nShowing the latest %d per script; %d older notifications hidden. Use --verbose to show all retained notifications.", displayedNotificationsPerScript, hidden)
+		fmt.Fprintf(&output, "\nShowing the latest %d per scope and script; %d older notifications hidden. Use --verbose to show all retained notifications.", displayedNotificationsPerScript, hidden)
 	}
 	return output.String()
 }

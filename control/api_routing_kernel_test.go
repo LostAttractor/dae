@@ -48,16 +48,17 @@ func TestAPIAddressReloadKernelCapture(t *testing.T) {
 				t.Fatalf("generation=%d %s exemption=%d err=%v", generation, test.destination, exempt, err)
 			}
 			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-				src := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.2"), uint16(48000+generation*100+i))
-				packet, ipProto := routingKernelPacket(src, dst, proto)
-				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
-				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 				captured := dst.Port() == 8081 && !(test.api && proto == consts.L4ProtoType_TCP)
 				want := ^uint32(0)
 				if captured {
 					want = 7
 				}
-				for _, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+				for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					// LAN and local policy cases must not reuse each other's active UDP source.
+					src := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.2"), uint16(48000+generation*100+i+n*1000))
+					packet, ipProto := routingKernelPacket(src, dst, proto)
+					key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
+					key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 					verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256)})
 					if err != nil || verdict != want {
 						t.Fatalf("generation=%d %s %v %s verdict=%d, want=%d err=%v", generation, test.destination, proto, name, verdict, want, err)

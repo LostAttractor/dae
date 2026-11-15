@@ -234,6 +234,9 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 		return context.DeadlineExceeded
 	}
 	ue, exists := p.Get(src)
+	if exists && !ue.acceptsRoutingSource(routingResult) {
+		return nil
+	}
 	if !deadline.IsZero() && (!exists || ue.conn == nil) {
 		// Setup may wait on non-socket work; established writes carry the
 		// packet's deadline themselves.
@@ -245,7 +248,7 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 		if owner := ue.setupOwner.Load(); owner != nil && owner != c {
 			// A packet can queue before a predecessor publishes its endpoint.
 			// Keep initialization (and the worker drain) in the owning generation.
-			owner.udpTaskPool.emitPacket(packet, udpPacketWork{plane: owner, src: src, dst: dst})
+			owner.udpTaskPool.emitPacket(packet, udpPacketWork{plane: owner, src: src, dst: dst, routingResult: routingResult})
 			return nil
 		}
 	}
@@ -278,6 +281,7 @@ func (c *ControlPlane) handleUDPPacket(ctx context.Context, slot *udpWriteSlot, 
 			pending:         &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
 			firstDst:        dst,
 			firstIfindex:    routingResult.Ifindex,
+			binding:         bpfUdpBinding{RouteEpoch: routingResult.RouteEpoch, SourceOrigin: routingResult.SourceOrigin, Mac: routingResult.Mac},
 			NatTimeout:      udpSniffingTimeout,
 			unbind:          unbind,
 			replies:         replies,

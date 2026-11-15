@@ -86,15 +86,15 @@ func TestRuntimeStoreDefaultKeyUsesResolvedScriptPath(t *testing.T) {
 	}
 	value := strings.Repeat("x", maxStoreValueSize)
 	for _, key := range []string{"large-one", "large-two"} {
-		if !r.data.write(t.Context(), key, value, false) {
+		if !r.data.write(t.Context(), testLocalScope, key, value, false) {
 			t.Fatal("per-value limit applied to whole store")
 		}
 	}
-	if r.data.write(t.Context(), "too-large", value+"x", false) {
+	if r.data.write(t.Context(), testLocalScope, "too-large", value+"x", false) {
 		t.Fatal("oversized value accepted")
 	}
 	stored, _, err := readRuntimeStoreSnapshot(r.data.path)
-	if err != nil || stored["large-one"] != value || stored["large-two"] != value {
+	if err != nil || stored["local"]["large-one"] != value || stored["local"]["large-two"] != value {
 		t.Fatalf("large values lost: %v", err)
 	}
 }

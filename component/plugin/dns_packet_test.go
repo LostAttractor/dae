@@ -59,12 +59,21 @@ func TestDNSPacketOpaqueBytesAndEncodingErrors(t *testing.T) {
 func TestDNSForkRetainsIdentityAndIsolatesQuery(t *testing.T) {
 	original := &DNSExchange{DNSPacket: DNSMessage(new(dns.Msg).SetQuestion("test.example.", dns.TypeA)),
 		Source: netip.MustParseAddrPort("192.0.2.1:1234"), Destination: netip.MustParseAddrPort("192.0.2.53:53"), Egress: "path/proxy", Chain: 1}
-	probe := original.Fork()
-	message := probe.MessageCopy()
-	message.Question[0].Qtype = dns.TypeAAAA
-	probe.DNSPacket = DNSMessage(message)
-	if original.Independent() || !probe.Independent() || original.Source != probe.Source || original.Destination != probe.Destination || original.Egress != probe.Egress || original.Chain != probe.Chain || original.MessageCopy().Question[0].Qtype != dns.TypeA {
-		t.Fatal("fork lost identity, changed its parent or retained its transport lifetime")
+	for _, origin := range []SourceOrigin{SourceUnknown, SourceLocal, SourceLAN} {
+		original.SourceOrigin = origin
+		probe := original.Fork()
+		message := probe.MessageCopy()
+		message.Question[0].Qtype = dns.TypeAAAA
+		probe.DNSPacket = DNSMessage(message)
+		if original.Independent() || !probe.Independent() || original.Source != probe.Source || original.Destination != probe.Destination || original.Egress != probe.Egress || original.Chain != probe.Chain || original.MessageCopy().Question[0].Qtype != dns.TypeA {
+			t.Fatal("fork lost identity, changed its parent or retained its transport lifetime")
+		}
+		for _, copy := range []*DNSExchange{original, original.Copy(), probe} {
+			upstream := copy.WithUpstream(DNSUpstream{Network: "tcp", Address: original.Destination})
+			if copy.SourceOrigin != origin || upstream.SourceOrigin != origin {
+				t.Fatalf("derived DNS request lost source %v", origin)
+			}
+		}
 	}
 }
 

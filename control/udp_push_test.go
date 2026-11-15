@@ -16,11 +16,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/socks5"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/singmux"
@@ -452,7 +454,7 @@ func smuxReply(t *testing.T, peer *smuxtest.Stream, first bool, from netip.AddrP
 // Both push their targets' replies as from the original destinations, and
 // no goroutine reads them.
 func TestUDPPushSetupOverSmuxKernelIntegration(t *testing.T) {
-	bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", 8)
+	bindings := newRoutingLayoutTestMap(t, "udp_bindings_map", uint32(unsafe.Sizeof(bpfUdpBinding{})))
 	decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
 	var endpoints UdpEndpointPool
 	defer endpoints.closeAll()
@@ -481,7 +483,7 @@ func TestUDPPushSetupOverSmuxKernelIntegration(t *testing.T) {
 	replies.set(true, nil)
 	var want []string
 	for i, original := range originals {
-		result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: matcher.defaultProfileID}
+		result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: matcher.defaultProfileID, SourceOrigin: uint8(plugin.SourceLocal)}
 		if err := plane.handlePkt(t.Context(), []byte("query"), source, original, result); err != nil {
 			t.Fatal(err)
 		}

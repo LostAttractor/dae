@@ -33,6 +33,7 @@ type Options struct {
 	Selectors     SelectorStore
 	Probes        ProbeStore
 	Scripts       ScriptStore
+	ScriptStorage ScriptStoreMigrator
 	Operations    OperationStore
 	Devices       DeviceStore
 	DeviceStatus  func(netip.Addr, [6]byte) contract.DeviceStatus
@@ -77,6 +78,7 @@ func NewHandler(options Options) http.Handler {
 	s.route(mux, "DELETE /api/selectors/{group}", accessAdmin, s.serveSelector)
 	s.route(mux, "POST /api/probes", accessAdmin, s.serveProbe)
 	s.route(mux, "POST /api/plugins/{instance}/scripts/run", accessAdmin, s.serveScript)
+	s.route(mux, "POST /api/plugins/{instance}/store/migrate", accessAdmin, s.serveScriptStoreMigration)
 	s.route(mux, "POST /api/resources/refresh", accessAdmin, s.serveResources)
 	s.route(mux, "GET /api/resources", accessAdmin, s.serveResources)
 	s.route(mux, "POST /api/operations", accessAdmin, s.serveOperations)

@@ -122,7 +122,7 @@ func TestValidateClientNeighbor(t *testing.T) {
 				{"different IP", changed(func(n *netlink.Neigh) { n.IP = net.ParseIP("192.0.2.24") }), false},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					err := validateClientNeighbor(source, mac, []netlink.Neigh{test.neighbor})
+					err := validateClientNeighbor(source, mac, &test.neighbor)
 					if (err == nil) != test.want {
 						t.Fatalf("error = %v, want accepted = %v", err, test.want)
 					}

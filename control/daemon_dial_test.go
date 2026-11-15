@@ -13,11 +13,15 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
 
 func TestInternalDNSRoutesTransportWithDaemonIdentity(t *testing.T) {
 	identity := daemonProcessIdentity()
+	if identity.sourceOrigin() != plugin.SourceLocal {
+		t.Fatalf("daemon source = %v, want local", identity.sourceOrigin())
+	}
 	process := strings.TrimRight(string(identity.Pname[:]), "\x00")
 	for _, network := range []string{"udp", "tcp"} {
 		for _, port := range []string{"53", "1053", "1054"} {

@@ -13,6 +13,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
@@ -24,6 +25,7 @@ func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
 	selected := &udpLifecycleDialer{opened: make(chan *udpLifecyclePacket, 8)}
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute})
 	endpoint.mitm, endpoint.firstDst, endpoint.firstIfindex = true, destination, 7
+	endpoint.binding = bpfUdpBinding{SourceOrigin: uint8(plugin.SourceLocal)}
 	endpoint.packetDialer = selected
 	endpoint.destinations = map[netip.AddrPort]udpDestination{destination: {target: destination}}
 	endpoint.sockets = map[netip.AddrPort]*udpSocket{destination: {conn: bridge}}
@@ -34,7 +36,7 @@ func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
 	// Existing sources do not reselect, even if a later packet carries a
 	// different kernel route. Only the proven destination enters the bridge.
 	for _, dst := range []netip.AddrPort{destination, other, destination} {
-		if err := plane.handlePkt(t.Context(), []byte(dst.String()), source, dst, &routingResult{Outbound: uint8(consts.OutboundBlock)}); err != nil {
+		if err := plane.handlePkt(t.Context(), []byte(dst.String()), source, dst, &routingResult{Outbound: uint8(consts.OutboundBlock), SourceOrigin: uint8(plugin.SourceLocal)}); err != nil {
 			t.Fatal(err)
 		}
 	}

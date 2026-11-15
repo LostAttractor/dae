@@ -75,7 +75,7 @@ struct routing_profile test_profile;
 struct {
 	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
 	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 4);
+	__uint(max_entries, 5);
 	__array(values, int());
 } entry_call_map SEC(".maps") = {
 	.values = {
@@ -83,8 +83,25 @@ struct {
 		[1] = &lan_egress_l2,
 		[2] = &tproxy_wan_ingress_l2,
 		[3] = &lan_ingress_l2,
+		[4] = &lan_ingress_l3,
 	},
 };
+
+/* The runner requires Ethernet frames; strip the fixture header before the real L3 entry. */
+SEC("tc/test_lan_ingress_l3")
+int test_lan_ingress_l3(struct __sk_buff *skb)
+{
+	__u8 packet[64];
+	__u32 len = (skb->len - ETH_HLEN) & 63;
+
+	if (!len || len + ETH_HLEN != skb->len ||
+	    bpf_skb_load_bytes(skb, ETH_HLEN, packet, len) ||
+	    bpf_skb_store_bytes(skb, 0, packet, len, 0) ||
+	    bpf_skb_change_tail(skb, len, 0))
+		return TCX_DROP;
+	bpf_tail_call(skb, &entry_call_map, 4);
+	return TCX_DROP;
+}
 
 /* Own the socket and classify the same skb: each test run has its own dummy
  * socket, even without a userspace socket.
@@ -149,7 +166,7 @@ SEC("tc/test_expire_closing_udp_route")
 int test_expire_closing_udp_route(struct __sk_buff *skb)
 {
 	struct udp_routing_cache_key key = { .sport = bpf_htons(20099) };
-	struct routing_result result = { .generation = routing_generation };
+	struct routing_result result = { .generation = routing_generation, .source_origin = SOURCE_LOCAL };
 	struct udp_routing_cache_value *value;
 
 	if (save_udp_route(&key, &result, 0))
@@ -285,6 +302,21 @@ int test_redirect_track_unchanged(struct __sk_buff *skb)
 		return 4;
 	entry = bpf_map_lookup_elem(&redirect_track, &key);
 	return entry && entry->smac[5] == 3 ? 0 : 5;
+}
+
+/* The low three mark bytes select origin, MAC suffix and candidate route to exercise first-packet races. */
+SEC("tc/test_save_udp_route")
+int test_save_udp_route(struct __sk_buff *skb)
+{
+	struct udp_routing_cache_key key = { .sport = bpf_htons(52001) };
+	struct routing_result result = {
+		.generation = routing_generation,
+		.source_origin = skb->mark,
+		.mac = { 2, 0, 0, 0, 0, skb->mark >> 8 },
+		.outbound = skb->mark >> 16,
+	};
+
+	return save_udp_route(&key, &result, 0) ? TCX_DROP : TC_ACT_OK;
 }
 
 SEC("tc/benchmark/parser")
@@ -3272,7 +3304,7 @@ SEC("tc/setup/udp_bound_source_skips_routing")
 int testsetup_udp_bound_source_skips_routing(struct __sk_buff *skb)
 {
 	struct udp_routing_cache_key key;
-	__u64 bound = 0;
+	struct udp_binding bound = { .source_origin = SOURCE_LOCAL };
 
 	make_ipv4_udp_cache_key(&key, IPV4(192,168,2,1), 0, 21001, 0, 0);
 	bpf_map_update_elem(&udp_bindings_map, &key, &bound, BPF_ANY);
@@ -3450,7 +3482,7 @@ int testsetup_offline_fallback_lease(struct __sk_buff *skb)
 	struct outbound_connectivity connectivity = {
 		.state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT, .fallback = token,
 	};
-	struct routing_result result = { .outbound = OUTBOUND_USER_DEFINED_MIN, .mark = 0x35 };
+	struct routing_result result = { .outbound = OUTBOUND_USER_DEFINED_MIN, .mark = 0x35, .source_origin = SOURCE_LOCAL };
 	struct udp_routing_cache_key key = { .sport = bpf_htons(22003) };
 	__u32 fallback = 0;
 	__u8 lease = FALLBACK_LEASE_LIVE, exited = DAEMON_ONLINE;
@@ -3480,15 +3512,15 @@ int testsetup_offline_fallback_lease(struct __sk_buff *skb)
 	    result.outbound != OUTBOUND_DIRECT || result.mark != 0x35 || fallback != token)
 		goto out;
 	result.generation = routing_generation;
-	if (save_udp_route(&key, &result, fallback) || read_udp_route(&key, &result) != 1)
+	if (save_udp_route(&key, &result, fallback) || read_udp_route(&key, &result, NULL) != 1)
 		goto out;
 	exited = DAEMON_OFFLINE;
 	if (bpf_map_update_elem(&exited_map, &zero_key, &exited, BPF_ANY) ||
-	    !fallback_live(token) || read_udp_route(&key, &result) != 1)
+	    !fallback_live(token) || read_udp_route(&key, &result, NULL) != 1)
 		goto out;
 	/* A fresh runtime's private lease set cannot revive the old native grant. */
 	if (bpf_map_delete_elem(&fallback_lease_map, &token) || fallback_live(token) ||
-	    read_udp_route(&key, &result) != 0)
+	    read_udp_route(&key, &result, NULL) != 0)
 		goto out;
 	lease = FALLBACK_LEASE_LIVE;
 	if (bpf_map_update_elem(&fallback_lease_map, &next_token, &lease, BPF_ANY) ||

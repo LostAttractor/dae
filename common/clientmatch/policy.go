@@ -110,6 +110,29 @@ func (p *Policy) Default(source netip.Addr, mac [6]byte) bool {
 	return decision.Allow
 }
 
+// AllowsMAC requires an IP-independent allow; unknown IPs cannot bypass earlier IP exclusions.
+func (p *Policy) AllowsMAC(mac [6]byte) bool {
+	if p == nil || mac == [6]byte{} {
+		return false
+	}
+	if enabled, exists := p.overrides[mac]; exists {
+		return enabled
+	}
+	decision := p.fallback
+	if candidate, exists := p.macs[mac]; exists && candidate.Order < decision.Order {
+		decision = candidate
+	}
+	if !decision.Allow {
+		return false
+	}
+	for _, candidate := range p.prefixes {
+		if candidate.Order < decision.Order && !candidate.Allow {
+			return false
+		}
+	}
+	return true
+}
+
 // Entries exports a stable value copy for kernel-map preparation. Mutating the
 // result cannot change this policy or another configuration generation.
 func (p *Policy) Entries() []Entry {

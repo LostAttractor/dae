@@ -24,7 +24,7 @@ sign=type=cron,cronexp="* * * * * *",timeout=10,script-path=sign.js`)
 if ($trigger !== "http-api" || $script.type !== "cron" || $cronexp !== "* * * * * *") throw Error("wrong metadata");
 $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error); $done(); });`}, 1)
 		request := api.ScriptRunRequest{Module: "account", Script: "sign"}
-		if _, err := e.TriggerScript(request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := e.TriggerScript(t.Context(), request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("trigger before start: %v", err)
 		}
 		release := make(chan struct{})
@@ -43,7 +43,7 @@ $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error);
 		host := startCronTestHost(t, e, client)
 		next := cronStatus(t, e, 0).NextRun
 		e.slots <- struct{}{}
-		accepted, err := host.TriggerScript("test", request)
+		accepted, err := host.TriggerScript(t.Context(), "test", request)
 		if err != nil || accepted.Run != 1 || accepted.Instance != "test" || accepted.Module != "account" || accepted.Status.LastTrigger != "http-api" || accepted.Status.State != "waiting" || !accepted.Status.NextRun.Equal(next) {
 			t.Fatalf("acceptance: %+v, %v", accepted, err)
 		}
@@ -51,7 +51,7 @@ $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error);
 		if len(entered) != 0 {
 			t.Fatal("manual run bypassed shared script slots")
 		}
-		if _, err := host.TriggerScript("test", request); !errors.Is(err, plugin.ErrScriptBusy) {
+		if _, err := host.TriggerScript(t.Context(), "test", request); !errors.Is(err, plugin.ErrScriptBusy) {
 			t.Fatalf("overlapping trigger: %v", err)
 		}
 		<-e.slots
@@ -67,7 +67,7 @@ $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error);
 		if status.LastResult != "success" || status.Failures != 0 || status.State != "scheduled" || status.LastTrigger != "http-api" {
 			t.Fatalf("manual result: %+v", status)
 		}
-		if _, err := host.TriggerScript("test", request); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "test", request); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -78,10 +78,10 @@ $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error);
 		if len(canceled) != 1 || status.Runs != 2 || status.LastError != "canceled" || status.State != "stopped" || len(e.slots) != 0 {
 			t.Fatalf("close did not cancel and join manual task: %+v", status)
 		}
-		if _, err := host.TriggerScript("test", request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := host.TriggerScript(t.Context(), "test", request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("host accepted work after close: %v", err)
 		}
-		if _, err := e.TriggerScript(request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := e.TriggerScript(t.Context(), request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("worker accepted work after close: %v", err)
 		}
 	})
@@ -116,11 +116,11 @@ func TestTaskManualSelection(t *testing.T) {
 			{"test", "first", "absent", plugin.ErrScriptNotFound},
 			{"test", "", "sign", plugin.ErrScriptAmbiguous},
 		} {
-			if _, err := host.TriggerScript(test.instance, api.ScriptRunRequest{Module: test.module, Script: test.script}); !errors.Is(err, test.err) {
+			if _, err := host.TriggerScript(t.Context(), test.instance, api.ScriptRunRequest{Module: test.module, Script: test.script}); !errors.Is(err, test.err) {
 				t.Fatalf("selection %+v: %v", test, err)
 			}
 		}
-		response, err := host.TriggerScript("test", api.ScriptRunRequest{Module: "second", Script: "sign"})
+		response, err := host.TriggerScript(t.Context(), "test", api.ScriptRunRequest{Module: "second", Script: "sign"})
 		if err != nil || response.Module != "second" {
 			t.Fatalf("qualified selection: %+v %v", response, err)
 		}

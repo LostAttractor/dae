@@ -29,6 +29,9 @@ type runtimeHarness struct {
 
 func (r *runtimeHarness) Run(ctx context.Context, source string, in Invocation) (*Result, error) {
 	in.BodyMemory, in.BodyLimit = r.budget, 32<<20
+	if in.Scope == (ScriptScope{}) {
+		in.Scope = testLocalScope
+	}
 	result, err := r.Runtime.Run(ctx, source, in)
 	r.t.Cleanup(result.Close)
 	return result, err
@@ -346,7 +349,7 @@ func TestRuntimeRetiredStoreIsReleased(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	previous := func() weak.Pointer[runtimeStore] {
 		r := testRuntime(t, RuntimeOptions{StorePath: path})
-		if !r.data.write(t.Context(), "value", "initial", false) {
+		if !r.data.write(t.Context(), testLocalScope, "value", "initial", false) {
 			t.Fatal("could not write store")
 		}
 		return weak.Make(r.data)
@@ -361,11 +364,11 @@ func TestRuntimeRetiredStoreIsReleased(t *testing.T) {
 		t.Fatal("retired runtime's store is retained by the global cache")
 	}
 	// With no live runtime sharing the path, a fresh instance reloads the file.
-	if err := os.WriteFile(path, []byte(`{"value":"updated"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"local":{"value":"updated"}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	next := testRuntime(t, RuntimeOptions{StorePath: path})
-	if got, err := next.data.read(t.Context(), "value"); err != nil || got != "updated" {
+	if got, err := next.data.read(t.Context(), testLocalScope, "value"); err != nil || got != "updated" {
 		t.Fatalf("fresh runtime read stale data: %v, %v", got, err)
 	}
 }

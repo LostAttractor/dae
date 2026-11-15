@@ -46,7 +46,7 @@ func init() {
 func Execute() error {
 	definitions := compiledplugins.Definitions()
 	var connection cli.Connection
-	services := plugin.CommandServices{BaseDir: common.CacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
+	services := plugin.CommandServices{BaseDir: common.CacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript, MigrateScriptStore: connection.MigrateScriptStore}
 	ca := newCACommand()
 	plugins := newPluginsCommand(definitions, services)
 	connection.Bind(plugins.PersistentFlags())

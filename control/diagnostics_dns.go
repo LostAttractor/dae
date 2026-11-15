@@ -24,9 +24,9 @@ func (c *ControlPlane) diagnosticDNSContext(ctx context.Context, request api.Exp
 		}
 	}
 	query, _ := plugin.DiagnosticDNSRequest(ctx)
-	dnsRequest := plugin.DNSRequest{DNSPacket: query.DNSPacket, Network: request.Flow.Protocol, Source: input.src, OriginalDestination: input.dst, Destination: input.dst, Interface: input.ifindex}
+	dnsRequest := plugin.DNSRequest{DNSPacket: query.DNSPacket, Network: request.Flow.Protocol, Source: input.src, SourceMAC: input.mac, SourceOrigin: query.SourceOrigin, OriginalDestination: input.dst, Destination: input.dst, Interface: input.ifindex}
 	identity := routingResult{Pname: input.processName, Ifindex: input.ifindex, ProfileId: input.profileID,
-		Physinif: input.physinif, Dscp: input.dscp, Mac: input.mac, CaptureFlags: evaluation.captureFlags}
+		Physinif: input.physinif, Dscp: input.dscp, Mac: input.mac, SourceOrigin: uint8(query.SourceOrigin), CaptureFlags: evaluation.captureFlags}
 	(routeDecision{outbound: evaluation.outbound, mark: evaluation.mark, must: evaluation.must}).apply(&identity)
 	ctx = context.WithValue(ctx, diagnosticDNSRouteKey{}, identity)
 	return plugin.WithDiagnosticDNSRequest(ctx, dnsRequest)
@@ -112,5 +112,12 @@ func diagnosticDNSQuestion(ctx context.Context, request api.ExplainRequest) cont
 	if q.DO || q.UDPSize != 0 {
 		message.SetEdns0(uint16(max(q.UDPSize, 512)), q.DO)
 	}
-	return plugin.WithDiagnosticDNSRequest(ctx, plugin.DNSRequest{DNSPacket: plugin.DNSMessage(message)})
+	origin := plugin.SourceUnknown
+	switch request.Context.Origin {
+	case "local", "daemon":
+		origin = plugin.SourceLocal
+	case "lan":
+		origin = plugin.SourceLAN
+	}
+	return plugin.WithDiagnosticDNSRequest(ctx, plugin.DNSRequest{DNSPacket: plugin.DNSMessage(message), SourceOrigin: origin})
 }

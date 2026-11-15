@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
@@ -60,7 +61,7 @@ func newTestUDPCore(t *testing.T) *controlPlaneCore {
 		t.Cleanup(func() { _ = m.Close() })
 		return m
 	}
-	bindings := mapOf("udp_bind_test", uint32(unsafe.Sizeof(uint64(0))))
+	bindings := mapOf("udp_bind_test", uint32(unsafe.Sizeof(bpfUdpBinding{})))
 	decisions := mapOf("udp_route_test", uint32(unsafe.Sizeof(bpfUdpRoutingCacheValue{})))
 	return &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UdpBindingsMap: bindings, UdpRoutingCacheMap: decisions}}}}
 }
@@ -91,7 +92,7 @@ func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 			var epoch uint64
 			send := func(dst netip.AddrPort, group uint8) {
 				t.Helper()
-				if err := c.handlePkt(context.Background(), []byte("datagram"), src, dst, &routingResult{Outbound: group, Mac: mac, RouteEpoch: epoch}); err != nil {
+				if err := c.handlePkt(context.Background(), []byte("datagram"), src, dst, &routingResult{Outbound: group, Mac: mac, SourceOrigin: uint8(plugin.SourceLAN), RouteEpoch: epoch}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -134,10 +135,13 @@ func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 			if got := <-connB.writes; got != second {
 				t.Fatalf("new lifetime destination = %v", got)
 			}
-			var bound uint64
+			var bound bpfUdpBinding
 			key := udpSourceKey(src)
 			if err := bindings.Lookup(&key, &bound); err != nil {
 				t.Fatalf("new source binding missing: %v", err)
+			}
+			if bound.RouteEpoch != epoch || bound.Mac != mac || bound.SourceOrigin != uint8(plugin.SourceLAN) {
+				t.Fatalf("source binding lost its identity: %+v", bound)
 			}
 
 		})

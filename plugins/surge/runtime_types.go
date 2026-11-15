@@ -52,6 +52,8 @@ func runtimeHeaders(header http.Header, full bool) any {
 }
 
 type Invocation struct {
+	// Scope comes from the host source and isolation policy, never scripts or HTTP headers.
+	Scope                            ScriptScope
 	Domain                           string
 	CronExp                          string
 	Trigger                          string

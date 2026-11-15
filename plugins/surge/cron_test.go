@@ -38,7 +38,7 @@ func cronTestEngine(t *testing.T, module *Module, sources map[string]string, slo
 	}
 	cleanupBackend(t, rt.backend)
 	budget := membuffer.NewBudget(128 << 20)
-	e, err := NewEngine(EngineOptions{Modules: []*Module{module}, Runtime: rt, BodyMemory: budget,
+	e, err := NewEngine(EngineOptions{Modules: []*Module{module}, Runtime: rt, BodyMemory: budget, Devices: newTestDevices(), IsolateLAN: true,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: slots, ScriptTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ const ignored = {}; ignored.self = ignored; $done(ignored); $done({body:"ignored
 `}, 1)
 		before := cronStatus(t, e, 0)
 		time.Sleep(3 * time.Second)
-		count, err := e.options.Runtime.data.read(t.Context(), "count")
+		count, err := e.options.Runtime.data.read(t.Context(), testLocalScope, "count")
 		if err != nil || before.State != "pending" || !before.NextRun.IsZero() || count != nil {
 			t.Fatalf("cron ran before activation: %+v, count=%v, error=%v", before, count, err)
 		}
@@ -190,7 +190,7 @@ const ignored = {}; ignored.self = ignored; $done(ignored); $done({body:"ignored
 		snapshot.Modules[0].Tasks[0].State = "changed"
 		time.Sleep(time.Second)
 		synctest.Wait()
-		count, err = e.options.Runtime.data.read(t.Context(), "count")
+		count, err = e.options.Runtime.data.read(t.Context(), testLocalScope, "count")
 		if err != nil || count != "2" || cronStatus(t, e, 0).Runs != 2 {
 			t.Fatalf("cron state or shared store was lost: count=%v, error=%v", count, err)
 		}
@@ -377,7 +377,7 @@ if (typeof $request !== "undefined") {
 				})}
 				req := httptest.NewRequest("POST", "https://example.test/query", nil)
 				req.Header["Cookie"] = []string{"token=fixture"}
-				chain := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
+				chain := e.Wrap(plugin.Flow{Host: "example.test", Port: 443, SourceOrigin: plugin.SourceLocal}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
 					return exchange.NewResponse(&http.Response{StatusCode: 204, Request: exchange.Request.Head, Header: make(http.Header), Body: http.NoBody}), nil
 				})
 				response, err := chain(&plugin.Exchange{Request: plugin.NewRequest(req, e.options.BodyMemory), Client: client})
@@ -385,7 +385,7 @@ if (typeof $request !== "undefined") {
 					t.Fatal(err)
 				}
 				response.Close()
-				if data, err := e.options.Runtime.data.read(t.Context(), "task_cookie"); err != nil || data == nil {
+				if data, err := e.options.Runtime.data.read(t.Context(), testLocalScope, "task_cookie"); err != nil || data == nil {
 					t.Fatalf("capture did not populate persistent store: %v", err)
 				}
 				runtimeFakeClockTest(t, func(t *testing.T) {
@@ -399,7 +399,7 @@ if (typeof $request !== "undefined") {
 					}
 					synctest.Wait()
 					if mode == "manual" {
-						if _, err := host.TriggerScript("task", api.ScriptRunRequest{Script: m.TaskScripts[0].Name}); err != nil {
+						if _, err := host.TriggerScript(t.Context(), "task", api.ScriptRunRequest{Script: m.TaskScripts[0].Name}); err != nil {
 							t.Fatal(err)
 						}
 					} else {

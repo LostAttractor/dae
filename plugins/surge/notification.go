@@ -20,8 +20,8 @@ const (
 	maxNotificationHistory = 1 << 20 // Conservative encoded JSON budget per instance.
 )
 
-// Runtime-owned: each script gets its own bounded history, shared by invocations.
-// Rebuilding an instance creates a new history, independently of its file store.
+// Runtime history is bounded per effective scope and script, shared across invocations.
+// Rebuilding an instance starts fresh history, independent of persistent storage.
 type notificationHistory struct {
 	mu      sync.Mutex
 	scripts map[notificationScript]*scriptNotifications
@@ -30,7 +30,7 @@ type notificationHistory struct {
 }
 
 type notificationScript struct {
-	module, script, kind string
+	scope, mac, module, script, kind string
 }
 
 type scriptNotifications struct {
@@ -51,12 +51,12 @@ func truncateScriptText(text string, limit int) (string, bool) {
 func notificationBytes(n surgeapi.SurgeNotification) int {
 	// JSON can expand each text byte to a six-byte escape. Leave room for
 	// field names, timestamps, IDs and separators without allocating JSON here.
-	return 512 + 6*(len(n.Module)+len(n.Script)+len(n.ScriptType)+len(n.Title)+len(n.Subtitle)+len(n.Body))
+	return 512 + 6*(len(n.Scope)+len(n.MAC)+len(n.Module)+len(n.Script)+len(n.ScriptType)+len(n.Title)+len(n.Subtitle)+len(n.Body))
 }
 
 func (h *notificationHistory) add(notification surgeapi.SurgeNotification) {
 	// Key by the original, host-provided identity before truncating report text.
-	key := notificationScript{notification.Module, notification.Script, notification.ScriptType}
+	key := notificationScript{notification.Scope, notification.MAC, notification.Module, notification.Script, notification.ScriptType}
 	for _, field := range []*string{&notification.Module, &notification.Script, &notification.Title, &notification.Subtitle, &notification.Body} {
 		limit := maxNotificationText
 		if field == &notification.Body {

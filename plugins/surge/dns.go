@@ -248,24 +248,37 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	if script == nil {
 		return nil, fmt.Errorf("missing DNS script %q", name)
 	}
+	ctx, cancel := context.WithTimeout(ctx, e.scriptTimeout(script))
+	defer cancel()
+	scope := ScriptScope{Kind: ScriptScopeLocal}
+	if e.isolateLAN(script) {
+		scope = e.identifyScope(ctx, request.SourceOrigin, request.Source.Addr(), request.SourceMAC)
+	}
+	if err := ctx.Err(); err != nil {
+		e.traceScript(nil, script).finish(err)
+		return nil, err
+	}
 	key := dnsScriptKey(script, request)
+	key.scope = scope
+	if scope.Kind == ScriptScopeDevice && scope.valid() {
+		key.generation = e.options.Runtime.data.generation.Load()
+	}
 	if cached := e.dnsCache.get(key, request); cached != nil {
 		return cached, nil
 	}
 	execution := e.traceScript(nil, script)
+	execution.scope = scope
 	defer func() { execution.finish(err) }()
-	ctx, cancel := context.WithTimeout(ctx, e.scriptTimeout(script))
-	defer cancel()
 	value, err := func() (DNSResult, error) {
 		release, err := e.acquire(ctx, "dns")
 		if err != nil {
 			return DNSResult{}, err
 		}
 		defer release()
-		execution.start()
+		execution.start(ctx)
 		question, _ := request.Question()
 		result, err := e.runInvocation(ctx, module, script, Invocation{
-			Domain: strings.TrimSuffix(question.Name, "."), HTTPClient: request.Client,
+			Domain: strings.TrimSuffix(question.Name, "."), HTTPClient: request.Client, Scope: scope,
 		})
 		if err != nil {
 			return DNSResult{}, err

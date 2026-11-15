@@ -1034,6 +1034,7 @@ set_ipv4_udp_routing_cache(struct __sk_buff *skb,
 	struct udp_routing_cache_key key;
 	struct udp_routing_cache_value value = {
 		.result.outbound = outbound,
+		.result.source_origin = SOURCE_LOCAL,
 		.cached_until = cached_until,
 	};
 

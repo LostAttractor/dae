@@ -25,7 +25,7 @@ func TestRuntimeStoreProcessHelper(t *testing.T) {
 	}
 	for i := range 16 {
 		key := fmt.Sprintf("%s-%d", os.Getenv("DAE_TEST_STORE_WRITER"), i)
-		if !store.write(t.Context(), key, key, false) {
+		if !store.write(t.Context(), testDeviceScope, key, key, false) {
 			t.Fatalf("could not write %s", key)
 		}
 	}
@@ -34,7 +34,7 @@ func TestRuntimeStoreProcessHelper(t *testing.T) {
 func TestRuntimeStoreMultipleProcesses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	parent, err := openRuntimeStore(path)
-	if err != nil || !parent.write(t.Context(), "cookie", "captured", false) {
+	if err != nil || !parent.write(t.Context(), testDeviceScope, "cookie", "captured", false) {
 		t.Fatalf("initialize store: %v", err)
 	}
 	var commands []*exec.Cmd
@@ -58,16 +58,16 @@ func TestRuntimeStoreMultipleProcesses(t *testing.T) {
 	for _, id := range []string{"a", "b"} {
 		for i := range 16 {
 			key := fmt.Sprintf("%s-%d", id, i)
-			if got, err := parent.read(t.Context(), key); err != nil || got != key {
+			if got, err := parent.read(t.Context(), testDeviceScope, key); err != nil || got != key {
 				t.Fatalf("lost external write %s: %v, %v", key, got, err)
 			}
 		}
 	}
-	if !parent.write(t.Context(), "cookie", "", true) {
+	if !parent.write(t.Context(), testDeviceScope, "cookie", "", true) {
 		t.Fatal("delete failed")
 	}
 	values, _, err := readRuntimeStoreSnapshot(path)
-	if err != nil || len(values) != 32 || values["cookie"] != "" {
+	if err != nil || len(values[testDeviceName]) != 32 || values[testDeviceName]["cookie"] != "" {
 		t.Fatalf("stale writer overwrote child data: %v, %v", values, err)
 	}
 	for _, name := range []string{path, path + ".lock"} {
@@ -81,7 +81,7 @@ func TestRuntimeStoreMultipleProcesses(t *testing.T) {
 func TestRuntimeStoreLockHonorsInvocationDeadline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	store, err := openRuntimeStore(path)
-	if err != nil || !store.write(t.Context(), "cookie", "original", false) {
+	if err != nil || !store.write(t.Context(), testDeviceScope, "cookie", "original", false) {
 		t.Fatal(err)
 	}
 	lock, err := lockRuntimeStore(t.Context(), path)
@@ -92,7 +92,7 @@ func TestRuntimeStoreLockHonorsInvocationDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 	done := make(chan bool, 1)
-	go func() { done <- store.write(ctx, "cookie", "changed", false) }()
+	go func() { done <- store.write(ctx, testDeviceScope, "cookie", "changed", false) }()
 	select {
 	case success := <-done:
 		if success || ctx.Err() == nil {
@@ -101,7 +101,7 @@ func TestRuntimeStoreLockHonorsInvocationDeadline(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("store lock ignored invocation deadline")
 	}
-	if value, err := store.read(t.Context(), "cookie"); err != nil || value != "original" {
+	if value, err := store.read(t.Context(), testDeviceScope, "cookie"); err != nil || value != "original" {
 		t.Fatalf("canceled write changed data: %v, %v", value, err)
 	}
 }
@@ -127,14 +127,14 @@ func TestRuntimeStoreLocalLockHonorsInvocationDeadline(t *testing.T) {
 				done := make(chan error, 1)
 				go func() {
 					if write {
-						if store.write(ctx, "key", "value", false) {
+						if store.write(ctx, testDeviceScope, "key", "value", false) {
 							done <- errors.New("write bypassed the local lock")
 						} else {
 							done <- ctx.Err()
 						}
 						return
 					}
-					_, err := store.read(ctx, "key")
+					_, err := store.read(ctx, testDeviceScope, "key")
 					done <- err
 				}()
 				select {

@@ -615,7 +615,8 @@
         "type": "object",
         "properties": {
           "module": { "type": "string", "description": "Required when the script name is not unique within the instance." },
-          "script": { "type": "string", "minLength": 1 }
+          "script": { "type": "string", "minLength": 1 },
+          "mac": { "type": "string", "description": "MITM-enabled target device MAC for a script with LAN isolation enabled. Omission always selects local execution. Scripts with LAN isolation disabled reject MAC selection; omit mac." }
         },
         "required": ["script"],
         "additionalProperties": false
@@ -630,27 +631,48 @@
         },
         "required": ["instance", "module", "run", "status"]
       },
+      "ScriptStoreMigrateRequest": {
+        "type": "object",
+        "properties": {
+          "from_mac": { "type": "string", "description": "Source device: a nonzero unicast six-byte MAC, distinct from to_mac." },
+          "to_mac": { "type": "string", "description": "Destination device: a nonzero unicast six-byte MAC with no existing storage partition." }
+        },
+        "required": ["from_mac", "to_mac"],
+        "additionalProperties": false
+      },
+      "ScriptStoreMigrateResponse": {
+        "type": "object",
+        "properties": {
+          "instance": { "type": "string" },
+          "from_mac": { "type": "string", "description": "Canonical source MAC." },
+          "to_mac": { "type": "string", "description": "Canonical destination MAC." },
+          "keys_moved": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["instance", "from_mac", "to_mac", "keys_moved"]
+      },
       "ScriptTaskStatus": {
-        "description": "A plugin-managed script task. Times describe the latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload.",
+        "description": "One effective execution-scope row for a plugin-managed script definition. Surge always includes a local row and adds device rows only for scripts with LAN isolation enabled; unknown is not an executable target. Times and counters describe this scope's latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload.",
         "properties": {
           "name": { "type": "string" },
+          "scope": { "type": "string", "description": "Effective execution scope, not original request origin. Surge reports local or device explicitly; shared LAN execution is local." },
+          "mac": { "type": "string", "description": "Host-confirmed target device MAC; present only when scope is device." },
           "type": { "type": "string", "enum": ["cron", "generic"] },
           "cronexp": { "type": "string" },
           "timezone": { "type": "string" },
           "timeout_seconds": { "type": "number" },
-          "state": { "type": "string", "enum": ["pending", "ready", "scheduled", "waiting", "running", "unscheduled", "stopped"] },
+          "state": { "type": "string", "enum": ["unavailable", "pending", "ready", "scheduled", "waiting", "running", "unscheduled", "stopped"] },
           "next_run": { "type": "string", "format": "date-time" },
           "last_started_at": { "type": "string", "format": "date-time" },
           "last_finished_at": { "type": "string", "format": "date-time" },
           "last_duration_ms": { "type": "integer", "format": "int64" },
-          "last_result": { "type": "string", "enum": ["success", "failed"] },
+          "last_result": { "type": "string", "enum": ["success", "failed", "skipped"] },
           "last_trigger": { "type": "string", "enum": ["cron", "http-api"] },
-          "last_error": { "type": "string", "description": "Stable failure category, such as timeout, canceled, error or http_client_unavailable. No raw script exceptions or response bodies." },
+          "last_error": { "type": "string", "description": "Stable failure or skip category, such as timeout, canceled, error, http_client_unavailable, device_disabled or device_query_failed. No raw script exceptions or response bodies." },
           "runs": { "type": "integer", "minimum": 0 },
           "failures": { "type": "integer", "minimum": 0 },
-          "skipped": { "type": "integer", "minimum": 0, "description": "Schedule ticks skipped because this task was still waiting or running." }
+          "skipped": { "type": "integer", "minimum": 0, "description": "Schedule ticks merged during pending discovery or while this task was waiting/running, plus admitted tasks skipped because device eligibility was revoked or device discovery failed." }
         },
-        "required": ["name", "type", "timeout_seconds", "state", "last_duration_ms", "runs", "failures", "skipped"],
+        "required": ["name", "scope", "type", "timeout_seconds", "state", "last_duration_ms", "runs", "failures", "skipped"],
         "type": "object"
       },
       "NodeAnnotationStatus": {
@@ -1831,7 +1853,7 @@
       "post": {
         "operationId": "triggerScript",
         "summary": "Trigger an existing cron or generic task",
-        "description": "Requires administration. Returns 202 with an acceptance snapshot and per-task run number; execution belongs to the daemon and continues after the HTTP response. Inspect the plugin status for completion. Concurrent triggers for a waiting/running task return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name: 400; inactive worker: 503. No inline scripts, source URLs, argument overrides or automatic retries.",
+        "description": "Requires administration. Returns 202 with an acceptance snapshot, status.scope, device-only status.mac and a per-scope task run number; execution uses daemon routing and continues after the HTTP response. Inspect plugin status for completion. Omitted mac always selects local execution without requiring LAN discovery, MITM or a CA. Explicit mac selects a currently MITM-enabled device only when the script isolates LAN clients; otherwise omit mac. Concurrent triggers for the same waiting/running scope or an explicitly selected disabled device return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name, invalid MAC or MAC selection on a non-isolated script: 400; inactive worker, unavailable device discovery, or canceled/timed-out admission: 503. Admission follows request and worker cancellation and has its own script-timeout budget, separate from accepted execution; discovery does not count as a run. Accepted tasks survive request cancellation. No inline scripts, source URLs, argument overrides or automatic retries.",
         "parameters": [
           { "name": "instance", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
@@ -1842,6 +1864,31 @@
         },
         "responses": {
           "202": { "description": "Script execution accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptRunResponse" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+      }
+    },
+    "/api/plugins/{instance}/store/migrate": {
+      "post": {
+        "operationId": "migrateScriptStore",
+        "summary": "Move one device script storage partition",
+        "description": "Requires administration and a live plugin storage runtime. Synchronously moves all persistentStore keys from one device MAC to another in this instance, preserving keys and values and removing the source partition. No merging or overwriting: even an empty destination partition conflicts. Stop old-MAC traffic and background eligibility first. Device authorization, isolation, local storage, notifications and task counters are unchanged. A later execution for the old MAC can create a new partition. Source and destination need not be online or MITM-enabled. In-memory mode moves only current runtime data. The fixed five-second context bounds cancellable lock waits, not filesystem I/O. Busy protection covers this daemon and overlapping reload generations; stop script writers in other processes sharing the file. No automatic retries: timeout or connection loss does not prove the data was unchanged. A published-but-durability-unconfirmed error means the move already took effect.",
+        "parameters": [
+          { "name": "instance", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptStoreMigrateRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Partition moved; no stored values are returned", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptStoreMigrateResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error", "description": "Invalid JSON or MACs, including equal MACs" },
+          "404": { "$ref": "#/components/responses/Error", "description": "Instance or source partition not found" },
+          "409": { "$ref": "#/components/responses/Error", "description": "Destination partition exists or a source/destination script is executing" },
+          "500": { "$ref": "#/components/responses/Error", "description": "Migration failed, or was published but durability is unconfirmed; do not automatically retry" },
+          "503": { "$ref": "#/components/responses/Error", "description": "Storage capability/runtime unavailable, retired instance or canceled/timed-out lock wait" },
           "default": { "$ref": "#/components/responses/Error" }
         },
         "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]

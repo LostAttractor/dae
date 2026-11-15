@@ -225,6 +225,11 @@ func (c *Client) TriggerScript(ctx context.Context, instance string, request api
 	return c.requestStatus[api.ScriptRunResponse](ctx, "POST", "/api/plugins/"+url.PathEscape(instance)+"/scripts/run", request, "", http.StatusAccepted)
 }
 
+// MigrateScriptStore moves one device partition synchronously, without retries.
+func (c *Client) MigrateScriptStore(ctx context.Context, instance string, request api.ScriptStoreMigrateRequest) (*api.ScriptStoreMigrateResponse, error) {
+	return c.request[api.ScriptStoreMigrateResponse](ctx, "POST", "/api/plugins/"+url.PathEscape(instance)+"/store/migrate", request, "")
+}
+
 func (c *Client) RefreshResources(ctx context.Context) (*api.Operation, error) {
 	return c.requestStatus[api.Operation](ctx, "POST", "/api/resources/refresh", nil, "", http.StatusAccepted)
 }

@@ -3,6 +3,7 @@
 package apiserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -23,16 +24,16 @@ func (s *handler) serveScript(w http.ResponseWriter, r *http.Request, who caller
 		apiError(w, http.StatusServiceUnavailable, "script plugins are unavailable")
 		return
 	}
-	response, err := s.options.Scripts.TriggerScript(r.PathValue("instance"), request)
+	response, err := s.options.Scripts.TriggerScript(r.Context(), r.PathValue("instance"), request)
 	if err != nil {
 		switch {
 		case errors.Is(err, plugin.ErrScriptNotFound):
 			apiError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, plugin.ErrScriptAmbiguous):
+		case errors.Is(err, plugin.ErrScriptAmbiguous), errors.Is(err, plugin.ErrScriptDeviceUnsupported), errors.Is(err, plugin.ErrScriptDeviceInvalid):
 			apiError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, plugin.ErrScriptBusy):
+		case errors.Is(err, plugin.ErrScriptBusy), errors.Is(err, plugin.ErrScriptDeviceDisabled):
 			apiError(w, http.StatusConflict, err.Error())
-		case errors.Is(err, plugin.ErrScriptInactive):
+		case errors.Is(err, plugin.ErrScriptInactive), errors.Is(err, plugin.ErrScriptDeviceUnavailable), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			apiError(w, http.StatusServiceUnavailable, err.Error())
 		default:
 			apiError(w, http.StatusInternalServerError, "could not trigger script task")

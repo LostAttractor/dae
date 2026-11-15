@@ -10,9 +10,9 @@ import (
 )
 
 func TestDNSRaceRejectsUncorrelatedAndEmptyResponses(t *testing.T) {
-	request := &DNSExchange{DNSPacket: DNSMessage(new(dns.Msg).SetQuestion("race.example.", dns.TypeA))}
+	request := &DNSExchange{DNSPacket: DNSMessage(new(dns.Msg).SetQuestion("race.example.", dns.TypeA)), SourceOrigin: SourceLAN}
 	response, err := RaceDNSServers(t.Context(), request, []string{"wrong", "empty", "valid"}, func(_ context.Context, query *DNSExchange, server string) (*DNSResponse, error) {
-		if !query.Independent() || query == request {
+		if !query.Independent() || query == request || query.SourceOrigin != request.SourceOrigin {
 			t.Error("race shared the parent transport lifetime")
 		}
 		if server == "empty" {

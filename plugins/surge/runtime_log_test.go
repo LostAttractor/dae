@@ -30,7 +30,7 @@ func TestScriptLogBounds(t *testing.T) {
 	} {
 		var entries []*log.Entry
 		rt := &Runtime{opts: RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) { entries = append(entries, e) })}}
-		execution := &scriptExecution{runtime: rt, ctx: t.Context()}
+		execution := &scriptExecution{runtime: rt, ctx: t.Context(), scope: testDeviceScope}
 		if _, err := execution.hostCall(args); err != nil {
 			t.Fatal(err)
 		}
@@ -40,6 +40,9 @@ func TestScriptLogBounds(t *testing.T) {
 		entry := entries[0]
 		if len(entry.Message) > maxScriptLogText || !utf8.ValidString(entry.Message) || entry.Data["truncated"] != true {
 			t.Fatalf("unbounded log: bytes=%d fields=%v", len(entry.Message), entry.Data)
+		}
+		if entry.Data["scope"] != "device" || entry.Data["mac"] != testDeviceName {
+			t.Fatalf("bounded log lost execution scope: %v", entry.Data)
 		}
 	}
 }

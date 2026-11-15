@@ -108,11 +108,12 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		}
 		return &tcpRelay{
 			lConn: sniffer, dst: dst, domain: host,
-			activity:    observe,
-			mitm:        intercepted,
-			deviceMAC:   routingResult.Mac,
-			routeLease:  routeLease,
-			policyLease: policyLease,
+			activity:     observe,
+			mitm:         intercepted,
+			deviceMAC:    routingResult.Mac,
+			sourceOrigin: routingResult.sourceOrigin(),
+			routeLease:   routeLease,
+			policyLease:  policyLease,
 		}, nil
 	}
 

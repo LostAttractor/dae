@@ -20,6 +20,8 @@ type DNSRequest struct {
 	DNSPacket
 	Network                                  string
 	Source, OriginalDestination, Destination netip.AddrPort
+	SourceMAC                                [6]byte
+	SourceOrigin                             SourceOrigin
 	Interface                                uint32
 	// ServerAssigned prevents a later general resolver policy from overriding an
 	// explicit per-domain assignment. Caches must isolate the selected Destination.

@@ -39,6 +39,7 @@ type scriptExecution struct {
 	bodyError                          error
 	moduleName, scriptName, scriptType string
 	sessionID                          string
+	scope                              ScriptScope
 }
 
 type runtimeEvent struct {
@@ -75,7 +76,7 @@ func (s *scriptExecution) log(level log.Level, parts ...string) {
 			break
 		}
 	}
-	entry := s.runtime.opts.Logger.WithFields(log.Fields{"script": s.scriptName, "module": s.moduleName, "session_id": s.sessionID})
+	entry := s.runtime.opts.Logger.WithFields(log.Fields{"script": s.scriptName, "module": s.moduleName, "session_id": s.sessionID, "scope": s.scope.name(), "mac": s.scope.deviceName()})
 	if truncated {
 		entry = entry.WithField("truncated", true)
 	}
@@ -122,15 +123,15 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		return nil, nil
 	case "notify":
 		s.runtime.notifications.add(surgeapi.SurgeNotification{
-			Module: s.moduleName, Script: s.scriptName, ScriptType: s.scriptType,
+			Scope: s.scope.name(), MAC: s.scope.deviceName(), Module: s.moduleName, Script: s.scriptName, ScriptType: s.scriptType,
 			Title: arg(1), Subtitle: arg(2), Body: arg(3),
 		})
 		s.log(log.InfoLevel, arg(1), arg(2), arg(3))
 		return nil, nil
 	case "read":
-		return s.runtime.data.read(s.ctx, arg(1))
+		return s.runtime.data.read(s.ctx, s.scope, arg(1))
 	case "write":
-		return s.runtime.data.write(s.ctx, arg(1), arg(2), arg(3) == "delete"), nil
+		return s.runtime.data.write(s.ctx, s.scope, arg(1), arg(2), arg(3) == "delete"), nil
 	case "encode":
 		return base64.StdEncoding.EncodeToString([]byte(arg(1))), nil
 	case "decode":

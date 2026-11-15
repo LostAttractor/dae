@@ -87,21 +87,23 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 						if err := collection.Maps["domain_routing_map"].Update(destination.Addr().As16(), domains, ebpf.UpdateAny); err != nil {
 							t.Fatal(err)
 						}
-						packet, ipProto := routingKernelPacket(source, destination, proto)
-						explained, explanation, needed, _, explainErr := matcher.explainSpans(t.Context(), matcher.profiles[matcher.defaultProfileID], routingInput{
-							src: source, dst: destination, l4proto: proto, kernel: true, domainBitmap: domains.Routing[:], domainBumpBitmap: domains.Bump[:],
-						}, nil, map[uint8]string{0: "direct", 1: "block", 2: "proxy"}, "kernel")
-						if explainErr != nil || len(needed) != 0 || len(explanation) == 0 {
-							t.Fatalf("explanation failed: %+v %v %v", explanation, needed, explainErr)
-						}
-						key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(destination.Port()), L4proto: ipProto}
-						key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), destination.Addr().As16()
 						capture, bump, ambiguous := test.capture, test.bump, test.ambiguous
 						apiBypass := test.name == "API bypass" && proto == consts.L4ProtoType_TCP
 						if test.name == "API bypass" && !apiBypass {
 							capture, bump, ambiguous = true, true, true
 						}
-						for _, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+						for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+							// Separate port ranges by source and rule version to avoid sharing UDP cache entries.
+							source := netip.AddrPortFrom(source.Addr(), source.Port()+uint16(n)*2000)
+							packet, ipProto := routingKernelPacket(source, destination, proto)
+							explained, explanation, needed, _, explainErr := matcher.explainSpans(t.Context(), matcher.profiles[matcher.defaultProfileID], routingInput{
+								src: source, dst: destination, l4proto: proto, kernel: true, domainBitmap: domains.Routing[:], domainBumpBitmap: domains.Bump[:],
+							}, nil, map[uint8]string{0: "direct", 1: "block", 2: "proxy"}, "kernel")
+							if explainErr != nil || len(needed) != 0 || len(explanation) == 0 {
+								t.Fatalf("explanation failed: %+v %v %v", explanation, needed, explainErr)
+							}
+							key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(destination.Port()), L4proto: ipProto}
+							key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), destination.Addr().As16()
 							want := ^uint32(0) // TCX_NEXT
 							if capture || bump {
 								want = 7 // TC_ACT_REDIRECT

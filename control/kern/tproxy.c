@@ -196,6 +196,21 @@ struct udp_routing_cache_key {
 	__u16 padding;
 };
 
+enum source_origin {
+	SOURCE_UNKNOWN = 0,
+	SOURCE_LOCAL = 1,
+	SOURCE_LAN = 2,
+};
+
+struct udp_binding {
+	__u64 route_epoch;
+	__u8 mac[6];
+	__u8 source_origin;
+	__u8 padding;
+};
+
+_Static_assert(sizeof(struct udp_binding) == 16, "UDP binding ABI size");
+
 /* Shared by TCP tuples and UDP source decisions, with no alignment holes.
  * Process-name predicates use the socket owner storage, not this result.
  * Preserve first-packet metadata: interfaces, DSCP and policies can change
@@ -213,7 +228,7 @@ struct routing_result {
 	__u8 capture_flags;
 	__u8 protocol;
 	__u8 dscp;
-	__u8 padding;
+	__u8 source_origin;
 	__u32 physinif;
 	__u32 generation;
 };
@@ -416,7 +431,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct udp_routing_cache_key);
-	__type(value, __u64);
+	__type(value, struct udp_binding);
 	__uint(max_entries, MAX_UDP_ROUTING_CACHE_NUM);
 } udp_bindings_map SEC(".maps");
 
@@ -1024,9 +1039,18 @@ static __always_inline int degrade_unavailable(struct routing_result *result,
 	return 0;
 }
 
-/* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
+static __always_inline bool udp_source_matches(__u8 origin, const __u8 *mac,
+					       const struct udp_binding *source)
+{
+	return origin == source->source_origin &&
+		(origin == SOURCE_LOCAL ||
+		 (origin == SOURCE_LAN && !__builtin_memcmp(mac, source->mac, ETH_ALEN)));
+}
+
+/* 1 = hit, 0 = new lifetime, -1 = source mismatch or lifetime already ending. */
 static __noinline int read_udp_route(struct udp_routing_cache_key *key,
-				     struct routing_result *result)
+				     struct routing_result *result,
+				     const struct udp_binding *source)
 {
 	struct udp_routing_cache_value *value =
 		bpf_map_lookup_elem(&udp_routing_cache_map, key);
@@ -1058,6 +1082,11 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 	if (expired) {
 		value->cached_until = 0;
 	} else {
+		if (source &&
+		    !udp_source_matches(value->result.source_origin, value->result.mac, source)) {
+			bpf_spin_unlock(&value->lock);
+			return -1;
+		}
 		value->cached_until = now + UDP_ROUTING_CACHE_TTL_NS;
 		*result = value->result;
 	}
@@ -1101,8 +1130,11 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 			return -1;
 		}
 	}
-	/* Concurrent first packets must all adopt the winning decision. */
-	return read_udp_route(key, result) == 1 ? 0 : -1;
+	struct udp_binding source = { .source_origin = result->source_origin };
+
+	__builtin_memcpy(source.mac, result->mac, sizeof(source.mac));
+	/* Concurrent first packets can only adopt a decision from the same trusted source. */
+	return read_udp_route(key, result, &source) == 1 ? 0 : -1;
 }
 
 static __always_inline bool redirect_entry_changed(const struct redirect_entry *stored,
@@ -1571,8 +1603,10 @@ static __always_inline void decode_route_result(struct routing_result *result,
 
 static __always_inline void fill_route_metadata(struct routing_result *result,
 						const struct route_params *params,
-						__u32 generation, __u64 route_epoch)
+						__u32 generation, __u64 route_epoch, bool is_wan)
 {
+	/* WAN egress excludes forwarded traffic; a missing LAN L3 MAC is not local. */
+	result->source_origin = is_wan ? SOURCE_LOCAL : SOURCE_LAN;
 	result->generation = generation;
 	result->route_epoch = route_epoch;
 	result->profile_id = params->profile_id;
@@ -1640,7 +1674,10 @@ static __always_inline int do_tproxy_first_fragment(
 		fill_udp_routing_cache_key(&udp_key, tuples);
 		if (bpf_map_lookup_elem(&udp_bindings_map, &udp_key))
 			return TCX_DROP;
-		int hit = read_udp_route(&udp_key, saved);
+		struct udp_binding source = { .source_origin = is_wan ? SOURCE_LOCAL : SOURCE_LAN };
+
+		__builtin_memcpy(source.mac, ethh->h_source, sizeof(source.mac));
+		int hit = read_udp_route(&udp_key, saved, &source);
 
 		if (hit < 0 ||
 		    (hit && (saved->outbound != OUTBOUND_DIRECT ||
@@ -1679,7 +1716,7 @@ static __always_inline int do_tproxy_first_fragment(
 
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
-		fill_route_metadata(result, params, generation, route_epoch);
+		fill_route_metadata(result, params, generation, route_epoch, is_wan);
 		if (l4proto == IPPROTO_UDP) {
 			if (save_udp_route(&udp_key, result, fallback) ||
 			    result->outbound != OUTBOUND_DIRECT)
@@ -1816,15 +1853,18 @@ static __always_inline int do_tproxy_unfragmented(
 	/* Online DNS is per-destination. Crash bypass must not let an old proxy
 	 * source escape its binding merely by sending to a DNS destination. */
 	if (l4proto == IPPROTO_UDP && (!isdns || crashed)) {
-		__u64 *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
+		struct udp_binding *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
+		struct udp_binding source = { .source_origin = is_wan ? SOURCE_LOCAL : SOURCE_LAN };
 
+		__builtin_memcpy(source.mac, ethh->h_source, sizeof(source.mac));
 		if (binding) {
 			/* Its endpoint releases the old source before a new lifetime starts. */
-			if (*binding != route_epoch)
+			if (binding->route_epoch != route_epoch ||
+			    !udp_source_matches(binding->source_origin, binding->mac, &source))
 				return TCX_DROP;
 			goto control_plane;
 		}
-		int hit = read_udp_route(&udp_key, routing_result);
+		int hit = read_udp_route(&udp_key, routing_result, &source);
 
 		if (hit < 0)
 			return TCX_DROP;
@@ -1842,7 +1882,7 @@ static __always_inline int do_tproxy_unfragmented(
 			return TCX_DROP;
 		routing_result->outbound = OUTBOUND_DIRECT;
 		routing_result->mark = skb->mark;
-		fill_route_metadata(routing_result, params, generation, route_epoch);
+		fill_route_metadata(routing_result, params, generation, route_epoch, is_wan);
 		if (l4proto == IPPROTO_UDP && save_udp_route(&udp_key, routing_result, 0))
 			return TCX_DROP;
 		goto selected;
@@ -1855,7 +1895,7 @@ static __always_inline int do_tproxy_unfragmented(
 	     daemon_offline() != scratch->state.offline))
 		return TCX_DROP;
 	decode_route_result(routing_result, route_ret);
-	fill_route_metadata(routing_result, params, generation, route_epoch);
+	fill_route_metadata(routing_result, params, generation, route_epoch, is_wan);
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;
@@ -1865,6 +1905,20 @@ static __always_inline int do_tproxy_unfragmented(
 	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must)) {
 		bool dns_must = isdns && routing_result->must;
 
+		if (dns_must) {
+			struct udp_binding *binding =
+				bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
+			struct udp_binding source = {
+				.source_origin = routing_result->source_origin,
+			};
+
+			__builtin_memcpy(source.mac, routing_result->mac, sizeof(source.mac));
+			/* A live endpoint can outlast its initial routing-cache entry. */
+			if (binding &&
+			    (binding->route_epoch != route_epoch ||
+			     !udp_source_matches(binding->source_origin, binding->mac, &source)))
+				return TCX_DROP;
+		}
 		if (save_udp_route(&udp_key, routing_result, fallback))
 			return TCX_DROP;
 		/* Adopt the source's existing outbound/mark, but do not let its
@@ -2003,7 +2057,7 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		struct routing_result ignored;
 
 		/* Replies renew only current-generation caches, releasing retired timer programs. */
-		read_udp_route(&source, &ignored);
+		read_udp_route(&source, &ignored, NULL);
 
 		/* A packet without state may start an inbound flow, whose replies
 		 * leave directly; its state waits for the answer. On WAN ingress,

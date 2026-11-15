@@ -56,6 +56,36 @@ func (p *relayTestPlugin) ObserveDNS(context.Context, *plugin.DNSExchange, *plug
 	p.observations++
 }
 
+func TestDNSRequestPreservesSourceIdentity(t *testing.T) {
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
+	plane := &ControlPlane{routingMatcher: matcher}
+	for _, source := range []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:40000"), netip.MustParseAddrPort("[fe80::10%lan]:40000")} {
+		destination := netip.MustParseAddrPort("192.0.2.53:53")
+		if source.Addr().Is6() {
+			destination = netip.MustParseAddrPort("[fe80::1%lan]:53")
+		}
+		for _, origin := range []plugin.SourceOrigin{plugin.SourceUnknown, plugin.SourceLocal, plugin.SourceLAN} {
+			for _, mac := range [][6]byte{{}, {2, 0, 0, 0, 0, 1}} {
+				for _, network := range []string{"udp", "tcp"} {
+					request, _, err := plane.dnsRequest(nil, network, source, destination, routingResult{Mac: mac, Ifindex: 2, SourceOrigin: uint8(origin)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, copy := range []*plugin.DNSExchange{request, request.Copy(), request.Fork()} {
+						if copy.Source != source || copy.SourceMAC != mac || copy.SourceOrigin != origin || copy.Interface != 2 {
+							t.Fatalf("%s DNS identity lost: %+v", network, copy.DNSRequest)
+						}
+						upstream := copy.WithUpstream(plugin.DNSUpstream{Network: network, Address: destination})
+						if upstream.Source != source || upstream.SourceMAC != mac || upstream.SourceOrigin != origin {
+							t.Fatal("upstream lost DNS identity")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 	// Domain evidence precedes delivery so the kernel has it before the client
 	// connects; plugins observe only delivered answers.

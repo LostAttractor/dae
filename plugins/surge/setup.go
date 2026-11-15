@@ -75,15 +75,18 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 				Arguments:       source.Arguments,
 				RefreshDeadline: refreshDeadline,
 			})
+			if err == nil {
+				if source.Name != "" {
+					module.Name = source.Name
+				}
+				err = applyModuleIsolation(module, source)
+			}
 			if err != nil {
 				// Modules canceled by another failure remain "not loaded".
 				if loadCtx.Err() == nil || !errors.Is(err, context.Canceled) {
 					status.Modules[i].State = "failed"
 				}
 				return fmt.Errorf("surge module %q (%s): %w", source.Name, resource.RedactURL(source.Link), err)
-			}
-			if source.Name != "" {
-				module.Name = source.Name
 			}
 			status.Modules[i] = module.Status()
 			modules[i] = module
@@ -131,6 +134,31 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 	}
 	logger.WithFields(log.Fields{"modules": len(modules), "duration": time.Since(started)}).Debug("Loaded Surge modules")
 	return modules, nil
+}
+
+// Apply policy before publishing modules so requests and cached tasks agree.
+func applyModuleIsolation(module *Module, source ModuleSource) error {
+	matches := make(map[string]int, len(source.ScriptIsolation))
+	for _, scripts := range [][]Script{module.Scripts, module.TaskScripts} {
+		for i := range scripts {
+			script := &scripts[i]
+			script.IsolateLAN, script.IsolateLANSet = source.IsolateLAN, source.IsolateLANSet
+			if isolate, ok := source.ScriptIsolation[script.Name]; ok {
+				script.IsolateLAN, script.IsolateLANSet = isolate, true
+				matches[script.Name]++
+			}
+		}
+	}
+	for name := range source.ScriptIsolation {
+		switch matches[name] {
+		case 0:
+			return fmt.Errorf("unknown script override %q", name)
+		case 1:
+		default:
+			return fmt.Errorf("ambiguous script override %q", name)
+		}
+	}
+	return nil
 }
 
 func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Services) (plugin.Resources, error) {
@@ -190,7 +218,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		}
 	}
 	engine, err := newEngine(ctx, EngineOptions{
-		Modules: modules, Runtime: runtime,
+		Modules: modules, Runtime: runtime, Devices: services.Devices, IsolateLAN: conf.IsolateLAN,
 		HTTPPolicies: conf.HTTPPolicies,
 		BodyMemory:   services.BodyMemory,
 		MaxBodySize:  conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,

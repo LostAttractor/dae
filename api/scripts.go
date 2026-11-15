@@ -8,6 +8,7 @@ import "time"
 type ScriptRunRequest struct {
 	Module string `json:"module,omitempty"`
 	Script string `json:"script"`
+	MAC    string `json:"mac,omitempty"`
 }
 
 // ScriptRunResponse is an acceptance snapshot for daemon execution, not a completed
@@ -23,6 +24,8 @@ type ScriptRunResponse struct {
 // LastError is a bounded category, never a script exception or response body.
 type ScriptTaskStatus struct {
 	Name           string    `json:"name"`
+	Scope          string    `json:"scope"`
+	MAC            string    `json:"mac,omitempty"`
 	Type           string    `json:"type"`
 	CronExp        string    `json:"cronexp,omitempty"`
 	Timezone       string    `json:"timezone,omitempty"`

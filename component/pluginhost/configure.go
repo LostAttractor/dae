@@ -32,9 +32,10 @@ type instanceInput struct {
 	baseDir      string
 	bodyMemory   *membuffer.Budget
 	sharedStates plugin.SharedStates
+	devices      plugin.DeviceService
 }
 
-func sameSharedStates(a, b plugin.SharedStates) bool {
+func sameService(a, b any) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
@@ -162,8 +163,8 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		if configuration == nil {
 			configuration = spec.Config
 		}
-		input := instanceInput{services.Interfaces, configuration, resource.Key, services.BaseDir, services.BodyMemory, services.SharedStates}
-		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && sameSharedStates(existing.input.sharedStates, input.sharedStates) && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
+		input := instanceInput{services.Interfaces, configuration, resource.Key, services.BaseDir, services.BodyMemory, services.SharedStates, services.Devices}
+		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && sameService(existing.input.sharedStates, input.sharedStates) && sameService(existing.input.devices, input.devices) && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
 			instances = append(instances, PreparedInstance{existing, resource.Value})
 			continue
 		}

@@ -59,7 +59,7 @@ $httpClient.get("https://generic.test/", (error, response, body) => {
   const ignored = {}; ignored.self = ignored; $done(ignored); $done("also ignored");
 });`}, 1)
 		request := api.ScriptRunRequest{Script: "tool"}
-		if _, err := e.TriggerScript(request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := e.TriggerScript(t.Context(), request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("accepted before activation: %v", err)
 		}
 		if before := cronStatus(t, e, 0); before.State != "pending" || before.Type != "generic" {
@@ -84,7 +84,7 @@ $httpClient.get("https://generic.test/", (error, response, body) => {
 		}
 		registry := surgeRegistry(t, e)
 		for run := uint64(1); run <= 2; run++ {
-			accepted, err := host.TriggerScript("test", request)
+			accepted, err := host.TriggerScript(t.Context(), "test", request)
 			if err != nil || accepted.Run != run || accepted.Module != "utilities" || accepted.Status.Type != "generic" || accepted.Status.State != "waiting" || !accepted.Status.NextRun.IsZero() {
 				t.Fatalf("acceptance: %+v %v", accepted, err)
 			}
@@ -104,10 +104,10 @@ $httpClient.get("https://generic.test/", (error, response, body) => {
 		if err := host.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := host.TriggerScript("test", request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := host.TriggerScript(t.Context(), "test", request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("host accepted after close: %v", err)
 		}
-		if _, err := e.TriggerScript(request); !errors.Is(err, plugin.ErrScriptInactive) {
+		if _, err := e.TriggerScript(t.Context(), request); !errors.Is(err, plugin.ErrScriptInactive) {
 			t.Fatalf("worker accepted after close: %v", err)
 		}
 		if status := cronStatus(t, e, 0); status.State != "stopped" || status.Runs != 2 {
@@ -137,7 +137,7 @@ timer=type=cron,cronexp="* * * * * *",timeout=10,script-path=timer.js`)
 			}
 		})}
 		host := startCronTestHost(t, e, client)
-		if _, err := host.TriggerScript("test", api.ScriptRunRequest{Script: "manual"}); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "test", api.ScriptRunRequest{Script: "manual"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -148,7 +148,7 @@ timer=type=cron,cronexp="* * * * * *",timeout=10,script-path=timer.js`)
 			if status.Runs != 1 || status.State != state {
 				t.Fatalf("tasks bypassed shared slots: %+v", status)
 			}
-			if _, err := host.TriggerScript("test", api.ScriptRunRequest{Script: status.Name}); !errors.Is(err, plugin.ErrScriptBusy) {
+			if _, err := host.TriggerScript(t.Context(), "test", api.ScriptRunRequest{Script: status.Name}); !errors.Is(err, plugin.ErrScriptBusy) {
 				t.Fatalf("overlapping trigger: %v", err)
 			}
 		}
@@ -159,11 +159,11 @@ timer=type=cron,cronexp="* * * * * *",timeout=10,script-path=timer.js`)
 				t.Fatalf("tasks did not share runtime/store: %+v", status)
 			}
 		}
-		if _, err := host.TriggerScript("test", api.ScriptRunRequest{Script: "manual"}); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "test", api.ScriptRunRequest{Script: "manual"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		if _, err := host.TriggerScript("test", api.ScriptRunRequest{Script: "timer"}); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "test", api.ScriptRunRequest{Script: "timer"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -191,7 +191,7 @@ func TestGenericTimeoutAndRecovery(t *testing.T) {
 			if waiting {
 				e.slots <- struct{}{}
 			}
-			if _, err := host.TriggerScript("test", request); err != nil {
+			if _, err := host.TriggerScript(t.Context(), "test", request); err != nil {
 				t.Fatal(err)
 			}
 			synctest.Wait()
@@ -204,10 +204,10 @@ func TestGenericTimeoutAndRecovery(t *testing.T) {
 				<-e.slots
 			}
 		}
-		if !e.options.Runtime.data.write(t.Context(), "done", "yes", false) {
+		if !e.options.Runtime.data.write(t.Context(), testLocalScope, "done", "yes", false) {
 			t.Fatal("store write failed")
 		}
-		if _, err := host.TriggerScript("test", request); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "test", request); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()

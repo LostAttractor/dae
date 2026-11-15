@@ -52,6 +52,7 @@ plugins {
 | `max_body_size` | `33554432` | 正文缓冲上限，字节；脚本可进一步缩小 |
 | `max_concurrent_scripts` | `16` | 规则匹配、改写、脚本和诊断共用的并发名额 |
 | `http_policies` | 空 | 预加载脚本主动请求使用的出站组，逗号分隔，如 `proxy,api`；不增加捕获或路由规则 |
+| `isolate_lan` | `true` | 默认按可信 MAC 隔离 LAN 脚本状态；dae 模块描述符可按模块或脚本覆盖，本机始终使用本机分区 |
 | `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
 每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。JavaScript 堆限制不等于进程内存限制；Node.js 的 `memory_limit` 只约束 V8 老生代，工作进程另受下述 cgroup 限制；jq 使用其独立进程内存限制。
@@ -89,9 +90,48 @@ Node.js 预热需要可写且已委派 memory 控制器的 cgroup v2。每个 wo
 
 ### 持久存储
 
-同一实例的 HTTP、DNS、cron 和 generic 脚本共享存储，不同实例按 ID 隔离。默认文件例如 `/var/lib/dae/plugins/surge/surge-store.json`；改名会使用新的存储，旧文件保留。`store: false` 不读取或修改已有文件，重载后内存数据丢失；重新开启会恢复文件内的数据。
+存储按 **实例 × 有效执行域 × key** 分区。本机调用始终共享实例的本机分区。实例 `isolate_lan` 默认 `true`；dae 模块描述符可设置模块级 `isolate_lan`，也可用 `script { name: '脚本名' isolate_lan: false }` 逐脚本覆盖。优先级为**脚本覆盖 > 模块覆盖 > 实例默认**，未声明时逐层继承，适用于 HTTP request/response、DNS、cron 和 generic。sgmodule、JavaScript 和持久化 key 均不需要修改。开启隔离的 LAN 调用按宿主确认的直连设备 MAC 使用独立分区；来源未知或 LAN 身份不能确认时，`read` 返回 null、`write` 和删除返回 false，不使用 IP、网关 MAC 或零 MAC 猜测本机。关闭隔离后，所有来源共用本机分区。默认文件例如 `/var/lib/dae/plugins/surge/surge-store.json`；实例改名使用新文件，旧文件保留。`store: false` 仅控制持久化，不改变隔离规则；不读取或修改已有文件，重载后内存数据丢失，重新开启会恢复文件内的数据。
 
-store 单值上限为 4 MiB，实例 JSON 总计上限为 64 MiB。省略键时按解析后的 script-path 区分条目；同一实例内相同脚本路径共享默认条目，显式键可用于不同脚本共享数据。值只接受字符串，null 删除；显式键须为不含路径分隔符的非空字符串。写入通过同目录的 `surge-store.json.lock` 跨进程锁保护，合并最新数据后原子替换；读取检查文件身份、大小和修改时间，只有变化时才重新加载 JSON，未变时复用内存数据。锁等待受脚本超时约束，数据和锁文件使用 `0600`。单次键写入有并发保护，脚本的多次 read/write 不构成事务。
+同一文件的 JSON 结构为 `分区 → keys → strings`，本机使用保留分区名，设备使用规范 MAC；全部分区合计上限为 64 MiB，单值上限为 4 MiB。同一实例、同一有效执行域内，HTTP、DNS、cron 和 generic 按原 key 共享，不按脚本或模块另行切分；省略键时使用解析后的 script-path，相同路径共享默认条目。显式键须为不含路径分隔符的非空字符串，值只接受字符串，null 删除。写入通过同目录的 `surge-store.json.lock` 跨进程锁保护，合并最新数据后原子替换；读取检查文件身份、大小和修改时间，仅变化时重新加载 JSON。锁等待受脚本超时约束，数据和锁文件使用 `0600`。单次键写入有并发保护，多次 read/write 不构成事务。
+
+抓取 Cookie 的 capture 脚本与读取它的 cron/generic 脚本必须采用一致的隔离策略，并选择同一有效执行域，才能读取同一份状态。例如在 dae 的 Surge 实例中，将模块内名为 capture 和 job 的脚本设为共享，其他脚本仍按模块默认隔离：
+
+```text
+module {
+  account {
+    link: 'file:modules/account.sgmodule'
+    isolate_lan: true
+    script { name: 'capture' isolate_lan: false }
+    script { name: 'job' isolate_lan: false }
+  }
+}
+```
+
+若整个模块都需要共享，直接设置模块的 `isolate_lan: false`，不必列出各脚本。`script` 描述符可重复，但每项必须包含非空 name 与布尔 isolate_lan，同一名称不能重复配置。名称按模块参数替换和条件筛选后的脚本名精确匹配，可包含中文、点号和空格；未找到或匹配多个定义会拒绝加载。不同模块的同名脚本互不影响。描述符可与 `arguments {}` 共存，不新增 Surge 参数或头部元数据；远程模块更新不会覆盖本地策略，但脚本重命名或移除后需要同步调整描述符。
+
+关闭隔离会有意让不同客户端与本机共享 Cookie/token，后写入的数据可能覆盖其他账户。更改隔离设置只改变访问的分区，不自动迁移、合并或删除已有分区。MAC 是设备标识而非认证凭据，更换或复用 MAC 会改变或继承对应分区。
+
+### MAC 变更后的数据迁移
+
+设备更换 MAC 后，可通过运行中的 daemon 移动该设备的整个脚本存储分区：
+
+```bash
+dae plugins surge store migrate 02:00:00:00:00:11 02:00:00:00:00:22 --instance surge
+# 自动化调用可追加 --json；独立 dae-client 使用相同的 plugins 子命令。
+```
+
+位置参数依次为旧、新 MAC。先停止旧 MAC 的流量并取消其后台执行资格，核对新地址和目标分区，再执行迁移。新旧设备无需在线或当前启用 MITM；命令需要管理员访问权限。未指定 `--instance` 时只允许唯一 Surge 实例，不会批量处理多个实例。
+
+- 迁移保持所有 key/value 原样，成功后删除旧分区；不按脚本或模块切分，不涉及本机分区。
+- 源分区不存在返回 `404`；目标分区已存在（即使为空）返回 `409`，不覆盖、不合并，也没有强制模式。非法或相同 MAC 返回 `400`。
+- 源或目标 MAC 有脚本正在执行时返回 `409`，不会中断脚本；待其完整清理后可重新执行命令。无关设备、本机和 unknown 执行不构成该冲突。磁盘写入复用原有锁与原子替换，锁等待受服务端五秒 context 预算约束，文件系统 I/O 不保证可即时中断。
+- 成功后，使用同一 store 的设备域 DNS 脚本缓存失效，本机缓存不变；已在途的响应和外部 DNS 缓存不能撤回。
+- 不迁移通知、任务历史、MITM 授权、client 集合或路由规则，也不改写排队任务的 MAC。迁移不是永久别名：旧 MAC 的新执行仍可能重新创建旧分区，设备授权需另行调整。
+- `store: false` 只移动当前运行时的内存数据，不读写磁盘或增加跨重载保留能力；实例没有脚本运行时则返回 `503`，不打开历史文件。
+
+成功返回移动的键数量；`--json` 包含 `instance`、规范化的 `from_mac`、`to_mac` 和 `keys_moved`，不输出存储值。若原子替换已完成但目录同步失败，会返回 `500` 并明确提示迁移已发布、持久性未确认：数据已经移动，不应自动重试。超时或连接中断也不证明数据未变，CLI 不自动重试。
+
+执行期保护覆盖当前 daemon 及同路径的重载代际；跨进程文件锁只保护单次更新，不能保护另一进程整段脚本的读—计算—写。如果另一个进程也操作同一存储，迁移前必须停止其写入。MAC 不是身份认证；迁移可能转交 Cookie/token，管理员应确认新 MAC 属于预期设备。
 
 ## 模块参数与交互配置
 
@@ -177,7 +217,7 @@ DNS 脚本的预算包含等待执行名额；`$httpClient` 保留原 DNS 客户
 
 字面 IP Host 与原生 [rules / DNAT](destination-rules.md) 共用目的地址规则，原生 rules 排在插件贡献之前。只有完整过滤条件命中的流量才进入用户态，新目标 block 仍生效。DNS 的透明转发和持久化域名登记见 [DNS](dns.md)。
 
-字面 IP 映射对 direct 和 proxy 生效，优先于 `dial_target_override`，不影响代理服务器自身地址。域名条目的静态 DNS TTL 为 60 秒；系统与脚本默认 TTL 为 0。脚本返回地址及正 TTL 时，结果按脚本、域名和插件链缓存，同一插件链中的客户端共享结果，不区分客户端 IP/端口，命中时返回剩余 TTL；0 不缓存，每实例最多 4096 条，过期或插件实例、顺序变化后重新执行脚本，仅路由变化的重载保留结果。脚本显式返回正 TTL 表示结果可在该配置内共享；TTL 为 0 时每次执行。存储复用公共有界 LRU，但合成结果不混入上游答案。
+字面 IP 映射对 direct 和 proxy 生效，优先于 `dial_target_override`，不影响代理服务器自身地址。域名条目的静态 DNS TTL 为 60 秒；系统与脚本默认 TTL 为 0。脚本返回地址及正 TTL 时，结果按有效执行域、脚本、域名和插件链缓存：本机与关闭隔离的脚本共享本机缓存，开启隔离的 LAN 结果按可信 MAC 区分，同设备 IP/端口变化不影响归属；命中返回剩余 TTL。有效执行域 unknown 或 TTL 为 0 时绕过缓存，每次执行。每实例最多 4096 条，过期或插件实例、顺序变化后重新执行脚本，仅路由变化的重载保留结果。存储复用公共有界 LRU，但合成结果不混入上游答案。
 
 ### 限制客户端来源
 
@@ -257,9 +297,11 @@ fetch 提供 Headers、Request、Response 和 `text()` / `json()` / `arrayBuffer
 
 `WARNINGS` 统计模块解析、加载和缓存回退的警告，命令在表格下按模块列出完整内容。TLS 握手失败和脚本运行日志不计入此列。
 
-`TASKS` 显示 cron 和 generic 脚本数量（包含在 `SCRIPTS` 总数中）。`Surge script tasks` 列出类型、表达式、时区、超时、当前状态及下次执行时间；generic 没有表达式、时区和下次执行时间。`Last script runs` 列出最近一次尝试的起止时间、耗时、触发来源、结果和运行/失败/重叠跳过次数。`TRIGGER` / `last_trigger` 为 `cron`（定时）或 `http-api`（CLI/API 手动触发）。JSON 中对应 `details.modules[].tasks`，`type` 区分两类任务；也可通过 `./dae plugins status -v` 查看。
+`TASKS` 按 cron 和 generic 脚本定义计数（包含在 `SCRIPTS` 总数中），不会因多个执行域重复计数。`Surge script tasks` 按有效执行域显示：每个脚本始终有本机行，只有开启隔离才有设备行，本机在前、设备按 MAC 排序。`SCOPE` 显式区分 `local`、`device MAC …` 与 `unknown`，不能根据空 MAC 推断本机；unknown 不是可执行任务目标。其余列为类型、表达式、时区、超时、当前状态及下次执行时间；generic 没有定时字段。`Last script runs` 按相同执行域列出最近一次尝试、耗时、结果和运行/失败/重叠跳过次数。`TRIGGER` / `last_trigger` 为 `cron` 或 `http-api`。JSON 对应 `details.modules[].tasks`，每行显式包含 `scope: "local"|"device"`，仅 device 带 `mac`。也可用 `./dae plugins status -v` 查看。
 
-状态包括 `pending`（等待插件激活）、`ready`（generic 可手动运行）、`scheduled`、`waiting`（等待共享名额）、`running`、`unscheduled`（cron 表达式没有可计算的下次时间，如 2 月 31 日）和 `stopped`。起止时间与超时包含等待名额；`last_error` 只提供 `timeout`、`canceled`、`error` 等错误类别，详细异常见日志。`success` 只表示脚本正常调用 `$done`：脚本自行捕获的接口失败仍可能显示 success，应同时查看近期通知或业务日志。
+需要 LAN 目标时，目标列表在插件启动、定时到期和指定 MAC 手动触发时刷新；启动及定时发现异步进行，最多一个自动查询在途，本机任务的准入和派发不等待它。status/list 只读取最近快照，不做设备发现 I/O；展示快照不作为新设备任务的授权依据，设备执行前仍复核当前资格。LAN 查询失败不阻断本机执行，也不沿用旧 LAN 目标派发任务；已知非 busy 设备行显示 `unavailable/device_query_failed`，没有设备行时通过模块 Warnings 报告。运行中的任务保留真实状态。查询恢复清除发现告警，不抹除执行历史；正常快照确认移除且没有进行中任务的设备会从列表删除，其计数不作为持久历史保留。全部脚本关闭隔离时不查询 LAN 目标。
+
+状态包括 `unavailable`（LAN 目标查询失败）、`pending`（等待插件激活）、`ready`（generic 可手动运行）、`scheduled`、`waiting`（等待共享名额）、`running`、`unscheduled`（cron 没有可计算的下次时间，如 2 月 31 日）和 `stopped`。本机不受 LAN 发现状态影响；没有设备时仍保留正常本机行。LAN 批量发现完成、确认目标后才创建执行记录；起止时间与超时包含准入后的共享名额排队和执行前资格复查，不包含此前的批量发现；`last_error` 只提供 `timeout`、`canceled`、`error`、`device_query_failed` 等类别，详细异常见日志。`success` 仅表示脚本正常调用 `$done`，不保证业务操作成功。
 
 ```sh
 journalctl -u dae -f -o cat
@@ -278,13 +320,13 @@ journalctl -u dae -f -o cat
 | `request_failed` | Surge 请求处理失败 |
 | `task_start` / `task_end` | cron/generic 脚本开始、结束；包含模块、脚本名称和类型、结果及耗时 |
 
-启用 `trace` 后，Surge 请求与脚本事件通过结构化 `event` 字段标识，使用 `connection_id` 和 `request_id` 关联。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。没有 `request_begin` 时依次检查来源开关、hostname、TCP/QUIC、TLS 信任、域名验证策略和网卡绑定。自动事件不记录 URL 路径、查询参数、认证头和正文，脚本自行打印的内容不受此限制。
+启用 `trace` 后，Surge 请求与脚本事件通过结构化 `event` 字段标识，使用 `connection_id` 和 `request_id` 关联。脚本事件的 `scope` 报告有效执行域，仅 device 带 MAC；共享模式的 LAN 请求显示 local。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。没有 `request_begin` 时依次检查来源开关、hostname、TCP/QUIC、TLS 信任、域名验证策略和网卡绑定。自动事件不记录 URL 路径、查询参数、认证头和正文，脚本自行打印的内容不受此限制。
 
 ### 近期通知
 
-脚本调用 `$notification.post(title, subtitle, body)` 时，除 info 日志外，还会在当前插件实例的内存中**按脚本各保留最多 50 条**通知。身份由模块名、脚本名和脚本类型共同确定；HTTP 请求/响应、DNS、cron 和 generic 均支持。普通 `console.log` 不计入。
+脚本调用 `$notification.post(title, subtitle, body)` 时，除 info 日志外，还会在当前实例内存中**按有效执行域与脚本各保留最多 50 条**通知。分组为 scope、MAC、模块名、脚本名与类型，HTTP 请求/响应、DNS、cron 和 generic 均支持。`scope` 明确为 `local`、`device` 或 `unknown`，仅 device 带 `mac`，本机与未知来源不会混组。展示的是有效执行域而非原始来源：关闭隔离的 LAN 请求显示 local，不表示其来源已被认证成本机。普通 `console.log` 不计入。
 
-每个实例另有 **1 MiB 的保守 JSON 编码预算**（按文本最坏转义长度计费）。达到总量上限时，优先从记录最多的脚本删除最旧记录；记录数相同则删除最旧的一条。高频脚本会先缩短自己的历史；若单条历史的脚本总量也超过预算，较旧记录仍会淘汰。因此实际保留数量可能少于每脚本 50 条，verbose/JSON 返回当前预算内的全部记录。
+每个实例另有 **1 MiB 的保守 JSON 编码预算**（包含 scope、MAC，文本按最坏转义长度计费）。超限时优先从记录最多的执行域与脚本分组删除最旧记录，记录数相同则删除最旧的一条。高频分组先缩短自己的历史；分组总量仍超过预算时也会淘汰较旧单条历史。因此每组实际可能少于 50 条，verbose/JSON 返回预算内全部记录。MAC 不加入 Prometheus 指标标签。
 
 ```sh
 dae plugins surge status --instance surge
@@ -293,15 +335,17 @@ dae plugins surge status --instance surge --json
 dae plugins status -v
 ```
 
-文本输出的 `Recent Surge notifications` 默认**每脚本显示最近 3 条**，包含通知时间、实例/模块/脚本、脚本类型、标题、副标题和正文，最新在前。有省略时提示隐藏数量；`--verbose`（`-v`）展示当前保留的全部通知，`dae plugins status -v` 也会完整展示。不同实例和模块中的同名脚本分别计数。
+文本输出的 `Recent Surge notifications` 默认**每执行域每脚本显示最近 3 条**，包含时间、实例/模块/脚本、执行域及设备 MAC、类型和正文，最新在前。有省略时提示隐藏数量；`--verbose`（`-v`）与 `dae plugins status -v` 展示全部保留通知。不同实例、执行域和模块中的同名脚本分别计数。
 
-`--json` 始终返回全部保留记录，位于实例的 `details.notifications`，也可从 `GET /api/status` 的 `plugins[].details.notifications` 获取；没有通知时省略该字段。verbose 展示的是当前内存中保留的记录。单个脚本超过 50 条时淘汰其最早记录，重载/重启会清空。例如：
+`--json` 始终返回全部保留记录，位于实例的 `details.notifications`，也可从 `GET /api/status` 的 `plugins[].details.notifications` 获取；无通知时省略该字段。同一执行域与脚本超过 50 条时淘汰最早记录，重载/重启清空。例如：
 
 ```json
 {
   "id": 3,
   "created_at": "2026-09-29T09:05:00+08:00",
   "module": "cron_demo",
+  "scope": "device",
+  "mac": "02:00:00:00:00:50",
   "script": "demo.cron",
   "script_type": "cron",
   "title": "任务完成",
@@ -338,9 +382,11 @@ cron_demo: 'file:modules/cron-demo.sgmodule'
 
 `cronexp` 必填：五字段依次为分、时、日、月、星期；六字段在最前面加秒。支持 `*`、逗号列表、范围、步长和英文月/星期名，星期用 `0–6`（周日为 0）。按 **daemon 本地时区** 调度；例如 `5 9 * * *` 每日 09:05，`*/10 * * * * *` 每十秒。时区以 daemon 的系统环境为准，而不是手机时区。
 
-插件激活后安排下一次未来执行；准备模块时不运行任务，启动不补跑历史任务。运行中因延迟或休眠错过多个时间点时，每个到期任务至多触发一次，再安排未来时间，不逐次补跑积压。同一任务上次仍在等待或运行时，新的定时触发记为 skipped，手动触发返回冲突。不同任务共用 `max_concurrent_scripts`，单次预算包含等待名额、JS 和 HTTP 调用；默认继承 `script_timeout`，声明的 `timeout`（秒）优先。重载/停止会取消任务及其 HTTP 请求并等待清理完成，新实例重新调度，运行历史与计数重置。
+插件激活后安排下一次未来执行；准备模块时不运行，启动不补跑历史任务。每次到期始终执行**本机一次**；该脚本有效隔离开启时，再对**当前 MITM 启用的 LAN 设备**每 MAC 执行一次，关闭隔离时所有来源共享本机状态且只执行本机一次。LAN 资格要求宿主 MITM 开启、CA 就绪；显式启用 MAC 不要求在线，`all`、IP 和 CIDR 只枚举宿主已知 LAN 设备，设备显式关闭覆盖配置。本机不依赖设备服务、LAN 目标、MITM 开关或 CA，慢查询或查询失败都不阻断本机准入和派发。自动发现未完成时，每个脚本只保留一项 LAN 待办，重复到期合并为 skipped，不逐次补跑；后来到期的其他脚本使用后续的新查询。运行中错过多个时间点时，每个到期任务对每个执行域至多触发一次，再安排未来时间。同一任务同一有效执行域仍在等待/运行时，定时触发记为 skipped，手动触发返回冲突；发现期间已完成的重叠执行也不迟到补跑，其他执行域独立。全部任务共用 `max_concurrent_scripts`，本机没有独立或优先名额；预算从实际准入开始，包含共享名额排队、执行前资格复查、JS 和 HTTP，不包含此前的批量发现。默认继承 `script_timeout`，脚本 `timeout` 优先。重载/停止取消任务、自动发现及 HTTP 请求并等待清理，新实例重新调度、重置运行历史与计数。
 
-运行时提供 `$script.type = "cron"`、`$cronexp` 和配置的 `$argument`，不注入 `$request`/`$response`；必须调用 `$done()`，返回值被忽略。与同一插件实例的 HTTP 脚本共享 `$persistentStore`，默认跨重启保留 Cookie；`store: false` 可关闭持久化。后台 `$httpClient` 使用 daemon 的路由客户端，没有被截获设备的来源身份。只有 cron 的模块无需 MITM hostname 或 CA；Cookie 抓取仍需按原 hostname、证书信任、设备开关和 DNS 映射条件启用 MITM。
+设备候选来自当前 MITM 策略中的 MAC、已发布路由及其引用的 clientset MAC，以及 LAN 邻居表，不从脚本存储或流量统计推断。仅导出 ipset/nftset、未被路由引用的离线 clientset 成员不会单独成为候选。无 IP 的候选只能按不依赖 IP 的确定结果执行；设备覆盖设为 On 不要求在线。`all` 或 CIDR 无法枚举宿主从未识别到的终端，也不会触发主动扫描。
+
+运行时提供 `$script.type = "cron"`、`$cronexp` 和配置的 `$argument`，不注入 `$request`/`$response`；必须调用 `$done()`，返回值被忽略。同一实例、同一有效执行域的 HTTP/DNS/generic 共享 `$persistentStore`，capture 与 cron 的隔离设置须一致；`store: false` 可关闭持久化。后台 `$httpClient` 使用 daemon 路由，选定 MAC 只决定状态归属，不模拟设备网络来源。纯 cron 模块无需 MITM hostname，也不新增捕获规则，本机任务无需 MITM/CA；LAN Cookie 抓取仍须满足 hostname、证书信任、设备开关和 DNS 映射条件。
 
 `console.log` 和 `$notification.post` 的输出写入 daemon 日志；后者还会出现在 status 的[近期通知](#近期通知)中。
 
@@ -360,11 +406,11 @@ $notification.post("Generic demo", $argument, "Triggered by " + $trigger);
 $done();
 ```
 
-在实例的 `module` 段加入 `tools: 'file:modules/tools.sgmodule'`，重载后使用 `dae plugins surge run demo.tool --instance surge --module tools` 执行。
+在实例的 `module` 段加入 `tools: 'file:modules/tools.sgmodule'`，重载后使用 `dae plugins surge run demo.tool --instance surge --module tools` 在本机执行。
 
 运行时提供 `$script.type = "generic"`、`$trigger = "http-api"` 和配置的 `$argument`，没有类型专用输入。必须调用 `$done()`，手动执行忽略其返回值，未调用则等待超时。每次执行使用独立 VM。
 
-generic 与 cron 共用后台任务执行器、实例存储、通知、路由 HTTP 客户端及 `max_concurrent_scripts` 名额；超时包含排队时间。同一任务等待/运行时拒绝重复触发。插件激活后为 `ready`，完成后回到 `ready`；停止/重载取消并等待执行清理。纯 generic 模块无需 MITM hostname 或 CA，也不产生流量捕获规则。
+generic 与 cron 共用后台执行器、有效执行域存储与通知、daemon 路由 HTTP 客户端及共享执行名额；超时包含排队。同一任务同一域等待/运行时拒绝重复触发。插件激活后本机目标为空闲 `ready`，不依赖 MITM、CA 或设备服务；开启隔离的设备目标仍须满足当前 MITM 资格。停止/重载取消并等待清理。纯 generic 模块无需 MITM hostname，也不产生捕获规则。
 
 ## 手动触发
 
@@ -376,16 +422,17 @@ dae plugins surge list --instance surge --module cron_demo
 dae plugins surge list --json
 dae plugins surge run demo.cron --instance surge --module cron_demo
 dae plugins surge run demo.tool --instance surge --module tools
+dae plugins surge run demo.tool --instance surge --module tools --mac 02:00:00:00:00:50
 dae plugins surge status --instance surge
 ```
 
-`list` 显示实例、模块、脚本名、类型、当前状态和 cron 表达式，并给出运行命令用法。它读取 daemon 的已加载任务；HTTP 请求/响应和 DNS 脚本不属于手动执行列表。`--instance`、`--module` 可组合筛选；`--json` 返回任务数组，每项含 `instance`、`module` 及任务状态字段（`name` 是脚本名，`type` 为 `cron` 或 `generic`），无匹配任务时为 `[]`。
+`list` 按有效执行域显示实例、模块、脚本名、scope/设备 MAC、类型、状态和 cron 表达式，并给出用法。它只读取 daemon 已加载的 cron/generic 任务快照；HTTP 与 DNS 不在手动列表中。`--instance`、`--module` 可组合筛选；`--json` 返回含 `instance`、`module`、`scope`、可选设备 `mac` 及任务字段的扁平数组，无匹配定义时为 `[]`。每个定义都有本机行；同一实例/模块/名称的多个执行域行不构成名称歧义。
 
-等待中或运行中的任务仍会列出，重复触发会返回冲突；`unscheduled` 的 cron 仍可手动运行。名称含空格时请加引号，例如 `run '演示任务'`。
+等待或运行中的任务仍会列出，同任务同执行域重复触发返回冲突；`unscheduled` cron 仍可手动运行。名称含空格时加引号，例如 `run '演示任务'`。
 
-脚本名唯一时可省略 `--module`，跨实例也唯一时可省略 `--instance`。命令返回已受理的任务与运行编号；任务继续由 daemon 执行，结果通过 status 查看。`--json` 输出结构化受理信息；`run` 对应本任务的 `runs` 计数，仅在当前实例生命周期内有效。status 只保存最新一次尝试，重载重置历史。手动执行复用路由客户端、store、超时和执行名额，不改变原定时计划。脚本内 `$trigger` 为 `http-api`；定时执行时不注入 `$trigger`。
+脚本名唯一时可省略 `--module`，跨实例也唯一时可省略 `--instance`。**省略 `--mac` 始终执行本机一次**，不会自动选择唯一 LAN 设备。`--mac` 只用于开启隔离的脚本，选择当前 MITM 启用设备；关闭隔离时显式指定 MAC 会返回 `400`，要求省略 MAC，不会静默改为本机。命令返回有效执行域与运行编号，任务由 daemon 继续执行，结果从 status 查看；`--json` 的 `status.scope` 标识执行域，仅 device 有 `status.mac`。`run` 对应该执行域本任务的 `runs`，仅当前实例生命周期内有效；status 保留最新一次尝试，重载重置。手动执行不改变定时计划；脚本内 `$trigger` 为 `http-api`，定时执行不注入该变量。
 
-对应管理 API 为 `POST /api/plugins/{实例ID}/scripts/run`，例如正文 `{"module":"tools","script":"demo.tool"}`，需要正常管理权限及 `X-Dae-API: 1`。成功返回 `202`；任务不存在 `404`、同名不唯一 `400`、正在等待/运行 `409`、worker 未激活或已停止 `503`。仅接受已有 cron/generic 任务，不接受脚本文本或参数覆盖。
+对应管理 API 为 `POST /api/plugins/{实例ID}/scripts/run`，本机正文如 `{"module":"tools","script":"demo.tool"}`，设备执行另加 `"mac":"02:00:00:00:00:50"`；需要管理权限及 `X-Dae-API: 1`。成功 `202`，不存在 `404`，名称歧义、MAC 格式错误或未隔离脚本指定 MAC 为 `400`，设备禁用或同执行域任务忙碌为 `409`，worker 未激活/停止或设备发现服务不可用为 `503`。不接受脚本文本或参数覆盖。
 
 ## 示例
 

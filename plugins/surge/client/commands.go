@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func Commands(fetch cli.MITMSource, trigger cli.ScriptTrigger) []*cobra.Command {
-	return []*cobra.Command{NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch), NewSurgeRunCommand(fetch, trigger)}
+func Commands(fetch cli.MITMSource, trigger cli.ScriptTrigger, migrate cli.ScriptStoreMigrator) []*cobra.Command {
+	return []*cobra.Command{NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch), NewSurgeRunCommand(fetch, trigger), NewSurgeStoreCommand(fetch, migrate)}
 }
 
 func NewSurgeStatusCommand(fetch cli.MITMSource) *cobra.Command {

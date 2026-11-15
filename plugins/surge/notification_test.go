@@ -33,7 +33,7 @@ func TestRuntimeNotificationsSurviveScriptFailureAndLogFiltering(t *testing.T) {
 console.log("ordinary log");
 $script.name = "spoofed";
 $notification.post("签到成功", "账户一", "余额 1.2\n明日继续", {url:"https://example.test/"});
-throw Error("after notification");`, Invocation{ModuleName: "account", ScriptName: "sign", ScriptType: "cron"})
+throw Error("after notification");`, Invocation{Scope: ScriptScope{Kind: ScriptScopeLocal}, ModuleName: "account", ScriptName: "sign", ScriptType: "cron"})
 	if err == nil || logs.Len() != 0 {
 		t.Fatalf("script failure/log filtering changed: %v logs=%s", err, &logs)
 	}
@@ -42,7 +42,7 @@ throw Error("after notification");`, Invocation{ModuleName: "account", ScriptNam
 		t.Fatalf("notification was lost or console log became a notification: %+v", recent)
 	}
 	notification := recent[0]
-	if notification.ID != 1 || notification.CreatedAt.IsZero() || notification.Module != "account" || notification.Script != "sign" || notification.ScriptType != "cron" || notification.Title != "签到成功" || notification.Subtitle != "账户一" || notification.Body != "余额 1.2\n明日继续" || notification.Truncated {
+	if notification.Scope != "local" || notification.MAC != "" || notification.ID != 1 || notification.CreatedAt.IsZero() || notification.Module != "account" || notification.Script != "sign" || notification.ScriptType != "cron" || notification.Title != "签到成功" || notification.Subtitle != "账户一" || notification.Body != "余额 1.2\n明日继续" || notification.Truncated {
 		t.Fatalf("lost notification fields or trusted script-modified metadata: %+v", notification)
 	}
 	recent[0].Body = "mutated report"
@@ -146,12 +146,43 @@ func TestRuntimeNotificationRetentionIsPerScript(t *testing.T) {
 	}
 }
 
+func TestNotificationHistorySeparatesScopes(t *testing.T) {
+	var history notificationHistory
+	identities := []surgeapi.SurgeNotification{
+		{Scope: "local"},
+		{Scope: "unknown"},
+		{Scope: "device", MAC: "02:00:00:00:00:50"},
+		{Scope: "device", MAC: "02:00:00:00:00:51"},
+	}
+	for _, identity := range identities {
+		for i := range maxScriptNotifications + 5 {
+			identity.Module, identity.Script, identity.ScriptType, identity.Title = "account", "job", "generic", fmt.Sprint(i)
+			history.add(identity)
+		}
+	}
+	counts := make(map[[2]string]int)
+	for _, n := range history.snapshot() {
+		counts[[2]string{n.Scope, n.MAC}]++
+		if n.Title == "0" {
+			t.Fatal("scope history retained an expired entry")
+		}
+	}
+	for _, identity := range identities {
+		if counts[[2]string{identity.Scope, identity.MAC}] != maxScriptNotifications {
+			t.Fatalf("scope histories evicted each other: %v", counts)
+		}
+		if notificationBytes(identity)-notificationBytes(surgeapi.SurgeNotification{}) != 6*(len(identity.Scope)+len(identity.MAC)) {
+			t.Fatal("notification budget omitted scope or MAC bytes")
+		}
+	}
+}
+
 func TestNotificationInstanceBudgetKeepsStatusBounded(t *testing.T) {
 	var history notificationHistory
-	history.add(surgeapi.SurgeNotification{Script: "quiet", Body: "keep me"})
+	history.add(surgeapi.SurgeNotification{Scope: "local", Script: "quiet", Body: "keep me"})
 	for i := range 180 {
 		for range maxScriptNotifications {
-			history.add(surgeapi.SurgeNotification{Module: "module", Script: fmt.Sprint(i), ScriptType: "generic",
+			history.add(surgeapi.SurgeNotification{Scope: "device", MAC: fmt.Sprintf("02:00:00:00:00:%02x", i), Module: "module", Script: "job", ScriptType: "generic",
 				Title: strings.Repeat("\x00", maxNotificationText), Body: strings.Repeat("\x00", maxNotificationBody)})
 		}
 	}
@@ -168,9 +199,9 @@ func TestNotificationInstanceBudgetKeepsStatusBounded(t *testing.T) {
 	// An instance with more single-entry histories than its byte budget may
 	// evict quiet entries too; a busy script alone must not do so.
 	var isolated notificationHistory
-	isolated.add(surgeapi.SurgeNotification{Script: "quiet", Body: "keep me"})
+	isolated.add(surgeapi.SurgeNotification{Scope: "local", Script: "quiet", Body: "keep me"})
 	for range maxScriptNotifications * 2 {
-		isolated.add(surgeapi.SurgeNotification{Script: "busy", Body: strings.Repeat("x", maxNotificationBody)})
+		isolated.add(surgeapi.SurgeNotification{Scope: "local", Script: "busy", Body: strings.Repeat("x", maxNotificationBody)})
 	}
 	quiet := false
 	for _, n := range isolated.snapshot() {
@@ -191,6 +222,9 @@ request=type=http-request,pattern=.,script-path=request.js
 response=type=http-response,pattern=.,script-path=response.js
 query=type=dns,script-path=query.js
 job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
+	if err := applyModuleIsolation(module, ModuleSource{IsolateLAN: true, IsolateLANSet: true, ScriptIsolation: map[string]bool{"response": false}}); err != nil {
+		t.Fatal(err)
+	}
 	module.Name = "notices"
 	sources := map[string]string{
 		"request":  `$notification.post("request", "", ""); $done();`,
@@ -200,7 +234,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 	}
 	e := cronTestEngine(t, module, sources, 2)
 	// Warm regexp2's process-wide real-time clock outside synctest.
-	chain := e.Wrap(plugin.Flow{Host: "notify.test", Port: 443}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
+	chain := e.Wrap(plugin.Flow{Host: "notify.test", Port: 443, SourceOrigin: plugin.SourceLAN, SourceMAC: testDeviceMAC}, func(exchange *plugin.Exchange) (*plugin.Response, error) {
 		return exchange.NewResponse(&http.Response{StatusCode: 200, Request: exchange.Request.Head, Header: make(http.Header), Body: http.NoBody}), nil
 	})
 	response, err := chain(&plugin.Exchange{Request: plugin.NewRequest(httptest.NewRequestWithContext(t.Context(), "GET", "https://notify.test/", nil), e.options.BodyMemory)})
@@ -212,7 +246,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 	_, err = e.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		t.Fatal("DNS script unexpectedly fell through")
 		return nil, nil
-	})(t.Context(), &plugin.DNSExchange{DNSRequest: plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query)}})
+	})(t.Context(), &plugin.DNSExchange{DNSRequest: plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query), SourceOrigin: plugin.SourceLAN, SourceMAC: testDeviceMAC}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +260,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		if _, err := host.TriggerScript("personal", api.ScriptRunRequest{Script: "job"}); err != nil {
+		if _, err := host.TriggerScript(t.Context(), "personal", api.ScriptRunRequest{Script: "job"}); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()
@@ -239,12 +273,38 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 		}
 		for i, phase := range []string{"cron", "dns", "http-response", "http-request"} {
 			notification := status.Notifications[i]
-			if notification.Module != "notices" || notification.ScriptType != phase || notification.Script != notification.Title {
+			wantScope, wantMAC := "device", testDeviceName
+			if phase == "cron" || phase == "http-response" {
+				wantScope, wantMAC = "local", ""
+			}
+			if notification.Scope != wantScope || notification.MAC != wantMAC || notification.Module != "notices" || notification.ScriptType != phase || notification.Script != notification.Title {
 				t.Errorf("wrong script provenance: %+v", notification)
 			}
 		}
 	})
 	if len(cronTestEngine(t, module, sources, 2).Status().Notifications) != 0 {
 		t.Fatal("new instance inherited notification history")
+	}
+}
+
+func TestRuntimeNotificationUsesEffectiveScope(t *testing.T) {
+	runtime := testRuntime(t, RuntimeOptions{})
+	for _, test := range []struct {
+		scope     ScriptScope
+		kind, mac string
+	}{
+		{scope: ScriptScope{Kind: ScriptScopeLocal}, kind: "local"},
+		{scope: ScriptScope{Kind: ScriptScopeDevice, MAC: testDeviceMAC}, kind: "device", mac: testDeviceName},
+		{scope: ScriptScope{}, kind: "unknown"},
+	} {
+		result, err := runtime.Runtime.Run(t.Context(), `$notification.post("scope", "", ""); $done();`, Invocation{Scope: test.scope, ScriptName: "scope", ScriptType: "generic", BodyMemory: runtime.budget, BodyLimit: 32 << 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Close()
+		n := runtime.notifications.snapshot()[0]
+		if n.Scope != test.kind || n.MAC != test.mac {
+			t.Fatalf("scope=%+v: notification=%+v", test.scope, n)
+		}
 	}
 }

@@ -79,13 +79,19 @@ func (t *workerTransport) RoundTripPolicy(request *http.Request, policy string) 
 	return t.RoundTrip(request.WithContext(pluginctx.WithHTTPPolicy(request.Context(), policy)))
 }
 
-func (t *workerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	t.runtime.mu.Lock()
-	plane := t.runtime.current
+// admitWorkerPlane shares the retirement lock; callers must release workerRoundTrips when done.
+func (r *Runtime) admitWorkerPlane() *ControlPlane {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	plane := r.current
 	if plane != nil {
 		plane.workerRoundTrips.Add(1)
 	}
-	t.runtime.mu.Unlock()
+	return plane
+}
+
+func (t *workerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	plane := t.runtime.admitWorkerPlane()
 	if plane == nil {
 		if request.Body != nil {
 			_ = request.Body.Close()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +26,8 @@ type EngineOptions struct {
 	// BodyMemory is supplied by the host, shared across instances and reloads.
 	BodyMemory           *membuffer.Budget
 	Runtime              *Runtime
+	Devices              plugin.DeviceService
+	IsolateLAN           bool
 	MaxBodySize          int64
 	MaxConcurrentScripts int
 	ScriptTimeout        time.Duration
@@ -195,6 +198,19 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 	e = e.forConnection(flow.Host, flow.Port)
 	return func(exchange *plugin.Exchange) (response *plugin.Response, err error) {
 		r := exchange.Request.Head
+		ctx := r.Context()
+		if _, ok := ctx.Value(scriptScopeKey{}).(func(context.Context) ScriptScope); !ok {
+			// Resolve once using the first isolated script's execution deadline.
+			var once sync.Once
+			var scope ScriptScope
+			identify := func(ctx context.Context) ScriptScope {
+				once.Do(func() {
+					scope = e.identifyScope(ctx, flow.SourceOrigin, flow.Source.Addr(), flow.SourceMAC)
+				})
+				return scope
+			}
+			*r = *r.WithContext(context.WithValue(ctx, scriptScopeKey{}, identify))
+		}
 		e.traceRequest(r, "request_begin", "protocol", r.Proto)
 		response, err = e.processRequest(exchange)
 		if err != nil {

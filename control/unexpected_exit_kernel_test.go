@@ -10,6 +10,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/routingabi"
 	"golang.org/x/sys/unix"
 )
@@ -40,6 +41,16 @@ func TestUDPUnexpectedExitPolicy(t *testing.T) {
 						}
 						packet, _ := routingKernelPacket(src, dst, consts.L4ProtoType_UDP)
 						runTCPAdmissionPacket(t, collection, program, packet, verdict, 0)
+						if !block {
+							origin := plugin.SourceLAN
+							if program == "tproxy_wan_egress_l2" {
+								origin = plugin.SourceLocal
+							}
+							var cached bpfUdpRoutingCacheValue
+							if err := collection.Maps["udp_routing_cache_map"].Lookup(udpSourceKey(src), &cached); err != nil || cached.Result.SourceOrigin != uint8(origin) {
+								t.Fatalf("crash bypass lost source origin: %+v, %v", cached.Result, err)
+							}
+						}
 					}
 				})
 			}
@@ -82,7 +93,8 @@ func TestUDPUnexpectedExitPreservesSourceOwnership(t *testing.T) {
 				return
 			}
 			source := udpSourceKey(src)
-			if err := collection.Maps["udp_bindings_map"].Update(source, uint64(0), ebpf.UpdateAny); err != nil {
+			binding := bpfUdpBinding{SourceOrigin: uint8(plugin.SourceLAN), Mac: [6]byte(packet[6:12])}
+			if err := collection.Maps["udp_bindings_map"].Update(source, binding, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			if err := collection.Maps["udp_routing_cache_map"].Delete(source); err != nil {

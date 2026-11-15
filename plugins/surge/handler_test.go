@@ -191,6 +191,7 @@ func TestSurgeProxyRepeatedCookieHeaders(t *testing.T) {
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("unchanged"))
 				req.Header[name] = []string{"mjclient=YouPin", "serviceToken=abc=123", "youpin_sessionid=session"}
 				original := req.Header.Clone()
+				req = req.WithContext(context.WithValue(req.Context(), scriptScopeKey{}, func(context.Context) ScriptScope { return testLocalScope }))
 				controlledRequest := plugin.NewRequest(req, engine.options.BodyMemory)
 				defer controlledRequest.Body().Close()
 				_, err := engine.processRequest(&plugin.Exchange{Request: controlledRequest})
@@ -198,7 +199,7 @@ func TestSurgeProxyRepeatedCookieHeaders(t *testing.T) {
 					t.Fatal(err)
 				}
 				req = forwardTestRequest(t, controlledRequest)
-				if got, err := engine.options.Runtime.data.read(t.Context(), "captured"); err != nil || got != "serviceToken=abc=123" {
+				if got, err := engine.options.Runtime.data.read(t.Context(), testLocalScope, "captured"); err != nil || got != "serviceToken=abc=123" {
 					t.Fatalf("captured token=%v error=%v", got, err)
 				}
 				if rewrite {

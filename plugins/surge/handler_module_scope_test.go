@@ -5,6 +5,7 @@ package surge
 import (
 	"context"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"io"
 	"net"
@@ -294,9 +295,10 @@ func TestProxyModuleScopeSharesRuntimeAndCapacity(t *testing.T) {
 		"request": `const value=Number($persistentStore.read("scope-counter")||"0")+1; $persistentStore.write(String(value),"scope-counter"); $done({response:{status:200,body:String(value)}});`,
 	})
 	engine := moduleScopeEngine(t, module)
+	engine.options.Devices = newTestDevices(testDeviceMAC)
 	var handlers []http.Handler
 	for _, host := range []string{"a.test", "b.test"} {
-		handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, 80, testUpstream(func(context.Context, string, string) (net.Conn, error) {
+		handler, closeTransport := proxyTestHost(t, engine).HandlerForFlow("http", plugin.Flow{Host: host, Port: 80, SourceOrigin: plugin.SourceLAN, SourceMAC: testDeviceMAC}, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 			t.Error("synthetic script contacted upstream")
 			return nil, context.Canceled
 		}))

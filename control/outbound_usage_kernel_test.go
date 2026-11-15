@@ -78,18 +78,19 @@ routing {
 					}
 				}
 				for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-					src := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(40000+round*100+i))
-					packet, ipProto := routingKernelPacket(src, dst, proto)
-					connectivityKey := bpfOutboundConnectivityQuery{Outbound: built.nameToID["proxy"], Ipversion: 4, L4proto: ipProto}
-					if err := collection.Maps["outbound_connectivity_map"].Update(connectivityKey, bpfOutboundConnectivity{State: encodeOutboundConnectivity(alive, false, consts.OutboundBlock)}, ebpf.UpdateAny); err != nil {
-						t.Fatal(err)
-					}
 					capture := alive && tc.domain == "target.example" && dst.Port() == 443 && (tc.name != "API bypass" || proto == consts.L4ProtoType_UDP)
 					want := ^uint32(0) // TCX_NEXT: direct stays in the kernel.
 					if capture {
 						want = 7 // TC_ACT_REDIRECT
 					}
-					for _, program := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					for n, program := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+						// Each source gets its own UDP decision without reusing another source's active port.
+						src := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(40000+round*100+i+n*1000))
+						packet, ipProto := routingKernelPacket(src, dst, proto)
+						connectivityKey := bpfOutboundConnectivityQuery{Outbound: built.nameToID["proxy"], Ipversion: 4, L4proto: ipProto}
+						if err := collection.Maps["outbound_connectivity_map"].Update(connectivityKey, bpfOutboundConnectivity{State: encodeOutboundConnectivity(alive, false, consts.OutboundBlock)}, ebpf.UpdateAny); err != nil {
+							t.Fatal(err)
+						}
 						verdict, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
 						if err != nil || verdict != want {
 							t.Fatalf("%s proto=%d alive=%v: verdict=%d, want=%d, err=%v", program, proto, alive, verdict, want, err)

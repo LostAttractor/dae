@@ -150,14 +150,15 @@ http-request . old new // request body rewriting keeps the declared capture scop
 						observeDNSRegistry(registry, matcher.domainMatcher.MatchDomainBitmap,
 							&plugin.DNSExchange{DNSPacket: plugin.DNSMessage(request)}, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(response), ReceivedAt: time.Now()})
 					}
-					source := netip.AddrPortFrom(sourceIP, uint16(41000+i))
-					packet, ipProto := routingKernelPacket(source, destination, proto)
-					key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(destination.Port()), L4proto: ipProto}
-					key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), destination.Addr().As16()
 					// The management API listens only on TCP. Its bypass must not
 					// prevent a declared HTTP/3 target from being captured on UDP.
 					capture := test.capture || test.name == "API bypass" && proto == consts.L4ProtoType_UDP
-					for _, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+					for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+						// Separate UDP lifetimes so policy tests do not trigger source-ownership conflicts.
+						source := netip.AddrPortFrom(sourceIP, uint16(41000+i+n*1000))
+						packet, ipProto := routingKernelPacket(source, destination, proto)
+						key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(destination.Port()), L4proto: ipProto}
+						key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), destination.Addr().As16()
 						want := ^uint32(0) // TCX_NEXT: kernel direct, no proxy connection.
 						if capture {
 							want = 7 // TC_ACT_REDIRECT

@@ -67,7 +67,7 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 	worker := &cobra.Command{Use: "__jq-worker", Hidden: true, Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error { return jq.Run(cmd.InOrStdin(), cmd.OutOrStdout()) },
 	}
-	return append(surgeclient.Commands(services.Status, services.TriggerScript), configure, worker)
+	return append(surgeclient.Commands(services.Status, services.TriggerScript, services.MigrateScriptStore), configure, worker)
 }
 
 func promptModuleArguments(input io.Reader, output io.Writer, metadata Metadata) (map[string]string, error) {

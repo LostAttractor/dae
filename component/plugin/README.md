@@ -85,8 +85,11 @@ adds `WrapDNS`. A DNS-only plugin contributes `Plan.DNS` and requires no HTTP
 scope, CA or client MITM switch. All captured TCP/UDP port-53 flows can enter
 the DNS chain; DNS scopes do not expand HTTP capture.
 
-`DNSRequest` contains a `DNSPacket`, transport, source, original/effective
-destination, interface, plugin chain and upstream binding. `DNSExchange` embeds
+`DNSRequest` contains a `DNSPacket`, transport, source, original ingress
+`SourceMAC`, `SourceOrigin`, original/effective destination, interface, plugin chain
+and upstream binding. `SourceOrigin` is host-confirmed `SourceLocal`, `SourceLAN`
+or zero-value `SourceUnknown`; copies and derived queries preserve it. `SourceMAC` is raw ingress metadata, not a verified device identity;
+validate it with `Services.Devices.Identify` before using device-scoped state. `DNSExchange` embeds
 that data and adds invocation-scoped `DialContext`, `ListenPacket`, `Resolve` and
 `Client`. Handlers receive `*DNSExchange`; `Copy()` isolates query/routing changes
 while retaining the same services.
@@ -686,6 +689,38 @@ instance is reused or old requests drain. A change of source causes the host to
 prepare a new instance. Standalone factory callers may leave the service nil;
 plugins requiring live interface observations then own their monitor and close it.
 
+## Device identity
+
+`Services.Devices` is a host-owned service shared across reload generations:
+
+```go
+type DeviceService interface {
+    Identify(context.Context, netip.Addr, [6]byte) [6]byte
+    MITMEnabled(context.Context) ([][6]byte, error)
+}
+```
+
+`Flow.SourceOrigin` and `DNSRequest.SourceOrigin` identify the verified ingress,
+not an effective storage scope. Zero MAC, source IP, interface or PID alone never
+prove local origin. Shared-state policies may map LAN or unknown origins to a
+local bucket without rewriting this origin metadata.
+
+`Identify` validates a source IP and raw ingress MAC against directly connected
+LAN identity; the zero MAC means unknown. Plugins must not treat a gateway MAC,
+unverified ingress metadata or an IP address as a fallback storage identity.
+`MITMEnabled` enumerates devices currently enabled by MITM configuration and
+per-device overrides. Explicitly enabled MACs need not be online; `all`, IP and
+CIDR rules apply only to host-known LAN devices. Explicit disable overrides win.
+No eligible devices means no device-scoped background execution. This does not
+restrict local background execution, which needs no device service, MITM or CA.
+Device discovery failure must not be treated as local execution failure.
+
+The host owns this service and keeps its policy current across reload; plugins
+borrow it and do not close it. `Worker.Run(ctx, client)` is unchanged: selecting a
+device for background state does not impersonate that device's network routing.
+The worker HTTP client continues using daemon routing. `Services.Storage` and
+other services remain independently available to external plugins.
+
 ## Persistent storage
 
 `Services.ResourceCacheDir` is the shared configuration-resource cache root, or
@@ -839,11 +874,47 @@ These commands use the local Unix status socket and do not require `api_port`.
 See Surge's [command implementation](../../plugins/surge/command_configure.go).
 
 `services.TriggerScript(ctx, instance, request)` requests an existing task through
-the daemon API. A plugin implementing `ScriptTrigger` must return promptly, reject
-inactive/overlapping work and attach accepted tasks to its worker lifetime, so
-shutdown/reload cancels and joins them. Execution requests never carry script
+the daemon API. A plugin implementing
+`ScriptTrigger.TriggerScript(context.Context, api.ScriptRunRequest)` must honor
+request cancellation during admission, reject inactive/overlapping work and attach
+accepted tasks to its worker lifetime, so shutdown/reload cancels and joins them.
+The host also cancels admission when its drain deadline expires, including when a
+successor keeps the shared worker alive. Surge bounds admission with a separate
+script-timeout budget; discovery does not consume execution history or the accepted
+task's budget. Admission cancellation/timeouts return 503; request cancellation
+after acceptance does not stop the task. Execution requests never carry script
 source or arbitrary arguments. The CLI returns an acceptance snapshot; execution
-results are available through the plugin's status report.
+results are available through the plugin's status report. `ScriptTaskStatus.Scope`
+reports the effective scope; Surge uses local/device and reserves unknown for
+non-executable contexts. Only device scope carries a MAC. Omitted request MAC
+means local; selecting a MAC on a non-isolated script returns
+`ErrScriptDeviceUnsupported` (400, omit MAC), unavailable device discovery returns
+`ErrScriptDeviceUnavailable` (503), and disabled devices remain 409.
+
+`services.MigrateScriptStore(ctx, instance, request)` invokes the optional
+`ScriptStoreMigrator.MigrateScriptStore(context.Context, api.ScriptStoreMigrateRequest)`
+capability through the admin-only daemon API. It synchronously returns
+`api.ScriptStoreMigrateResponse`; the host fills `Instance`. Implementations move
+an entire device partition, preserve key/value data, reject an existing target
+(including an empty partition), and never change device authorization or isolation.
+Both MACs must be valid, distinct nonzero unicast six-byte identities. Local and
+unknown scopes are not migration targets; devices need not be online or eligible
+for MITM. A missing runtime is unavailable, not a request to open historical files.
+
+Use `ErrScriptStoreInvalid` (400), `ErrScriptStoreNotFound` (404),
+`ErrScriptStoreConflict` / `ErrScriptStoreBusy` (409), and
+`ErrScriptStoreUnavailable` (503). Honor context cancellation during lock waits.
+The host retains the owner and joins request draining before calling outside its
+mutex, connects forced shutdown cancellation, and releases the reference outside
+the mutex before completing admission. The API retains its whole-request generation
+lock and supplies a fixed five-second context, not a hard filesystem I/O deadline.
+Errors after publication must preserve `common/persist.AfterPublish` so the API
+returns a sanitized 500 explicitly stating that the move was published but its
+durability is unconfirmed. Never expose stored values or filesystem paths or
+retry this mutation automatically, including after timeout or connection loss.
+Command callbacks are optional; commands requiring an absent callback must report
+unavailability instead of panicking. `CommandServices.Status` and other existing
+fields remain available to external plugins.
 
 Create human-readable tables with [`clitable.New()`](../../pkg/clitable/table.go)
 from `github.com/daeuniverse/dae/pkg/clitable` to share the host CLI style:
@@ -889,3 +960,9 @@ separate lightweight client package for API commands, registered explicitly by a
 standalone client through `cli.NewMITMCommand`. That package must not import its
 runtime implementation. Surge's [`api`](../../plugins/surge/api) and
 [`client`](../../plugins/surge/client) packages follow this boundary.
+`cli.MITMCommands` factories receive three callbacks: scoped status, script trigger,
+and script-store migration. Surge's `store migrate OLD_MAC NEW_MAC` selects only
+when the scoped status contains exactly one instance; `--instance` disambiguates.
+It never uses module/task contents or device eligibility to select the instance,
+and performs one mutation through the shared SDK. These client packages must not
+import `component` or initialize a local runtime.
