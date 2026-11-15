@@ -44,12 +44,14 @@ func appendControlMessage(oob []byte, level, kind int32, data []byte) []byte {
 func originalDestControlMessage(destination netip.AddrPort) []byte {
 	if destination.Addr().Is4() {
 		var sockaddr [unix.SizeofSockaddrInet4]byte
+		binary.NativeEndian.PutUint16(sockaddr[:], unix.AF_INET)
 		binary.BigEndian.PutUint16(sockaddr[2:], destination.Port())
 		address := destination.Addr().As4()
 		copy(sockaddr[4:], address[:])
 		return appendControlMessage(nil, unix.SOL_IP, unix.IP_RECVORIGDSTADDR, sockaddr[:])
 	}
 	var sockaddr [unix.SizeofSockaddrInet6]byte
+	binary.NativeEndian.PutUint16(sockaddr[:], unix.AF_INET6)
 	binary.BigEndian.PutUint16(sockaddr[2:], destination.Port())
 	address := destination.Addr().As16()
 	copy(sockaddr[8:], address[:])

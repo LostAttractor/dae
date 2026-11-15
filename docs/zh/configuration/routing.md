@@ -130,7 +130,7 @@ group {
 }
 ```
 
-- `mark` 设置入口 socket 的 `SO_MARK`，支持十进制、十六进制 uint32，禁止包含保留的 TPROXY 位 `0x08000000`。省略时继承 `global.so_mark_from_dae`；显式 `mark: 0` 使用零。它与 routing 规则的 `mark` 参数相互独立。
+- `mark` 设置入口 socket 的 `SO_MARK`，支持十进制、十六进制 uint32，禁止包含保留的 TPROXY 位 `0x08000000`，也不能等于内部 DNS 回复专用值 `0x20000000`。`global.so_mark_from_dae` 同样遵循这两项限制。省略时继承 `global.so_mark_from_dae`；显式 `mark: 0` 使用零。它与 routing 规则的 `mark` 参数相互独立。
 - `interface` 使用 `SO_BINDTODEVICE` 绑定接口。入口 TCP、UDP、QUIC、测速、重连和 bootstrap DNS（包括 TCP DNS 重试）使用相同 mark/interface。创建候选前检查接口能力；已有候选若绑定失败，则本次操作失败并沿用健康检查重试。
 - 回环 DNS（如 `127.0.0.1`、`127.0.0.53`、`::1`）通过本机连接访问，不绑定代理出口接口，但保留入口 mark。系统 DNS 和 `global.dns_resolver` 均遵循此规则；本地 DNS 服务自行决定上游出口。外部 DNS 和所有代理连接仍使用配置的接口。
 - `ipversion(4)` / `ipversion(6)` 严格限制连接入口代理的地址族；`ipversion(4, 6)` 允许双栈，支持通常的取反和交集语义。DNS 传输自身可独立使用任一地址族。它不限制代理访问目标的地址族，也不改变 TLS SNI / HTTP Host。

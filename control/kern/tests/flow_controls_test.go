@@ -99,12 +99,20 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 						if network.proto == 6 {
 							advanceTCPSYN(packet, 34)
 						}
-						status, _, _, err := runBpfProgram(program, packet, ctx)
+						status, _, outCtx, err := runBpfProgram(program, packet, ctx)
 						if err != nil || status != want {
 							t.Fatalf("%s: status=%d err=%v, want=%d", program, status, err, want)
 						}
 						var result bpftestRoutingResult
 						err = lookupHandoff(obj.RoutingTuplesMap, key, &result)
+						if redirect && network.proto == 17 && test.port == 53 {
+							if !errors.Is(err, ebpf.ErrKeyNotExist) {
+								t.Fatal("DNS published a legacy tuple handoff")
+							}
+							var handoff bpftestDnsHandoff
+							err = obj.DnsHandoffMap.Lookup(dnsContextCookie(outCtx), &handoff)
+							result = handoff.Result
+						}
 						if !redirect {
 							if !errors.Is(err, ebpf.ErrKeyNotExist) {
 								t.Fatalf("kernel direct retained proxy state: %+v, %v", result, err)

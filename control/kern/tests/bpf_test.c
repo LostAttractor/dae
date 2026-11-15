@@ -289,22 +289,40 @@ int test_redirect_track_unchanged(struct __sk_buff *skb)
 	tuples.five.sip.u6_addr32[3] = key.sip.u6_addr32[3] = bpf_htonl(0xc0a80102);
 	tuples.five.dip.u6_addr32[3] = key.dip.u6_addr32[3] = bpf_htonl(0xcb007101);
 	if (skb->protocol != bpf_htons(ETH_P_IP) ||
-	    prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+	    prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh, NULL))
 		return 1;
 	first = bpf_map_lookup_elem(&redirect_track, &key);
-	if (!first || prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+	if (!first || prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh, NULL))
 		return 2;
 	entry = bpf_map_lookup_elem(&redirect_track, &key);
 	if (entry != first)
 		return 3;
 	ethh.h_source[5] = 3;
-	if (prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh))
+	if (prep_redirect_to_control_plane(skb, false, ETH_HLEN, &tuples, &ethh, NULL))
 		return 4;
 	entry = bpf_map_lookup_elem(&redirect_track, &key);
 	return entry && entry->smac[5] == 3 ? 0 : 5;
 }
 
-/* The low three mark bytes select origin, MAC suffix and candidate route to exercise first-packet races. */
+SEC("tc/test_dns_reply_egress")
+int test_dns_reply_egress(struct __sk_buff *skb)
+{
+	__u64 cookie = (__u64)skb->cb[2] << 32 | skb->cb[1];
+
+	if (bpf_skb_set_tstamp(skb, cookie, BPF_SKB_TSTAMP_DELIVERY_MONO))
+		return TCX_DROP;
+	int ret = tproxy_dae0peer_egress(skb);
+
+	if (ret != TCX_NEXT)
+		return ret;
+	__u8 type = *(volatile __u8 *)&skb->tstamp_type;
+
+	return !type && !skb->tstamp && !skb->mark &&
+		skb->cb[0] == DNS_REPLY_MARK &&
+		((__u64)skb->cb[2] << 32 | skb->cb[1]) == cookie ? TC_ACT_OK : TCX_DROP;
+}
+
+/* The low three mark bytes encode origin, MAC suffix and candidate route to exercise the first-packet race. */
 SEC("tc/test_save_udp_route")
 int test_save_udp_route(struct __sk_buff *skb)
 {
@@ -3104,10 +3122,13 @@ int testcheck_udp_route_cache_dns_change(struct __sk_buff *skb)
 	struct udp_routing_cache_key cache_key;
 
 	make_ipv4_udp_routing_key(&key, IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 53);
-	struct routing_result *result = bpf_map_lookup_elem(&routing_tuples_map, &key);
+	__u64 cookie = (__u64)skb->cb[2] << 32 | skb->cb[1];
+	struct dns_handoff *handoff = bpf_map_lookup_elem(&dns_handoff_map, &cookie);
 
-	if (!result || result->outbound != OUTBOUND_USER_DEFINED_MIN + 45 ||
-	    result->capture_flags != CAPTURE_DNS || result->must)
+	if (skb->cb[0] != DNS_METADATA_MARK || !handoff ||
+	    handoff->result.outbound != OUTBOUND_USER_DEFINED_MIN + 45 ||
+	    handoff->result.capture_flags != CAPTURE_DNS || handoff->result.must ||
+	    bpf_map_lookup_elem(&routing_tuples_map, &key))
 		ret = TC_ACT_SHOT;
 	/* DNS gets fresh policy without replacing the existing non-DNS source route. */
 	make_ipv4_udp_cache_key(&cache_key, IPV4(192,168,1,11), IPV4(1,1,1,11),

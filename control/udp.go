@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
@@ -54,15 +55,15 @@ func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {
 		strings.Contains(errString, "cannot assign requested address")
 }
 
-func tryRawUDPFallback(data []byte, from, to netip.AddrPort, mark uint32, reason string, trigger error) bool {
+func tryRawUDPFallback(data []byte, from, to netip.AddrPort, mark uint32, oob []byte, reason string, trigger error) bool {
 	if !shouldTryRawUDPFallback(trigger, from, to) {
 		return false
 	}
 	var err error
 	if from.Addr().Is4() || from.Addr().Is4In6() {
-		err = sendUDPv4RawInDaeNetns(data, from, to, mark)
+		err = sendUDPv4RawInDaeNetns(data, from, to, mark, oob)
 	} else {
-		err = sendUDPv6RawInDaeNetns(data, from, to, mark)
+		err = sendUDPv6RawInDaeNetns(data, from, to, mark, oob)
 	}
 	if err == nil {
 		log.WithFields(log.Fields{"source": from, "destination": to, "operation": reason}).Trace("Sent DNS response through raw UDP fallback")
@@ -75,18 +76,24 @@ func tryRawUDPFallback(data []byte, from, to netip.AddrPort, mark uint32, reason
 	return false
 }
 
-// sendPkt uses a transparent UDP socket first and falls back to a raw DNS
-// response when the source address cannot be bound.
-func sendPktWithMark(data []byte, from, to netip.AddrPort, mark uint32) (err error) {
+func (c *ControlPlane) sendDNSReply(data []byte, from, to netip.AddrPort, packet *dnsPacket) error {
+	if packet == nil {
+		return errors.New("DNS reply has no packet metadata")
+	}
+	// Keep the entry for queued fragments after send returns; LRU eviction only drops late packets.
+	if err := c.core.bpf.DnsReplyMap.Update(packet.cookie, packet.reply, ebpf.UpdateNoExist); err != nil {
+		return fmt.Errorf("publish DNS reply: %w", err)
+	}
+	oob := dnsReplyOOB(packet.cookie)
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, DefaultAnyfromCacheTTL)
 	if err != nil {
-		if tryRawUDPFallback(data, from, to, mark, "get-or-create", err) {
+		if tryRawUDPFallback(data, from, to, c.soMarkFromDae, oob, "get-or-create", err) {
 			return nil
 		}
-		return
+		return err
 	}
-	_, err = uConn.WriteToUDPAddrPortWithDeadline(data, to, time.Now().Add(consts.DefaultDNSTimeout))
-	if err != nil && tryRawUDPFallback(data, from, to, mark, "write-to-udp", err) {
+	_, err = uConn.writeDNSReply(data, oob, to, time.Now().Add(consts.DefaultDNSTimeout))
+	if err != nil && tryRawUDPFallback(data, from, to, c.soMarkFromDae, oob, "write-to-udp", err) {
 		return nil
 	}
 	return err

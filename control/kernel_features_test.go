@@ -25,6 +25,9 @@ func TestKernelProbesDoNotLoadProductionResources(t *testing.T) {
 	if len(probe.Maps) != 1 || probe.Maps["exited_map"].MaxEntries != 1 || probe.Maps["exited_map"].Pinning != ebpf.PinNone {
 		t.Fatal("preflight allocates production or pinned maps")
 	}
+	if probe.Programs["tproxy_dae0peer_egress"] == nil {
+		t.Fatal("preflight omits the DNS reply TCX egress hook")
+	}
 	for name, program := range probe.Programs {
 		if len(program.Instructions) != 2 || program.Type != production.Programs[name].Type || program.AttachType != production.Programs[name].AttachType {
 			t.Fatalf("invalid attachment probe %s", name)

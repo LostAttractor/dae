@@ -38,6 +38,8 @@ enum api_client_link_type {
 enum handoff_constants {
 	HANDOFF_LIFETIME_SECONDS = 30,
 	TPROXY_MARK = 0x08000000,
+	DNS_METADATA_MARK = TPROXY_MARK | 0x10000000,
+	DNS_REPLY_MARK = 0x20000000,
 };
 
 enum outbound_index {

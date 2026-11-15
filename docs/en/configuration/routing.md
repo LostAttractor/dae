@@ -130,7 +130,7 @@ group {
 }
 ```
 
-- `mark` sets the entry socket's `SO_MARK`, accepting decimal or hexadecimal uint32 values except those containing the reserved TPROXY bit `0x08000000`. Omission inherits `global.so_mark_from_dae`; explicit `mark: 0` uses zero. It is independent of routing-rule `mark` parameters.
+- `mark` sets the entry socket's `SO_MARK`, accepting decimal or hexadecimal uint32 values except those containing the reserved TPROXY bit `0x08000000` or equal to the internal DNS reply mark `0x20000000`. The same restrictions apply to `global.so_mark_from_dae`. Omission inherits `global.so_mark_from_dae`; explicit `mark: 0` uses zero. It is independent of routing-rule `mark` parameters.
 - `interface` binds sockets with `SO_BINDTODEVICE`. The same mark/interface apply to entry TCP, UDP, QUIC, health checks, reconnects and bootstrap DNS (including TCP DNS retry). Interface capabilities are checked before creating candidates; a failed bind on an existing candidate fails that operation and normal health checks retry it.
 - Loopback DNS servers (such as `127.0.0.1`, `127.0.0.53` and `::1`) are reached locally without binding the proxy interface, while retaining its mark. This applies to both system DNS and `global.dns_resolver`; the local resolver controls its own upstream egress. External DNS still uses the configured interface, as do all proxy connections.
 - `ipversion(4)` / `ipversion(6)` strictly restrict the connection to the entry proxy. `ipversion(4, 6)` allows both; negation and conjunction follow normal filter semantics. DNS transport may use either family independently. These filters do not restrict the proxy's destination-family capabilities or change TLS SNI / HTTP Host.

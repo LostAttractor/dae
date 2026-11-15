@@ -181,7 +181,8 @@ func TestHTTPClientAdmissionKernelParity(t *testing.T) {
 							if !allowed && (port == 53 || port == 8443 || port == 8888) && want != 7 {
 								t.Fatalf("HTTP exclusion removed DNS, DNAT or proxy admission: port=%d", port)
 							}
-							verdict, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256)})
+							out := make([]byte, 256)
+							verdict, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out})
 							if err != nil || verdict != want {
 								t.Fatalf("%s preserve=%v IPv%d proto=%d port=%d %s: verdict=%d want=%d error=%v", tc.name, preserve, family, proto, port, program, verdict, want, err)
 							}
@@ -189,7 +190,7 @@ func TestHTTPClientAdmissionKernelParity(t *testing.T) {
 								key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: protocol}
 								key.Sip.U6Addr8, key.Dip.U6Addr8 = srcIP.As16(), dstIP.As16()
 								var got bpfRoutingResult
-								if err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &got); err != nil || got.CaptureFlags != evaluation.captureFlags || got.Outbound != uint8(evaluation.outbound) {
+								if err := lookupKernelPacketHandoff(collection, out, key, &got); err != nil || got.CaptureFlags != evaluation.captureFlags || got.Outbound != uint8(evaluation.outbound) {
 									t.Fatalf("%s: kernel/userspace diverged: %+v %+v %v", tc.name, got, evaluation, err)
 								}
 							}

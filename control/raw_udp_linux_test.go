@@ -252,7 +252,7 @@ func TestSendUDPv4RawDirect(t *testing.T) {
 	sourcePort := conflict.LocalAddr().(*net.UDPAddr).AddrPort().Port()
 	from := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), sourcePort)
 	to := client.LocalAddr().(*net.UDPAddr).AddrPort()
-	if err := sendUDPv4RawDirect([]byte("hello"), from, to, 0); err != nil {
+	if err := sendUDPv4RawDirect([]byte("hello"), from, to, 0, nil); err != nil {
 		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
 			t.Skipf("raw socket capability unavailable: %v", err)
 		}
@@ -278,7 +278,7 @@ func TestSendUDPv6RawDirect(t *testing.T) {
 	sourcePort := conflict.LocalAddr().(*net.UDPAddr).AddrPort().Port()
 	from := netip.AddrPortFrom(netip.IPv6Loopback(), sourcePort)
 	to := client.LocalAddr().(*net.UDPAddr).AddrPort()
-	if err := sendUDPv6RawDirect([]byte("hello"), from, to, 0); err != nil {
+	if err := sendUDPv6RawDirect([]byte("hello"), from, to, 0, nil); err != nil {
 		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
 			t.Skipf("raw socket capability unavailable: %v", err)
 		}

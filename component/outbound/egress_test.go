@@ -82,7 +82,7 @@ routing { fallback: direct }`)
 func TestEntryOptionValidation(t *testing.T) {
 	for _, params := range [][]*config_parser.Param{
 		{annotation("mark", "-1")}, {annotation("mark", "4294967296")},
-		{annotation("mark", "0x8000000")}, {annotation("mark", "garbage")},
+		{annotation("mark", "0x8000000")}, {annotation("mark", "0x20000000")}, {annotation("mark", "garbage")},
 		{annotation("mark", "1"), annotation("mark", "2")},
 		{annotation("interface", "")}, {annotation("interface", "abcdefghijklmnop")},
 		{annotation("interface", "wan\x00ignored")}, {annotation("interface", "wan 0")},

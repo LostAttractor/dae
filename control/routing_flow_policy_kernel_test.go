@@ -62,7 +62,8 @@ func TestPolicyFlowKernelIsolation(t *testing.T) {
 					if name == "main" && (port == 443 || port == 9443) || name == "tor" && port == 53 {
 						want = 7
 					}
-					verdict, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256)})
+					out := make([]byte, 256)
+					verdict, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out})
 					if err != nil || verdict != want {
 						t.Fatalf("%s %s port=%d proto=%d: verdict=%d, %v; want %d", name, program, port, proto, verdict, err, want)
 					}
@@ -76,6 +77,7 @@ func TestPolicyFlowKernelIsolation(t *testing.T) {
 						}
 						continue
 					}
+					err = lookupKernelPacketHandoff(collection, out, key, &handoff)
 					if err != nil || handoff.ProfileId != ids[name] || handoff.Outbound != uint8(decision.outbound) || handoff.CaptureFlags != decision.captureFlags || (handoff.Must != 0) != decision.must {
 						t.Fatalf("kernel/userspace policy mismatch: %+v, %+v, %v", handoff, decision, err)
 					}

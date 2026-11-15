@@ -3,6 +3,9 @@
 package control
 
 import (
+	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -12,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/internal/routingabi"
 )
 
 func lookupKernelHandoff(m *ebpf.Map, key any, result *bpfRoutingResult) error {
@@ -19,6 +23,25 @@ func lookupKernelHandoff(m *ebpf.Map, key any, result *bpfRoutingResult) error {
 	err := m.Lookup(key, &value)
 	*result = value.Result
 	return err
+}
+
+func lookupKernelPacketHandoff(collection *ebpf.Collection, ctx []byte, key bpfTuplesKey, result *bpfRoutingResult) error {
+	if key.L4proto != 17 || key.Dport != common.Htons(53) {
+		return lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, result)
+	}
+	cookie := uint64(binary.NativeEndian.Uint32(ctx[52:56])) | uint64(binary.NativeEndian.Uint32(ctx[56:60]))<<32
+	if binary.NativeEndian.Uint32(ctx[48:52]) != routingabi.DNS_METADATA_MARK || cookie == 0 {
+		return fmt.Errorf("missing DNS cookie: %x", ctx[48:60])
+	}
+	var handoff bpfDnsHandoff
+	if err := collection.Maps["dns_handoff_map"].Lookup(cookie, &handoff); err != nil {
+		return err
+	}
+	if handoff.Reply.Tuple != key {
+		return fmt.Errorf("DNS tuple mismatch: %+v != %+v", handoff.Reply.Tuple, key)
+	}
+	*result = handoff.Result
+	return nil
 }
 
 func dnsKernelCollection(t *testing.T) (*ebpf.Collection, *BPFState) {
@@ -112,7 +135,8 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 					// Policy cases must not reuse another origin's live UDP source.
 					src := netip.AddrPortFrom(src.Addr(), src.Port()+uint16(n)*1000)
 					packet, ipProto := routingKernelPacket(src, dst, proto)
-					verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
+					out := make([]byte, 256)
+					verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out, Repeat: 1})
 					if err != nil || verdict != want {
 						t.Fatalf("%s proto=%d: verdict=%d want=%d error=%v", name, proto, verdict, want, err)
 					}
@@ -120,7 +144,7 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 						key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
 						key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 						var result bpfRoutingResult
-						err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result)
+						err := lookupKernelPacketHandoff(collection, out, key, &result)
 						outbound := uint8(consts.OutboundDirect)
 						if flags == captureDestination {
 							outbound = uint8(consts.OutboundControlPlaneRouting)
@@ -162,14 +186,15 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 			} {
 				dst := netip.MustParseAddrPort(test.target)
 				packet, proto := routingKernelPacket(src, dst, consts.L4ProtoType_UDP)
-				verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
+				out := make([]byte, 256)
+				verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out, Repeat: 1})
 				if err != nil || verdict != 7 {
 					t.Fatalf("%s bound=%v %s verdict=%d err=%v", name, bound, test.target, verdict, err)
 				}
 				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: proto}
 				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 				var result bpfRoutingResult
-				if err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result); err != nil {
+				if err := lookupKernelPacketHandoff(collection, out, key, &result); err != nil {
 					t.Fatal(err)
 				}
 				if result.Must != test.must || result.Mark != test.mark || result.CaptureFlags != test.capture || result.Outbound != uint8(consts.OutboundUserDefinedMin) {
@@ -190,6 +215,54 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 				t.Fatalf("DNS replaced non-DNS source policy: %+v", cached.Result)
 			}
 		}
+	}
+}
+
+func TestDNSMetadataLRUEviction(t *testing.T) {
+	collection, state := routingKernelFixture(t, nil, 1, func(spec *ebpf.CollectionSpec) {
+		spec.Maps["dns_handoff_map"].MaxEntries = 1
+		spec.Maps["dns_reply_map"].MaxEntries = 1
+	})
+	builder, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "dport(53) -> direct"))
+	builder.bpf = state
+	if err := builder.BuildKernspace(); err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := routingKernelPacket(netip.MustParseAddrPort("192.0.2.1:45000"), netip.MustParseAddrPort("192.0.2.53:53"), consts.L4ProtoType_UDP)
+	var first, last uint64
+	for i := range 256 {
+		out := make([]byte, 256)
+		verdict, err := collection.Programs["lan_ingress_l2"].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out, Repeat: 1})
+		if err != nil || verdict != 7 {
+			t.Fatalf("capture: verdict=%d err=%v", verdict, err)
+		}
+		cookie := uint64(binary.NativeEndian.Uint32(out[52:56])) | uint64(binary.NativeEndian.Uint32(out[56:60]))<<32
+		if cookie <= last {
+			t.Fatalf("cookie reused after eviction: %d <= %d", cookie, last)
+		}
+		if i == 0 {
+			first = cookie
+		}
+		last = cookie
+		var handoff bpfDnsHandoff
+		if err := collection.Maps["dns_handoff_map"].Lookup(cookie, &handoff); err != nil {
+			t.Fatal(err)
+		}
+		if err := collection.Maps["dns_reply_map"].Update(cookie, handoff.Reply, ebpf.UpdateNoExist); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var handoff bpfDnsHandoff
+	var reply bpfDnsReply
+	if err := collection.Maps["dns_handoff_map"].Lookup(first, &handoff); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("handoff did not evict old cookie: %v", err)
+	}
+	if err := collection.Maps["dns_reply_map"].Lookup(first, &reply); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("reply did not evict old cookie: %v", err)
+	}
+	var counter bpfDnsCookie
+	if err := collection.Maps["dns_cookie_map"].Lookup(uint32(0), &counter); err != nil || counter.Value != last {
+		t.Fatalf("LRU changed the cookie counter: %+v err=%v", counter, err)
 	}
 }
 

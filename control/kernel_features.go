@@ -110,7 +110,7 @@ func kernelProbeSpec(production *ebpf.CollectionSpec) *ebpf.CollectionSpec {
 		},
 		Programs: make(map[string]*ebpf.ProgramSpec),
 	}
-	for _, name := range []string{"tproxy_sk_lookup", "tproxy_dae0peer_ingress", "tproxy_dae0_ingress", "lan_ingress_l2", "tproxy_wan_egress_l2", "handle_exit"} {
+	for _, name := range []string{"tproxy_sk_lookup", "tproxy_dae0peer_ingress", "tproxy_dae0peer_egress", "tproxy_dae0_ingress", "lan_ingress_l2", "tproxy_wan_egress_l2", "handle_exit"} {
 		p := production.Programs[name]
 		var verdict int32
 		if p.Type == ebpf.SkLookup {
@@ -219,6 +219,7 @@ func probeNetworkFeatures(ctx context.Context, ns *DaeNetns, collection *ebpf.Co
 			links, err := ns.attachPrograms(bpfPrograms{
 				TproxySkLookup:        collection.Programs["tproxy_sk_lookup"],
 				TproxyDae0peerIngress: collection.Programs["tproxy_dae0peer_ingress"],
+				TproxyDae0peerEgress:  collection.Programs["tproxy_dae0peer_egress"],
 				TproxyDae0Ingress:     collection.Programs["tproxy_dae0_ingress"],
 			})
 			return errors.Join(err, closeBpfLinks(links))
@@ -280,7 +281,14 @@ func probeTransparentSockets(family int) error {
 		if err != nil {
 			return err
 		}
-		err = errors.Join(
+		if kind == unix.SOCK_DGRAM {
+			err = errors.Join(
+				unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TIMESTAMPNS_NEW, 1),
+				unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVMARK, 1),
+				enableDNSReplyMetadata(fd),
+			)
+		}
+		err = errors.Join(err,
 			unix.SetsockoptInt(fd, level, option, 1),
 			unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, 0x100),
 			unix.Close(fd),

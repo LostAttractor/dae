@@ -11,6 +11,7 @@ import (
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/internal/routingabi"
 )
 
 func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
@@ -35,6 +36,9 @@ func Ntohs(i uint16) uint16 {
 func ValidateSoMarkFromDae(mark uint32) error {
 	if mark&consts.TproxyMark != 0 {
 		return fmt.Errorf("so_mark_from_dae %#x contains reserved tproxy mark %#x", mark, consts.TproxyMark)
+	}
+	if mark == routingabi.DNS_REPLY_MARK {
+		return fmt.Errorf("so_mark_from_dae %#x is reserved for internal DNS replies", mark)
 	}
 	return nil
 }

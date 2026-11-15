@@ -163,6 +163,9 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 		"tcp_proxy_socket_map":   b.TcpProxySocketMap,
 		"tcp_handshake_gate_map": b.TcpHandshakeGateMap,
 		"udp_bindings_map":       b.UdpBindingsMap, "udp_conn_state_map": b.UdpConnStateMap,
+		"dns_cookie_map":          b.DnsCookieMap,
+		"dns_handoff_map":         b.DnsHandoffMap,
+		"dns_reply_map":           b.DnsReplyMap,
 		"udp_inbound_pending_map": b.UdpInboundPendingMap,
 		"udp_routing_cache_map":   b.UdpRoutingCacheMap,
 	} {

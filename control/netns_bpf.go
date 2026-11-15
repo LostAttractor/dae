@@ -25,6 +25,16 @@ func (ns *DaeNetns) attachPrograms(programs bpfPrograms) (links []link.Link, err
 		return nil, fmt.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
 	}
 	links = append(links, skLookup)
+	peerEgress, err := ns.With(func() (link.Link, error) {
+		return link.AttachTCX(link.TCXOptions{
+			Interface: ns.dae0peer.Attrs().Index, Program: programs.TproxyDae0peerEgress,
+			Attach: ebpf.AttachTCXEgress,
+		})
+	})
+	if err != nil {
+		return links, fmt.Errorf("attach dae0peer DNS reply egress: %w", err)
+	}
+	links = append(links, peerEgress)
 	if ns.dae0.Type() == "netkit" {
 		for _, target := range []struct {
 			program *ebpf.Program

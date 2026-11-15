@@ -233,6 +233,63 @@ struct routing_result {
 	__u32 generation;
 };
 
+struct dns_reply {
+	struct tuples_key tuple;
+	struct redirect_entry path;
+	__u32 padding;
+};
+
+struct dns_handoff {
+	struct dns_reply reply;
+	struct routing_result result;
+	__u8 pname[TASK_COMM_LEN];
+};
+
+struct dns_cookie {
+	struct bpf_spin_lock lock;
+	__u32 padding;
+	__u64 value;
+};
+
+_Static_assert(sizeof(struct dns_reply) == 64, "DNS reply ABI size");
+_Static_assert(sizeof(struct dns_handoff) == 120, "DNS handoff ABI size");
+
+/* Runtime retains these maps across generations; evicted cookies are never reused. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct dns_cookie);
+	__uint(max_entries, 1);
+} dns_cookie_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, struct dns_handoff);
+	__uint(max_entries, 65536);
+} dns_handoff_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, struct dns_reply);
+	__uint(max_entries, 65536);
+} dns_reply_map SEC(".maps");
+
+static __always_inline __u64 next_dns_cookie(void)
+{
+	struct dns_cookie *counter = bpf_map_lookup_elem(&dns_cookie_map, &zero_key);
+	__u64 cookie = 0;
+
+	if (!counter)
+		return 0;
+	bpf_spin_lock(&counter->lock);
+	if (counter->value < 0x7fffffffffffffffULL)
+		cookie = ++counter->value;
+	bpf_spin_unlock(&counter->lock);
+	return cookie;
+}
+
 /* Properties of a kernel-forwarded TCP flow, fixed by its SYN's decision. SYN
  * identity keeps a retransmission's decision apart from tuple reuse. */
 struct tcp_flow_state {
@@ -955,6 +1012,7 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
 struct ingress_scratch {
 	struct tuples tuples;
 	struct udp_routing_scratch route;
+	struct dns_handoff dns;
 	struct route_params params;
 	struct route_state state;
 };
@@ -1152,7 +1210,7 @@ static __always_inline bool redirect_entry_changed(const struct redirect_entry *
 
 static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len,
-	struct tuples *tuples, struct ethhdr *ethh)
+	struct tuples *tuples, struct ethhdr *ethh, struct dns_handoff *dns)
 {
 	if (daemon_offline())
 		return -1;
@@ -1190,15 +1248,27 @@ static __always_inline int prep_redirect_to_control_plane(
 			 sizeof(ethh->h_source));
 	__builtin_memcpy(redirect_entry.dmac, ethh->h_dest,
 			 sizeof(ethh->h_dest));
-	/* An update replaces the LRU node even when nothing changed. The lookup
-	 * keeps an unchanged entry recent as well. */
-	if (redirect_entry_changed(bpf_map_lookup_elem(&redirect_track, &redirect_tuple),
-				   &redirect_entry) &&
-	    bpf_map_update_elem(&redirect_track, &redirect_tuple,
-				&redirect_entry, BPF_ANY))
-		return -1;
+	__u64 cookie = 0;
 
-	skb->cb[0] = TPROXY_MARK;
+	if (dns) {
+		dns->reply.path = redirect_entry;
+		cookie = next_dns_cookie();
+		if (!cookie || bpf_map_update_elem(&dns_handoff_map, &cookie, dns, BPF_NOEXIST))
+			return -1;
+	}
+	/* Plain DNS must not change a concurrent association's return path. */
+	if (!dns || dns->result.must) {
+		/* Avoid replacing the LRU node on every packet when the return path is unchanged. */
+		if (redirect_entry_changed(bpf_map_lookup_elem(&redirect_track, &redirect_tuple),
+					   &redirect_entry) &&
+		    bpf_map_update_elem(&redirect_track, &redirect_tuple,
+					&redirect_entry, BPF_ANY))
+			return -1;
+	}
+
+	skb->cb[0] = dns ? DNS_METADATA_MARK : TPROXY_MARK;
+	skb->cb[1] = cookie;
+	skb->cb[2] = cookie >> 32;
 	return 0;
 }
 
@@ -1812,6 +1882,7 @@ static __always_inline int do_tproxy_unfragmented(
 	__u64 route_epoch = device ? device->epoch : 0;
 
 	struct tuples_key *routing_tuples_key = &tuples->five;
+	struct dns_handoff *dns = NULL;
 
 	if (l4proto == IPPROTO_TCP) {
 		int action = tcp_packet_action(skb, routing_tuples_key, &l4h->tcph, route_epoch);
@@ -1943,15 +2014,24 @@ selected:
 			bpf_map_delete_elem(&routing_tuples_map, routing_tuples_key);
 		goto direct;
 	}
-	if (daemon_offline() ||
-	    publish_handoff(routing_tuples_key, routing_result, pid_pname,
-			    l4proto == IPPROTO_TCP ? l4h->tcph.seq : 0))
+	if (daemon_offline())
 		return TCX_DROP;
+	if (l4proto == IPPROTO_UDP && isdns) {
+		dns = &scratch->dns;
+		__builtin_memset(dns, 0, sizeof(*dns));
+		dns->reply.tuple = tuples->five;
+		dns->result = *routing_result;
+		if (pid_pname)
+			__builtin_memcpy(dns->pname, pid_pname->pname, sizeof(dns->pname));
+	} else if (publish_handoff(routing_tuples_key, routing_result, pid_pname,
+				   l4proto == IPPROTO_TCP ? l4h->tcph.seq : 0)) {
+		return TCX_DROP;
+	}
 
 control_plane:
 	// Assign to control plane.
 	if (prep_redirect_to_control_plane(skb, is_wan, link_h_len, tuples,
-					   ethh))
+					   ethh, dns))
 		return TCX_DROP;
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
@@ -2144,9 +2224,18 @@ SEC("netkit/primary")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
 	// Only packets redirected from wan_egress or lan_ingress have this cb mark.
-	if (skb->cb[0] != TPROXY_MARK)
+	__u32 mark = skb->cb[0];
+	__u64 cookie = (__u64)skb->cb[2] << 32 | skb->cb[1];
+
+	if (mark != TPROXY_MARK && mark != DNS_METADATA_MARK)
+		return TC_ACT_SHOT;
+	if (mark == DNS_METADATA_MARK &&
+	    (!cookie || cookie >> 63 ||
+	     bpf_skb_set_tstamp(skb, cookie, BPF_SKB_TSTAMP_UNSPEC)))
 		return TC_ACT_SHOT;
 	skb->cb[0] = 0;
+	skb->cb[1] = 0;
+	skb->cb[2] = 0;
 
 	/*
    * ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -2159,17 +2248,92 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
 	 */
-	// TODO: redirect directly to lo?
-	skb->mark = TPROXY_MARK;
+	// TODO: Redirect directly to lo?
+	skb->mark = mark;
 	if (bpf_skb_change_type(skb, PACKET_HOST))
 		return TC_ACT_SHOT;
 	return TC_ACT_OK;
+}
+
+/* Move the cookie into the trusted cb channel before qdisc interprets SCM_TXTIME. */
+SEC("tc/dae0peer_egress")
+int tproxy_dae0peer_egress(struct __sk_buff *skb)
+{
+	if (skb->mark != DNS_REPLY_MARK) {
+		skb->cb[0] = DAE_REPLY_MARK;
+		return TCX_NEXT;
+	}
+	/* Read tstamp_type first so the verifier permits delivery timestamp access. */
+	__u8 type = *(volatile __u8 *)&skb->tstamp_type;
+	__u64 cookie = skb->tstamp;
+
+	if (type != BPF_SKB_TSTAMP_DELIVERY_MONO || !cookie || cookie >> 63)
+		return TCX_DROP;
+	skb->cb[0] = DNS_REPLY_MARK;
+	skb->cb[1] = cookie;
+	skb->cb[2] = cookie >> 32;
+	if (bpf_skb_set_tstamp(skb, 0, BPF_SKB_TSTAMP_UNSPEC))
+		return TCX_DROP;
+	skb->mark = 0;
+	return TCX_NEXT;
+}
+
+static __always_inline bool dns_reply_matches(struct __sk_buff *skb,
+					      const struct dns_reply *reply)
+{
+	struct ethhdr ethh;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
+	struct tuples tuples;
+	__u8 protocol;
+	__u32 offset = 0, packet_end;
+	enum fragment_state fragment;
+	int ret = parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h, &protocol,
+				  &offset, &packet_end, &fragment);
+
+	if (ret < 0 || (ret && fragment != FRAGMENT_NONFIRST) ||
+	    (skb->protocol != bpf_htons(ETH_P_IP) && skb->protocol != bpf_htons(ETH_P_IPV6)))
+		return false;
+	/* The ingress parser stops at a non-first IPv6 fragment header; read its next protocol. */
+	if (fragment == FRAGMENT_NONFIRST && skb->protocol == bpf_htons(ETH_P_IPV6) &&
+	    bpf_skb_load_bytes(skb, offset, &protocol, sizeof(protocol)))
+		return false;
+	if (protocol != IPPROTO_UDP || reply->tuple.l4proto != IPPROTO_UDP)
+		return false;
+	get_tuples(skb, &tuples, &l3h, &l4h, protocol);
+	if (__builtin_memcmp(&tuples.five.sip, &reply->tuple.dip, sizeof(union ip6)) ||
+	    __builtin_memcmp(&tuples.five.dip, &reply->tuple.sip, sizeof(union ip6)))
+		return false;
+	if (fragment == FRAGMENT_NONFIRST)
+		return true;
+	if (tuples.five.sport != reply->tuple.dport || tuples.five.dport != reply->tuple.sport)
+		return false;
+	__u32 payload = bpf_ntohs(l4h.udph.len) - sizeof(struct udphdr);
+
+	return fragment == FRAGMENT_FIRST ? payload >= packet_end - offset :
+		payload == packet_end - offset;
 }
 
 // Reply traffic. Attached at Netkit peer or veth host TCX ingress.
 SEC("netkit/peer")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
+	struct redirect_entry *redirect_entry;
+
+	if (skb->cb[0] == DNS_REPLY_MARK) {
+		__u64 cookie = (__u64)skb->cb[2] << 32 | skb->cb[1];
+
+		if (!cookie || cookie >> 63)
+			return TC_ACT_SHOT;
+		struct dns_reply *reply = bpf_map_lookup_elem(&dns_reply_map, &cookie);
+
+		if (!reply || !dns_reply_matches(skb, reply))
+			return TC_ACT_SHOT;
+		redirect_entry = &reply->path;
+		goto redirect;
+	}
+	if (skb->cb[0] != DAE_REPLY_MARK)
+		return TC_ACT_SHOT;
 	// reverse the tuple!
 	struct redirect_tuple redirect_tuple = {};
 
@@ -2192,24 +2356,26 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 				   &redirect_tuple.dip,
 				   sizeof(redirect_tuple.dip));
 	}
-	struct redirect_entry *redirect_entry =
-		bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
+	redirect_entry = bpf_map_lookup_elem(&redirect_track, &redirect_tuple);
 
 	if (!redirect_entry)
 		return TC_ACT_OK;
 
-	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
-			    redirect_entry->dmac, sizeof(redirect_entry->dmac),
-			    0);
-	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-			    redirect_entry->smac, sizeof(redirect_entry->smac),
-			    0);
+redirect:
+	if (bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_source),
+				redirect_entry->dmac, sizeof(redirect_entry->dmac), 0) ||
+	    bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+				redirect_entry->smac, sizeof(redirect_entry->smac), 0))
+		return TC_ACT_SHOT;
 	__u32 type = redirect_entry->from_wan ? PACKET_HOST : PACKET_OTHERHOST;
 
-	bpf_skb_change_type(skb, type);
+	if (bpf_skb_change_type(skb, type))
+		return TC_ACT_SHOT;
 	__u64 flags = redirect_entry->from_wan ? BPF_F_INGRESS : 0;
 
 	skb->cb[0] = DAE_REPLY_MARK;
+	skb->cb[1] = 0;
+	skb->cb[2] = 0;
 	return bpf_redirect(redirect_entry->ifindex, flags);
 }
 

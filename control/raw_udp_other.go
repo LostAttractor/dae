@@ -12,10 +12,10 @@ import (
 	"net/netip"
 )
 
-func sendUDPv4RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32) error {
+func sendUDPv4RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32, _ []byte) error {
 	return fmt.Errorf("raw IPv4 UDP fallback unsupported on this platform: from=%v to=%v", from, to)
 }
 
-func sendUDPv6RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32) error {
+func sendUDPv6RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32, _ []byte) error {
 	return fmt.Errorf("raw IPv6 UDP fallback unsupported on this platform: from=%v to=%v", from, to)
 }

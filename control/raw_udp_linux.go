@@ -29,7 +29,7 @@ const (
 type rawUDPSendtoFunc func(int, []byte, int, unix.Sockaddr) error
 type rawUDPPollFunc func([]unix.PollFd, int) (int, error)
 
-func sendUDPv4RawDirect(data []byte, from, to netip.AddrPort, mark uint32) error {
+func sendUDPv4RawDirect(data []byte, from, to netip.AddrPort, mark uint32, oob []byte) error {
 	udp, err := buildUDPv4Packet(data, from, to)
 	if err != nil {
 		return err
@@ -59,7 +59,7 @@ func sendUDPv4RawDirect(data []byte, from, to netip.AddrPort, mark uint32) error
 	}
 
 	toIP := to.Addr().Unmap().As4()
-	if err := sendRawUDPPacket(fd, udp, &unix.SockaddrInet4{Addr: toIP}); err != nil {
+	if err := sendRawUDPPacket(fd, udp, oob, &unix.SockaddrInet4{Addr: toIP}); err != nil {
 		return fmt.Errorf("send raw IPv4 UDP packet from %v to %v: %w", from, to, err)
 	}
 	return nil
@@ -88,18 +88,18 @@ func buildUDPv4Packet(data []byte, from, to netip.AddrPort) ([]byte, error) {
 	return udp, nil
 }
 
-func sendUDPv4RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32) error {
+func sendUDPv4RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32, oob []byte) error {
 	ns := GetDaeNetns()
 	if ns == nil {
 		return fmt.Errorf("dae netns is not initialized")
 	}
 	_, err := ns.With(func() (struct{}, error) {
-		return struct{}{}, sendUDPv4RawDirect(data, from, to, mark)
+		return struct{}{}, sendUDPv4RawDirect(data, from, to, mark, oob)
 	})
 	return err
 }
 
-func sendUDPv6RawDirect(data []byte, from, to netip.AddrPort, mark uint32) error {
+func sendUDPv6RawDirect(data []byte, from, to netip.AddrPort, mark uint32, oob []byte) error {
 	udp, err := buildUDPv6Packet(data, from, to)
 	if err != nil {
 		return err
@@ -134,7 +134,7 @@ func sendUDPv6RawDirect(data []byte, from, to netip.AddrPort, mark uint32) error
 	if err != nil {
 		return fmt.Errorf("resolve raw IPv6 destination address %v: %w", to.Addr(), err)
 	}
-	if err := sendRawUDPPacket(fd, udp, toAddr); err != nil {
+	if err := sendRawUDPPacket(fd, udp, oob, toAddr); err != nil {
 		return fmt.Errorf("send raw IPv6 UDP packet from %v to %v: %w", from, to, err)
 	}
 	return nil
@@ -180,13 +180,13 @@ func buildUDPv6Packet(data []byte, from, to netip.AddrPort) ([]byte, error) {
 	return udp, nil
 }
 
-func sendUDPv6RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32) error {
+func sendUDPv6RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32, oob []byte) error {
 	ns := GetDaeNetns()
 	if ns == nil {
 		return fmt.Errorf("dae netns is not initialized")
 	}
 	_, err := ns.With(func() (struct{}, error) {
-		return struct{}{}, sendUDPv6RawDirect(data, from, to, mark)
+		return struct{}{}, sendUDPv6RawDirect(data, from, to, mark, oob)
 	})
 	return err
 }
@@ -202,8 +202,18 @@ func enableRawUDPFragmentation(fd, family int) error {
 	}
 }
 
-func sendRawUDPPacket(fd int, packet []byte, to unix.Sockaddr) error {
-	return sendRawUDPPacketWith(fd, packet, to, rawUDPSendTimeout, unix.Sendto, unix.Poll)
+func sendRawUDPPacket(fd int, packet, oob []byte, to unix.Sockaddr) error {
+	send := unix.Sendto
+	if len(oob) != 0 {
+		if err := enableDNSReplyMetadata(fd); err != nil {
+			return err
+		}
+		send = func(fd int, data []byte, flags int, to unix.Sockaddr) error {
+			_, err := unix.SendmsgN(fd, data, oob, to, flags)
+			return err
+		}
+	}
+	return sendRawUDPPacketWith(fd, packet, to, rawUDPSendTimeout, send, unix.Poll)
 }
 
 func sendRawUDPPacketWith(

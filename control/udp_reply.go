@@ -34,7 +34,7 @@ type udpReplySender struct {
 func (s *udpReplySender) send(data []byte, from netip.AddrPort) error {
 	socket, err := s.socket(from, true)
 	if err != nil {
-		if tryRawUDPFallback(data, from, s.to, s.mark, "get-or-create", err) {
+		if tryRawUDPFallback(data, from, s.to, s.mark, nil, "get-or-create", err) {
 			return nil
 		}
 		return err
@@ -52,7 +52,7 @@ func (s *udpReplySender) send(data []byte, from netip.AddrPort) error {
 		// link-local clients need it.
 		_, err = socket.writeWithDeadline(data, s.to, time.Now().Add(consts.DefaultDNSTimeout))
 	}
-	if err != nil && tryRawUDPFallback(data, from, s.to, s.mark, "write-to-udp", err) {
+	if err != nil && tryRawUDPFallback(data, from, s.to, s.mark, nil, "write-to-udp", err) {
 		return nil
 	}
 	return err

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -29,8 +30,8 @@ routing { fallback: direct }
 	}
 }
 
-func TestSoMarkFromDaeRejectsTproxyMark(t *testing.T) {
-	for _, mark := range []uint32{consts.TproxyMark, consts.TproxyMark | 0x21} {
+func TestSoMarkFromDaeRejectsReservedMark(t *testing.T) {
+	for _, mark := range []uint32{consts.TproxyMark, consts.TproxyMark | 0x21, routingabi.DNS_REPLY_MARK} {
 		sections, err := config_parser.Parse(fmt.Sprintf(`
 global { so_mark_from_dae: %#x }
 routing { fallback: direct }
@@ -40,7 +41,7 @@ routing { fallback: direct }
 		}
 		if _, err = New(sections); err == nil {
 			t.Errorf("so_mark_from_dae %#x was accepted", mark)
-		} else if !strings.Contains(err.Error(), "reserved tproxy mark") {
+		} else if !strings.Contains(err.Error(), "reserved") {
 			t.Errorf("unexpected error for so_mark_from_dae %#x: %v", mark, err)
 		}
 	}

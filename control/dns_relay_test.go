@@ -249,29 +249,13 @@ func TestDNSUDPResponseOwnership(t *testing.T) {
 	}
 }
 
-func TestDNSUDPReplyRestoresOriginalDestination(t *testing.T) {
-	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	original, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 53)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer original.Close()
+func TestDNSUDPRelayUsesRewrittenDestination(t *testing.T) {
 	upstream, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer upstream.Close()
-	src, dst := client.LocalAddr().(*net.UDPAddr).AddrPort(), original.LocalAddr().(*net.UDPAddr).AddrPort()
-	// Supply an already-open reply socket to exercise delivery without creating
-	// the daemon's network namespace. Kernel port-53 admission is tested separately.
-	pool := DefaultAnyfromPool
-	DefaultAnyfromPool = NewAnyfromPool()
-	DefaultAnyfromPool.pool[dst] = &Anyfrom{conn: original, idleTTL: time.Second}
-	defer func() { DefaultAnyfromPool = pool }()
+	src, dst := netip.MustParseAddrPort("127.0.0.1:12345"), netip.MustParseAddrPort("127.0.0.53:53")
 	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, fmt.Sprintf("dip(127.0.0.53) -> dnat('%s')", upstream.LocalAddr()), ""))
 	group := downloadTestGroup(t, "direct", func(ctx context.Context, network, target string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, target)
@@ -292,14 +276,22 @@ func TestDNSUDPReplyRestoresOriginalDestination(t *testing.T) {
 		}
 		_, _ = upstream.WriteToUDPAddrPort(answer, from)
 	}()
-	c.handleDNSUDP(wire, src, dst, routingResult{CaptureFlags: captureDestination})
-	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
-	buffer := make([]byte, 1024)
-	n, from, err := client.ReadFromUDPAddrPort(buffer)
-	if err != nil || from != dst || !bytes.Equal(buffer[:n], answer) {
-		t.Fatalf("reply source=%s want=%s bytes=%x error=%v", from, dst, buffer[:n], err)
+	identity := routingResult{CaptureFlags: captureDestination}
+	request, bypass, err := c.dnsRequest(wire, "udp", src, dst, identity)
+	if err != nil {
+		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	var received []byte
+	err = c.processDNS(ctx, request, identity, bypass, relayDNSUDP, func(wire []byte) error {
+		received = bytes.Clone(wire)
+		return nil
+	})
 	<-upstreamDone
+	if err != nil || !bytes.Equal(received, answer) {
+		t.Fatalf("reply bytes=%x error=%v", received, err)
+	}
 }
 
 func TestDNSStreamTransferOrdering(t *testing.T) {

@@ -21,6 +21,7 @@ type routingResult struct {
 	bpfRoutingResult
 	Pid   uint32
 	Pname [16]byte
+	dns   *dnsPacket
 }
 
 func (r *routingResult) sourceOrigin() plugin.SourceOrigin {

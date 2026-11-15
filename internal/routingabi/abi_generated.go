@@ -16,6 +16,8 @@ const (
 	FALLBACK_TOKEN_RESERVED                 = 1
 	HANDOFF_LIFETIME_SECONDS                = 30
 	TPROXY_MARK                             = 134217728
+	DNS_METADATA_MARK                       = 402653184
+	DNS_REPLY_MARK                          = 536870912
 	HTTP_CLIENT_ALL                         = 0
 	HTTP_CLIENT_MAC_OVERRIDE                = 1
 	HTTP_CLIENT_MAC                         = 2

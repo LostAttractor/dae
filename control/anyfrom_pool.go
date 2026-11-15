@@ -65,6 +65,18 @@ func (a *Anyfrom) Close() error {
 	return err
 }
 
+// Send the DNS cookie and mark per message without changing shared socket identity.
+func (a *Anyfrom) writeDNSReply(data, oob []byte, addr netip.AddrPort, deadline time.Time) (int, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	if err := a.conn.SetWriteDeadline(deadline); err != nil {
+		return 0, err
+	}
+	defer a.conn.SetWriteDeadline(time.Time{})
+	n, _, err := a.conn.WriteMsgUDPAddrPort(data, oob, addr)
+	return n, err
+}
+
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
 	pool     map[netip.AddrPort]*Anyfrom
@@ -206,6 +218,13 @@ func listenAnyfrom(lAddr netip.AddrPort) (*net.UDPConn, error) {
 		Control: func(network string, address string, c syscall.RawConn) error {
 			if err := transparentControl(c); err != nil {
 				return err
+			}
+			var socketErr error
+			if err := c.Control(func(fd uintptr) { socketErr = enableDNSReplyMetadata(int(fd)) }); err != nil {
+				return err
+			}
+			if socketErr != nil {
+				return socketErr
 			}
 			if mark := anyfromSoMark.Load(); mark != 0 {
 				return netproxy.SoMarkControl(c, int(mark))

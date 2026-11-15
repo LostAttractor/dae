@@ -69,15 +69,17 @@ func TestVethAttachmentFailureCleanupIntegration(t *testing.T) {
 	}
 	skLookup := newTestProgram(t, ebpf.SkLookup, ebpf.AttachSkLookup, 1)
 	peerIngress := newTestProgram(t, ebpf.SchedCLS, ebpf.AttachTCXIngress, 0)
+	peerEgress := newTestProgram(t, ebpf.SchedCLS, ebpf.AttachTCXEgress, 0)
 	err := withKernelProbeNamespace(func(device netlink.Link) error {
 		if device.Type() == "netkit" {
 			return unix.EOPNOTSUPP
 		}
 		return netlink.LinkAdd(device)
 	}, func(ns *DaeNetns) error {
-		// Fail after SK_LOOKUP and peer ingress have already been attached.
+		// Fail after SK_LOOKUP and both peer directions have already been attached.
 		links, err := ns.attachPrograms(bpfPrograms{
-			TproxySkLookup: skLookup, TproxyDae0peerIngress: peerIngress, TproxyDae0Ingress: skLookup,
+			TproxySkLookup: skLookup, TproxyDae0peerIngress: peerIngress,
+			TproxyDae0peerEgress: peerEgress, TproxyDae0Ingress: skLookup,
 		})
 		if err == nil || len(links) != 0 {
 			closeBpfLinks(links)
@@ -86,6 +88,7 @@ func TestVethAttachmentFailureCleanupIntegration(t *testing.T) {
 		for _, query := range []link.QueryOptions{
 			{Target: int(ns.daeNs), Attach: ebpf.AttachSkLookup},
 			{Target: ns.dae0peer.Attrs().Index, Attach: ebpf.AttachTCXIngress},
+			{Target: ns.dae0peer.Attrs().Index, Attach: ebpf.AttachTCXEgress},
 			{Target: ns.dae0.Attrs().Index, Attach: ebpf.AttachTCXIngress},
 		} {
 			result, err := link.QueryPrograms(query)

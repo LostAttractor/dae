@@ -349,7 +349,7 @@ func (c *ControlPlane) handleDNSUDP(wire []byte, src, dst netip.AddrPort, identi
 			if cause := routeLease.AbortCause(); cause != nil {
 				return cause
 			}
-			return sendPktWithMark(wire, dst, src, c.soMarkFromDae)
+			return c.sendDNSReply(wire, dst, src, identity.dns)
 		})
 		if err != nil && ctx.Err() == nil {
 			log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("DNS relay failed")

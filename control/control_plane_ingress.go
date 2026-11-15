@@ -23,27 +23,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RetrieveOriginalDest reads IP(V6)_ORIGDSTADDR in place: every ingress
-// datagram passes here, and the control messages need no copy. Like
-// syscall.ParseSocketControlMessage, a header beyond the received bytes
-// rejects the whole buffer.
-func RetrieveOriginalDest(oob []byte) (destination netip.AddrPort) {
-	for len(oob) >= unix.CmsgLen(0) {
-		header := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
-		if header.Len < unix.SizeofCmsghdr || uint64(header.Len) > uint64(len(oob)) {
-			return netip.AddrPort{}
-		}
-		data := oob[unix.CmsgLen(0):header.Len]
-		if !destination.IsValid() {
-			if header.Level == unix.SOL_IP && header.Type == unix.IP_RECVORIGDSTADDR && len(data) >= unix.SizeofSockaddrInet4 {
-				destination = netip.AddrPortFrom(netip.AddrFrom4([4]byte(data[4:8])), binary.BigEndian.Uint16(data[2:4]))
-			} else if header.Level == unix.SOL_IPV6 && header.Type == unix.IPV6_RECVORIGDSTADDR && len(data) >= unix.SizeofSockaddrInet6 {
-				destination = netip.AddrPortFrom(netip.AddrFrom16([16]byte(data[8:24])), binary.BigEndian.Uint16(data[2:4]))
-			}
-		}
-		oob = oob[min(unix.CmsgSpace(len(data)), len(oob)):]
-	}
-	return destination
+func RetrieveOriginalDest(oob []byte) netip.AddrPort {
+	metadata, _ := parseUDPMetadata(oob)
+	return metadata.destination
 }
 
 // socketDrops reads SO_RXQ_OVFL: the datagrams the socket dropped before it
@@ -188,7 +170,7 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	go func() {
 		defer r.ingress.Done()
 		buf := pool.GetBuffer(udpReceiveBufferSize)
-		oob := pool.GetBuffer(120)
+		oob := pool.GetBuffer(udpOOBSize)
 		defer pool.PutBuffer(buf)
 		defer pool.PutBuffer(oob)
 		var dropped uint32 // by the socket, as last reported
@@ -206,27 +188,32 @@ func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 			if countIngressDrops(oob[:oobn], flags, &dropped) {
 				continue
 			}
-			dst := RetrieveOriginalDest(oob[:oobn])
-			if !src.IsValid() || !dst.IsValid() {
+			metadata, valid := parseUDPMetadata(oob[:oobn])
+			if !src.IsValid() || !valid {
 				continue
 			}
 
 			src = common.ConvergeAddrPort(src)
-			dst = common.ConvergeAddrPort(dst)
-			// Snapshot the first packet before another packet replaces the handoff.
-			// Existing sources already own their route.
+			dst := metadata.destination
+			// DNS consumes per-packet snapshots; existing non-DNS associations retain their own routes.
 			var routingResult *routingResult
 			endpoint, exists := r.udpEndpoints.pool.Load(src)
 			var owner *ControlPlane
 			if exists {
 				owner = endpoint.(*UdpEndpoint).setupOwner.Load()
 			}
-			if !exists || dst.Port() == 53 {
-				routingResult, err = retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_UDP)
-				if err != nil {
+			if dst.Port() == 53 {
+				if !metadata.validDNS() {
 					dropRouteMissing.Add(1)
 					continue
 				}
+				routingResult, err = retrieveDNSRoutingResult(r.shared["dns_handoff_map"], src, dst, metadata.cookie)
+			} else if !exists {
+				routingResult, err = retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_UDP)
+			}
+			if err != nil {
+				dropRouteMissing.Add(1)
+				continue
 			}
 			r.mu.Lock()
 			c := r.current
@@ -275,6 +262,9 @@ func tproxyListenConfig() net.ListenConfig {
 		}
 		level, option, value := unix.IPPROTO_TCP, unix.TCP_LINGER2, -1
 		if !strings.HasPrefix(network, "tcp") {
+			if err := receiveDNSMetadataControl(c); err != nil {
+				return err
+			}
 			level, option, value = unix.SOL_SOCKET, unix.SO_RXQ_OVFL, 1
 		}
 		var err error
