@@ -19,7 +19,7 @@ function run(cwd, command, args) {
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'dae-doc-tools-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  for (const path of ['package.json', '.markdownlint.jsonc', 'hack/docs']) {
+  for (const path of ['package.json', 'pnpm-lock.yaml', '.markdownlint.jsonc', 'hack/docs']) {
     cpSync(join(root, path), join(cwd, path), { recursive: true });
   }
   symlinkSync(join(root, 'node_modules'), join(cwd, 'node_modules'), 'dir');

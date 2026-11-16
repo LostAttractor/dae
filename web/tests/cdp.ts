@@ -11,6 +11,10 @@ export function cdp(socket: WebSocket) {
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
   const exceptions: Protocol.Runtime.ExceptionDetails[] = [];
   const browserLogs: string[] = [];
+  socket.addEventListener("close", () => {
+    for (const command of pending.values()) command.reject(new Error("CDP connection closed"));
+    pending.clear();
+  });
   socket.onmessage = ({ data }) => {
     const message: EventMessage | Reply = JSON.parse(String(data));
     if ("method" in message) {
@@ -28,6 +32,7 @@ export function cdp(socket: WebSocket) {
 
   function call<Method extends keyof Commands>(method: Method, ...[params]: Commands[Method]["paramsType"]): Promise<Commands[Method]["returnType"]> {
     return new Promise((resolve, reject) => {
+      if (socket.readyState !== WebSocket.OPEN) return reject(new Error("CDP connection is not open"));
       const id = ++sequence;
       pending.set(id, { resolve: value => resolve(value as Commands[Method]["returnType"]), reject });
       socket.send(JSON.stringify({ id, method, params }));
