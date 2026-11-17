@@ -110,6 +110,7 @@ enum __attribute__((packed)) MatchType {
 	MatchType_Dscp,
 	MatchType_Fallback,
 	MatchType_HTTPClient,
+	MatchType_APIIngress,
 };
 
 enum L4ProtoType {

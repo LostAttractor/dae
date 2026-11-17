@@ -30,6 +30,9 @@ type interfaceListener struct {
 	done     chan struct{}
 	once     sync.Once
 	mu       sync.Mutex
+	changes  chan struct{}
+	retry    *time.Timer
+	backoff  time.Duration
 	sockets  map[int]*interfaceSocket
 }
 
@@ -115,7 +118,7 @@ func PrepareInterfaces(current *Server, address string, patterns []string, manag
 }
 
 func newInterfaceListener(addr *net.TCPAddr) *interfaceListener {
-	return &interfaceListener{address: addr, incoming: make(chan net.Conn), done: make(chan struct{}), sockets: make(map[int]*interfaceSocket)}
+	return &interfaceListener{changes: make(chan struct{}, 1), address: addr, incoming: make(chan net.Conn), done: make(chan struct{}), sockets: make(map[int]*interfaceSocket)}
 }
 
 // InterfaceFiles duplicates the currently bound sockets under the topology lock.
@@ -238,11 +241,14 @@ func (l *interfaceListener) reconcile() error {
 	}
 	for index, socket := range l.sockets {
 		if link := wanted[index]; link == nil || link.Attrs().MasterIndex != 0 || socket.serving && !serving[index] {
+			// A pending socket may already be in the candidate datapath snapshot.
+			l.notifyChanges()
 			socket.close()
 			delete(l.sockets, index)
 		}
 	}
 	var result error
+	var retry bool
 	for index, link := range wanted {
 		socket := l.sockets[index]
 		if socket == nil {
@@ -250,16 +256,70 @@ func (l *interfaceListener) reconcile() error {
 			socket, err = l.listen(link)
 			if err != nil {
 				result = errors.Join(result, err)
+				retry = retry || serving[index] && (errors.Is(err, unix.EADDRINUSE) || errors.Is(err, unix.EADDRNOTAVAIL) || errors.Is(err, unix.ENODEV) || errors.Is(err, unix.ENOBUFS) || errors.Is(err, unix.ENOMEM))
 				continue
 			}
 			l.sockets[index] = socket
 		}
 		if serving[index] && !socket.serving {
 			socket.serving = true
+			l.notifyChanges()
 			go l.accept(index, socket)
 		}
 	}
+	if retry && l.retry == nil {
+		l.backoff = min(max(100*time.Millisecond, l.backoff*2), 5*time.Second)
+		l.retry = time.AfterFunc(l.backoff, func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			l.retry = nil
+			if l.active != nil {
+				_ = l.reconcile()
+			}
+		})
+	} else if !retry {
+		l.backoff = 0
+	}
 	return result
+}
+
+func (l *interfaceListener) notifyChanges() {
+	select {
+	case l.changes <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) InterfaceChanges() <-chan struct{} {
+	if s == nil || s.interfaces == nil {
+		return nil
+	}
+	return s.interfaces.changes
+}
+
+// InterfaceIndices selects only sockets actually reserved for the candidate or serving generation.
+func (s *Server) InterfaceIndices(candidate *InterfaceUpdate) []uint32 {
+	if s == nil || s.interfaces == nil {
+		return nil
+	}
+	l := s.interfaces
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var indices []uint32
+	if candidate != nil {
+		for _, link := range candidate.scope.MatchingLinks(candidate.patterns) {
+			if index := link.Attrs().Index; l.sockets[index] != nil && link.Attrs().MasterIndex == 0 {
+				indices = append(indices, uint32(index))
+			}
+		}
+	} else {
+		for index, socket := range l.sockets {
+			if socket.serving {
+				indices = append(indices, uint32(index))
+			}
+		}
+	}
+	return indices
 }
 
 func (u *InterfaceUpdate) Commit() {
@@ -382,6 +442,9 @@ func (l *interfaceListener) Close() error {
 	l.once.Do(func() {
 		close(l.done)
 		l.mu.Lock()
+		if l.retry != nil {
+			l.retry.Stop()
+		}
 		active, pending := l.active, l.pending
 		l.active, l.pending = nil, nil
 		for _, socket := range l.sockets {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -115,6 +116,13 @@ func TestLANListenerBindsInterfaceAndRetiresItsConnections(t *testing.T) {
 	}
 	if err != nil || index != link.Attrs().Index {
 		t.Fatalf("socket interface: %d %v", index, err)
+	}
+	var protocol int
+	if err := raw.Control(func(fd uintptr) { protocol, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PROTOCOL) }); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || protocol != unix.IPPROTO_TCP {
+		t.Fatalf("socket protocol: %d %v; want TCP", protocol, err)
 	}
 	peer, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socket.Addr().(*net.TCPAddr).Port), time.Second)
 	if err != nil {
@@ -454,5 +462,90 @@ func TestLANListenerCloseJoinsCallbacksWithoutHoldingLock(t *testing.T) {
 	}
 	if err := <-registered; err != nil && !errors.Is(err, net.ErrClosed) {
 		t.Fatal(err)
+	}
+}
+
+func TestLANListenerRetriesTemporaryBindWithoutAnotherLinkEvent(t *testing.T) {
+	link := testAPIDummy(t, "dae-bind-before")
+	manager, err := network.NewInterfaceManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	occupied, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	server, err := ListenInterfaces(occupied.Addr().String(), []string{"dae-bind-after"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := netlink.LinkSetName(link, "dae-bind-after"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.interfaces.mu.Lock()
+		retry := server.interfaces.retry != nil
+		server.interfaces.mu.Unlock()
+		if retry {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hotplug did not retry the occupied port")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := server.InterfaceIndices(nil); len(got) != 0 {
+		t.Fatalf("unbound interface published: %v", got)
+	}
+	occupied.Close()
+	select {
+	case <-server.InterfaceChanges():
+	case <-time.After(3 * time.Second):
+		t.Fatal("releasing port did not restore listener")
+	}
+	if got := server.InterfaceIndices(nil); !slices.Equal(got, []uint32{uint32(link.Attrs().Index)}) {
+		t.Fatalf("restored sockets: %v", got)
+	}
+}
+
+func TestLANListenerReportsLostReservation(t *testing.T) {
+	link := testAPIDummy(t, "dae-reserved")
+	manager, err := network.NewInterfaceManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	server, update, err := PrepareInterfaces(nil, ":0", []string{link.Attrs().Name}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	index := link.Attrs().Index
+	if got := server.InterfaceIndices(update); !slices.Equal(got, []uint32{uint32(index)}) {
+		t.Fatalf("reserved sockets: %v", got)
+	}
+	server.interfaces.mu.Lock()
+	done := server.interfaces.sockets[index].done
+	server.interfaces.mu.Unlock()
+	if err := netlink.LinkSetName(link, "dae-retired"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("listener did not retire the reservation")
+	}
+	update.Commit()
+	select {
+	case <-server.InterfaceChanges():
+	default:
+		t.Fatal("lost reservation did not invalidate the published interface snapshot")
+	}
+	if got := server.InterfaceIndices(nil); len(got) != 0 {
+		t.Fatalf("serving sockets after rename: %v", got)
 	}
 }

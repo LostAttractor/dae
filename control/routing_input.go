@@ -79,6 +79,7 @@ func retrieveRoutingResult(m *ebpf.Map, src, dst netip.AddrPort, l4proto uint8) 
 // predicates. profileID is local to the selected configuration generation; zero
 // selects this matcher's default for callers without a kernel routing context.
 type routingInput struct {
+	wanEgress          bool
 	src, dst           netip.AddrPort
 	l4proto            consts.L4ProtoType
 	domain             string
@@ -109,8 +110,8 @@ func (r *routingResult) routingInput(src, dst netip.AddrPort, domain string, pro
 	return routingInput{
 		src: src, dst: dst, domain: domain, l4proto: protocol,
 		processName: r.Pname, ifindex: r.Ifindex, profileID: r.ProfileId,
-		physinif: r.Physinif,
-		dscp:     r.Dscp, mac: r.Mac,
+		physinif: r.Physinif, wanEgress: r.sourceOrigin() != plugin.SourceLAN,
+		dscp: r.Dscp, mac: r.Mac,
 	}
 }
 

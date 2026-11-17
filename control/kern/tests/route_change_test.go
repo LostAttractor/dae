@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"net"
 	"net/netip"
 	"slices"
 	"testing"
@@ -164,6 +165,37 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		run(ack, next)
 		run(syn, next) // both exemption lookups must survive an in-progress update
 		run(ack, next)
+		// A scoped listener must also own this ingress for the device exemption.
+		ingress, err := ebpf.NewMap(spec.Maps["lpm_array_map"].InnerMap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ingress.Close()
+		if err := obj.LpmArrayMap.Update(uint32(1), ingress, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		if err := obj.ApiIngressSlot.Set(uint32(1)); err != nil {
+			t.Fatal(err)
+		}
+		run(ack, drop)
+		lo, err := net.InterfaceByName("lo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		iface := exempt
+		iface.Address = [16]byte{}
+		binary.BigEndian.PutUint32(iface.Address[12:], uint32(lo.Index))
+		if err := ingress.Update(iface, uint32(1), ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		run(ack, next)
+		if err := ingress.Delete(iface); err != nil {
+			t.Fatal(err)
+		}
+		run(ack, drop)
+		if err := obj.ApiIngressSlot.Set(^uint32(0)); err != nil {
+			t.Fatal(err)
+		}
 		// Exemptions apply only to this TCP destination, including during updates.
 		transportOffset := 14 + 20
 		if ipv6 {

@@ -5,6 +5,7 @@ package control
 import (
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -30,7 +31,7 @@ func TestAPIRoutingAddressChanges(t *testing.T) {
 		return rules
 	}
 	old := prepare(8081, "192.0.2.1/24", "2001:db8::1/64")
-	plane := &ControlPlane{apiListen: "8081", apiBypass: append(old.apiBypass, old.apiBypass...)}
+	plane := &ControlPlane{apiBypass: append(old.apiBypass, old.apiBypass...)}
 	for _, test := range []struct {
 		name      string
 		port      uint16
@@ -60,26 +61,18 @@ func TestAPIRoutingAddressChanges(t *testing.T) {
 }
 
 func TestAPIRoutingExplicitEndpoint(t *testing.T) {
-	for _, listen := range []string{"192.0.2.1:8081", "[2001:db8::1]:8081", "[::ffff:192.0.2.1]:8081", "[fe80::1%dae-test]:8081"} {
+	for _, listen := range []string{"127.0.0.1:8081", "[::1]:8081", "[::ffff:127.0.0.1]:8081", "192.0.2.123:8081"} {
 		t.Run(listen, func(t *testing.T) {
-			api := config.API{Listen: listen}
 			rules := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "proxy"})}
-			if err := rules.bypassLocalAPI(api.Listen); err != nil {
+			if err := rules.bypassLocalAPI(listen); err != nil {
 				t.Fatal(err)
 			}
-			ip := netip.MustParseAddrPort(listen).Addr().Unmap().WithZone("")
-			key := netip.AddrPortFrom(ip, 8081)
-			if len(rules.apiBypass) != 1 || rules.apiBypass[0] != key {
-				t.Fatalf("explicit API bypass = %+v; want only %+v", rules.apiBypass, key)
+			ip := netip.MustParseAddrPort(listen).Addr().Unmap()
+			local := ip.IsLoopback()
+			if current, err := (&ControlPlane{apiListen: listen, apiBypass: rules.apiBypass}).APIRoutingCurrent(); !current || err != nil {
+				t.Fatal(current, err)
 			}
-			plane := &ControlPlane{apiListen: api.Listen, apiBypass: rules.apiBypass}
-			if current, err := plane.APIRoutingCurrent(); !current || err != nil {
-				t.Fatalf("explicit API routing is not current: %v, %v", current, err)
-			}
-			plane.apiBypass = nil
-			if current, err := plane.APIRoutingCurrent(); current || err != nil {
-				t.Fatalf("missing explicit API exemption was considered current: %v, %v", current, err)
-			}
+
 			matcher, _ := routingMatcherForTest(t, rules)
 			for _, destination := range []netip.Addr{ip, netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1"), netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")} {
 				for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
@@ -90,7 +83,7 @@ func TestAPIRoutingExplicitEndpoint(t *testing.T) {
 							l4proto: proto,
 						})
 						want := consts.OutboundUserDefinedMin
-						if destination == ip && port == 8081 && proto == consts.L4ProtoType_TCP {
+						if local && destination == ip && port == 8081 && proto == consts.L4ProtoType_TCP {
 							want = consts.OutboundDirect
 						}
 						if err != nil || got != want {
@@ -157,5 +150,29 @@ func TestAPIRoutingWildcardSocketFamilies(t *testing.T) {
 				t.Fatalf("wildcard API routing is not current: %v, %v", current, err)
 			}
 		})
+	}
+}
+
+func TestLANAPIBypassFollowsServingInterfaces(t *testing.T) {
+	rules := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "block"}), apiScoped: true}
+	rules.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.IPv4(192, 0, 2, 1), Mask: net.CIDRMask(32, 32)}})
+	matcher, _ := routingMatcherForTest(t, rules)
+	plane := &ControlPlane{routingState: matcher.routingState}
+	for _, indices := range [][]uint32{nil, {7, 9}, {9}, nil} {
+		if err := plane.SetAPIInterfaces(indices); err != nil {
+			t.Fatal(err)
+		}
+		for _, i := range []uint32{0, 7, 9, 11} {
+			for _, wan := range []bool{false, true} {
+				got, _, _, err := matcher.match(routingInput{src: netip.MustParseAddrPort("192.0.2.2:1234"), dst: netip.MustParseAddrPort("192.0.2.1:8081"), ifindex: i, physinif: 7, wanEgress: wan, l4proto: consts.L4ProtoType_TCP})
+				want := consts.OutboundBlock
+				if !wan && slices.Contains(indices, i) {
+					want = consts.OutboundDirect
+				}
+				if err != nil || got != want {
+					t.Fatalf("sockets=%v ifindex=%d wan=%t got=%v, %v; want %v", indices, i, wan, got, err, want)
+				}
+			}
+		}
 	}
 }

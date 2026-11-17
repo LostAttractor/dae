@@ -23,6 +23,7 @@ type preparedRules struct {
 	// enter the active matcher or kernel maps.
 	validationOutbounds map[string]uint8
 	apiBypass           []netip.AddrPort
+	apiScoped           bool
 	apiPort             uint16
 	destinations        routing.DestinationRewrites
 	routing             *config.Routing

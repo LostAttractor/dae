@@ -36,6 +36,7 @@ const (
 	MatchType_Dscp        MatchType = routingabi.MatchTypeDscp
 	MatchType_Fallback    MatchType = routingabi.MatchTypeFallback
 	MatchType_HTTPClient  MatchType = routingabi.MatchTypeHTTPClient
+	MatchType_APIIngress  MatchType = routingabi.MatchTypeAPIIngress
 	MatchType_Upstream    MatchType = routingabi.MatchTypeHTTPClient + 2
 	MatchType_QType       MatchType = routingabi.MatchTypeHTTPClient + 3
 )

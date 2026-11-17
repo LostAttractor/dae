@@ -309,11 +309,13 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			return nil
 		case err := <-ingressErrors:
 			return err
+		case <-app.managementAPI.InterfaceChanges():
+			apiRoutingTimer.Reset(0)
 		case <-app.plane.APIAddressChanges():
 			apiRoutingTimer.Reset(0)
 		case <-apiRoutingTimer.C:
-			if err := app.plane.RefreshAPIRouting(ctx); err != nil {
-				log.WithError(resource.RedactError(err)).Warn("Could not refresh API routing after host address changes; retrying")
+			if err := app.refreshAPIRouting(ctx); err != nil {
+				log.WithError(resource.RedactError(err)).Warn("Could not refresh API routing after address or listener changes; retrying")
 				apiRoutingTimer.Reset(time.Second)
 			}
 		case <-refreshC:

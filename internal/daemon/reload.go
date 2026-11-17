@@ -179,7 +179,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	}
 	routingUnchanged := !suspend && !abort && sameControlConfig(a.conf, next) && a.inputs.equal(inputs)
 	if routingUnchanged {
-		if err := a.plane.RefreshAPIRouting(ctx); err != nil {
+		if err := a.refreshAPIRouting(ctx); err != nil {
 			return "", fmt.Errorf("refresh API routing: %w", err)
 		}
 	}

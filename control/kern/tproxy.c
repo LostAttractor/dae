@@ -165,7 +165,6 @@ struct {
 } redirect_track SEC(".maps");
 // 7.86 MB
 
-
 struct tuples_key {
 	union ip6 sip;
 	union ip6 dip;
@@ -394,14 +393,14 @@ volatile const __s32 proxy_netns_id = BPF_F_CURRENT_NETNS;
 
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
-/* Both the routing predicate and device exemptions use this live address set. */
+/* Shared by API routing and device exemptions. An unset ingress slot is unrestricted. */
+volatile __u32 api_ingress_slot = (__u32)-1;
 volatile __u32 api_lpm_slot = (__u32)-1;
 volatile __u32 default_routing_profile;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
 /* Published per generation; only terminal unexpected exit uses this policy. */
 volatile __u32 unexpected_exit_behavior = OUTBOUND_DIRECT;
-
 
 struct api_client {
 	__u64 observed_at;
@@ -472,9 +471,10 @@ struct {
 #include "routing_maps.h"
 
 /* One immutable LPM replacement updates API bypass and device exemptions. */
-static __always_inline bool route_exempt(const struct tuples_key *five)
+static __always_inline bool route_exempt(const struct tuples_key *five, __u32 ingress)
 {
 	__be16 port = api_port;
+
 	if (five->l4proto != IPPROTO_TCP || !port || five->dport != port)
 		return false;
 	__u32 slot = api_lpm_slot;
@@ -482,7 +482,8 @@ static __always_inline bool route_exempt(const struct tuples_key *five)
 	struct lpm_key key = { .trie_key.prefixlen = IPV6_BYTE_LENGTH * 8 };
 
 	__builtin_memcpy(key.data, five->dip.u6_addr8, IPV6_BYTE_LENGTH);
-	return table && bpf_map_lookup_elem(table, &key);
+	return table && bpf_map_lookup_elem(table, &key) &&
+		(api_ingress_slot == (__u32)-1 || api_ingress_matches(api_ingress_slot, ingress));
 }
 
 struct pid_pname {
@@ -1736,6 +1737,7 @@ static __always_inline void fill_route_params(
 		params->l4proto_type |= L4ProtoType_uTP;
 	params->ipversion_type =
 		protocol == bpf_htons(ETH_P_IP) ? IpVersionType_4 : IpVersionType_6;
+	params->wan_egress = is_wan;
 	params->has_pname = !!pid_pname;
 	if (pid_pname)
 		__builtin_memcpy(params->pname, pid_pname->pname, sizeof(params->pname));
@@ -1970,7 +1972,7 @@ static __always_inline int do_tproxy_unfragmented(
 	bool isdns = tuples->five.dport == bpf_htons(53);
 
 	struct device_route_state *device = device_route(ethh->h_source);
-	bool exempt = route_exempt(&tuples->five);
+	bool exempt = route_exempt(&tuples->five, is_wan ? 0 : ifindex);
 
 	if (exempt)
 		device = NULL;

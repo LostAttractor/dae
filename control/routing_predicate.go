@@ -46,6 +46,9 @@ func (p *routingPredicates) lpmKey(kind consts.MatchType) [16]byte {
 func (p *routingPredicates) match(m *RoutingMatcher, match *bpfMatchSet) (predicateResult, error) {
 	var hit bool
 	switch consts.MatchType(match.Type) {
+	case consts.MatchType_APIIngress:
+		slot := binary.LittleEndian.Uint32(match.Value[:])
+		hit = !p.input.wanEgress && p.input.ifindex != 0 && m.lpmMatcher[slot].HasPrefixIP(apiIngressKey(p.input.ifindex))
 	case consts.MatchType_HTTPClient:
 		if !p.httpClientChecked {
 			p.httpClientAllowed = m.httpClientAllowed == nil || m.httpClientAllowed(p.input.src.Addr(), p.input.mac)

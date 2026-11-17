@@ -24,6 +24,13 @@ type preparedPlane struct {
 	apiUpdate   *apiserver.InterfaceUpdate
 }
 
+func (a *application) refreshAPIRouting(ctx context.Context) error {
+	if err := a.plane.SetAPIInterfaces(a.managementAPI.InterfaceIndices(nil)); err != nil {
+		return err
+	}
+	return a.plane.RefreshAPIRouting(ctx)
+}
+
 func (p *preparedPlane) closeAPI() {
 	p.apiUpdate.Rollback()
 	if p.api != p.previousAPI {
@@ -57,7 +64,11 @@ func (a *application) assemblePlane(ctx context.Context, conf *config.Config, in
 	if err != nil {
 		return nil, errors.Join(err, plane.Close())
 	}
-	return &preparedPlane{plane: plane, api: api, previousAPI: a.managementAPI, apiUpdate: update}, nil
+	p := &preparedPlane{plane: plane, api: api, previousAPI: a.managementAPI, apiUpdate: update}
+	if err := plane.SetAPIInterfaces(api.InterfaceIndices(update)); err != nil {
+		return nil, errors.Join(err, p.discard())
+	}
+	return p, nil
 }
 
 // publishPlane adopts both resources only after successful routing publication.

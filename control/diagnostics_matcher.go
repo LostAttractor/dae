@@ -140,6 +140,8 @@ func diagnosticField(kind consts.MatchType, input routingInput, metadata routing
 		return "mac", net.HardwareAddr(input.mac[:]).String()
 	case consts.MatchType_ProcessName:
 		return "process_name", strings.TrimRight(string(input.processName[:]), "\x00")
+	case consts.MatchType_APIIngress:
+		return "ifindex", strconv.FormatUint(uint64(input.ifindex), 10)
 	case consts.MatchType_IfIndex:
 		return "ifindex", fmt.Sprintf("ifindex=%d physical_ifindex=%d", input.ifindex, input.physinif)
 	case consts.MatchType_Dscp:

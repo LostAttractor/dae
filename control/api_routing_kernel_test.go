@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 func TestAPIAddressRefreshKernelCapture(t *testing.T) {
@@ -28,12 +29,8 @@ func TestAPIAddressRefreshKernelCapture(t *testing.T) {
 	}
 	plane := &ControlPlane{core: &controlPlaneCore{bpf: state}, routingMatcher: matcher, routingState: matcher.routingState, kernelReady: true}
 	for generation, host := range []string{"192.0.2.1", "2001:db8::1", "192.0.2.2", "2001:db8::2"} {
-		plane.apiListen = net.JoinHostPort(host, "8081")
-		if err := plane.RefreshAPIRouting(t.Context()); err != nil {
+		if err := plane.replaceAPIAddresses([]netip.AddrPort{netip.MustParseAddrPort(net.JoinHostPort(host, "8081"))}); err != nil {
 			t.Fatal(err)
-		}
-		if current, err := plane.APIRoutingCurrent(); !current || err != nil {
-			t.Fatalf("refreshed API routing is not current: %v, %v", current, err)
 		}
 		for i, test := range []struct {
 			destination string
@@ -101,8 +98,7 @@ func TestAPIAddressRefreshKernelCapture(t *testing.T) {
 	}
 	closed.Close()
 	state.LpmArrayMap = closed
-	plane.apiListen = "192.0.2.3:8081"
-	err = plane.RefreshAPIRouting(t.Context())
+	err = plane.replaceAPIAddresses([]netip.AddrPort{netip.MustParseAddrPort("192.0.2.3:8081")})
 	state.LpmArrayMap = outer
 	if err == nil || !slices.Equal(previous, plane.apiBypass) || matcher.lpmMatcher[*matcher.apiSetSlot] != previousTrie {
 		t.Fatalf("failed kernel publication replaced accepted state: %v", err)
@@ -115,5 +111,39 @@ func TestAPIAddressRefreshKernelCapture(t *testing.T) {
 	var value uint32
 	if err := retained.Lookup(cidrToBpfLpmKey(netip.MustParsePrefix("2001:db8::2/128")), &value); err != nil || value != 1 {
 		t.Fatalf("failed publication lost the previous kernel set: %d, %v", value, err)
+	}
+}
+
+func TestLANAPIIngressKernelRouting(t *testing.T) {
+	collection, state := dnsKernelCollection(t)
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "block"}), apiScoped: true}
+	rules.bypassAPI(9080, []net.Addr{&net.IPNet{IP: net.IPv4(192, 0, 2, 1), Mask: net.CIDRMask(32, 32)}})
+	matcher, _ := routingMatcherForTest(t, rules)
+	matcher.bpf = state
+	if err := matcher.BuildKernspace(); err != nil {
+		t.Fatal(err)
+	}
+	plane := &ControlPlane{routingState: matcher.routingState, kernelReady: true}
+	for generation, indices := range [][]uint32{nil, {uint32(lo.Index)}, nil} {
+		if err := plane.SetAPIInterfaces(indices); err != nil {
+			t.Fatal(err)
+		}
+		for n, name := range []string{"lan_ingress_l2", "tproxy_wan_egress_l2"} {
+			// Use independent TCP flows on the test runner's loopback device.
+			src := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), uint16(46000+2*generation+n))
+			packet, _ := routingKernelPacket(src, netip.MustParseAddrPort("192.0.2.1:9080"), consts.L4ProtoType_TCP)
+			want := uint32(2)
+			if len(indices) != 0 && name == "lan_ingress_l2" {
+				want = ^uint32(0)
+			}
+			got, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256)})
+			if err != nil || got != want {
+				t.Fatalf("%s interfaces=%v verdict=%d want=%d: %v", name, indices, got, want, err)
+			}
+		}
 	}
 }

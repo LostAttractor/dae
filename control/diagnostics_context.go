@@ -178,7 +178,7 @@ func diagnosticHostname(request api.ExplainRequest) string {
 }
 
 func diagnosticInput(request api.ExplainRequest, matcher *RoutingMatcher) (routingInput, map[string]bool, []api.DiagnosticField, error) {
-	input := routingInput{kernel: request.Context.Origin != "daemon", l4proto: consts.L4ProtoType_TCP}
+	input := routingInput{wanEgress: request.Context.Origin != "lan", kernel: request.Context.Origin != "daemon", l4proto: consts.L4ProtoType_TCP}
 	if request.Flow.Protocol == "udp" {
 		input.l4proto = consts.L4ProtoType_UDP
 	}

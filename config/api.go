@@ -46,6 +46,9 @@ func ParseAPIEndpoint(listen string) (address string, port uint16, lan bool, err
 		if err != nil {
 			return "", 0, false, fmt.Errorf("api.listen: an explicit address must be an IP literal")
 		}
+		if ip.Zone() != "" || ip.Unmap().Is6() && ip.IsLinkLocalUnicast() {
+			return "", 0, false, fmt.Errorf("api.listen: scoped IPv6 addresses require a bare port and global.lan_interface")
+		}
 		host = ip.String()
 	}
 	n, err := strconv.ParseUint(portText, 10, 16)

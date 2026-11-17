@@ -25,6 +25,7 @@ type RoutingMatcherBuilder struct {
 	rules                []bpfMatchSet
 	simulatedLpmTries    [][]netip.Prefix
 	clientSetSlots       map[string]int
+	apiIngressSlot       *uint32
 	apiSetSlot           *uint32
 	kernelLpmLen         int
 	routing              RoutingProgram

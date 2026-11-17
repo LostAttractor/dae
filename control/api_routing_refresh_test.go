@@ -7,12 +7,14 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"sync"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/vishvananda/netlink"
 )
 
 func TestAPIAddressRefreshKeepsStaticPredicates(t *testing.T) {
@@ -24,15 +26,12 @@ func TestAPIAddressRefreshKeepsStaticPredicates(t *testing.T) {
 	original := *matcher
 	original.routingState = matcher.routingState.snapshot()
 	for _, host := range []string{"192.0.2.1", "2001:db8::1", "192.0.2.2", ""} {
-		plane.apiListen = ""
+		var addresses []netip.AddrPort
 		if host != "" {
-			plane.apiListen = netip.AddrPortFrom(netip.MustParseAddr(host), 8081).String()
+			addresses = []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr(host), 8081)}
 		}
-		if err := plane.RefreshAPIRouting(t.Context()); err != nil {
+		if err := plane.replaceAPIAddresses(addresses); err != nil {
 			t.Fatal(err)
-		}
-		if current, err := plane.APIRoutingCurrent(); !current || err != nil {
-			t.Fatalf("refreshed addresses are stale: %v, %v", current, err)
 		}
 		for _, address := range []string{"192.0.2.1", "192.0.2.2", "2001:db8::1"} {
 			for _, port := range []uint16{8081, 8082} {
@@ -58,7 +57,7 @@ func TestAPIAddressRefreshKeepsStaticPredicates(t *testing.T) {
 		}
 	}
 	previous := slices.Clone(plane.apiBypass)
-	plane.apiListen = "192.0.2.1:8081"
+	plane.apiListen = "127.0.0.1:8081"
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := plane.RefreshAPIRouting(ctx); !errors.Is(err, context.Canceled) || !slices.Equal(previous, plane.apiBypass) {
@@ -71,8 +70,8 @@ func TestAPIAddressSlotDoesNotShareStaticTrie(t *testing.T) {
 	rules.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP("192.0.2.1"), Mask: net.CIDRMask(32, 32)}})
 	matcher, _ := routingMatcherForTest(t, rules)
 	plane := &ControlPlane{core: &controlPlaneCore{}, routingMatcher: matcher, routingState: matcher.routingState,
-		apiListen: "192.0.2.2:8081", apiBypass: rules.apiBypass}
-	if err := plane.RefreshAPIRouting(t.Context()); err != nil {
+		apiBypass: rules.apiBypass}
+	if err := plane.replaceAPIAddresses([]netip.AddrPort{netip.MustParseAddrPort("192.0.2.2:8081")}); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -99,11 +98,11 @@ func TestAPIAddressRefreshConcurrentReaders(t *testing.T) {
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for i := range 200 {
-			plane.apiListen = "192.0.2.1:8081"
+			listen := "192.0.2.1:8081"
 			if i%2 == 0 {
-				plane.apiListen = "192.0.2.2:8081"
+				listen = "192.0.2.2:8081"
 			}
-			if err := plane.RefreshAPIRouting(t.Context()); err != nil {
+			if err := plane.replaceAPIAddresses([]netip.AddrPort{netip.MustParseAddrPort(listen)}); err != nil {
 				t.Error(err)
 				return
 			}
@@ -123,4 +122,44 @@ func TestAPIAddressRefreshConcurrentReaders(t *testing.T) {
 		})
 	}
 	workers.Wait()
+}
+
+func TestExplicitAPIAddressLifecycle(t *testing.T) {
+	if os.Getenv("DAE_TEST_API_NETNS") != "1" {
+		t.Skip("requires an isolated network namespace with CAP_NET_ADMIN")
+	}
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vip, err := netlink.ParseAddr("192.0.2.253/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := preparedRules{routing: testRoutingConfig(nil, &config_parser.Function{Name: "block"})}
+	rules.bypassAPI(9080, nil)
+	matcher, _ := routingMatcherForTest(t, rules)
+	plane := &ControlPlane{core: &controlPlaneCore{}, routingMatcher: matcher, routingState: matcher.routingState, apiListen: "192.0.2.253:9080"}
+	input := routingInput{src: netip.MustParseAddrPort("198.51.100.1:1234"), dst: netip.MustParseAddrPort(plane.apiListen), l4proto: consts.L4ProtoType_TCP}
+	check := func(want consts.OutboundIndex) {
+		t.Helper()
+		if err := plane.RefreshAPIRouting(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		got, _, _, err := matcher.match(input)
+		if got != want || err != nil {
+			t.Fatalf("route=%v err=%v, want %v", got, err, want)
+		}
+	}
+	check(consts.OutboundBlock)
+	for range 2 {
+		if err := netlink.AddrAdd(lo, vip); err != nil {
+			t.Fatal(err)
+		}
+		check(consts.OutboundDirect)
+		if err := netlink.AddrDel(lo, vip); err != nil {
+			t.Fatal(err)
+		}
+		check(consts.OutboundBlock)
+	}
 }

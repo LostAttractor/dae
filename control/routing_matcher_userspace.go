@@ -95,7 +95,7 @@ func (b *RoutingMatcherBuilder) buildUserspace(previous *RoutingMatcher) (matche
 	// Build Ip matcher.
 	lpmMatcher := make([]*trie.Trie, len(b.simulatedLpmTries))
 	if previous != nil {
-		previous.reuseStaticTries(lpmMatcher, b.simulatedLpmTries, b.clientSetSlots, b.apiSetSlot)
+		previous.reuseStaticTries(lpmMatcher, b.simulatedLpmTries, b.clientSetSlots, b.apiSetSlot, b.apiIngressSlot)
 	}
 	for i, prefixes := range b.simulatedLpmTries {
 		if lpmMatcher[i] != nil {
@@ -144,7 +144,7 @@ func (b *RoutingMatcherBuilder) buildUserspace(previous *RoutingMatcher) (matche
 
 	return &RoutingMatcher{
 		routingState: &routingState{bpf: b.bpf, matches: slices.Clone(b.rules), lpmMatcher: lpmMatcher,
-			simulatedLpmTries: prefixes, clientSetSlots: maps.Clone(b.clientSetSlots), apiSetSlot: b.apiSetSlot, kernelLpmLen: b.kernelLpmLen, routing: b.routing},
+			simulatedLpmTries: prefixes, clientSetSlots: maps.Clone(b.clientSetSlots), apiSetSlot: b.apiSetSlot, apiIngressSlot: b.apiIngressSlot, kernelLpmLen: b.kernelLpmLen, routing: b.routing},
 		ifmgr: b.ifmgr, interfaceRulePatches: slices.Clone(b.interfaceRulePatches),
 		defaultProfileID: b.defaultProfileID,
 		destinations:     destinations,

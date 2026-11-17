@@ -23,6 +23,7 @@ type routingState struct {
 	rulesMu           sync.RWMutex
 	simulatedLpmTries [][]netip.Prefix
 	clientSetSlots    map[string]int
+	apiIngressSlot    *uint32
 	apiSetSlot        *uint32
 	kernelLpmLen      int
 	routing           RoutingProgram
@@ -30,9 +31,9 @@ type routingState struct {
 
 // Reuse only immutable predicates at matching slots. Client membership can
 // change while a successor is being prepared, and belongs to each generation.
-func (s *routingState) reuseStaticTries(dst []*trie.Trie, prefixes [][]netip.Prefix, clients map[string]int, apiSlot *uint32) {
+func (s *routingState) reuseStaticTries(dst []*trie.Trie, prefixes [][]netip.Prefix, clients map[string]int, apiSlot, ingressSlot *uint32) {
 	dynamic := make(map[int]bool, len(clients)+len(s.clientSetSlots)+2)
-	for _, slot := range []*uint32{apiSlot, s.apiSetSlot} {
+	for _, slot := range []*uint32{apiSlot, s.apiSetSlot, ingressSlot, s.apiIngressSlot} {
 		if slot != nil {
 			dynamic[int(*slot)] = true
 		}

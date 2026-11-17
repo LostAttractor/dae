@@ -35,6 +35,7 @@ struct route_params {
 	__u8 dscp;
 	bool isdns;
 	bool has_pname;
+	bool wan_egress;
 };
 
 enum match_result {
@@ -120,6 +121,11 @@ static __always_inline int route_predicate(struct route_ctx *ctx,
 	const struct domain_routing *domain;
 
 	switch (match_set->type) {
+	case MatchType_APIIngress:
+		if (ctx->params->wan_egress)
+			return MATCH_MISS;
+		return api_ingress_matches(match_set->index, ctx->params->ifindex) ?
+			MATCH_HIT : MATCH_MISS;
 	case MatchType_HTTPClient:
 		if (ctx->http_client_admission == HTTP_CLIENT_UNCHECKED)
 			ctx->http_client_admission = http_client_allowed(ctx->params) ?

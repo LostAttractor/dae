@@ -62,6 +62,7 @@ const (
 	MatchTypeDscp                           = 10
 	MatchTypeFallback                       = 11
 	MatchTypeHTTPClient                     = 12
+	MatchTypeAPIIngress                     = 13
 	OUTBOUND_CONNECTIVITY_ALIVE             = 0
 	OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT    = 1
 	OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK     = 2

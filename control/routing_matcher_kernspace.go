@@ -87,6 +87,13 @@ func (m *RoutingMatcher) BuildKernspace() error {
 	if err := m.bpf.ApiLpmSlot.Set(slot); err != nil {
 		return fmt.Errorf("publish API address slot: %w", err)
 	}
+	slot = ^uint32(0)
+	if m.apiIngressSlot != nil {
+		slot = *m.apiIngressSlot
+	}
+	if err := m.bpf.ApiIngressSlot.Set(slot); err != nil {
+		return fmt.Errorf("publish API ingress slot: %w", err)
+	}
 	if err := m.uploadRoutingPool(); err != nil {
 		return err
 	}

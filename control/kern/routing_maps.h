@@ -32,6 +32,16 @@ struct {
 	__array(values, struct map_lpm_type);
 } lpm_array_map SEC(".maps");
 
+/* Keep the LPM key out of the inline rule walker and packet classifier frames. */
+static __noinline bool api_ingress_matches(__u32 slot, __u32 ifindex)
+{
+	struct map_lpm_type *table = bpf_map_lookup_elem(&lpm_array_map, &slot);
+	struct lpm_key key = { .trie_key.prefixlen = 128 };
+
+	key.data[3] = bpf_htonl(ifindex);
+	return ifindex && table && bpf_map_lookup_elem(table, &key);
+}
+
 /* One namespace for each predicate kind keeps IPv4, IPv6 and MAC disjoint. */
 struct http_client_key {
 	__u32 prefixlen;
