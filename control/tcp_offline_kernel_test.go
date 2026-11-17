@@ -239,8 +239,11 @@ func TestTCPFlowEvictionKeepsConnection(t *testing.T) {
 			}
 			for i := range 512 {
 				other := tuplesKey(netip.AddrPortFrom(src.Addr(), uint16(41000+i)), dst, unix.IPPROTO_TCP)
-				if err := collection.Maps["tcp_flow_map"].Update(other, bpfTcpFlowState{}, ebpf.UpdateAny); err != nil {
-					t.Fatal(err)
+				// Reference new entries too; cold inserts can spare an already referenced entry.
+				for range 2 {
+					if err := collection.Maps["tcp_flow_map"].Update(other, bpfTcpFlowState{}, ebpf.UpdateAny); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); !errors.Is(err, ebpf.ErrKeyNotExist) {
