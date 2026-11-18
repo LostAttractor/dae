@@ -32,27 +32,25 @@ func (d *Dialer) Share(property *Property, statsScope string) (*Dialer, bool) {
 // Caller holds mu or is constructing an unpublished runtime.
 func (d *pathRuntime) newMember(property *Property, statsScope string) *Dialer {
 	key := makeStatsKey(property, statsScope)
+	var accounting *dialerStats
+	for member := range d.members {
+		if member.StatsKey() == key {
+			accounting = member.stats
+			break
+		}
+	}
+	if accounting == nil {
+		accounting = &dialerStats{key: key, id: stats.NodeID(key)}
+	}
 	member := &Dialer{
 		pathRuntime:  d,
 		Property:     property,
-		stats:        dialerStats{key: key, id: stats.NodeID(key)},
+		stats:        accounting,
 		linkDigest:   linkDigest(property.Link),
 		checkEnabled: true,
 	}
 	d.members[member] = struct{}{}
 	return member
-}
-
-func (d *pathRuntime) membersSnapshot() []*Dialer {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	members := make([]*Dialer, 0, len(d.members))
-	for member := range d.members {
-		if member.active {
-			members = append(members, member)
-		}
-	}
-	return members
 }
 
 // LinkDigest identifies the configured path. Links may carry credentials, so

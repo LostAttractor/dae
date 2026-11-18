@@ -13,12 +13,12 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
-// Dialer is a group-local member of a shared physical path. Properties and
-// statistics belong to this member; connectivity and transport belong to the path.
+// Dialer is a group-local member of a shared physical path. Equivalent members
+// across generations share statistics as well as connectivity and transport.
 type Dialer struct {
 	*pathRuntime
 	*Property
-	stats      dialerStats
+	stats      *dialerStats
 	linkDigest string
 	// Member state is protected by the shared runtime's mu.
 	group        *groupBinding

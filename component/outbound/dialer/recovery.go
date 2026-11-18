@@ -260,8 +260,8 @@ func (d *pathRuntime) startConnection(event netproxy.StateEvent, action string) 
 	d.recovery.BlockedBy = ""
 	d.statusRevision++
 	d.mu.Unlock()
-	for _, member := range d.membersSnapshot() {
-		stats.DefaultStore.RecordReconnectAttempt(member.StatsKey(), string(event.RecoveryExecutor))
+	for s := range d.activeStats() {
+		stats.DefaultStore.RecordReconnectAttempt(s.key, string(event.RecoveryExecutor))
 	}
 }
 

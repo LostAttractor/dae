@@ -12,7 +12,7 @@ import (
 )
 
 func TestDialerLatencyWindow(t *testing.T) {
-	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context()}, active: true}
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context()}, active: true, stats: new(dialerStats)}
 	d.members = map[*Dialer]struct{}{d: {}}
 	if d.RuntimeStatus().HasLatency {
 		t.Fatal("unbound dialer has latency")
@@ -56,7 +56,7 @@ func TestDialerLatencyWindow(t *testing.T) {
 }
 
 func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
-	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context(), health: pathHealth{phase: healthHealthy}}}
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context(), health: pathHealth{phase: healthHealthy}}, stats: new(dialerStats)}
 	d.RegisterDialerGroup(nil, DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
 	network := common.NetworkIndex(0).NetworkType()
 	d.health.networks[network.Index()] = networkSupported

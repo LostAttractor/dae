@@ -91,3 +91,57 @@ func TestUncheckedCandidateStatsWaitForPublication(t *testing.T) {
 		t.Fatalf("unchecked candidate publication = %+v", got)
 	}
 }
+
+func TestSharedRuntimeAccountsEachStatsKeyOnceDuringReload(t *testing.T) {
+	old, _ := newLifetimeDialer(t)
+	old.ActivateCheck(nil)
+	share := func(scope string) *Dialer {
+		d, ok := old.Share(old.Property, scope)
+		if !ok {
+			t.Fatal("could not share active path")
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		d.DeferStats()
+		d.ActivateCheck(nil)
+		return d
+	}
+	identities := map[string]stats.NodeIdentity{old.StatsKey(): {Name: old.Name}}
+	stats.DefaultStore.Reconcile(identities, nil)
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+	old.PublishStats()
+
+	candidate := share("")
+	otherGroup := share("other group")
+	if stats.DefaultStore.GetNode(old.StatsKey()).Seen {
+		t.Fatal("attaching a candidate published a new state for the existing key")
+	}
+	assertChecks := func(phase string, d *Dialer, total, failed int64) {
+		t.Helper()
+		got := stats.DefaultStore.GetNode(d.StatsKey())
+		if got.ChecksTotal != total || got.ChecksFailed != failed ||
+			got.Recent24h.ChecksTotal != total || got.Recent24h.ChecksFailed != failed {
+			t.Fatalf("%s: availability for %q = %+v; want %d checks, %d failures", phase, d.StatsKey(), got, total, failed)
+		}
+	}
+
+	old.recordAvailability(false, true, time.Time{})
+	assertChecks("during preparation", old, 1, 1)
+	assertChecks("unpublished group", otherGroup, 0, 0)
+
+	identities[otherGroup.StatsKey()] = stats.NodeIdentity{Name: otherGroup.Name}
+	stats.DefaultStore.Reconcile(identities, nil)
+	candidate.PublishStats()
+	otherGroup.PublishStats()
+	assertChecks("at publication", candidate, 1, 1)
+	assertChecks("new group at publication", otherGroup, 1, 1)
+
+	old.recordAvailability(true, true, time.Time{})
+	assertChecks("while both planes are live", candidate, 2, 1)
+	assertChecks("independent group", otherGroup, 2, 1)
+
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	candidate.recordAvailability(true, true, time.Time{})
+	assertChecks("after the old plane retires", candidate, 3, 1)
+}

@@ -207,12 +207,19 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 		return
 	}
 	if !d.active {
+		firstStatsMember := true
+		for member := range d.members {
+			if member.active && member.stats == d.stats {
+				firstStatsMember = false
+				break
+			}
+		}
 		d.active = true
 		if !d.health.measuredAt.IsZero() && d.group != nil {
 			d.group.latency.record(d.health.lastLatency)
 		}
-		if d.initialCheckCompletedLocked() || !d.checks.checkedAt.IsZero() {
-			d.recordMemberAvailability(d.healthyLocked(d.sessionSnapshot()), false, time.Time{})
+		if firstStatsMember && (d.initialCheckCompletedLocked() || !d.checks.checkedAt.IsZero()) {
+			d.stats.recordAvailability(d.healthyLocked(d.sessionSnapshot()), false, time.Time{})
 		}
 		d.updateCheckDemandLocked()
 	}

@@ -17,91 +17,108 @@ type availabilityObservation struct {
 	failureStarted time.Time
 }
 
-// Candidate checks must not modify the running plane's statistics. Retain the
-// latest check and any subsequent state change, rather than a startup history.
+// Members with the same key on one path share accounting. For a new key, keep
+// the latest check and subsequent state change until the plane publishes it.
 type dialerStats struct {
 	key, id string // Immutable group-local identity.
 	sync.Mutex
+	published        bool
 	deferred         bool
 	check, state     *availabilityObservation
 	connectionFailed bool
 }
 
-// DeferStats must be called before candidate connectivity checks start.
+// DeferStats buffers new statistics before candidate connectivity checks start.
 func (d *Dialer) DeferStats() {
 	d.stats.Lock()
-	d.stats.deferred = true
+	if !d.stats.published {
+		d.stats.deferred = true
+	}
 	d.stats.Unlock()
 }
 
 // PublishStats records the validated candidate state once its identity has been
 // reconciled into the process store, then enables normal check accounting.
 func (d *Dialer) PublishStats() {
-	d.stats.Lock()
-	defer d.stats.Unlock()
-	if !d.stats.deferred {
+	s := d.stats
+	s.Lock()
+	defer s.Unlock()
+	s.published = true
+	if !s.deferred {
 		return
 	}
-	key := d.StatsKey()
-	if check := d.stats.check; check != nil {
-		stats.DefaultStore.RecordNodeCheck(key, check.alive, check.failureStarted)
+	if check := s.check; check != nil {
+		stats.DefaultStore.RecordNodeCheck(s.key, check.alive, check.failureStarted)
 	}
-	if state := d.stats.state; state != nil {
-		stats.DefaultStore.RecordNodeState(key, state.alive, state.failureStarted)
+	if state := s.state; state != nil {
+		stats.DefaultStore.RecordNodeState(s.key, state.alive, state.failureStarted)
 	}
-	if d.stats.connectionFailed {
-		stats.DefaultStore.RecordNodeConnFail(key)
+	if s.connectionFailed {
+		stats.DefaultStore.RecordNodeConnFail(s.key)
 	}
-	d.stats.check, d.stats.state = nil, nil
-	d.stats.connectionFailed = false
-	d.stats.deferred = false
+	s.check, s.state = nil, nil
+	s.connectionFailed = false
+	s.deferred = false
+}
+
+// Count path events once per stats key, even while old and new groups coexist.
+func (d *pathRuntime) activeStats() map[*dialerStats]struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	active := make(map[*dialerStats]struct{}, len(d.members))
+	for member := range d.members {
+		if member.active {
+			active[member.stats] = struct{}{}
+		}
+	}
+	return active
 }
 
 func (d *pathRuntime) recordAvailability(alive, checked bool, failureStarted time.Time) {
-	for _, member := range d.membersSnapshot() {
-		member.recordMemberAvailability(alive, checked, failureStarted)
+	for s := range d.activeStats() {
+		s.recordAvailability(alive, checked, failureStarted)
 	}
 }
 
-func (d *Dialer) recordMemberAvailability(alive, checked bool, failureStarted time.Time) {
-	d.stats.Lock()
-	defer d.stats.Unlock()
-	if d.stats.deferred {
+func (s *dialerStats) recordAvailability(alive, checked bool, failureStarted time.Time) {
+	s.Lock()
+	defer s.Unlock()
+	if s.deferred {
 		observation := &availabilityObservation{alive: alive, failureStarted: failureStarted}
 		if checked {
-			d.stats.check = observation
-			d.stats.state = nil
+			s.check = observation
+			s.state = nil
 		} else {
-			d.stats.state = observation
+			s.state = observation
 		}
 		return
 	}
 	if checked {
-		stats.DefaultStore.RecordNodeCheck(d.StatsKey(), alive, failureStarted)
+		stats.DefaultStore.RecordNodeCheck(s.key, alive, failureStarted)
 	} else {
-		stats.DefaultStore.RecordNodeState(d.StatsKey(), alive, failureStarted)
+		stats.DefaultStore.RecordNodeState(s.key, alive, failureStarted)
 	}
 }
 
 func (d *pathRuntime) recordConnectionFailure() {
-	for _, member := range d.membersSnapshot() {
-		member.recordMemberConnectionFailure()
+	for s := range d.activeStats() {
+		s.recordConnectionFailure()
 	}
 }
 
-func (d *Dialer) recordMemberConnectionFailure() {
-	d.stats.Lock()
-	defer d.stats.Unlock()
-	if d.stats.deferred {
-		d.stats.connectionFailed = true
+func (s *dialerStats) recordConnectionFailure() {
+	s.Lock()
+	defer s.Unlock()
+	if s.deferred {
+		s.connectionFailed = true
 		return
 	}
-	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
+	stats.DefaultStore.RecordNodeConnFail(s.key)
 }
 
 func (d *pathRuntime) recordResourceFailure() {
-	for _, member := range d.membersSnapshot() {
-		stats.DefaultStore.RecordResourceFailure(member.StatsKey())
+	for s := range d.activeStats() {
+		stats.DefaultStore.RecordResourceFailure(s.key)
 	}
 }
 
