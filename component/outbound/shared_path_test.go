@@ -48,7 +48,7 @@ func TestBuildPathPreservesCredentialBytes(t *testing.T) {
 	for _, field := range []string{"username", "password"} {
 		t.Run(field, func(t *testing.T) {
 			var descriptors []NodeDescriptor
-			for i, value := range []string{"%FF", "%FF", "%FE", "%EF%BF%BD", "%2Fw%3D%3D", "%00", ""} {
+			for i, value := range []string{"%FF", "%FF", "%FE", "%EF%BF%BD", "%2Fw%3D%3D", "%00"} {
 				user, password := "user", "password"
 				if field == "username" {
 					user = value

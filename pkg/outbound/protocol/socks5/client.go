@@ -116,9 +116,6 @@ func (s *Socks5) connect(conn net.Conn, target string, cmd byte) (socks.Addr, er
 		return nil, err
 	}
 	authenticated := len(s.user) > 0
-	if len(s.user) > 255 || len(s.password) > 255 || (authenticated && len(s.password) == 0) {
-		return nil, fmt.Errorf("socks5 username/password must contain 1 to 255 bytes")
-	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 	buf.Write([]byte{Version, 1, socks.AuthNone})

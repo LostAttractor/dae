@@ -4,11 +4,34 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol/infra/socks"
 )
+
+func TestNewSocks5CredentialValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name, userinfo string
+		wantErr        bool
+	}{
+		{name: "no credentials"},
+		{name: "complete credentials", userinfo: "user:pass@"},
+		{name: "username only", userinfo: "user@", wantErr: true},
+		{name: "password only", userinfo: ":pass@", wantErr: true},
+		{name: "longest credentials", userinfo: strings.Repeat("u", 255) + ":" + strings.Repeat("p", 255) + "@"},
+		{name: "username too long", userinfo: strings.Repeat("u", 256) + ":pass@", wantErr: true},
+		{name: "password too long", userinfo: "user:" + strings.Repeat("p", 256) + "@", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewSocks5("socks5://"+tt.userinfo+"proxy:1080", nil)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewSocks5 error = %v, want error: %v", err, tt.wantErr)
+			}
+		})
+	}
+}
 
 func TestConnectClassifiesUnsupportedReply(t *testing.T) {
 	tests := []struct {

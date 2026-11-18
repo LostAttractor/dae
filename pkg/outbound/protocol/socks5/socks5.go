@@ -13,6 +13,7 @@
 package socks5
 
 import (
+	"errors"
 	"net/url"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
@@ -40,6 +41,9 @@ func NewSocks5(s string, d netproxy.Dialer) (*Socks5, error) {
 	addr := u.Host
 	user := u.User.Username()
 	pass, _ := u.User.Password()
+	if (user == "") != (pass == "") || len(user) > 255 || len(pass) > 255 {
+		return nil, errors.New("socks5 credentials require both username and password with 1 to 255 bytes each")
+	}
 
 	h := &Socks5{
 		ParentDialer: d,
