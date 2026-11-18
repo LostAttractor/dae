@@ -167,4 +167,38 @@ struct {
 } domain_routing_map SEC(".maps");
 // Previously about 21.63 MB was preallocated; memory now grows with occupancy.
 
+struct domain_activity_slot {
+	__u64 token;
+	__u64 last_seen_ns;
+};
+
+struct domain_activity_event {
+	__be32 ip[4];
+	__u64 token;
+	__u64 last_seen_ns;
+};
+
+_Static_assert(sizeof(struct domain_activity_slot) == 16, "domain activity slot ABI");
+_Static_assert(sizeof(struct domain_activity_event) == 32, "domain activity event ABI");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __be32[4]);
+	__type(value, struct domain_activity_slot);
+	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} domain_activity_slots SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 64 * 1024);
+} domain_activity_events SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, 1);
+} domain_activity_losses SEC(".maps");
+
 #endif /* DAE_ROUTING_MAPS_H */

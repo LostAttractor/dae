@@ -78,6 +78,7 @@ func TestMeasurementMode(t *testing.T) {
 		{ebpf.Array, 0, "baseline"},
 		{ebpf.PerCPUArray, 0, "baseline"},
 		{ebpf.ArrayOfMaps, 0, "baseline"},
+		{ebpf.RingBuf, 0, "baseline"},
 		{ebpf.LPMTrie, unix.BPF_F_NO_PREALLOC, ""},
 		{ebpf.SkStorage, unix.BPF_F_NO_PREALLOC, ""},
 		{ebpf.SockMap, 0, ""},
@@ -125,12 +126,14 @@ func TestMeasureMapKernel(t *testing.T) {
 			},
 		}
 		spec.Maps["socket_storage"] = &ebpf.MapSpec{Type: ebpf.SkStorage}
+		spec.Maps["domain_activity_events"] = &ebpf.MapSpec{Type: ebpf.RingBuf, MaxEntries: uint32(os.Getpagesize())}
 		var out bytes.Buffer
 		if err := measureMaps(&out, spec); err != nil {
 			t.Fatal(err)
 		}
 		for _, want := range []string{
 			"possible_cpus=", "active_timers=false",
+			fmt.Sprintf("map=domain_activity_events type=RingBuf key=0 value=0 capacity_bytes=%d flags=0 mode=baseline", os.Getpagesize()),
 			"map=device_routes_map type=ArrayOfMaps", "sample=created memlock:",
 			"map=device_routes_map.inner type=Hash key=6 value=16 entries=17 flags=1 mode=occupancy",
 			"elements=17 memlock:", "map=socket_storage type=SkStorage status=not_measured",

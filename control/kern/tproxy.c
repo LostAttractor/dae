@@ -197,7 +197,10 @@ struct udp_binding {
 _Static_assert(sizeof(struct udp_binding) == 16, "UDP binding ABI size");
 
 #define FLOW_EXPLICIT_DIRECT 0x80
-_Static_assert(!(L4ProtoType_X & FLOW_EXPLICIT_DIRECT), "flow flags overlap L4 protocol bits");
+/* Cached UDP must distinguish a selected route from offline bypass. */
+#define FLOW_OBSERVABLE_DIRECT 0x40
+_Static_assert(!(L4ProtoType_X & (FLOW_EXPLICIT_DIRECT | FLOW_OBSERVABLE_DIRECT)),
+	       "flow flags overlap L4 protocol bits");
 
 /* Shared by TCP tuples and UDP source decisions, with no alignment holes.
  * Process-name predicates use the socket owner storage, not this result.
@@ -1639,6 +1642,7 @@ enum tcp_packet_action {
 	TCP_PACKET_ROUTE,
 	TCP_PACKET_NATIVE,
 	TCP_PACKET_PROXY,
+	TCP_PACKET_NATIVE_SELECTED,
 };
 
 /* tcp_flow_map holds only the properties of kernel-forwarded flows: a SYN
@@ -1666,7 +1670,8 @@ tcp_packet_action(struct __sk_buff *skb, struct tuples_key *key,
 			if (!valid)
 				return TCP_PACKET_PROXY;
 			skb->mark = flow.mark;
-			return TCP_PACKET_NATIVE;
+			return flow.explicit_direct || flow.fallback ?
+			       TCP_PACKET_NATIVE_SELECTED : TCP_PACKET_NATIVE;
 		}
 		int ret = bpf_map_delete_elem(&tcp_flow_map, key);
 
@@ -1695,7 +1700,8 @@ tcp_packet_action(struct __sk_buff *skb, struct tuples_key *key,
 		skb->mark = flow.mark;
 		if (tcp->rst)
 			bpf_map_delete_elem(&tcp_flow_map, key);
-		return TCP_PACKET_NATIVE;
+		return flow.explicit_direct || flow.fallback ?
+		       TCP_PACKET_NATIVE_SELECTED : TCP_PACKET_NATIVE;
 	}
 	if (tcp_handoff_live(key, 0, 0, false) || tcp_proxy_socket_live(skb, key))
 		return TCP_PACKET_PROXY;
@@ -1824,7 +1830,7 @@ static __always_inline int do_tproxy_first_fragment(
 		/* Fragments can neither carry a mark nor split across proxy paths. */
 		if (action < 0 || action == TCP_PACKET_PROXY || skb->mark)
 			return TCX_DROP;
-		if (action == TCP_PACKET_NATIVE)
+		if (action == TCP_PACKET_NATIVE || action == TCP_PACKET_NATIVE_SELECTED)
 			goto direct;
 	}
 	struct udp_routing_cache_key udp_key = {};
@@ -1879,7 +1885,7 @@ static __always_inline int do_tproxy_first_fragment(
 
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
-		result->flow_flags = decoded.flow_flags;
+		result->flow_flags = decoded.flow_flags | FLOW_OBSERVABLE_DIRECT;
 		fill_route_metadata(result, params, generation, route_epoch, is_wan);
 		if (l4proto == IPPROTO_UDP) {
 			if (save_udp_route(&udp_key, result, fallback) ||
@@ -1921,6 +1927,35 @@ static __always_inline void observe_api_client(
 		__builtin_memcpy(client.mac, ethh->h_source, sizeof(client.mac));
 	/* Userspace verifies this packet's MAC against its scoped L3 neighbor. */
 	bpf_map_update_elem(&api_client_map, key, &client, BPF_ANY);
+}
+
+static __noinline void observe_direct_domain(const void *ip)
+{
+	struct domain_activity_slot *slot = bpf_map_lookup_elem(&domain_activity_slots, ip);
+
+	if (!slot)
+		return;
+	__u64 old = *(volatile __u64 *)&slot->last_seen_ns;
+	__u64 now = bpf_ktime_get_ns();
+
+	if (now <= old || (old && now - old < 5 * NSEC_PER_SEC) || daemon_offline() ||
+	    __sync_val_compare_and_swap(&slot->last_seen_ns, old, now) != old)
+		return;
+	struct domain_activity_event *event =
+		bpf_ringbuf_reserve(&domain_activity_events, sizeof(*event), 0);
+
+	if (!event) {
+		/* The updated slot remains available to a userspace rescan. */
+		__u64 *losses = bpf_map_lookup_elem(&domain_activity_losses, &zero_key);
+
+		if (losses)
+			__sync_fetch_and_add(losses, 1);
+		return;
+	}
+	__builtin_memcpy(event->ip, ip, sizeof(event->ip));
+	event->token = slot->token;
+	event->last_seen_ns = now;
+	bpf_ringbuf_submit(event, 0);
 }
 
 // Routing and redirect the packet back.
@@ -1985,6 +2020,14 @@ static __always_inline int do_tproxy_unfragmented(
 
 		if (action < 0)
 			return TCX_DROP;
+		if (action == TCP_PACKET_NATIVE_SELECTED) {
+			const struct tcphdr *tcp = &l4h->tcph;
+
+			if (!exempt && !tcp->rst && !(tcp->syn && tcp->ack) &&
+			    (tcp->syn || offset < packet_end))
+				observe_direct_domain(&tuples->five.dip);
+			return TCX_NEXT;
+		}
 		if (action == TCP_PACKET_NATIVE)
 			return TCX_NEXT;
 		if (action == TCP_PACKET_PROXY)
@@ -2071,6 +2114,8 @@ static __always_inline int do_tproxy_unfragmented(
 	if (!stopping() && !routing_result->capture_flags &&
 	    degrade_unavailable(routing_result, protocol, l4proto, &fallback))
 		return TCX_DROP;
+	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags)
+		routing_result->flow_flags |= FLOW_OBSERVABLE_DIRECT;
 	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must)) {
 		bool dns_must = isdns && routing_result->must;
 
@@ -2137,6 +2182,8 @@ control_plane:
 
 direct:
 	skb->mark = routing_result->mark;
+	if (!exempt && (routing_result->flow_flags & FLOW_OBSERVABLE_DIRECT))
+		observe_direct_domain(&tuples->five.dip);
 	return TCX_NEXT;
 }
 

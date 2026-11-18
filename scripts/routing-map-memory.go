@@ -40,7 +40,7 @@ func measurementMode(ms *ebpf.MapSpec) string {
 			return "occupancy"
 		}
 		return "baseline"
-	case ebpf.LRUHash, ebpf.Array, ebpf.PerCPUArray, ebpf.ArrayOfMaps:
+	case ebpf.LRUHash, ebpf.Array, ebpf.PerCPUArray, ebpf.ArrayOfMaps, ebpf.RingBuf:
 		return "baseline"
 	default:
 		return ""
@@ -52,6 +52,7 @@ var requiredMaps = []string{
 	"udp_bindings_map", "udp_routing_cache_map", "tcp_flow_map",
 	"udp_conn_state_map", "udp_inbound_pending_map",
 	"device_routes_map", "domain_routing_map",
+	"domain_activity_slots", "domain_activity_events", "domain_activity_losses",
 	"redirect_track", "routing_tuples_map",
 	"ingress_scratch_map",
 }
@@ -97,8 +98,12 @@ func measure(out io.Writer, name string, ms *ebpf.MapSpec) error {
 		return err
 	}
 	defer m.Close()
-	if _, err := fmt.Fprintf(out, "map=%s type=%s key=%d value=%d entries=%d flags=%d mode=%s\n",
-		name, ms.Type, ms.KeySize, ms.ValueSize, ms.MaxEntries, ms.Flags, mode); err != nil {
+	unit := "entries"
+	if ms.Type == ebpf.RingBuf {
+		unit = "capacity_bytes"
+	}
+	if _, err := fmt.Fprintf(out, "map=%s type=%s key=%d value=%d %s=%d flags=%d mode=%s\n",
+		name, ms.Type, ms.KeySize, ms.ValueSize, unit, ms.MaxEntries, ms.Flags, mode); err != nil {
 		return err
 	}
 	if mode == "baseline" {
