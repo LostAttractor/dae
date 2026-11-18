@@ -19,7 +19,7 @@ in pkgs.mkShell ({
   nativeBuildInputs = with pkgs; [
     git
     gnumake
-    nodejs_22
+    nodejs_26
     # The pnpm shim selects package.json's packageManager version.
     corepack
     openssl

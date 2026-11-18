@@ -5,7 +5,7 @@
   fetchPnpmDeps,
   pnpmConfigHook,
   pnpm_12,
-  nodejs_22,
+  nodejs_26,
   llvmPackages_latest,
   installShellFiles,
   writeText,
@@ -47,7 +47,7 @@ buildGo127Module (finalAttrs: {
       inherit (finalAttrs) pname src;
       pnpm = pnpm_12;
       fetcherVersion = 5;
-      hash = "sha256-M0zIwY5O4WmJPK/U8zuiGtewrcSBwYtlFi56ibCEqMI=";
+      hash = "sha256-OOMWCB+HWxIBEUFp9NEX7oZK6OwIVQ9g24+zXMxncis=";
     }).overrideAttrs
       (old: {
         name = depsName "pnpm-deps" [
@@ -60,7 +60,7 @@ buildGo127Module (finalAttrs: {
   nativeBuildInputs = [
     pnpmConfigHook
     pnpm_12
-    nodejs_22
+    nodejs_26
     installShellFiles
   ];
 
@@ -115,7 +115,7 @@ buildGo127Module (finalAttrs: {
   '';
 
   # The NixOS module adds these to the service PATH; Surge's nodejs backend runs `node`.
-  passthru.runtimeInputs = lib.optional (surgeRuntime == "nodejs") nodejs_22 ++ runtimeInputs;
+  passthru.runtimeInputs = lib.optional (surgeRuntime == "nodejs") nodejs_26 ++ runtimeInputs;
 
   meta = {
     description = "Linux high-performance transparent proxy solution based on eBPF";

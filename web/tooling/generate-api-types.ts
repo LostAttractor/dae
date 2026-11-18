@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import openapiTS, { astToString } from "openapi-typescript";
+import openapiTS, { astToString } from "openapi-typesafe";
 
 const destination = new URL("../src/api.generated.ts", import.meta.url);
 const schema = new URL("../../docs/api/openapi.json", import.meta.url);

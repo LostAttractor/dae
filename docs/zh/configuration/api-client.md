@@ -121,7 +121,7 @@ make web
 make -C web
 ```
 
-`web/` 的前端源码、构建配置和测试均使用 TypeScript。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者需要 Make、Node.js 22.13+ 和 pnpm，不需要 Go；Make 会按需安装锁定版本的前端依赖，并在构建前执行严格类型检查。`dae-client` 只包含终端命令，不携带 Web 资源。
+`web/` 的前端源码、构建配置和测试均使用 TypeScript。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者需要 Make、Node.js 26.13+ 和 pnpm，不需要 Go；Make 会按需安装锁定版本的前端依赖，并在构建前执行严格类型检查。`dae-client` 只包含终端命令，不携带 Web 资源。
 
 产物包含 `index.html`、`assets/` 下的 JavaScript 和 CSS、`dae-web.json` API 目标元数据，以及依赖许可声明。React 界面使用 Cloudflare 的 Kumo 组件，浅色/深色配色跟随系统设置，流量图表使用 Recharts 并自适应宽度。Overview 展示快捷节点选择、访问设备设置和状态；Setting 分区提供设备管理、全局节点选择与诊断。所有前端依赖均打包到本地资源中。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
 

@@ -3,7 +3,7 @@
 ## Setup
 
 - Initialize submodules in every clone and worktree: `git submodule update --init --recursive`.
-- Enter the development environment with `direnv allow` or `nix-shell`. Without Nix, install Go 1.27.2+, Clang/LLVM with the BPF backend, and Node.js 22.13+, then run `corepack enable pnpm`.
+- Enter the development environment with `direnv allow` or `nix-shell`. Without Nix, install Go 1.27.2+, Clang/LLVM with the BPF backend, Node.js 26.13+, and Corepack, then run `corepack enable pnpm`.
 - Run `pnpm install` (`make` also runs it) to install dependencies and the husky Git hooks. Worktrees created with `git worktree add` from a set-up clone receive the hooks immediately.
 
 ## Development Workflow

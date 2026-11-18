@@ -1,7 +1,7 @@
 # dae Web
 
 The browser application uses dae's HTTP API. This directory builds independently
-of the daemon and Go toolchain. It requires Node.js 22.13+, pnpm and Make.
+of the daemon and Go toolchain. It requires Node.js 26.13+, pnpm and Make.
 Application components use TypeScript/TSX. The Vite configuration, build tools
 and tests are TypeScript as well; Node scripts run through the pinned `tsx` loader.
 
@@ -513,7 +513,7 @@ the daemon version.
 
 ## Browser checks
 
-With Node.js 22.13+, Chromium, OpenSSL and NSS `certutil` installed:
+With Node.js 26.13+, Chromium, OpenSSL and NSS `certutil` installed:
 
 ```sh
 make test

@@ -90,7 +90,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '26'
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Test Web independently of Go and native runtimes
@@ -158,12 +158,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '26'
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Build standalone Web assets
-        run: make web
+      - name: Build embedded Web assets
+        run: make web-assets
 
       - name: Test build invalidation and ablation contracts
         if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'
@@ -188,6 +188,12 @@ jobs:
       - name: Install host LLVM
         uses: ./.github/actions/setup-llvm
 
+      - name: Test the minimum supported Surge Node.js runtime
+        if: matrix.surge-runtime == 'nodejs' && matrix.plugins == 'example'
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22.13.0'
+
       - name: Run tests
         run: |
           sudo systemd-run --wait --pipe --collect --uid="$(id -u)" \
@@ -196,7 +202,7 @@ jobs:
             env "PATH=$PATH" "HOME=$HOME" "CC=$CLANG" \
             "CLANG=$CLANG" "STRIP=$STRIP" "LLVM_OBJDUMP=$LLVM_OBJDUMP" \
             "SURGE_RUNTIME=$SURGE_RUNTIME" "PLUGINS_CONFIG=$PLUGINS_CONFIG" \
-            GOWORK=off make test TEST_ARGS=-count=1
+            GOWORK=off make -o web-assets test TEST_ARGS=-count=1
 
       - name: Test pinned QuickJS binding
         if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'

@@ -1,20 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import ts from "typescript";
+import { transpile } from "./transpile.ts";
 import type { Fixture } from "./fixtures.ts";
 
-const source = ts.transpileModule(await readFile(new URL("../src/api.ts", import.meta.url), "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText;
+const source = await transpile("api", "cjs");
 
 function boundary(page = "https://panel.example", target = "") {
   const calls: { url: string; options: RequestInit }[] = [];
   const proof = { id: "proof", ca_fingerprint: "test-ca" };
-  const exports = {};
+  const module = { exports: {} };
   runInNewContext(source, {
-    exports, URL, AbortSignal, __DAE_API_URL__: target, location: new URL(page),
+    module, URL, AbortSignal, __DAE_API_URL__: target, location: new URL(page),
     // Accessing either browser storage is a regression.
     get localStorage() { throw new Error("Unexpected localStorage access"); },
     get sessionStorage() { throw new Error("Unexpected sessionStorage access"); },
@@ -24,7 +21,7 @@ function boundary(page = "https://panel.example", target = "") {
       return new Response(JSON.stringify(proof), { headers: { "Content-Type": "application/json" } });
     },
   });
-  return { api: exports as {
+  return { api: module.exports as {
     loginAvailable: boolean;
     request(path: string, method?: string, body?: unknown, headers?: Record<string, string>): Promise<unknown>;
     downloadCertificate(format: string): Promise<void>;
@@ -96,9 +93,7 @@ test("proofs omit cookies and headers, refuse redirects, and enforce exact chall
   assert.equal(calls.length, 3);
 });
 
-const certificateSource = ts.transpileModule(await readFile(new URL("../src/certificate.ts", import.meta.url), "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText;
+const certificateSource = await transpile("certificate", "cjs");
 
 function certificateBoundary() {
   const metadata: NonNullable<Fixture["certificate"]> = { name: "Test CA", fingerprint: "test-ca", mitm_test_generation: "one" };
@@ -128,16 +123,16 @@ function certificateBoundary() {
     errorMessage: String,
     apiOrigin: () => "https://panel.example",
   };
-  const exports = {};
+  const module = { exports: {} };
   runInNewContext(certificateSource, {
-    exports, URL, location: new URL("https://panel.example"),
+    module, URL, location: new URL("https://panel.example"),
     require: (path: string) => {
       if (path === "./api.ts") return api;
       assert.equal(path, "./dom.ts");
       return { byId: node };
     },
   });
-  const certificate = exports as {
+  const certificate = module.exports as {
     certificateDevice(device: Fixture["device"]): void;
     certificateIdentity(metadata: Fixture["certificate"]): void;
     certificateAccessChanged(): void;

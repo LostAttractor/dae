@@ -4,7 +4,7 @@
 
 - Go 1.27.2 or later, Make, and Git. QuickJS builds also need a C compiler with libc development headers.
 - Clang with the BPF backend and matching LLVM tools for eBPF generation. Clang 15+ is recommended; older versions emit a warning. CI tests Clang majors 15–23; release builds use Clang 23.
-- Node.js 22.13+ and pnpm to bundle the embedded Web interface and Recharts charts.
+- Node.js 26.13+ and pnpm to bundle the embedded Web interface and Recharts charts.
 - A target C compiler and sysroot when cross-compiling with cgo.
 
 The root documentation tools and `web/` share a pnpm workspace and root lockfile.

@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { connect as connectTLS } from "node:tls";
-import ts from "typescript";
 import { cdp } from "./cdp.ts";
+import { transpile } from "./transpile.ts";
 
 const exec = promisify(execFile);
 const temporary = await mkdtemp(join(tmpdir(), "dae-ca-browser-"));
@@ -36,8 +36,7 @@ function output(child: ChildProcess, pattern: RegExp, stderr = false): Promise<s
 try {
   await mkdir(assets);
   await writeFile(join(assets, "dae-web.json"), JSON.stringify({ api_origin: "" }));
-  const source = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
-  await writeFile(join(assets, "api.js"), ts.transpileModule('const __DAE_API_URL__ = "";\n' + source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
+  await writeFile(join(assets, "api.js"), await transpile("api", "esm", ""));
   await writeFile(join(assets, "probe.js"), 'import {certificateRequest} from "./api.js"; window.checkCA = () => certificateRequest().then(proof => ({ok: true, proof}), error => ({ok: false, error: String(error)}));');
   await writeFile(join(assets, "index.html"), '<!doctype html><title>dae certificate test</title><script type="module" src="/probe.js"></script>');
   await exec("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key, "-out", root, "-subj", "/CN=dae trust regression CA", "-days", "1", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);

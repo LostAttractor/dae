@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import ts from "typescript";
+import { transpile } from "./transpile.ts";
 import { apiTarget } from "../tooling/api-target.ts";
 import { cdp } from "./cdp.ts";
 
@@ -46,13 +46,12 @@ try {
   children.push(server);
   const origins = JSON.parse(await output(server, /^(\{[^\n]+\})\n/m)) as Record<Entry, string>;
   assert.deepEqual(Object.keys(origins).sort(), ["cross-site", "direct", "proxy", "same-site"]);
-  const source = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
   for (const name of Object.keys(origins) as Entry[]) {
     const directory = join(assets, name);
     await mkdir(directory);
     const target = apiTarget(name === "same-site" || name === "cross-site" ? origins.direct : "");
     await writeFile(join(directory, "dae-web.json"), JSON.stringify({ api_origin: target }));
-    await writeFile(join(directory, "api.js"), ts.transpileModule(`const __DAE_API_URL__ = ${JSON.stringify(target)};\n${source}`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
+    await writeFile(join(directory, "api.js"), await transpile("api", "esm", target));
     await writeFile(join(directory, "probe.js"), `
       import {request, certificateRequest, apiOrigin, errorStatus, errorMessage, HTTPError} from "./api.js";
       const result = async action => {
