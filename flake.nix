@@ -30,8 +30,18 @@
       nixosModules.dae = import ./nix/module.nix self;
       nixosModules.default = self.nixosModules.dae;
 
-      checks = forAllSystems (system: {
-        nixos = nixpkgs.legacyPackages.${system}.testers.runNixOSTest (import ./nix/test.nix self);
-      });
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          inherit (pkgs.testers) runNixOSTest;
+          control = kernelPackages: runNixOSTest (import ./nix/kernel-control-test.nix self kernelPackages);
+        in
+        {
+          nixos = runNixOSTest (import ./nix/test.nix self);
+          kernel-control-lts = control pkgs.linuxPackages_6_18;
+          kernel-control-latest = control pkgs.linuxPackages_latest;
+        }
+      );
     };
 }
