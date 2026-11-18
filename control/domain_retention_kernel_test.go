@@ -3,6 +3,7 @@
 package control
 
 import (
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"testing"
@@ -57,7 +58,8 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 				if capture {
 					want = 7
 				}
-				verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
+				out := make([]byte, 256)
+				verdict, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: out, Repeat: 1})
 				if err != nil || verdict != want {
 					t.Fatalf("%s %s %d: verdict=%d want=%d err=%v", label, name, proto, verdict, want, err)
 				}
@@ -68,6 +70,9 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 				if !capture {
 					if !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("%s created userspace state for direct: %+v %v", label, result, err)
+					}
+					if got := binary.NativeEndian.Uint32(out[8:12]); got != mark {
+						t.Fatalf("%s %s %d: kernel-direct mark=%d, want %d", label, name, proto, got, mark)
 					}
 				} else if err != nil || result.Outbound != outbound || result.Mark != mark || result.Must != 0 || result.CaptureFlags != captureHTTP {
 					t.Fatalf("%s changed capture policy: %+v %v", label, result, err)
@@ -107,4 +112,25 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	if g.Verify(domain, b).Paired {
 		t.Fatal("expired verification evidence survived GC")
 	}
+
+	// A rejected zero-rule witness must remove even a previously selected
+	// positive projection. The spare kernel slot can serve a different bucket.
+	c := a.Next()
+	for domainCapacityBucket(c) == domainCapacityBucket(a) {
+		c = c.Next()
+	}
+	at := now.Add(70 * time.Second)
+	g.Upsert(domain, a, matcher.domainMatcher.MatchDomainBitmap(domain), 60, at)
+	g.Upsert(domain, c, matcher.domainMatcher.MatchDomainBitmap(domain), 50, at)
+	g.memoryLimit = g.memoryUsed
+	check("before user-cap omission", a, 443, true, uint8(consts.OutboundDirect), 37)
+	g.Upsert("outside.example.", a, matcher.domainMatcher.MatchDomainBitmap("outside.example."), 10, at)
+	if u := g.Usage(); u.UserUsed != 2 || u.OmittedPairs != 1 || u.IncompleteBuckets != 1 ||
+		!g.Verify(domain, a).Paired || g.Verify("outside.example.", a).Paired {
+		t.Fatalf("unexpected cap state: %+v", u)
+	}
+	check("user-cap omitted zero witness", a, 443, false, 0, 0)
+	check("non-colliding IP fills vacated slot", c, 443, true, uint8(consts.OutboundDirect), 37)
+	g.Sweep(at.Add(10 * time.Second))
+	check("user-cap omission expired", a, 443, true, uint8(consts.OutboundDirect), 37)
 }

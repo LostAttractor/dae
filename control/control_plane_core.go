@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -142,6 +143,14 @@ func (c *controlPlaneCore) bindBPF(bpf *BPFState, isReload bool) {
 	}
 	registry.kernel.update, registry.kernel.remove = c.writeDomainBitmaps, c.deleteDomainBitmaps
 	registry.kernel.batchUpdate = c.writeDomainBitmapBatch
+	if bpf.DomainActivitySlots != nil {
+		feed, err := newDomainDirectFeed(bpf.DomainActivitySlots, bpf.DomainActivityEvents, bpf.DomainActivityLosses)
+		if err != nil {
+			registry.warnDirect(time.Now(), err)
+		} else {
+			registry.direct = feed
+		}
+	}
 	if bpf.Runtime != nil {
 		registry.activityLag = tcpMonitorInterval
 	}

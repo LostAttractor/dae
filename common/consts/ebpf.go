@@ -95,6 +95,7 @@ const MaxMatchSetLen = routingabi.ROUTING_MAX_MATCH_SET_LEN
 
 // A policy assumption, independent of response caching and DNSSEC validity.
 const DefaultDNSRetentionWindow = 7 * 24 * time.Hour
+const DefaultDNSRegistryMemoryLimit = 64 << 20
 
 type L4ProtoType uint8
 

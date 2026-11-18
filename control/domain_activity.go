@@ -126,10 +126,8 @@ func (g *DomainRegistry) applyActivity() bool {
 	for _, batch := range g.activityBatch {
 		for key, at := range batch {
 			g.clock(at)
-			if g.touch(key, at) {
-				if _, resident := g.kernel.resident[key.ip]; !resident {
-					reconsider = true
-				}
+			if g.touch(key, at) && g.mayEnterProjection(key.ip, g.byIP[key.ip].priority) {
+				reconsider = true
 			}
 		}
 		clear(batch)
@@ -145,6 +143,15 @@ func (g *DomainRegistry) touch(key domainActivityKey, at time.Time) bool {
 				return g.extend(r, g.byIP[key.ip], pair, deadline)
 			}
 		}
+		// A missing exact name could be the omitted witness in this bucket.
+	}
+	if g.incompleteCount != 0 {
+		bucket := domainCapacityBucket(key.ip)
+		if !g.incomplete[bucket].IsZero() {
+			g.extendIncomplete(bucket, deadline)
+		}
+	}
+	if key.domain != "" {
 		return false
 	}
 	s := g.byIP[key.ip]

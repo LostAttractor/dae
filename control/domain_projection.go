@@ -39,6 +39,8 @@ func (e *domainProjectionError) Unwrap() error { return e.cause }
 
 type domainProjection struct {
 	max         int
+	omitted     int                              // candidates ranked below the desired set
+	cutoff      time.Time                        // last selection's lowest included priority when oversubscribed
 	resident    map[netip.Addr]domainBitmaps     // only successful kernel writes
 	desired     map[netip.Addr]domainBitmaps     // immutable snapshots, at most max entries
 	pending     map[netip.Addr]domainPublication // coalesced desired/installed difference, at most 2*max
@@ -62,6 +64,21 @@ func domainBitmapAllZero(bitmap []uint32) bool {
 	return true
 }
 
+func cloneDomainBitmap(bitmap []uint32) []uint32 {
+	if domainBitmapAllZero(bitmap) {
+		return nil
+	}
+	return slices.Clone(bitmap)
+}
+
+// Between membership changes deadlines only grow, so the previous cutoff
+// remains a lower bound. Equal deadlines still compete by IP.
+func (g *DomainRegistry) mayEnterProjection(ip netip.Addr, priority time.Time) bool {
+	k := &g.kernel
+	_, selected := k.desired[ip]
+	return !selected && k.max > 0 && (k.omitted == 0 || !priority.Before(k.cutoff)) && g.projectable(ip)
+}
+
 func (g *DomainRegistry) kernelRoutingBitmaps(ip netip.Addr) (bump, routing []uint32) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -75,19 +92,36 @@ func (g *DomainRegistry) kernelRoutingBitmaps(ip netip.Addr) (bump, routing []ui
 // rebuild is only needed when this IP's members change. Every retained member,
 // including zero-bit domains, participates in AND. Reuse the IP's own buffers.
 func (s *ipRecord) rebuild() {
-	clear(s.bump)
-	for i := range s.routing {
-		s.routing[i] = ^uint32(0)
-	}
 	s.priority = time.Time{}
+	var matched, hasZero bool
 	for r, pair := range s.domains {
+		if r.bitmap == nil {
+			hasZero = true
+			continue
+		}
+		if !matched {
+			matched = true
+			if s.bump == nil {
+				s.bump = make([]uint32, domainBitmapWords())
+				s.routing = make([]uint32, domainBitmapWords())
+			}
+			clear(s.bump)
+			for i := range s.routing {
+				s.routing[i] = ^uint32(0)
+			}
+		}
 		for i, word := range r.bitmap {
 			s.bump[i] |= word
 			s.routing[i] &= word
 		}
-		if !domainBitmapAllZero(r.bitmap) && pair.retainUntil.After(s.priority) {
+		if pair.retainUntil.After(s.priority) {
 			s.priority = pair.retainUntil
 		}
+	}
+	if !matched {
+		s.bump, s.routing = nil, nil
+	} else if hasZero {
+		clear(s.routing)
 	}
 }
 
@@ -95,6 +129,24 @@ func (s *ipRecord) rebuild() {
 // Unchanged membership with increased resident priority needs no publication.
 // Caller holds mu, including while writing the combined AND/OR map value.
 func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsider bool, now time.Time) {
+	if g.capacityPending {
+		g.persistActiveCapacity()
+	}
+	if g.reselect {
+		// An earlier failed bitmap update must not delay the first attempt
+		// to remove a now-incomplete resident until the retry timer.
+		for ip, p := range g.kernel.pending {
+			if !g.projectable(ip) {
+				p.due = time.Time{}
+				g.kernel.pending[ip] = p
+			}
+		}
+		reconsider, g.reselect = true, false
+	}
+	// The retry timer owns old pending writes when this batch changes nothing.
+	if !reconsider && len(changed) == 0 {
+		return
+	}
 	for ip := range changed {
 		if s := g.byIP[ip]; s != nil {
 			s.rebuild()
@@ -105,13 +157,13 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 		// Every possible new candidate fits. An incompletely filled projection
 		// has no omitted candidates to backfill, so only changed IPs matter.
 		for ip := range changed {
-			if s := g.byIP[ip]; s != nil && !domainBitmapAllZero(s.bump) {
-				k.want(ip, s, false)
+			if s := g.byIP[ip]; s != nil && !domainBitmapAllZero(s.bump) && g.projectable(ip) {
+				g.wantProjection(ip, s, now)
 			} else {
-				k.want(ip, nil, false)
+				g.wantProjection(ip, nil, now)
 			}
 		}
-		k.publish(now)
+		g.publishProjection(now)
 		return
 	}
 
@@ -119,7 +171,7 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 	// pairs again. Sort only when some candidates actually have to be omitted.
 	states := make([]netip.Addr, 0, len(g.byIP))
 	for ip, s := range g.byIP {
-		if !domainBitmapAllZero(s.bump) {
+		if !domainBitmapAllZero(s.bump) && g.projectable(ip) {
 			states = append(states, ip)
 		}
 	}
@@ -131,6 +183,10 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 			return a.Compare(b)
 		})
 	}
+	k.omitted = max(0, len(states)-k.max)
+	if k.omitted != 0 && k.max > 0 {
+		k.cutoff = g.byIP[states[k.max-1]].priority
+	}
 	desired := make(map[netip.Addr]struct{}, min(len(states), k.max))
 	for _, ip := range states[:min(len(states), k.max)] {
 		desired[ip] = struct{}{}
@@ -138,17 +194,17 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 	// Free slots before inserting replacements into the non-LRU map.
 	for ip := range k.desired {
 		if _, keep := desired[ip]; !keep {
-			k.want(ip, nil, false)
+			g.wantProjection(ip, nil, now)
 		}
 	}
 	for ip := range desired {
 		_, wasDesired := k.desired[ip]
 		_, modified := changed[ip]
 		if !wasDesired || modified {
-			k.want(ip, g.byIP[ip], false)
+			g.wantProjection(ip, g.byIP[ip], now)
 		}
 	}
-	k.publish(now)
+	g.publishProjection(now)
 	if len(states) > k.max && (k.lastWarning.IsZero() || now.Sub(k.lastWarning) >= time.Minute) {
 		k.lastWarning = now
 		log.WithFields(log.Fields{"candidates": len(states), "resident": len(desired), "capacity": k.max}).Warn("Domain kernel capacity excludes IPs; domain routing and capture coverage is incomplete")
@@ -179,10 +235,11 @@ func (k *domainProjection) want(ip netip.Addr, s *ipRecord, force bool) {
 // Caller owns the registry lock. Remove before inserting, and retain old values
 // on failure. The bounded queue holds only selected or actually installed IPs;
 // later changes supersede earlier requests without allocating another job.
-func (k *domainProjection) publish(now time.Time) {
+func (g *DomainRegistry) publishProjection(now time.Time) {
+	k := &g.kernel
 	for _, removing := range []bool{true, false} {
 		if !removing && k.force && k.batchUpdate != nil && len(k.pending) > 1 {
-			k.publishBatch(now)
+			g.publishProjectionBatch(now)
 		}
 		for ip, request := range k.pending {
 			value, wanted := k.desired[ip]
@@ -210,6 +267,7 @@ func (k *domainProjection) publish(now time.Time) {
 			}
 			if wanted {
 				k.resident[ip] = value
+				g.enableDirect(ip, now)
 			} else {
 				delete(k.resident, ip)
 			}
@@ -224,7 +282,8 @@ func (k *domainProjection) publish(now time.Time) {
 // Batch only full reconstruction, after removals free any required slots.
 // On any batch failure, scalar publication retries every unconfirmed entry:
 // kernels may have applied a prefix, and updates are deliberately idempotent.
-func (k *domainProjection) publishBatch(now time.Time) {
+func (g *DomainRegistry) publishProjectionBatch(now time.Time) {
+	k := &g.kernel
 	const batchSize = 256
 	batch := make([]domainMapEntry, 0, min(batchSize, len(k.pending)))
 	remaining := k.max - len(k.resident)
@@ -236,6 +295,7 @@ func (k *domainProjection) publishBatch(now time.Time) {
 			k.resident[entry.ip] = entry.domainBitmaps
 			delete(k.pending, entry.ip)
 		}
+		g.enableDirectBatch(batch, now)
 		batch = batch[:0]
 		return true
 	}
@@ -277,6 +337,13 @@ func (g *DomainRegistry) retryProjection(now time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.closed {
-		g.kernel.publish(now)
+		g.publishProjection(now)
+		for _, removing := range []bool{true, false} {
+			for ip, token := range g.directRetry {
+				if (token == 0) == removing {
+					g.writeDirectSlot(ip, token, now)
+				}
+			}
+		}
 	}
 }

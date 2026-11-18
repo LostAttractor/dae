@@ -114,6 +114,44 @@ func TestDNSRetentionWindow(t *testing.T) {
 	}
 }
 
+func TestDNSRegistryMemoryLimit(t *testing.T) {
+	for _, test := range []struct {
+		name, value string
+		want        int64
+	}{
+		{name: "default", want: consts.DefaultDNSRegistryMemoryLimit},
+		{name: "custom", value: "dns_registry_memory_limit: 4294967296", want: 4294967296},
+		{name: "zero", value: "dns_registry_memory_limit: 0"},
+		{name: "negative", value: "dns_registry_memory_limit: -1"},
+		{name: "fractional", value: "dns_registry_memory_limit: 1.5"},
+		{name: "overflow", value: "dns_registry_memory_limit: 9223372036854775808"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sections, err := config_parser.Parse("global { " + test.value + " } routing { fallback: direct }")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conf, err := New(sections)
+			if test.want == 0 {
+				if err == nil || !strings.Contains(err.Error(), "dns_registry_memory_limit") {
+					t.Fatalf("invalid registry limit: %v", err)
+				}
+				return
+			}
+			if err != nil || conf.Global.DNSRegistryMemoryLimit != test.want {
+				t.Fatalf("limit=%v error=%v, want %d", conf, err, test.want)
+			}
+			wire, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parseConfig(t, string(wire)).Global.DNSRegistryMemoryLimit; got != test.want {
+				t.Fatalf("limit changed in round trip: %d", got)
+			}
+		})
+	}
+}
+
 func TestNestedGroupNameDoesNotEnableProxyPathContext(t *testing.T) {
 	conf := parseConfig(t, `
 global {}

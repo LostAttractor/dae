@@ -4,10 +4,13 @@ package control
 
 import (
 	"container/heap"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
 )
 
 // Both indexes point to the same pair. Activity can extend its deadline, never
@@ -19,9 +22,10 @@ type domainPair struct {
 }
 
 type domainRecord struct {
-	name      string
-	bitmap    []uint32
-	addresses map[netip.Addr]*domainPair
+	name        string
+	bitmap      []uint32
+	addresses   map[netip.Addr]*domainPair
+	addressPeak int
 	// expiry never exceeds an address deadline. Extensions leave it behind;
 	// GC rescans the record once it passes.
 	expiry time.Time
@@ -29,19 +33,29 @@ type domainRecord struct {
 }
 
 type ipRecord struct {
-	domains  map[*domainRecord]*domainPair
-	bump     []uint32
-	routing  []uint32
-	priority time.Time
+	domains    map[*domainRecord]*domainPair
+	domainPeak int
+	matched    int // members with a nonzero rule bitmap
+	bump       []uint32
+	routing    []uint32
+	priority   time.Time
 }
 
 // DomainRegistry owns domain-IP evidence with two lookup directions. Kernel
 // eviction only changes projection membership, never userspace evidence.
 type DomainRegistry struct {
+	domainCapacity
 	mu            sync.Mutex
 	byName        map[string]*domainRecord
 	byIP          map[netip.Addr]*ipRecord
+	pairs         int
+	ipv4          int
 	kernel        domainProjection
+	direct        domainDirectSource
+	directSlots   map[netip.Addr]domainDirectSlot // confirmed installations and last consumed stamps
+	directRetry   map[netip.Addr]uint64           // failed writes: desired or still installed
+	directSerial  uint64
+	directWarning time.Time
 	window        time.Duration
 	activityLag   time.Duration // longest delay before connection activity is observed
 	evaluatedAt   time.Time
@@ -64,7 +78,8 @@ type DomainRegistry struct {
 // constructor does not start background work.
 func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpdate, remove func(netip.Addr) error) *DomainRegistry {
 	g := &DomainRegistry{
-		byName: make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
+		domainCapacity: domainCapacity{memoryLimit: consts.DefaultDNSRegistryMemoryLimit},
+		byName:         make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
 		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]domainBitmaps), desired: make(map[netip.Addr]domainBitmaps), pending: make(map[netip.Addr]domainPublication), update: update, remove: remove},
 		stopCh: make(chan struct{}), closeDone: make(chan struct{}), persistWake: make(chan struct{}, 1),
 	}
@@ -114,31 +129,48 @@ func (g *DomainRegistry) observeDNS(observations []domainObservation, at time.Ti
 		if !deadline.After(now) {
 			continue
 		}
+		r := g.byName[observation.name]
+		bitmap := observation.bitmap
+		if r != nil {
+			bitmap = r.bitmap
+		} else if domainBitmapAllZero(bitmap) {
+			bitmap = nil
+		}
 		for _, ip := range observation.ips {
 			ip = ip.Unmap()
-			r := g.byName[observation.name]
-			if r == nil {
-				r = &domainRecord{name: observation.name, bitmap: slices.Clone(observation.bitmap), addresses: make(map[netip.Addr]*domainPair)}
-				g.byName[observation.name] = r
-			}
-			if pair := r.addresses[ip]; pair != nil {
-				if g.extend(r, g.byIP[ip], pair, deadline) {
-					if _, resident := g.kernel.resident[ip]; !resident {
+			if r != nil {
+				if pair := r.addresses[ip]; pair != nil {
+					s := g.byIP[ip]
+					if g.extend(r, s, pair, deadline) && g.mayEnterProjection(ip, s.priority) {
 						reconsider = true
 					}
+					continue
 				}
-			} else {
-				pair := &domainPair{retainUntil: deadline}
-				g.addPair(r, ip, pair)
-				if g.persist != nil {
-					g.persist.add(r.name, ip, pair)
-					created = g.persist
-				}
-				if changed == nil {
-					changed = make(map[netip.Addr]struct{})
-				}
-				changed[ip] = struct{}{}
 			}
+			s := g.byIP[ip]
+			cost := domainPairIPCost(s != nil, s != nil && s.matched != 0, bitmap != nil)
+			if r == nil {
+				cost += domainNameMemory(observation.name, bitmap)
+			}
+			if cost > g.memoryLimit-g.memoryUsed {
+				g.omitPair(ip, deadline, now)
+				continue
+			}
+			if r == nil {
+				r = &domainRecord{name: observation.name, bitmap: slices.Clone(bitmap), addresses: make(map[netip.Addr]*domainPair)}
+				g.byName[observation.name] = r
+				g.memoryUsed += domainNameMemory(r.name, r.bitmap)
+			}
+			pair := &domainPair{retainUntil: deadline}
+			g.addPair(r, ip, pair)
+			if g.persist != nil {
+				g.persist.add(r.name, ip, pair)
+				created = g.persist
+			}
+			if changed == nil {
+				changed = make(map[netip.Addr]struct{})
+			}
+			changed[ip] = struct{}{}
 		}
 	}
 	g.syncProjection(changed, reconsider, now)
@@ -153,7 +185,7 @@ func (g *DomainRegistry) extend(r *domainRecord, s *ipRecord, pair *domainPair, 
 		if g.persist != nil {
 			g.persist.renew(pair)
 		}
-		if !domainBitmapAllZero(r.bitmap) && deadline.After(s.priority) {
+		if r.bitmap != nil && deadline.After(s.priority) {
 			s.priority = deadline
 			return true
 		}
@@ -176,19 +208,57 @@ func (g *DomainRegistry) addPair(r *domainRecord, ip netip.Addr, pair *domainPai
 func (g *DomainRegistry) indexPair(r *domainRecord, ip netip.Addr, pair *domainPair) {
 	s := g.byIP[ip]
 	if s == nil {
-		s = &ipRecord{domains: make(map[*domainRecord]*domainPair), bump: make([]uint32, domainBitmapWords()), routing: make([]uint32, domainBitmapWords())}
+		s = &ipRecord{domains: make(map[*domainRecord]*domainPair)}
 		g.byIP[ip] = s
+		g.memoryUsed += domainIPMemory
+		if ip.Is4() {
+			g.ipv4++
+		}
 	}
 	r.addresses[ip], s.domains[r] = pair, pair
+	r.addressPeak = max(r.addressPeak, len(r.addresses))
+	s.domainPeak = max(s.domainPeak, len(s.domains))
+	g.pairs++
+	g.memoryUsed += domainPairMemory
+	if r.bitmap != nil {
+		if s.matched == 0 {
+			g.memoryUsed += domainIPBitmapMemory()
+		}
+		s.matched++
+	}
 }
 
 func (g *DomainRegistry) removePair(r *domainRecord, ip netip.Addr) {
 	delete(r.addresses, ip)
 	s := g.byIP[ip]
 	delete(s.domains, r)
-	if len(s.domains) == 0 {
-		delete(g.byIP, ip)
+	g.pairs--
+	g.memoryUsed -= domainPairMemory
+	if r.bitmap != nil {
+		s.matched--
+		if s.matched == 0 {
+			g.memoryUsed -= domainIPBitmapMemory()
+		}
 	}
+	if len(s.domains) == 0 {
+		g.memoryUsed -= domainIPMemory
+		delete(g.byIP, ip)
+		if ip.Is4() {
+			g.ipv4--
+		}
+	}
+}
+
+// Go maps retain their backing storage after delete. Rebuild sparse indexes
+// from the live count; leave single-group maps and ordinary churn alone.
+func trimDomainIndex[K comparable, V any](index map[K]V, peak *int) map[K]V {
+	if *peak <= 8 || len(index) > *peak/4 {
+		return index
+	}
+	*peak = len(index)
+	live := make(map[K]V, len(index))
+	maps.Copy(live, index)
+	return live
 }
 
 type DomainVerification struct {
@@ -225,6 +295,7 @@ func (g *DomainRegistry) verifyLocked(name string, ip netip.Addr) (result Domain
 // whose expiry has passed are visited; each visit recomputes the exact bound.
 func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 	cutoff := now.Add(-g.activityLag)
+	g.expireIncomplete(cutoff)
 	var changed map[netip.Addr]struct{}
 	for len(g.due) != 0 && !g.due[0].expiry.After(cutoff) {
 		r := g.due[0]
@@ -245,8 +316,15 @@ func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 		if len(r.addresses) == 0 {
 			heap.Pop(&g.due)
 			delete(g.byName, r.name)
+			g.memoryUsed -= domainNameMemory(r.name, r.bitmap)
 		} else {
+			r.addresses = trimDomainIndex(r.addresses, &r.addressPeak)
 			heap.Fix(&g.due, 0)
+		}
+	}
+	for ip := range changed {
+		if s := g.byIP[ip]; s != nil {
+			s.domains = trimDomainIndex(s.domains, &s.domainPeak)
 		}
 	}
 	return changed
@@ -264,41 +342,32 @@ func (g *DomainRegistry) Sweep(now time.Time) {
 }
 
 type RegistryUsage struct {
-	UserUsed         int // retained domain-IP pairs
-	Domains          int
-	IPs              int // distinct across all domains
-	IPv4             int
-	IPv6             int
-	GC               uint64
-	KernelUsed       int
-	KernelMax        int
-	KernelCandidates int
-	KernelPending    int
+	UserUsed                int // retained domain-IP pairs
+	MemoryUsed, MemoryLimit int64
+	OmittedPairs            uint64 // new pair observations omitted at capacity, not distinct pairs
+	IncompleteBuckets       int
+	Domains                 int
+	IPs                     int // distinct across all domains
+	IPv4                    int
+	IPv6                    int
+	GC                      uint64
+	KernelUsed              int
+	KernelMax               int
+	KernelCandidates        int
+	KernelPending           int
 }
 
 // Usage takes one coherent snapshot without collecting or refreshing evidence.
 func (g *DomainRegistry) Usage() RegistryUsage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	usage := RegistryUsage{
+	return RegistryUsage{
+		UserUsed: g.pairs, IPv4: g.ipv4, IPv6: len(g.byIP) - g.ipv4,
+		MemoryUsed: g.memoryUsed, MemoryLimit: g.memoryLimit, OmittedPairs: g.omittedPairs, IncompleteBuckets: g.incompleteCount,
 		Domains: len(g.byName), IPs: len(g.byIP), GC: g.gcCount,
 		KernelUsed: len(g.kernel.resident), KernelMax: g.kernel.max,
-		KernelPending: len(g.kernel.pending),
+		KernelCandidates: len(g.kernel.desired) + g.kernel.omitted, KernelPending: len(g.kernel.pending),
 	}
-	for _, r := range g.byName {
-		usage.UserUsed += len(r.addresses)
-	}
-	for ip, s := range g.byIP {
-		if !domainBitmapAllZero(s.bump) {
-			usage.KernelCandidates++
-		}
-		if ip.Is4() {
-			usage.IPv4++
-		} else {
-			usage.IPv6++
-		}
-	}
-	return usage
 }
 
 // domainExpiry is a container/heap of records keyed by expiry. A record's slot

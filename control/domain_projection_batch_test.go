@@ -94,7 +94,7 @@ func TestDomainProjectionBatchKeepsFailedRemovalCapacity(t *testing.T) {
 		return fake.update(entries[0].ip, entries[0].bump, entries[0].routing)
 	}
 	g.kernel.force = true
-	g.kernel.publish(now)
+	g.publishProjection(now)
 	if len(g.kernel.resident) != 2 || len(fake.bump) != 2 || !fake.has(oldIP) || len(g.kernel.pending) != 2 {
 		t.Fatal("failed removal freed capacity")
 	}

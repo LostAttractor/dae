@@ -4,6 +4,7 @@ package control
 
 import (
 	"container/heap"
+	"fmt"
 	"maps"
 	"net/netip"
 	"slices"
@@ -24,6 +25,7 @@ func (g *DomainRegistry) Start() {
 	default:
 	}
 	g.workerDone = make(chan struct{})
+	g.startDirect()
 	go func() {
 		defer close(g.workerDone)
 		activity := time.NewTicker(time.Second)
@@ -35,6 +37,7 @@ func (g *DomainRegistry) Start() {
 			case <-g.stopCh:
 				return
 			case now := <-activity.C:
+				g.startDirect() // reopen after an optional reader failure
 				g.flushActivity()
 				g.retryProjection(now)
 				// The window ends after the activity it covers is applied.
@@ -54,6 +57,9 @@ func (g *DomainRegistry) stopWorker() {
 	g.stopOnce.Do(func() { close(g.stopCh) })
 	if g.workerDone != nil {
 		<-g.workerDone
+	}
+	if g.direct != nil {
+		g.direct.stop()
 	}
 }
 
@@ -92,7 +98,11 @@ func (g *DomainRegistry) Close() error {
 func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchBitmap func(string) []uint32) {
 	g.due = slices.Grow(g.due[:0], len(records))
 	for name, r := range records {
-		r.name, r.bitmap = name, slices.Clone(matchBitmap(name))
+		r.name = name
+		if matchBitmap != nil {
+			r.bitmap = cloneDomainBitmap(matchBitmap(name))
+		}
+		g.memoryUsed += domainNameMemory(name, r.bitmap)
 		first := true
 		for ip, pair := range r.addresses {
 			g.indexPair(r, ip, pair)
@@ -141,6 +151,10 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	// activity applied below. Pairs keep their ordinals, and the open window
 	// lists the copies of the pairs it listed.
 	g.persist, old.persist = l, nil
+	wasCapacityWriter := old.capacityWriting
+	old.capacityWriting = false
+	g.incomplete, g.omittedPairs = old.incomplete, old.omittedPairs
+	g.indexIncomplete()
 	g.gcCount = old.gcCount
 	g.clock(old.evaluatedAt)
 	var listed []*domainPair
@@ -182,14 +196,19 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	g.applyActivity()
 	now = g.clock(now)
 	g.gc(now)
-	if err := g.rebuildProjection(now); err != nil {
+	if g.memoryUsed > g.memoryLimit {
+		err = fmt.Errorf("dns_registry_memory_limit %d is below the %d bytes of retained DNS history under the new rules", g.memoryLimit, g.memoryUsed)
+	} else {
+		err = g.rebuildProjection(now)
+	}
+	if err != nil {
 		g.persist = nil
 		g.mu.Unlock()
 		old.mu.Lock()
 		if l != nil {
 			l.renewed = previous
 		}
-		old.persist = l
+		old.persist, old.capacityWriting = l, wasCapacityWriter
 		a.lock()
 		a.registry = owner
 		a.unlock()
@@ -201,6 +220,8 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	g.activity = a
 	a.registry = g
 	a.unlock()
+	g.capacityWriting = wasCapacityWriter
+	g.persistActiveCapacity()
 	g.mu.Unlock()
 	g.wakePersistence()
 	return nil

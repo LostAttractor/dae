@@ -85,3 +85,30 @@ func TestDomainProjectionForceAndFailedFork(t *testing.T) {
 		t.Fatal("predecessor lost retained activity")
 	}
 }
+
+func TestDomainProjectionRenewalDuringFailedRemoval(t *testing.T) {
+	for _, source := range []string{"dns", "activity"} {
+		t.Run(source, func(t *testing.T) {
+			g, fake := newTestRegistry(1, time.Minute)
+			now := time.Now()
+			a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+			g.Upsert("a.example.", a, testBitmap(0), 60, now)
+			g.kernel.remove = func(netip.Addr) error { return errors.New("busy") }
+			g.Upsert("b.example.", b, testBitmap(1), 120, now)
+			if len(g.kernel.pending) != 2 || !fake.has(a) {
+				t.Fatal("fixture did not leave the old IP installed but unselected")
+			}
+			g.kernel.remove = fake.remove
+			// A now ties B and wins by IP, even though its eviction is pending.
+			if source == "dns" {
+				g.Upsert("a.example.", a, testBitmap(0), 120, now)
+			} else {
+				g.activity.observe(a, "a.example.", now.Add(time.Minute))
+			}
+			if len(g.kernel.pending) != 0 || !fake.has(a) || fake.has(b) {
+				t.Fatal("renewal did not cancel the obsolete replacement")
+			}
+			checkInvariants(t, g, fake)
+		})
+	}
+}

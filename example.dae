@@ -65,6 +65,10 @@ global {
     # Uncaptured kernel-direct traffic does not refresh evidence in this version.
     dns_retention_window: 168h
 
+    # Estimated bytes for retained userspace domain-IP history, not process RSS.
+    # New pairs are omitted when they would exceed this budget (64 MiB by default).
+    dns_registry_memory_limit: 67108864
+
     # Optional DNS server for dae's internal lookups; IP or IP:port (default 53).
     # Unset uses Go's system resolver. Bootstrap is direct; after startup, DNS
     # transports follow routing. Proxy-server names always use direct bootstrap.

@@ -27,7 +27,11 @@ func TestRoutingInstallationDerivesSniffingFromProgram(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			conf := outboundUsageConfig(t, "global {}\nrouting { fallback: direct }")
 			conf.Global.DNSRetentionWindow = 0
-			core := &controlPlaneCore{closed: t.Context(), outboundResources: &outbound.Resources{}}
+			conf.Global.DNSRegistryMemoryLimit = 4 << 30
+			core := &controlPlaneCore{
+				closed: t.Context(), outboundResources: &outbound.Resources{},
+				domainRegistry: newDomainRegistry(0, consts.DefaultDNSRetentionWindow, nil, nil),
+			}
 			outbounds, err := core.buildOutbounds(t.Context(), nil, nil, &conf.Routing, &conf.Global, consts.OutboundBlock)
 			if err != nil {
 				t.Fatal(err)
@@ -38,6 +42,9 @@ func TestRoutingInstallationDerivesSniffingFromProgram(t *testing.T) {
 			rules := prepareFlowRulesForTest(t, tc.flow, tc.routes)
 			if err := plane.initializeRouting(rules, outbounds, conf); err != nil {
 				t.Fatal(err)
+			}
+			if got := core.domainRegistry.Usage().MemoryLimit; got != conf.Global.DNSRegistryMemoryLimit {
+				t.Fatalf("registry memory limit = %d, want %d", got, conf.Global.DNSRegistryMemoryLimit)
 			}
 			before := plane.routingMatcher
 			rules.enableMITMPlan(tc.plan)

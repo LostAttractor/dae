@@ -106,7 +106,11 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			t.Fatal("expiry heap order or slot is stale")
 		}
 	}
+	var pairs, ipv4 int
+	var memory int64
 	for name, r := range g.byName {
+		pairs += len(r.addresses)
+		memory += domainNameMemory(name, r.bitmap) + domainPairMemory*int64(len(r.addresses))
 		names[r] = true
 		if len(r.addresses) == 0 {
 			t.Fatal("empty name bucket")
@@ -124,14 +128,31 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 		}
 	}
 	for ip, s := range g.byIP {
+		if ip.Is4() {
+			ipv4++
+		}
 		if len(s.domains) == 0 {
 			t.Fatal("empty IP bucket")
 		}
+		matched := 0
 		for r, pair := range s.domains {
+			if !domainBitmapAllZero(r.bitmap) {
+				matched++
+			}
 			if !names[r] || r.addresses[ip] != pair {
 				t.Fatal("IP index retained a removed pair")
 			}
 		}
+		if matched != s.matched {
+			t.Fatal("cached count of rule-bearing members is stale")
+		}
+		memory += domainIPMemory
+		if matched != 0 {
+			memory += domainIPBitmapMemory()
+		}
+	}
+	if memory != g.memoryUsed || memory > g.memoryLimit {
+		t.Fatalf("index costs %d bytes, charged %d, budget %d", memory, g.memoryUsed, g.memoryLimit)
 	}
 	if len(g.kernel.resident) > g.kernel.max || len(fake.bump) != len(g.kernel.resident) || len(fake.routing) != len(g.kernel.resident) {
 		t.Fatal("kernel occupancy mismatch")
@@ -144,7 +165,10 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	var ranked []netip.Addr
 	priorities := make(map[netip.Addr]time.Time)
 	for ip, s := range g.byIP {
-		var intersection []uint32
+		intersection := testBitmap()
+		for i := range intersection {
+			intersection[i] = ^uint32(0)
+		}
 		union := testBitmap()
 		var priority time.Time
 		for _, r := range g.byName {
@@ -152,21 +176,24 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			if pair == nil {
 				continue
 			}
-			if intersection == nil {
-				intersection = slices.Clone(r.bitmap)
-			}
 			for i, bits := range r.bitmap {
 				union[i] |= bits
 				intersection[i] &= bits
+			}
+			if len(r.bitmap) == 0 {
+				clear(intersection)
 			}
 			if !domainBitmapAllZero(r.bitmap) && pair.retainUntil.After(priority) {
 				priority = pair.retainUntil
 			}
 		}
-		if !slices.Equal(s.bump, union) || !slices.Equal(s.routing, intersection) || !s.priority.Equal(priority) {
+		wantsProjection := !domainBitmapAllZero(union)
+		if !s.priority.Equal(priority) ||
+			(wantsProjection && (!slices.Equal(s.bump, union) || !slices.Equal(s.routing, intersection))) ||
+			(!wantsProjection && (s.bump != nil || s.routing != nil)) {
 			t.Fatal("cached IP aggregate disagrees with complete pair evidence")
 		}
-		if !domainBitmapAllZero(union) {
+		if wantsProjection && g.projectable(ip) {
 			ranked = append(ranked, ip)
 			priorities[ip] = priority
 		}
@@ -182,6 +209,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	})
 	if len(g.kernel.resident) != min(len(ranked), g.kernel.max) {
 		t.Fatal("projection has unfilled slots")
+	}
+	if g.pairs != pairs || g.ipv4 != ipv4 || g.kernel.omitted != max(0, len(ranked)-g.kernel.max) {
+		t.Fatalf("stale counts: %d pairs, %d IPv4, %d omitted; indexes have %d pairs, %d IPv4, %d candidates", g.pairs, g.ipv4, g.kernel.omitted, pairs, ipv4, len(ranked))
 	}
 	for _, ip := range ranked[:min(len(ranked), g.kernel.max)] {
 		if _, resident := g.kernel.resident[ip]; !resident || !fake.has(ip) {
@@ -401,7 +431,7 @@ func TestVerifySniffTrustsCapacityEvictedPair(t *testing.T) {
 	}
 }
 
-func TestDomainRegistryUnboundedUserspace(t *testing.T) {
+func TestDomainRegistryUserspaceIndependentOfKernelCapacity(t *testing.T) {
 	g, fake := newTestRegistry(1, time.Hour)
 	now := time.Now()
 	for i := range 300 {
@@ -677,6 +707,51 @@ func TestDomainUnchangedObservationStillCollects(t *testing.T) {
 				t.Fatal("unchanged observation failed to advance the watermark")
 			}
 			checkInvariants(t, g, fake)
+		})
+	}
+}
+
+func TestDomainZeroBitmapStorage(t *testing.T) {
+	g, fake := newTestRegistry(1, time.Second)
+	now := time.Now()
+	ip := netip.MustParseAddr("192.0.2.1")
+	const zero, matched = "zero.example.", "matched.example."
+	g.Upsert(zero, ip, testBitmap(), 30, now)
+	if g.byName[zero].bitmap != nil || g.byIP[ip].bump != nil || g.byIP[ip].routing != nil ||
+		fake.has(ip) || !g.Verify(zero, ip).Paired {
+		t.Fatal("pure-zero evidence allocated bitmap storage, was projected, or lost verification")
+	}
+	g.Upsert(matched, ip, testBitmap(0), 1, now)
+	if !slices.Equal(fake.bump[ip], testBitmap(0)) || !slices.Equal(fake.routing[ip], testBitmap()) {
+		t.Fatal("zero domain did not suppress AND on a mixed IP")
+	}
+	g.Sweep(now.Add(time.Second))
+	if g.byIP[ip].bump != nil || g.byIP[ip].routing != nil || fake.has(ip) || !g.Verify(zero, ip).Paired {
+		t.Fatal("GC did not release projection storage while keeping zero evidence")
+	}
+	next, nextMap := newTestRegistry(1, time.Second)
+	if err := next.ForkFrom(g, func(string) []uint32 { return testBitmap(1) }, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(nextMap.routing[ip], testBitmap(1)) || !next.Verify(zero, ip).Paired {
+		t.Fatal("reload did not rebuild from zero evidence under the new matcher")
+	}
+}
+
+func BenchmarkDomainIPBitmapStorage(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		bitmap []uint32
+	}{{"zero", testBitmap()}, {"matched", testBitmap(0)}} {
+		b.Run(tc.name, func(b *testing.B) {
+			domains := map[*domainRecord]*domainPair{
+				{bitmap: cloneDomainBitmap(tc.bitmap)}: {retainUntil: time.Now()},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				s := ipRecord{domains: domains}
+				s.rebuild()
+			}
 		})
 	}
 }

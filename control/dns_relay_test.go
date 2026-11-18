@@ -90,11 +90,12 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 	// Domain evidence precedes delivery so the kernel has it before the client
 	// connects; plugins observe only delivered answers.
 	for _, tc := range []struct {
-		name                 string
-		must, fail, trailing bool
-		evidence, observers  int
+		name                       string
+		must, fail, trailing, full bool
+		evidence, observers        int
 	}{
 		{name: "delivered", evidence: 1, observers: 1}, {name: "failed delivery", fail: true, evidence: 1},
+		{name: "registry full", full: true, evidence: 1, observers: 1},
 		{name: "trailing bytes", trailing: true}, {name: "must after DNAT", must: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,7 +104,12 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 				controls += "\ndport(1053) -> must"
 			}
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, controls, ""))
-			registry, _ := newTestRegistry(16, time.Second)
+			registry, kernel := newTestRegistry(16, time.Second)
+			ip := netip.MustParseAddr("203.0.113.9")
+			if tc.full {
+				registry.Upsert("original.", ip, testBitmap(0), 3600, time.Now())
+				registry.memoryLimit = registry.memoryUsed
+			}
 			p := new(relayTestPlugin)
 			host, err := mitm.New(mitm.Options{DisableHTTP: true}, mitm.Instance{ID: "observe", Plugin: p})
 			if err != nil {
@@ -126,6 +132,9 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 			err = c.processDNS(t.Context(), request, routingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 			}, func(got []byte) error {
+				if tc.full && (kernel.has(ip) || registry.Usage().IncompleteBuckets != 1) {
+					t.Error("delivered DNS before suppressing an incomplete IP")
+				}
 				if p.observations != 0 || registry.Usage().UserUsed != tc.evidence {
 					t.Errorf("before delivery: observers=%d evidence=%d", p.observations, registry.Usage().UserUsed)
 				}

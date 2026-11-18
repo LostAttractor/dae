@@ -63,6 +63,9 @@ func validateControlModes(params *Config) error {
 	if params.Global.DNSRetentionWindow <= 0 {
 		return fmt.Errorf("dns_retention_window must be positive")
 	}
+	if params.Global.DNSRegistryMemoryLimit <= 0 {
+		return fmt.Errorf("dns_registry_memory_limit must be a positive byte count")
+	}
 	if err := consts.VerifyRerouteMode(string(params.Global.RerouteMode)); err != nil {
 		return err
 	}

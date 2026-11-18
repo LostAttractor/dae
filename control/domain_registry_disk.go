@@ -86,17 +86,21 @@ type domainLogExact struct {
 // mutation appending its new pairs, the owner's worker and Close. Its holder
 // owns disk. Lock order: io, then DomainRegistry.mu.
 type domainLog struct {
-	io       sync.Mutex
-	enabled  bool // writing starts after activation
-	disabled bool // the files could not be read; this run leaves them untouched
-	rebuild  bool // the files do not describe memory; the next write compacts
-	next     uint32
-	window   uint32    // id of the open renewal window; pairs keep their last listing
-	due      time.Time // when the open window closes; moves with the files on reload
-	lo, hi   int64     // final deadlines in [lo, hi] are listed and recover hi
-	renewed  []*domainPair
-	fresh    []domainLogEntry
-	disk     domainDisk
+	io                sync.Mutex
+	enabled           bool // writing starts after activation
+	disabled          bool // the files could not be read; this run leaves them untouched
+	rebuild           bool // the files do not describe memory; the next write compacts
+	next              uint32
+	window            uint32    // id of the open renewal window; pairs keep their last listing
+	due               time.Time // when the open window closes; moves with the files on reload
+	lo, hi            int64     // final deadlines in [lo, hi] are listed and recover hi
+	renewed           []*domainPair
+	fresh             []domainLogEntry
+	disk              domainDisk
+	capacityPath      string
+	capacityDurable   [domainCapacityBuckets]time.Time
+	capacityRetry     time.Time
+	capacityDirSynced bool
 }
 
 type domainDisk struct {
@@ -111,7 +115,7 @@ type domainDisk struct {
 }
 
 func newDomainLog(dir string, now time.Time, window time.Duration) *domainLog {
-	l := &domainLog{rebuild: true, disk: domainDisk{dir: dir}}
+	l := &domainLog{rebuild: true, disk: domainDisk{dir: dir}, capacityPath: filepath.Join(dir, domainCapacityFile)}
 	l.open(now, window)
 	return l
 }
@@ -167,6 +171,8 @@ func (g *DomainRegistry) EnablePersistence(dir string) {
 		g.persist = newDomainLog(dir, time.Now(), g.window)
 	}
 	g.persist.enabled = !g.persist.disabled
+	g.capacityWriting = g.persist.enabled
+	g.persistActiveCapacity()
 	g.mu.Unlock()
 	g.wakePersistence()
 }
@@ -266,6 +272,10 @@ func (g *DomainRegistry) writeRenewals(now time.Time) {
 		return
 	}
 	g.mu.Lock()
+	if g.closed {
+		l.capacityRetry = time.Time{} // One final attempt before releasing the files.
+	}
+	g.persistActiveCapacity()
 	if l.rebuild {
 		g.mu.Unlock()
 		g.compact(l, now)
@@ -315,14 +325,17 @@ func (g *DomainRegistry) persistFailed(l *domainLog, err error) {
 func (g *DomainRegistry) compact(l *domainLog, now time.Time) {
 	d := &l.disk
 	g.mu.Lock()
-	pairs := 0
-	for _, r := range g.byName {
-		pairs += len(r.addresses)
+	if !g.persistActiveCapacity() {
+		// Replacing the baseline would discard the only recovery source for
+		// pairs omitted while restoring a larger registry.
+		d.retry = now.Add(domainRenewInterval)
+		g.mu.Unlock()
+		return
 	}
 	// Reuse renewal marks from this or the just-closed window; reads stay cold.
 	hot := func(pair *domainPair) bool { return pair.listed != 0 && l.window-pair.listed <= 1 }
-	entries := make([]domainLogEntry, pairs)
-	front, back := 0, pairs
+	entries := make([]domainLogEntry, g.pairs)
+	front, back := 0, len(entries)
 	for name, r := range g.byName {
 		active := false
 		for _, pair := range r.addresses {
@@ -820,11 +833,15 @@ func (g *DomainRegistry) Restore(dir string, matchBitmap func(string) []uint32, 
 	now = g.clock(now)
 	l := newDomainLog(dir, now, g.window)
 	g.persist = l
+	capacityErr := g.restoreCapacity(l)
+	err = errors.Join(err, capacityErr)
 	if unreadable {
 		l.disabled = true
+		g.indexIncomplete()
 		return fmt.Errorf("%w; not writing the domain registry until restart", err)
 	}
 	if rec == nil {
+		g.indexIncomplete()
 		return err
 	}
 	l.next, l.rebuild = uint32(len(rec.ordinals)), rec.journal == 0
@@ -832,7 +849,9 @@ func (g *DomainRegistry) Restore(dir string, matchBitmap func(string) []uint32, 
 	// Avoid allocating reverse indexes and evaluating current rules for
 	// evidence that cold restore collects.
 	cutoff := now.Add(-g.activityLag)
+	namePeak := len(rec.records)
 	for name, record := range rec.records {
+		record.addressPeak = len(record.addresses)
 		for ip, pair := range record.addresses {
 			if !pair.retainUntil.After(cutoff) {
 				delete(record.addresses, ip)
@@ -841,8 +860,15 @@ func (g *DomainRegistry) Restore(dir string, matchBitmap func(string) []uint32, 
 		}
 		if len(record.addresses) == 0 {
 			delete(rec.records, name)
+		} else {
+			record.addresses = trimDomainIndex(record.addresses, &record.addressPeak)
 		}
 	}
-	g.installRecords(rec.records, matchBitmap)
-	return g.rebuildProjection(now)
+	rec.records = trimDomainIndex(rec.records, &namePeak)
+	if g.limitRestoredCapacity(rec, matchBitmap) {
+		l.rebuild = true
+	}
+	g.installRecords(rec.records, nil)
+	g.indexIncomplete()
+	return errors.Join(g.rebuildProjection(now), err)
 }

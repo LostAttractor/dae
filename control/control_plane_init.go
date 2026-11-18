@@ -98,10 +98,15 @@ func (c *ControlPlane) initializeRouting(rules preparedRules, outbounds *outboun
 	if err := c.installRouting(&rules, outbounds.nameToID, conf.Group, nil); err != nil {
 		return err
 	}
-	if conf.Global.DNSRetentionWindow > 0 {
+	if conf.Global.DNSRetentionWindow > 0 || conf.Global.DNSRegistryMemoryLimit > 0 {
 		registry := c.core.domainRegistry
 		registry.mu.Lock()
-		registry.window = conf.Global.DNSRetentionWindow
+		if conf.Global.DNSRetentionWindow > 0 {
+			registry.window = conf.Global.DNSRetentionWindow
+		}
+		if conf.Global.DNSRegistryMemoryLimit > 0 {
+			registry.memoryLimit = conf.Global.DNSRegistryMemoryLimit
+		}
 		registry.mu.Unlock()
 	}
 	return nil

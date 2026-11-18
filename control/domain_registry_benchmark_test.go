@@ -398,9 +398,85 @@ func BenchmarkDomainRegistryFootprint(b *testing.B) {
 		runtime.GC()
 		runtime.ReadMemStats(&after)
 		runtime.KeepAlive(g)
+		b.ReportMetric(float64(g.memoryUsed), "budgeted-bytes")
 		b.ReportMetric(float64(int64(after.HeapAlloc)-int64(before.HeapAlloc)), "retained-bytes")
 		b.ReportMetric(float64(int64(after.HeapObjects)-int64(before.HeapObjects)), "retained-objects")
 	}
+}
+
+// Rotate a large address set across domains, keeping one long-lived pair per
+// domain. Retained heap after GC exposes oversized maps that survive expiry.
+func BenchmarkDomainRegistryChurnFootprint(b *testing.B) {
+	ips := make([]netip.Addr, 3000)
+	for i := range ips {
+		ips[i] = netip.AddrFrom4([4]byte{198, 18, byte(i >> 8), byte(i)})
+	}
+	for b.Loop() {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		g := newDomainRegistry(0, time.Second, nil, nil)
+		g.memoryLimit = 2 << 20
+		now := time.Now()
+		for i := range 100 {
+			name := fmt.Sprintf("d%d.example.", i)
+			g.ObserveDNS([]domainObservation{
+				{name: name, ips: ips, ttl: 2},
+				{name: name, ips: ips[:1], ttl: 3600},
+			}, now)
+			now = now.Add(3 * time.Second)
+			g.Sweep(now)
+		}
+		if g.pairs != 100 || g.omittedPairs != 0 {
+			b.Fatalf("unexpected workload: %d retained pairs, %d omissions", g.pairs, g.omittedPairs)
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		b.ReportMetric(float64(g.memoryUsed), "budgeted-bytes")
+		b.ReportMetric(float64(int64(after.HeapAlloc)-int64(before.HeapAlloc)), "retained-bytes")
+		runtime.KeepAlive(g)
+	}
+}
+
+func BenchmarkDomainRegistryUsage(b *testing.B) {
+	g, _, _ := benchmarkActivityRegistry(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		g.Usage()
+	}
+}
+
+// The omitted IP's deadline improves on each observation, but every slot
+// is held by an IP whose DNS TTL outlasts those renewals.
+func BenchmarkDomainRegistryBelowCutoff(b *testing.B) {
+	g, keys, now := benchmarkActivityRegistry(b)
+	g.kernel.max = len(g.byIP) / 2
+	// Pin half the IPs above both the fixture and activity deadlines.
+	pinned := make(map[netip.Addr]bool, g.kernel.max)
+	for _, key := range keys {
+		if !pinned[key.ip] {
+			r := g.byName[key.domain]
+			g.extend(r, g.byIP[key.ip], r.addresses[key.ip], now.Add(4*g.window))
+			pinned[key.ip] = true
+			if len(pinned) == g.kernel.max {
+				break
+			}
+		}
+	}
+	g.rebuildProjection(now)
+	for _, key := range keys {
+		if pinned[key.ip] {
+			continue
+		}
+		at := now.Add(g.window)
+		b.ReportAllocs()
+		for b.Loop() {
+			at = at.Add(time.Nanosecond)
+			g.activity.observe(key.ip, key.domain, at)
+		}
+		return
+	}
+	b.Fatal("fixture has no omitted candidate")
 }
 
 // Repeated I/O from 64 connections to shared IPs. Sweep at each batch boundary

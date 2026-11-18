@@ -36,6 +36,7 @@ type Global struct {
 	SniffVerifyMode           consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose" reload:"plane"`
 	SniffingTimeout           time.Duration          `mapstructure:"sniffing_timeout" default:"100ms" reload:"plane"`
 	DNSRetentionWindow        time.Duration          `mapstructure:"dns_retention_window" default:"168h" reload:"plane"`
+	DNSRegistryMemoryLimit    int64                  `mapstructure:"dns_registry_memory_limit" reload:"plane"`
 	DNSResolver               string                 `mapstructure:"dns_resolver" reload:"plane"`
 	DisableWaitingNetwork     bool                   `mapstructure:"disable_waiting_network" default:"false" reload:"startup"`
 	AutoConfigKernelParameter bool                   `mapstructure:"auto_config_kernel_parameter" default:"false" reload:"plane"`
@@ -169,7 +170,7 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 		nameToSection[section.Name] = &Section{Val: section}
 	}
 
-	conf = &Config{}
+	conf = &Config{Global: Global{DNSRegistryMemoryLimit: consts.DefaultDNSRegistryMemoryLimit}}
 	if _, present := nameToSection["api"]; !present {
 		nameToSection["api"] = &Section{Val: &config_parser.Section{Name: "api"}}
 	}
