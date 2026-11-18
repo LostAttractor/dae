@@ -209,10 +209,9 @@ func TestRetiredCloseWaitIsBounded(t *testing.T) {
 	}
 }
 
-// A peer granting about QUIC's cap of 2^60 streams, as sing-box's tuic
-// server does, cannot raise its limit once a stream ended, so its credit
-// never returns to the highest grant; a retired path still closes at once.
-func TestRetiredCloseSkipsUnlimitedCredit(t *testing.T) {
+// A peer at QUIC's stream limit cannot return credit. A retired path still
+// waits within CloseLinger so an unread upload is not cut by connection close.
+func TestRetiredCloseWaitsForUnlimitedCredit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*netproxy.CloseLinger)
 	defer cancel()
 	f := newCloseFixture(t, ctx, quic.Config{MaxIncomingStreams: 1 << 60, MaxIncomingUniStreams: 1 << 60})
@@ -223,20 +222,32 @@ func TestRetiredCloseSkipsUnlimitedCredit(t *testing.T) {
 	if _, err := io.ReadAll(client); err != nil {
 		t.Fatal(err)
 	}
+	payload := bytes.Repeat([]byte{'x'}, 256<<10)
+	if _, err := client.Write(payload); err != nil {
+		t.Fatal(err)
+	}
 	if err := netproxy.CloseWrite(client); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := io.ReadAll(request); err != nil {
-		t.Fatal(err)
-	}
-	_ = client.Close()
 	f.runtime.Retire()
 	start := time.Now()
-	if err := f.runtime.Wait(ctx); errors.Is(err, context.DeadlineExceeded) {
+	_ = client.Close()
+	closed := make(chan error, 1)
+	go func() { closed <- f.runtime.Wait(ctx) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("runtime closed before the peer read its upload: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	data, err := io.ReadAll(request)
+	if err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("peer read %d of %d bytes: %v", len(data), len(payload), err)
+	}
+	if err := <-closed; errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("runtime did not close")
 	}
-	if waited := time.Since(start); waited > time.Second {
-		t.Fatalf("closing took %v", waited)
+	if waited := time.Since(start); waited < netproxy.CloseLinger || waited > netproxy.CloseLinger+time.Second {
+		t.Fatalf("closing took %v, want about %v", waited, netproxy.CloseLinger)
 	}
 }
 

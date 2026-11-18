@@ -162,7 +162,13 @@ func readRequest(t *testing.T, stream io.Reader, payload string) {
 func TestReduceRttReconnectSendsRequestIn0RTT(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
-	listener, err := quic.ListenAddrEarly("127.0.0.1:0", recoveryTLS(t), &quic.Config{EnableDatagrams: true, Allow0RTT: true})
+	var peerLimit atomic.Int64
+	peerLimit.Store(100)
+	listener, err := quic.ListenAddrEarly("127.0.0.1:0", recoveryTLS(t), &quic.Config{
+		GetConfigForClient: func(*quic.ClientInfo) (*quic.Config, error) {
+			return &quic.Config{EnableDatagrams: true, Allow0RTT: true, MaxIncomingStreams: peerLimit.Load()}, nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +188,7 @@ func TestReduceRttReconnectSendsRequestIn0RTT(t *testing.T) {
 	cache.wait(t, ctx)
 	first.failConnection(errors.New("reconnect"))
 
+	peerLimit.Store(101) // The handshake grants one more stream while the early request is open.
 	release := parent.hold()
 	if err := d.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -212,12 +219,47 @@ func TestReduceRttReconnectSendsRequestIn0RTT(t *testing.T) {
 	if !second.quicConn.ConnectionState().Used0RTT || !server.ConnectionState().Used0RTT {
 		t.Fatal("0-RTT not accepted")
 	}
+	if current, highest := second.credit.Credit(quic.StreamTypeBidi); current != 100 || highest != 101 {
+		t.Fatalf("credit with one unread early stream = %d/%d, want 100/101", current, highest)
+	}
 	if _, err := remote.Write([]byte("pong")); err != nil {
 		t.Fatal(err)
 	}
 	reply := make([]byte, 4)
 	if _, err := io.ReadFull(client, reply); err != nil || string(reply) != "pong" {
 		t.Fatalf("reply=%q err=%v", reply, err)
+	}
+	if err := remote.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(client); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte{'x'}, 256<<10)
+	if _, err := client.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := netproxy.CloseWrite(client); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	closed := make(chan error, 1)
+	go func() { closed <- d.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("closed with an unread upload: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if data, err := io.ReadAll(remote); err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("peer read %d of %d bytes: %v", len(data), len(payload), err)
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(netproxy.CloseLinger / 2):
+		t.Fatal("returned stream credit did not end the wait")
 	}
 }
 

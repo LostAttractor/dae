@@ -9,14 +9,12 @@ import (
 
 // StreamCredit follows the stream credit a peer grants one connection, as
 // quic.Config.CapabilityCallback reports it: per stream type, how many
-// streams can still be opened and the most the peer granted at once. A peer
-// returns a stream's credit only once its application has finished with the
-// stream, so credit back at its highest shows that the peer consumed every
-// stream it was sent, not merely that the packets were acknowledged. The
+// streams can still be opened and the peer's concurrency allowance. The
 // zero value is ready to use.
 type StreamCredit struct {
 	mu               sync.Mutex
 	highest, current [2]int64 // by quic.StreamType
+	handshake        <-chan struct{}
 	// sinceZero is the most credit granted since a type last reported zero,
 	// which quic-go does when it restarts its limits after a 0-RTT rejection.
 	sinceZero [2]int64
@@ -24,10 +22,27 @@ type StreamCredit struct {
 	changed   chan struct{}
 }
 
+// Track0RTT must be called before opening early streams. quic-go applies the
+// final transport parameters before it closes handshake.
+func (c *StreamCredit) Track0RTT(handshake <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handshake = handshake
+}
+
 // Report is a quic.Config.CapabilityCallback; it never blocks.
 func (c *StreamCredit) Report(streamType quic.StreamType, available int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.handshake != nil {
+		select {
+		case <-c.handshake:
+			c.handshake = nil
+		default:
+			// A larger handshake grant does not release already opened streams.
+			c.highest[streamType] += max(0, available-c.current[streamType])
+		}
+	}
 	c.current[streamType] = available
 	c.highest[streamType] = max(c.highest[streamType], available)
 	c.sinceZero[streamType] = max(c.sinceZero[streamType], available)
@@ -70,16 +85,15 @@ func (c *StreamCredit) Credit(streamType quic.StreamType) (current, highest int6
 // WaitReleased waits until bidirectional credit is back at its highest, ctx
 // ends or done is closed. Unidirectional streams carry best-effort packets
 // or stay open with the connection (authentication, HTTP/3 control), so
-// their credit is not awaited. quic-go returns credit as each stream ends,
-// but a peer granting about QUIC's cap of 2^60 streams, as sing-box's does,
-// cannot raise its limit again: its credit counts as released. quinn
-// returns credit in batches of an eighth of its limit, so what is left
-// below a batch is waited for until ctx ends.
+// their credit is not awaited. quic-go returns credit as each stream ends.
+// Peers at QUIC's stream limit cannot return credit, and quinn returns it
+// in batches; missing credit still waits until ctx ends, since the peer
+// may not have received the last upload yet.
 func (c *StreamCredit) WaitReleased(ctx context.Context, done <-chan struct{}) {
 	for {
 		c.mu.Lock()
 		current, highest := c.current[quic.StreamTypeBidi], c.highest[quic.StreamTypeBidi]
-		if current >= highest || highest >= 1<<59 {
+		if current >= highest {
 			c.mu.Unlock()
 			return
 		}

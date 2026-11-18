@@ -77,6 +77,9 @@ func (t *clientImpl) ConnectQUIC(ctx context.Context, dialer netproxy.Dialer, di
 		CongestionController: t.CongestionController, CWND: t.CWND,
 		Early: t.ReduceRtt, AuthenticationError: ProtocolError,
 		Authenticate: func(ctx context.Context, conn *quic.Conn) error {
+			if t.ReduceRtt {
+				t.credit.Track0RTT(conn.HandshakeComplete())
+			}
 			var err error
 			authStream, err = conn.OpenUniStream()
 			if errors.Is(err, quic.Err0RTTRejected) {

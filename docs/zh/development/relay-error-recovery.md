@@ -10,7 +10,9 @@
 
 正常 EOF 优先 `CloseWrite`，保留反向传输；不支持半关时最多排空 10 秒。Abort 立即使用户态 TCP 对客户端 RST，UDP 释放 endpoint。`Invalidate` 仅停止新分配，不能掩盖后来收到的设备或组策略 Abort。
 
-关闭不丢弃已接受的数据：连接的 `Close` 保留 `Write` 已接受的字节和 `CloseWrite` 发出的 FIN，仍在进程内队列中时，由连接自身最多等待 `netproxy.CloseLinger`（5 秒）写出，或交给持有队列的资源。`Runtime` 退役后，最后一个连接关闭即关闭整条链，因此 `Layer.Resources` 只在全部租约释放后关闭；在载体上承载多路流的资源先将排队帧交给载体，同样以 `CloseLinger` 为上限；载体已失败或 owner 已 Abort 时立即关闭。之后立即关闭载体时，若载体在 `Close` 时 reset（如前一跳的流，或仍有未读数据的 TCP 连接），对端尚未读取的帧仍会丢失；sing-mux 会话因此先半关载体并等待对端 EOF，共用同一上限，anytls 会话和 HTTP/2 CONNECT 连接池仍立即关闭载体。上限按层计算：载体自身也需等待时，两层依次等待。HTTP/2 CONNECT 上游仅在已半关且响应已结束时先等待 END_STREAM 写出，最多 `CloseLinger`；交换未完成时（包括 Abort）立即 reset。Abort 只对客户端立即生效：relay 先 RST 客户端，再同步关闭上游，meek 上游仍先 POST 已接受的字节，最多 `CloseLinger`，期间占用该 relay 及上游资源。QUIC 连接（tuic、juicity、hysteria2）正常关闭前等待对端归还全部双向流额度，以此确认对端应用已读完各流，最多 `CloseLinger`；quinn 按并发上限的 1/8 批量归还，不足一批的零头会等满上限；对端授予的额度接近 QUIC 上限 2^60 时无法再归还，不等待。
+正常关闭在有限期限内排空已接受的数据：连接的 `Close` 保留 `Write` 已接受的字节和 `CloseWrite` 发出的 FIN，仍在进程内队列中时，由连接自身最多等待 `netproxy.CloseLinger`（5 秒）写出，或交给持有队列的资源。`Runtime` 退役后，最后一个连接关闭即关闭整条链，因此 `Layer.Resources` 只在全部租约释放后关闭；在载体上承载多路流的资源先将排队帧交给载体，同样以 `CloseLinger` 为上限；载体已失败或 owner 已 Abort 时立即关闭。之后立即关闭载体时，若载体在 `Close` 时 reset（如前一跳的流，或仍有未读数据的 TCP 连接），对端尚未读取的帧仍会丢失；sing-mux 会话因此先半关载体并等待对端 EOF，共用同一上限，anytls 会话和 HTTP/2 CONNECT 连接池仍立即关闭载体。上限按层计算：载体自身也需等待时，两层依次等待。HTTP/2 CONNECT 上游仅在已半关且响应已结束时先等待 END_STREAM 写出，最多 `CloseLinger`；交换未完成时（包括 Abort）立即 reset。Abort 只对客户端立即生效：relay 先 RST 客户端，再同步关闭上游，meek 上游仍先 POST 已接受的字节，最多 `CloseLinger`，期间占用该 relay 及上游资源。
+
+QUIC 连接（TUIC、Juicity、Hysteria2）正常关闭前，最多等待 `CloseLinger`，让对端归还全部双向流额度。TUIC 接受 0-RTT 时，最终握手可以提高票据中的并发上限；增加的额度不代表对端已读完早期流。quinn 按并发上限的 1/8 批量归还，不足一批的零头可能等满期限；累计流上限达到 `2^60` 后无法再归还，尚缺额度时仍等到期限或连接结束。
 
 仅过滤有来源证据的本地主动清理错误。目标失败、单流 reset 和操作超时不自动判定共享连接死亡；QUIC 连接终止等事实由协议 owner 处理。
 
