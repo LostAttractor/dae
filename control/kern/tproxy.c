@@ -37,10 +37,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 #undef bpf_printk
 #define bpf_printk(...) ((void)0)
 #endif
-// #define likely(x) x
-// #define unlikely(x) x
-#define likely(x) __builtin_expect((x), 1)
-#define unlikely(x) __builtin_expect((x), 0)
 
 #define IPV6_BYTE_LENGTH 16
 #define TASK_COMM_LEN 16
