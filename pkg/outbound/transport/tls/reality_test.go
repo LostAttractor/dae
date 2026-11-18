@@ -6,11 +6,15 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -49,6 +53,28 @@ func TestRealityRandomRangeDoesNotPanic(t *testing.T) {
 		if got := randBetween(pair[0], pair[1]); got != pair[0] {
 			t.Fatalf("unexpected fallback: %d", got)
 		}
+	}
+}
+
+func TestRealityVerifyConnection(t *testing.T) {
+	conn := RealityUConn{ServerName: "example.test", AuthKey: []byte("test key")}
+	if err := conn.verifyConnection(utls.ConnectionState{}); err == nil || conn.Verified {
+		t.Fatalf("empty certificate chain: verified = %v, error = %v", conn.Verified, err)
+	}
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{PublicKey: pub}
+	state := utls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+	if err := conn.verifyConnection(state); err == nil || conn.Verified {
+		t.Fatalf("unauthenticated certificate: verified = %v, error = %v", conn.Verified, err)
+	}
+	h := hmac.New(sha512.New, conn.AuthKey)
+	h.Write(pub)
+	cert.Signature = h.Sum(nil)
+	if err := conn.verifyConnection(state); err != nil || !conn.Verified {
+		t.Fatalf("authenticated certificate: verified = %v, error = %v", conn.Verified, err)
 	}
 }
 

@@ -3,7 +3,6 @@
 package tls
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -23,11 +22,9 @@ import (
 	"math/big"
 	"net"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	utls "github.com/refraction-networking/utls"
@@ -60,14 +57,15 @@ type RealityUConn struct {
 	Verified   bool
 }
 
-var p, _ = reflect.TypeFor[utls.Conn]().FieldByName("peerCertificates")
-
-func (c *RealityUConn) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-	certs := *(*[]*x509.Certificate)(unsafe.Add(unsafe.Pointer(c.Conn), p.Offset))
+func (c *RealityUConn) verifyConnection(state utls.ConnectionState) error {
+	certs := state.PeerCertificates
+	if len(certs) == 0 {
+		return errors.New("REALITY: server sent no certificates")
+	}
 	if pub, ok := certs[0].PublicKey.(ed25519.PublicKey); ok {
 		h := hmac.New(sha512.New, c.AuthKey)
 		h.Write(pub)
-		if bytes.Equal(h.Sum(nil), certs[0].Signature) {
+		if hmac.Equal(h.Sum(nil), certs[0].Signature) {
 			c.Verified = true
 			return nil
 		}
@@ -180,7 +178,7 @@ func (x *Reality) DialContext(ctx context.Context, network, addr string) (c net.
 		}()
 		uConn := &RealityUConn{lease: netproxy.DependencyOf(c)}
 		utlsConfig := &utls.Config{
-			VerifyPeerCertificate:  uConn.VerifyPeerCertificate,
+			VerifyConnection:       uConn.verifyConnection,
 			ServerName:             x.serverName,
 			InsecureSkipVerify:     true,
 			SessionTicketsDisabled: true,
