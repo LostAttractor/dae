@@ -2537,7 +2537,7 @@ int tproxy_sk_lookup(struct bpf_sk_lookup *ctx)
 
 struct get_real_comm_ctx {
 	char *arg_buf;
-	u8 l;
+	__u32 offset;
 };
 
 static int __noinline get_real_comm_step(__u32 index,
@@ -2550,7 +2550,7 @@ static int __noinline get_real_comm_step(__u32 index,
 	if (index >= MAX_ARG_LEN) // always false, just to make verifier happy
 		return 1;
 	if (unlikely(ctx->arg_buf[index] == '/'))
-		ctx->l = index + 1;
+		ctx->offset = index + 1;
 	if (unlikely(ctx->arg_buf[index] == ' ' ||
 		     ctx->arg_buf[index] == '\0')) {
 		// Write to dst.
@@ -2565,15 +2565,8 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
 	int ret;
 
-	if (!PARAM.has_bpf_get_current_task) {
-		// Fallback to bpf_get_current_comm when bpf_get_current_task is
-		// unavailable; process names may be truncated or less accurate.
-		pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
-		if (bpf_get_current_comm(&pid_pname->pname,
-					 sizeof(pid_pname->pname)))
-			pid_pname->pname[0] = '\0';
-		return 0;
-	}
+	if (!PARAM.has_bpf_get_current_task)
+		goto current_comm;
 
 	// Get pointer to args string.
 	struct task_struct *task = (void *)bpf_get_current_task();
@@ -2591,6 +2584,9 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 			ret);
 		return ret;
 	}
+	/* A full buffer may end before the basename in argv[0]. */
+	if (unlikely(ret == sizeof(arg_buf)))
+		goto current_comm;
 
 	// Find range of command name.
 	int index;
@@ -2600,7 +2596,7 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 			break;
 	}
 
-	__u32 offset = ctx.l;
+	__u32 offset = ctx.offset;
 
 	for (__u32 i = 0; i < TASK_COMM_LEN; i++) {
 		__u32 arg_index = offset + i;
@@ -2627,6 +2623,12 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 		bpf_printk("failed to read pid: %d", ret);
 		return ret;
 	}
+	return 0;
+
+current_comm:
+	pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
+	if (bpf_get_current_comm(&pid_pname->pname, sizeof(pid_pname->pname)))
+		pid_pname->pname[0] = '\0';
 	return 0;
 }
 

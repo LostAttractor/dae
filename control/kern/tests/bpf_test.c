@@ -160,6 +160,15 @@ int test_entry_pname(struct __sk_buff *skb)
 	return TC_ACT_SHOT;
 }
 
+SEC("tc/test_current_owner")
+int test_current_owner(struct __sk_buff *skb)
+{
+	struct pid_pname owner = {};
+
+	current_owner(&owner);
+	return bpf_skb_store_bytes(skb, 0, owner.pname, sizeof(owner.pname), 0);
+}
+
 /* An element marked closing by a closer that then deleted another key, e.g.
  * after the element was reused for this source, is removed at its expiry. */
 SEC("tc/test_expire_closing_udp_route")
