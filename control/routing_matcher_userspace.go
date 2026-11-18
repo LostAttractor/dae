@@ -239,7 +239,7 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 			flags := (match.Flags >> matchCaptureShift) & 7
 			captureFlags |= flags
 			if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
-				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
+				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
 			}
 		case consts.MatchActionFlowEnd:
 			if (simulateKernel && flowBump) || must == predicateUnknown {

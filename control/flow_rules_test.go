@@ -110,3 +110,19 @@ dport(443) -> must`, "")
 		}
 	}
 }
+
+func TestUserspaceRoutingCapturePreservesMust(t *testing.T) {
+	for _, capture := range []uint8{captureDestination, captureHTTP | captureHTTPRequest} {
+		matcher := &RoutingMatcher{routingState: &routingState{matches: []bpfMatchSet{
+			{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMust)},
+			{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionCapture), Flags: capture << matchCaptureShift},
+		}}}
+		got, err := matcher.evaluateSpans([]routingSpan{{End: 2}}, routingInput{
+			src: netip.MustParseAddrPort("192.0.2.1:12345"), dst: netip.MustParseAddrPort("198.51.100.1:443"), kernel: true,
+		})
+		want := routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: true, captureFlags: capture}
+		if err != nil || got != want {
+			t.Fatalf("capture=%d: got %+v, %v; want %+v", capture, got, err, want)
+		}
+	}
+}
