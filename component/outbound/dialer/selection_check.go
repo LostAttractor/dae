@@ -356,7 +356,8 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.healthAt = now.Add(c.recoveryRetryDelayLocked(now))
 		c.supportAt = time.Time{}
 	} else {
-		c.healthAt = now.Add(c.d.recoveryCheckInterval())
+		// dispatch moves this deadline forward while recovery still needs verification.
+		c.healthAt = now.Add(c.d.CheckInterval)
 	}
 	if blocked != "" {
 		c.blockedBy = blocked

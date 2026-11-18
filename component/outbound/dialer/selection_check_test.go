@@ -208,6 +208,28 @@ func TestAliveCheckDoesNotProbe(t *testing.T) {
 	})
 }
 
+func TestHealthySelectionCheckKeepsConfiguredInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := newTestDialer(t, testTransport{})
+		prepareRecoveryDialer(d)
+		c := testRecoveryChecker(t, d)
+		flight := &selectionCheck{ctx: t.Context(), network: common.NetworkTCP4, done: make(chan struct{})}
+		c.finishSelectionCheck(checkResult{
+			kind:      checkSelection,
+			request:   flight,
+			attempted: true,
+			probes:    []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+		})
+		if flight.err != nil {
+			t.Fatal(flight.err)
+		}
+		c.dispatch()
+		if next := time.Until(c.healthAt); next != d.CheckInterval {
+			t.Fatalf("next health check in %v; want %v", next, d.CheckInterval)
+		}
+	})
+}
+
 // A verification needs a representative result newer than the observation a
 // group switched on. An in-flight probe provides one, repeated requests
 // coalesce even while checks are paused, and a capability probe that leaves

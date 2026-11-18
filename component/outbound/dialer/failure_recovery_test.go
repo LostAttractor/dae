@@ -63,6 +63,11 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != api.RecoveryReady || !recovery.RetryAt.IsZero() {
 			t.Fatalf("completed observation still advertised a recovery check: %+v", recovery)
 		}
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if probes.Load() != 10 {
+			t.Fatal("a completed recovery window still used the faster check interval")
+		}
 	})
 }
 
