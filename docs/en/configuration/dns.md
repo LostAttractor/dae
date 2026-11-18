@@ -14,8 +14,11 @@ transparent but cannot publish evidence. Explicit `block` still blocks DNS;
 kernel direct.
 
 TCP uses a 30-second idle timeout refreshed by both requests and delivered
-responses, including AXFR/IXFR continuation frames. Upstream closure drains
-received responses before closing the client connection. A uniquely correlated
+responses, including AXFR/IXFR continuation frames. A client transfer uses a
+dedicated upstream connection and releases it at the end of the transfer.
+Its closure does not close unrelated queries. A retained upstream's closure
+drains admitted responses before closing the client connection. Auxiliary plugin
+queries cannot start zone transfers. A uniquely correlated
 header-only DNS error completes its exchange without publishing evidence.
 UDP plugin admission and local replies obey device route epochs and cancellation,
 including cache hits under `route_change_behavior: close`.

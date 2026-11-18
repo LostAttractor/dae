@@ -19,7 +19,7 @@ routing {
 
 回复使用客户端原本访问的服务器地址/端口。插件改选服务器后按新目标重新选路，保留原客户端、接口、进程和 routing profile。
 
-TCP 使用 30 秒空闲期限，请求及已交付响应均会刷新，包括 AXFR/IXFR 的后续帧。上游关闭时先排空已接收响应，再关闭客户端连接。能够唯一关联的无 Question 错误响应会完成请求，但不生成证据。UDP 插件准入和本地回复同样检查设备路由 epoch 与取消状态，`route_change_behavior: close` 对缓存命中也生效。
+TCP 使用 30 秒空闲期限，请求及已交付响应均会刷新，包括 AXFR/IXFR 的后续帧。客户端区域传输使用专用上游连接，传输结束即释放，不影响其他查询。保留的上游连接关闭时，先排空已接纳请求的响应，再关闭客户端连接。插件的辅助查询不能发起区域传输。能够唯一关联的无 Question 错误响应会完成请求，但不生成证据。UDP 插件准入和本地回复同样检查设备路由 epoch 与取消状态，`route_change_behavior: close` 对缓存命中也生效。
 
 dae 内部解析使用 Go 标准库。不配置 `global.dns_resolver` 时，沿用系统 `/etc/resolv.conf` 和 `/etc/hosts`，不要求安装 DNS 插件。Go 解析器使用带 mark 的套接字避免重新捕获，不模拟仅由 libc NSS 提供的名称源或 macOS split-DNS。
 

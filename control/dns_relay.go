@@ -382,6 +382,40 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSR
 	return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire[:n]), ReceivedAt: time.Now(), Origin: "relay"}, nil
 }
 
+const dnsTCPIdle = 2 * consts.DefaultDNSTimeout
+
+func dnsZoneTransfer(request *plugin.DNSExchange) bool {
+	header, _ := request.Header()
+	q, single := request.Question()
+	return single && !header.Response && header.Opcode == dns.OpcodeQuery && (q.Qtype == dns.TypeAXFR || q.Qtype == dns.TypeIXFR)
+}
+
+func exchangeUnpooledDNS(session, operation context.Context, request *plugin.DNSExchange, transfer *dnsTCPDelivery, write func([]byte) error) (*plugin.DNSResponse, error) {
+	upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
+	if err != nil {
+		return nil, err
+	}
+	if transfer == nil {
+		stream := newDNSStream(upstream, 0, func([]byte) error { return nil }, func() {})
+		defer stream.close()
+		return stream.exchange(operation, request, nil)
+	}
+	// Keep the request's admission slot while its dedicated stream forwards
+	// continuation frames, even after the first-response deadline is released.
+	transfer.unpooled.Add(1)
+	stop := context.AfterFunc(session, func() { _ = upstream.Close() })
+	stream := newDNSStream(upstream, dnsTCPIdle, write, func() {
+		stop()
+		_ = upstream.Close()
+		transfer.unpooled.Done()
+	})
+	response, err := stream.exchange(operation, request, transfer)
+	if err != nil {
+		_ = upstream.Close()
+	}
+	return response, err
+}
+
 func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, identity routingResult) error {
 	r := c.dnsRelay
 	if r == nil || r.admit() != nil {
@@ -404,7 +438,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	// Both request and response progress refresh idle time. Once an upstream
+	// Both request and response progress refresh idle time. Once a retained upstream
 	// closes, stop accepting requests and drain admitted response writers before
 	// propagating closure to the client. A later write cannot rearm that cutoff.
 	var readMu sync.Mutex
@@ -413,7 +447,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		readMu.Lock()
 		defer readMu.Unlock()
 		if !upstreamClosed {
-			_ = conn.SetReadDeadline(time.Now().Add(2 * consts.DefaultDNSTimeout))
+			_ = conn.SetReadDeadline(time.Now().Add(dnsTCPIdle))
 		}
 	}
 	endRead := func() {
@@ -428,6 +462,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 		defer writeMu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(consts.DefaultDNSTimeout))
 		if err := netutils.WriteDNSFrame(conn, wire); err != nil {
+			cancel() // A partially written frame invalidates the client stream.
 			return err
 		}
 		refreshRead()
@@ -453,18 +488,15 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			stream.close()
 		}
 	}()
-	exchangeOnce := func(operation context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
-		upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
-		if err != nil {
-			return nil, err
+	terminal := func(operation context.Context, request *plugin.DNSExchange, delivery *dnsTCPDelivery) (*plugin.DNSResponse, error) {
+		if dnsZoneTransfer(request) {
+			if delivery == nil || request.Independent() {
+				return nil, errors.New("auxiliary DNS exchange cannot return a zone transfer")
+			}
+			return exchangeUnpooledDNS(ctx, operation, request, delivery, write)
 		}
-		stream := newDNSStream(upstream, func([]byte) error { return nil }, func() {})
-		defer stream.close()
-		return stream.exchange(operation, request)
-	}
-	terminal := func(operation context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		if request.Independent() {
-			return exchangeOnce(operation, request)
+			return exchangeUnpooledDNS(ctx, operation, request, nil, write)
 		}
 		streamsMu.Lock()
 		key := streamKey{request.Egress, request.Destination}
@@ -474,31 +506,31 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			// repeated node switches, exchange on their own connection.
 			if len(streams) >= 16 {
 				streamsMu.Unlock()
-				return exchangeOnce(operation, request)
+				return exchangeUnpooledDNS(ctx, operation, request, nil, write)
 			}
 			upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
 			if err != nil {
 				streamsMu.Unlock()
 				return nil, err
 			}
-			stream = newDNSStream(upstream, write, endRead)
+			stream = newDNSStream(upstream, 0, write, endRead)
 			streams[key] = stream
 		}
 		streamsMu.Unlock()
-		return stream.exchange(operation, request)
+		return stream.exchange(operation, request, nil)
 	}
 	concurrency := make(chan struct{}, 32)
 	refreshRead()
 	for {
 		wire, err := netutils.ReadDNSFrame(conn)
 		if err != nil {
-			// Upstream EOF can race finalization of its last correlated response.
-			// Each worker already has its own bounded, cancellable deadline.
-			workers.Wait()
 			readMu.Lock()
 			closed := upstreamClosed
 			readMu.Unlock()
 			if errors.Is(err, io.EOF) || closed {
+				// Both a half-closed client and a retiring pooled upstream can
+				// still have admitted responses or dedicated transfers to drain.
+				workers.Wait()
 				return nil
 			}
 			return err
@@ -518,10 +550,28 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			defer r.finish()
 			defer func() { <-concurrency }()
 			operation, stop := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
-			defer stop()
-			err := c.processDNS(operation, request, identity, bypass, terminal, write)
-			if err != nil {
+			var delivery *dnsTCPDelivery
+			deliver := write
+			if dnsZoneTransfer(request) {
+				delivery = &dnsTCPDelivery{done: make(chan struct{})}
+				deliver = func(wire []byte) error {
+					if err := write(wire); err != nil {
+						return err
+					}
+					delivery.wire = wire
+					return nil
+				}
+			}
+			err := c.processDNS(operation, request, identity, bypass, func(ctx context.Context, query *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				return terminal(ctx, query, delivery)
+			}, deliver)
+			if err != nil && delivery == nil {
 				cancel()
+			}
+			stop()
+			if delivery != nil {
+				close(delivery.done)
+				delivery.unpooled.Wait()
 			}
 		})
 	}

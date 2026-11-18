@@ -298,7 +298,7 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	continuation := make(chan []byte, 2)
-	stream := newDNSStream(conn, func(wire []byte) error { continuation <- wire; return nil }, func() {})
+	stream := newDNSStream(conn, 0, func(wire []byte) error { continuation <- wire; return nil }, func() {})
 	defer stream.close()
 	request := dnsTestRequest(t, "zone.example.", 42)
 	query := request.MessageCopy()
@@ -318,10 +318,14 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	response, err := stream.exchange(ctx, request)
+	delivery := dnsTCPDelivery{done: make(chan struct{})}
+	delivered := sync.OnceFunc(func() { close(delivery.done) })
+	defer delivered()
+	response, err := stream.exchange(ctx, request, &delivery)
 	if err != nil || !bytes.Equal(dnsTestWire(t, response), firstWire) {
 		t.Fatalf("first frame: %+v %v", response, err)
 	}
+	cancel() // A middleware transport deadline is not a downstream delivery.
 	select {
 	case <-continuation:
 		t.Fatal("continuation overtook first delivery")
@@ -329,7 +333,8 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 		// Give the independent reader a chance to forward the next frame.
 		// A nonblocking check can pass even when the delivery barrier is absent.
 	}
-	cancel() // The relay cancels the operation only after first-frame delivery.
+	delivery.wire = firstWire
+	delivered()
 	select {
 	case wire := <-continuation:
 		if !bytes.Equal(wire, lastWire) {
@@ -433,13 +438,13 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 func TestDNSStreamCancellationInterruptsBlockedWrite(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
-	stream := newDNSStream(conn, func([]byte) error { return nil }, func() {})
+	stream := newDNSStream(conn, 0, func([]byte) error { return nil }, func() {})
 	defer stream.close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	request := dnsTestRequest(t, "blocked.example.", 1)
 	done := make(chan error, 1)
-	go func() { _, err := stream.exchange(ctx, request); done <- err }()
+	go func() { _, err := stream.exchange(ctx, request, nil); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -453,7 +458,7 @@ func TestDNSStreamCancellationInterruptsBlockedWrite(t *testing.T) {
 func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
-	stream := newDNSStream(conn, func([]byte) error { return errors.New("unexpected uncorrelated frame") }, func() {})
+	stream := newDNSStream(conn, 0, func([]byte) error { return errors.New("unexpected uncorrelated frame") }, func() {})
 	defer stream.close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -479,7 +484,7 @@ func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, request := range requests {
 		wg.Go(func() {
-			response, err := stream.exchange(ctx, request)
+			response, err := stream.exchange(ctx, request, nil)
 			if err != nil {
 				t.Error(err)
 				return
