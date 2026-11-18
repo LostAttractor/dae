@@ -41,6 +41,7 @@
           nixos = runNixOSTest (import ./nix/test.nix self);
           kernel-control-lts = control pkgs.linuxPackages_6_18;
           kernel-control-latest = control pkgs.linuxPackages_latest;
+          kernel-proxy = runNixOSTest (import ./nix/kernel-proxy-test.nix self);
         }
       );
     };
