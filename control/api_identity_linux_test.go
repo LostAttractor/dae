@@ -122,6 +122,15 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	must(err)
 	defer collection.Close()
 	must(collection.Maps["routing_map"].Update(uint32(0), &bpfMatchSet{Type: uint8(consts.MatchType_Fallback)}, ebpf.UpdateAny))
+	addresses, err := net.InterfaceAddrs()
+	must(err)
+	var rules preparedRules
+	rules.bypassAPI(9080, addresses)
+	apiAddresses, err := newLpmMap(apiBypassPrefixes(rules.apiBypass))
+	must(err)
+	defer apiAddresses.Close()
+	must(collection.Maps["lpm_array_map"].Update(uint32(0), apiAddresses, ebpf.UpdateAny))
+	must(collection.Variables["api_lpm_slot"].Set(uint32(0)))
 	plane := &ControlPlane{
 		apiPort: 9080, lanInterface: []string{"lan", "bond-port"},
 		core: &controlPlaneCore{kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{{linkIndex: lan.Attrs().Index, role: hostTCXLanIngress}, {linkIndex: bondPort.Attrs().Index, role: hostTCXLanIngress}}}, bpf: &BPFState{bpfObjects: &bpfObjects{

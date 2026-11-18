@@ -466,8 +466,8 @@ struct {
 
 #include "routing_maps.h"
 
-/* One immutable LPM replacement updates API bypass and device exemptions. */
-static __always_inline bool route_exempt(const struct tuples_key *five, __u32 ingress)
+/* One immutable address set feeds API observation and routing. */
+static __always_inline bool is_api_destination(const struct tuples_key *five)
 {
 	__be16 port = api_port;
 
@@ -478,8 +478,7 @@ static __always_inline bool route_exempt(const struct tuples_key *five, __u32 in
 	struct lpm_key key = { .trie_key.prefixlen = IPV6_BYTE_LENGTH * 8 };
 
 	__builtin_memcpy(key.data, five->dip.u6_addr8, IPV6_BYTE_LENGTH);
-	return table && bpf_map_lookup_elem(table, &key) &&
-		(api_ingress_slot == (__u32)-1 || api_ingress_matches(api_ingress_slot, ingress));
+	return table && bpf_map_lookup_elem(table, &key);
 }
 
 struct pid_pname {
@@ -1949,15 +1948,6 @@ static __always_inline int do_tproxy_unfragmented(
 	// Preserve these scalars before helpers can invalidate the verifier's skb knowledge.
 	u16 protocol = skb->protocol;
 	u32 ifindex = skb->ifindex;
-
-	/* Observe the actual LAN ingress before direct TCP's established-flow
-	 * shortcut. This keeps HTTP keep-alive requests fresh without depending
-	 * on the L3 route device, ARP device, or bridge/bond topology.
-	 */
-	if (!is_wan && l4proto == IPPROTO_TCP &&
-	    api_port && tuples->five.dport == api_port)
-		observe_api_client(skb, &tuples->five, ethh, link_h_len);
-
 	struct pid_pname *pid_pname = NULL;
 
 	if (is_wan && pid_is_control_plane(skb, &pid_pname)) {
@@ -1965,10 +1955,21 @@ static __always_inline int do_tproxy_unfragmented(
 		return TCX_NEXT;
 	}
 
+	/* Observe the actual LAN ingress before direct TCP's established-flow
+	 * shortcut. This keeps HTTP keep-alive requests fresh without depending
+	 * on the L3 route device, ARP device, or bridge/bond topology.
+	 */
+	bool api_destination = is_api_destination(&tuples->five);
+
+	if (!is_wan && api_destination)
+		observe_api_client(skb, &tuples->five, ethh, link_h_len);
+
 	bool isdns = tuples->five.dport == bpf_htons(53);
 
 	struct device_route_state *device = device_route(ethh->h_source);
-	bool exempt = route_exempt(&tuples->five, is_wan ? 0 : ifindex);
+	bool exempt = api_destination &&
+		(api_ingress_slot == (__u32)-1 ||
+		 api_ingress_matches(api_ingress_slot, is_wan ? 0 : ifindex));
 
 	if (exempt)
 		device = NULL;

@@ -7,12 +7,12 @@ package tests
 import (
 	"encoding/binary"
 	"errors"
-	"github.com/daeuniverse/dae/internal/routingabi"
 	"math"
 	"net/netip"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"golang.org/x/sys/unix"
 )
 
@@ -49,6 +49,20 @@ func apiClientPacket(ipv6 bool, flags byte) ([]byte, bpftestTuplesKey) {
 	return packet, key
 }
 
+func installTestAPIDestination(t *testing.T, obj *bpftestObjects, destination [16]byte) {
+	t.Helper()
+	key := struct {
+		PrefixLen uint32
+		Address   [16]byte
+	}{128, destination}
+	if err := obj.TestLpm.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.ApiLpmSlot.Set(uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAPIClientIngressObservation(t *testing.T) {
 	obj, err := loadTestObjects(t)
 	if err != nil {
@@ -64,22 +78,29 @@ func TestAPIClientIngressObservation(t *testing.T) {
 			name = "IPv6"
 		}
 		t.Run(name, func(t *testing.T) {
+			_, local := apiClientPacket(ipv6, 0x02)
+			installTestAPIDestination(t, obj, local.Dip.U6Addr8)
 			for _, test := range []struct {
-				name string
-				port uint16
-				prog *ebpf.Program
-				flag byte
-				want bool
+				name               string
+				port               uint16
+				prog               *ebpf.Program
+				flag               byte
+				want, otherAddress bool
 			}{
-				{"direct SYN on LAN", 9080, obj.LanIngressL2, 0x02, true},
-				{"keep alive data on LAN", 9080, obj.LanIngressL2, 0x18, true},
-				{"API disabled", 0, obj.LanIngressL2, 0x18, false},
-				{"different port", 9081, obj.LanIngressL2, 0x18, false},
-				{"WAN ingress", 9080, obj.TproxyWanIngressL2, 0x18, false},
-				{"WAN egress", 9080, obj.TproxyWanEgressL2, 0x18, false},
+				{"direct SYN on LAN", 9080, obj.LanIngressL2, 0x02, true, false},
+				{"keep alive data on LAN", 9080, obj.LanIngressL2, 0x18, true, false},
+				{"API disabled", 0, obj.LanIngressL2, 0x18, false, false},
+				{"different port", 9081, obj.LanIngressL2, 0x18, false, false},
+				{"same port, different address", 9080, obj.LanIngressL2, 0x02, false, true},
+				{"WAN ingress", 9080, obj.TproxyWanIngressL2, 0x18, false, false},
+				{"WAN egress", 9080, obj.TproxyWanEgressL2, 0x18, false, false},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					packet, key := apiClientPacket(ipv6, test.flag)
+					if test.otherAddress {
+						packet[len(packet)-21]++ // Last byte of the destination IP.
+						key.Dip.U6Addr8[15]++
+					}
 					_ = obj.ApiClientMap.Delete(&key)
 					if err := obj.ApiPort.Set(nativeUint16(test.port)); err != nil {
 						t.Fatal(err)

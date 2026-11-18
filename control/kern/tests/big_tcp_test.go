@@ -129,6 +129,8 @@ func TestBigTCPRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, ipv6 := range []bool{false, true} {
+		_, local := apiClientPacket(ipv6, 2)
+		installTestAPIDestination(t, obj, local.Dip.U6Addr8)
 		for _, tc := range []struct {
 			name            string
 			port            uint16
