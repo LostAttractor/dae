@@ -532,6 +532,11 @@ assignments take precedence over later general routing. Cache is a separate
 bounded LRU for full, aged responses, SOA negative caching and fixed TTLs;
 signed and transaction-specific replies are conservatively excluded.
 
+The router uses a separate connection for each upstream exchange to preserve
+request-specific routing. On a cache miss, DoH needs a new TLS handshake and
+DoQ/HTTP/3 need a new QUIC handshake. Use `dns-cache` to skip the exchange when
+the answer is already cached, especially on busy resolvers.
+
 `global.dns_resolver` selects the internal resolver from the first lookup.
 Configure upstreams, routing and family preference in the router plugin and
 `fixed_domain_ttl` in the cache plugin. Inspect instances with `dae plugins status`

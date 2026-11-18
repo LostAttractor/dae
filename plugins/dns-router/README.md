@@ -47,6 +47,9 @@ routing, marks, accounting and route/policy lifetimes. `transport.Exchange` owns
 one query and its sockets; connections are scoped to that exchange. Plain TCP
 can retry an interrupted query on one new connection; it never retransmits on
 a live stream.
+On a cache miss, DoH establishes a new TLS connection and DoQ/HTTP/3 establish
+a new QUIC connection. Use `dns-cache` to avoid repeat handshakes for cacheable
+answers on busy resolvers.
 Cancellation ends the exchange budget even if an outbound's `Close` is blocked.
 
 Dial services receive both the selected IP:port and the configured endpoint
