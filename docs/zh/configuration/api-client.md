@@ -408,3 +408,7 @@ go tool pprof cpu.pprof
 pprof 也接受 HTTPS Basic Auth，用户名 `dae`、密码为 `admin_key`，供外部工具使用。`go tool pprof` 可读取 Basic URL，但 URL 中的密钥可能出现在历史、进程参数和工具输出中；优先使用上述 key 文件下载方式。不要把 key 放在 query 参数中。Prometheus 配置见 [metrics](metrics.md)。
 
 `make WEBUI=n` 构建不包含 Web 的 daemon，并跳过前端构建；`api { web: false }` 可运行时关闭页面。所有证书和管理能力仍由 API/CLI 提供。开发时 `pnpm --dir web dev` 只提供静态页面，使用与生产构建相同的固定 `DAE_API_URL`。登录开发环境同样需要 HTTPS 页面、同站直连或同源 HTTPS 反代及精确 `web_origins`；普通 HTTP localhost 开发页不是远程 key 登录入口，不能以扩大白名单绕过跨站限制。
+
+本地开发需要 HTTPS 和热更新时，在 `web/.env.local` 同时设置 `DAE_DEV_TLS_CERT` 和 `DAE_DEV_TLS_KEY`，分别指向开发服务器的证书和私钥文件。私钥须放在工作区外。这不会改变 API 目标，也不会启动 API 反代。
+
+要在本机手动输入 key 登录真实路由器，改用 `pnpm --dir web dev:router`。用 `DAE_API_URL` 指定 HTTPS 上游；如果 Node 尚未信任上游证书，用 `DAE_API_CA` 指定其公开 CA 的 PEM 文件。在路由器的 `api.web_origins` 加入 `https://127.0.0.1:5173`，然后从浏览器打开该地址。只有此开发模式会代理相对的 `/api/` 请求；它不会注入 key，也不会授予 LAN 设备身份。

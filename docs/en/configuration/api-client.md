@@ -428,3 +428,7 @@ Certificate verification requires a direct TCP endpoint and proves the CLI's con
 pprof also supports HTTPS Basic Auth with username `dae` and password `admin_key`. `go tool pprof` can fetch a Basic URL, but credentials in URLs may appear in history, process arguments and tool output; prefer the key-file download above. Keys in query parameters are unsupported. See [metrics](metrics.md) for Prometheus configuration.
 
 `make WEBUI=n` omits Web assets and skips frontend builds. `api { web: false }` disables page serving at runtime; API and CLI functions remain available. `pnpm --dir web dev` serves static development assets using the same fixed `DAE_API_URL` contract as production. Login development also requires an HTTPS page, same-site direct access or a same-origin HTTPS proxy, and exact `web_origins`. An ordinary HTTP localhost development page cannot log in to a remote API by widening the allowlist.
+
+For local HTTPS and hot updates, set both `DAE_DEV_TLS_CERT` and `DAE_DEV_TLS_KEY` in `web/.env.local` to the development server's certificate and private key paths. Keep the key outside the workspace. This does not change the API target or start an API proxy.
+
+For manual key login against a real router, use `pnpm --dir web dev:router` instead. Set `DAE_API_URL` to the HTTPS upstream and optionally `DAE_API_CA` to its public CA PEM. Allow `https://127.0.0.1:5173` in the router's `api.web_origins` and open that address. Only this development mode proxies relative `/api/` requests; it never injects a key or grants LAN identity.

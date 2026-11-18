@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:router": "vite --mode router",
     "build": "pnpm run typecheck && node --import tsx build.ts",
     "test:dev": "node --import tsx --test tests/api.ts tests/cdp.test.ts tests/dev-server.ts",
     "test": "node --import tsx tests/browser.ts",

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { createServer as createTLSServer } from "node:https";
 import { createServer as createTCPServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
+import { createServer as createViteServer } from "vite";
 
 const profile = await mkdtemp(join(tmpdir(), "dae-web-"));
 const source = join(profile, "public");
@@ -2537,6 +2538,51 @@ try {
     assert.equal(await js('document.querySelector("#access-required").textContent'), "Access denied");
     assert.equal(await js('document.querySelector("#selector-count").textContent'), "Access denied");
     assert.equal(await js('document.querySelectorAll(".selector-row").length'), 0);
+  });
+
+  await test("dev:router proxies explicit login and cookies over verified HTTPS", async () => {
+    fixture.mode = "admin_key";
+    fixture.proxied = true;
+    const upstream = origin, previous = process.env;
+    let vite;
+    try {
+      process.env = { ...previous, DAE_API_URL: upstream, DAE_API_CA: join(profile, "root.pem"),
+        DAE_DEV_TLS_CERT: join(profile, "leaf.pem"), DAE_DEV_TLS_KEY: join(profile, "leaf.key") };
+      vite = await createViteServer({ configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)), mode: "router",
+        cacheDir: join(profile, "vite-cache"), server: { port: 0 }, logLevel: "silent" });
+    } finally { process.env = previous; }
+    const headers: IncomingMessage["headers"][] = [];
+    const record = (req: IncomingMessage) => { if (req.url === "/api/session" && req.method === "PUT") headers.push(req.headers); };
+    httpServer.on("request", record);
+    try {
+      await vite.listen();
+      assert.ok(vite.httpServer);
+      origin = `https://127.0.0.1:${serverPort(vite.httpServer)}`;
+      await page();
+      assert.deepEqual(await js('fetch("/dae-web.json").then(r => r.json())'), { api_origin: "" });
+      assert.equal(await js('fetch("/api/status").then(r => r.status)'), 401);
+      await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+      await until('document.querySelector("#access-title").textContent === "Administrator"');
+      assert.equal(headers.length, 1);
+      assert.equal(headers[0]!.host, new URL(upstream).host);
+      assert.equal(headers[0]!.origin, origin);
+      assert.equal(headers[0]!["sec-fetch-site"], "same-origin");
+      assert.equal(headers[0]!["x-dae-proxy"], "1");
+      assert.equal(headers[0]!.authorization, "Bearer test-key");
+      await page();
+      assert.equal(await js('fetch("/api/status").then(r => r.status)'), 200);
+      assert.equal(await js('document.cookie'), "");
+      await js('document.querySelector("#logout").click()');
+      await ready();
+      assert.equal(await js('fetch("/api/status").then(r => r.status)'), 401);
+      fixture.untrusted = true;
+      assert.equal(await js('fetch("/api/status").then(r => r.status)'), 502, "untrusted upstream TLS fails closed");
+    } finally {
+      origin = upstream;
+      httpServer.off("request", record);
+      await call("Page.navigate", { url: "about:blank" });
+      await vite.close();
+    }
   });
 
   await test("network timeout releases the controls", async () => {

@@ -32,6 +32,21 @@ application controllers reload the page. Editing frontend code does not rebuild
 or restart dae. `make dev` also installs the pinned dependencies before starting
 Vite. Use `pnpm run dev --port 5174` to select another local port.
 
+To serve the same dev server and hot updates at `https://127.0.0.1:5173/`,
+set both paths in `web/.env.local` or the command environment:
+
+```dotenv
+DAE_DEV_TLS_CERT=/path/to/localhost-cert.pem
+DAE_DEV_TLS_KEY=/path/to/localhost-key.pem
+```
+
+Use a browser-trusted PEM server certificate with `127.0.0.1` in its IP
+subject alternative names and the matching development private key, not the
+dae CA key or the router's management key. Keep the private key outside the
+workspace; relative paths resolve from `web/`. Without the pair Vite uses HTTP;
+setting only one path is an error. Builds and previews ignore both settings.
+Enabling HTTPS does not proxy the API or make different IP addresses same-site.
+
 `DAE_API_URL` also accepts the command environment, taking precedence over
 `.env.local`. This is the same deployment setting for development and production
 builds, not a development-only default. An explicit value must be an HTTPS origin
@@ -41,7 +56,7 @@ The local file is ignored by Git. Changing it restarts the development server;
 production changes require rebuilding and redeploying the complete bundle. There
 is no runtime API selector or browser-storage override.
 
-Vite serves static development files only. The ordinary HTTP localhost page is
+`pnpm run dev` serves static development files only. The ordinary HTTP localhost page is
 the certificate setup page: it offers CA metadata, downloads and a trust test.
 It does not load the management application or poll status. For authenticated development, serve the page over trusted
 HTTPS and use either same-site direct access or a same-origin HTTPS API proxy.
@@ -56,6 +71,19 @@ rejected even when their origin is listed; HTTP-to-HTTPS is not a same-site logi
 setup. A direct page retains LAN identity and can use CA/MITM verification when
 authorized. A proxy page cannot use self/device or verification capabilities.
 Development mode does not itself hide the verification action.
+
+To debug against a real router without another reverse proxy, set the TLS pair
+above and `DAE_API_URL` in `web/.env.local`. If Node does not already trust the
+upstream, set `DAE_API_CA=/path/to/dae-ca.pem` to the router's verified public
+CA (relative paths resolve from `web/`). Allow `https://127.0.0.1:5173` in the
+router's `api.web_origins`, configure a user or administrator key on the router,
+and run `pnpm run dev:router` from `web/`. Open that HTTPS origin and enter the
+key in the login form. Do not put the key in the frontend environment.
+
+Only in this mode, the browser uses relative `/api/` and Vite forwards that
+prefix to the fixed HTTPS upstream. Vite binds to loopback, verifies upstream
+TLS, preserves Origin and session cookies, and sets `X-Dae-Proxy: 1`. HMR stays
+local. No anonymous LAN or current-device identity is available through the proxy.
 
 Run `pnpm run typecheck` to check the browser and Node projects with TypeScript's
 strict mode. Vite handles transpilation and hot updates; production builds also
