@@ -22,8 +22,8 @@ export function NoticeIcon({ tone, size }: { tone: NoticeTone; size: number }) {
 }
 
 // A short line of status text with Kumo's semantic color and icon.
-export function InlineNotice({ tone, id, className = "", title, children }: { tone: NoticeTone; id?: string; className?: string; title?: string; children: ReactNode }) {
-  return <p id={id} title={title} className={`inline-notice flex items-center gap-1.5 ${toneText(tone)} ${className}`} data-tone={tone}>
+export function InlineNotice({ tone, className = "", title, children }: { tone: NoticeTone; className?: string; title?: string; children: ReactNode }) {
+  return <p title={title} className={`inline-notice flex items-center gap-1.5 ${toneText(tone)} ${className}`} data-tone={tone}>
     <NoticeIcon tone={tone} size={14} />
     <span className="min-w-0">{children}</span>
   </p>;

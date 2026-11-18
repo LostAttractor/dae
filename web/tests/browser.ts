@@ -766,7 +766,7 @@ try {
       await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       // Warning text keeps the readable default color; the shared warning icon color carries the tone.
-      assert.equal(await js('(() => { const icon = element => getComputedStyle(element.querySelector("svg")).color; const warning = document.querySelector("#sets .status-banner"); const note = document.querySelector("#routing-change-note"); return icon(warning) === icon(note) && icon(note) !== getComputedStyle(document.body).color && getComputedStyle(note).color === getComputedStyle(document.body).color; })()'), true);
+      assert.equal(await js('(() => { const warning = document.querySelector("#sets .status-banner"); return getComputedStyle(warning.querySelector("svg")).color !== getComputedStyle(warning).color && getComputedStyle(warning).color === getComputedStyle(document.body).color; })()'), true);
       if (process.env.SCREENSHOT_DIR) {
         await delay(250);
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
@@ -2242,6 +2242,7 @@ try {
 
   await test("LAN guests retain device controls without diagnostic entry points", async () => {
     fixture.mode = "lan";
+    fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
     await page("#setting/explain");
     assert.equal(await js('document.querySelector("#diagnostic-form")'), null);
     assert.equal(await js('document.querySelector("#setting-explain-tab")'), null);
@@ -2249,6 +2250,13 @@ try {
     await visit("overview");
     assert.equal(await js('document.querySelectorAll("#sets .client-toggle").length'), 2);
     assert.equal(await js('document.querySelectorAll("#sets .set-details").length'), 0);
+    assert.equal(await js('document.querySelector("#sets .status-banner[data-tone=warning]")?.textContent'), "Changes may interrupt active connections.");
+    assert.match(await js('document.querySelector("#mitm .status-banner[data-tone=warning]")?.textContent'), /Install and trust the CA certificate first/);
+    for (const width of [280, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
+      assert.deepEqual(await js('[...document.querySelectorAll("#sets .set-row")].map(row => Math.round(row.getBoundingClientRect().right - row.querySelector(".client-toggle").getBoundingClientRect().right))'), [0, 0], `no empty details column at ${width}px`);
+      await elementShot(".device-settings", `dae-web-guest-settings-${width}`);
+    }
     assert.equal(await js('document.querySelector("#device-traffic").checkVisibility()'), true);
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();

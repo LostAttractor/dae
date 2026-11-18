@@ -78,9 +78,13 @@ function ClientSetRow({ set, contextKey, actions, allowed }: { set: ClientSetSta
 function ClientSets({ device, generation, actions, allowed }: { device: DeviceState; generation: number; actions: ClientActions; allowed: boolean }) {
   const contextKey = JSON.stringify([generation, device.mac, device.source_ip, device.sets]);
   if (!device.sets.length) return <Empty size="sm" title="No routing options" />;
-  return <div className="client-options grid grid-cols-[minmax(0,1fr)_max-content_max-content_2.25rem] gap-x-3">{device.sets.map(set =>
-    <ClientSetRow key={set.name} set={set} contextKey={contextKey} actions={actions} allowed={allowed} />
-  )}</div>;
+  const columns = allowed ? "grid-cols-[minmax(0,1fr)_repeat(3,max-content)]" : "grid-cols-[minmax(0,1fr)_repeat(2,max-content)]";
+  return <>
+    <StatusBanner tone="warning" title="Changes may interrupt active connections." />
+    <div className={`client-options grid gap-x-3 ${columns}`}>{device.sets.map(set =>
+      <ClientSetRow key={set.name} set={set} contextKey={contextKey} actions={actions} allowed={allowed} />
+    )}</div>
+  </>;
 }
 
 export function createClientSets(container: HTMLElement, actions: ClientActions) {

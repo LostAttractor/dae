@@ -5,7 +5,6 @@ import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { createView } from "./react-view.ts";
 import { loginAvailable } from "./api.ts";
 import { CertificateDownload, CertificatePanel } from "./certificate-panel.tsx";
-import { InlineNotice } from "./notice.tsx";
 import { cardTitle, codeBlock, framed, groupLabel } from "./ui.ts";
 
 // The header, content and footer share one centered frame inside the page gutter.
@@ -78,7 +77,6 @@ function Shell() {
                 <LayerCard.Primary className="gap-0 p-4 md:p-5">
                   <section aria-labelledby="device-title">
                     <h3 id="device-title" className={groupLabel}>Routing Rules</h3>
-                    <InlineNotice id="routing-change-note" tone="warning" className="mt-1.5 text-sm">Changes may interrupt active connections.</InlineNotice>
                     <div id="sets" className="set-list @container"></div>
                   </section>
 

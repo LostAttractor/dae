@@ -61,7 +61,7 @@ Spacing follows Tailwind's 4px scale.
 | Between cards, and between the Setting sidebar and content | 16px; 20px from 768px |
 | Subsections in a card | Hairline with 20px above and below (`mt-5 border-t pt-5`) |
 | Group label to its content | 12px (`mb-3`) |
-| Group label to its description or warning | 6px, forming one heading unit |
+| Group label to its inline description | 6px, forming one heading unit |
 | Controls in a row | 8px (`gap-2`) |
 | Stacked fields | 16px (`gap-4`) |
 | List rows | 10px vertical padding (`py-2.5`); 16px horizontal inside a frame |
@@ -112,18 +112,19 @@ Spacing follows Tailwind's 4px scale.
 - The node picker is a `Popover` with search, but its trigger matches `Select`:
   control surface and an up-down caret.
 - On/off settings are switch rows: the name on the left, an On/Off label beside
-  the switch, switches aligned in one column.
+  the switch, switches aligned in one column. Routing rows reserve a column for
+  the details button only when it is available.
 - A setting that can follow a router default is one `Select` among **Router
   default (current value)**, **On** and **Off**. Choosing the default clears the
   override, so there is no separate reset button. When the default cannot be
   known, the choice reads **Router default** and a note says what it depends on.
 - Several formats of one download share one **Download** menu that names each
   format and where it is used, rather than a row of download buttons.
-- A prerequisite whose absence breaks something is an amber banner (title and
-  consequence) between its group label and the control, 12px from each. When the
-  page can verify it, a verified state shrinks to a green line under the label,
-  and a failure turns the banner red in place, with a retry action. Short
-  cautions, such as Routing Rules' interruption note, stay one-line notices.
+- Device setting warnings use the same amber banner between the group label and
+  its controls, with 12px on either side vertically. The routing interruption
+  warning needs only a title; the HTTPS prerequisite also explains the consequence.
+  Verified CA trust shrinks to a green line under the label, and a verification
+  failure while modules are on turns the banner red in place, with a retry action.
 - Notices, banners, notifications and outcome headings center their icon on
   their text block, one line or several, the same way a banner centers its
   action; text wraps beside the icon. `notice.tsx` supplies the icons and colors,
