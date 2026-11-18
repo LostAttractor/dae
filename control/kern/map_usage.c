@@ -11,7 +11,8 @@ struct map_usage {
 	__s64 used;
 };
 
-struct map_usage usage_sample;
+/* Retain the record layout in BTF for bpf2go, without a runtime map. */
+struct map_usage map_usage_layout SEC(".discard");
 
 SEC("iter/bpf_map")
 int read_map_usage(struct bpf_iter__bpf_map *ctx)
@@ -23,9 +24,12 @@ int read_map_usage(struct bpf_iter__bpf_map *ctx)
 	for (int i = 0; i < 32; i++) {
 		if (requested_map_ids[i] != map->id)
 			continue;
-		usage_sample.id = map->id;
-		usage_sample.limit = map->max_entries;
-		usage_sample.used = bpf_map_sum_elem_count(map);
+		struct map_usage usage_sample = {
+			.id = map->id,
+			.limit = map->max_entries,
+			.used = bpf_map_sum_elem_count(map),
+		};
+
 		bpf_seq_write(ctx->meta->seq, &usage_sample, sizeof(usage_sample));
 		break;
 	}
