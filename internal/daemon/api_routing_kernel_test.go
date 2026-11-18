@@ -55,11 +55,7 @@ func TestDaemonReloadRefreshesAPIAddressesKernel(t *testing.T) {
 	}
 	datapath := control.NewRuntime()
 	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, operations: newOperations()}
-	certificates, err := prepareCertificates(conf, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app.setCertificates(certificates)
+	initializeKernelTestCertificates(t, app)
 	t.Cleanup(func() {
 		app.managementAPI.Close()
 		resolver.SetRoute(nil)

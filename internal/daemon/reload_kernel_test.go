@@ -46,6 +46,15 @@ func (p *reloadWorker) Close() error {
 	return nil
 }
 
+func initializeKernelTestCertificates(t *testing.T, app *application) {
+	t.Helper()
+	certificates, err := prepareCertificates(app.conf, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.setCertificates(certificates)
+}
+
 // serveKernelTestIngress opens the transparent sockets before publication, in
 // the order Run uses: a generation is never published without its ingress.
 func serveKernelTestIngress(t *testing.T, datapath *control.Runtime, port uint16) {
@@ -146,6 +155,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	datapath := control.NewRuntime()
 	client, closeClient := datapath.NewWorkerClient()
 	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, definitions: definitions, workerClient: client, operations: newOperations()}
+	initializeKernelTestCertificates(t, app)
 	t.Cleanup(func() { resolver.SetRoute(nil); _ = datapath.Close(); closeClient(); _ = cleanupKernelResources() })
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {

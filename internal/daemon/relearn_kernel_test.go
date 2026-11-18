@@ -135,6 +135,7 @@ routing { fallback: proxy }`, udp.LocalAddr(), port)
 	}
 	datapath := control.NewRuntime()
 	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, operations: newOperations()}
+	initializeKernelTestCertificates(t, app)
 	t.Cleanup(func() { resolver.SetRoute(nil); _ = datapath.Close(); _ = cleanupKernelResources() })
 	app.inputs, err = loadControlInputs(t.Context(), conf, false, nil, path, nil)
 	if err != nil {
