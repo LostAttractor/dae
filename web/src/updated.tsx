@@ -30,7 +30,10 @@ export function UpdatedAt({ timestamp, compact = false }: { timestamp: number; c
   const date = new Date(timestamp);
   const elapsed = age(timestamp, now);
   const shortAge = elapsed === "just now" ? "now" : elapsed.replace(" ago", "");
-  return <time dateTime={date.toISOString()} title={date.toLocaleString()} aria-label={compact ? `Updated ${elapsed}` : undefined}>{compact ? shortAge : `Updated ${elapsed}`}</time>;
+  const label = `Updated ${elapsed}`;
+  return <time dateTime={date.toISOString()} title={date.toLocaleString()} aria-label={compact ? label : undefined}>
+    {compact ? <><span className="xl:hidden">{shortAge}</span><span className="hidden xl:inline">{label}</span></> : label}
+  </time>;
 }
 
 export function createUpdatedLabel(container: HTMLElement) {

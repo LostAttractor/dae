@@ -504,6 +504,7 @@ try {
     fixture.nextRead = { status: 503, started: deferred() };
     await page();
     assert.match(await js('document.querySelector("#access-description").textContent'), /Checking/);
+    assert.equal(await js('document.querySelector("#login-form").checkVisibility() || document.querySelector("#logout").checkVisibility()'), false);
     await until('document.querySelector("#access-title").textContent === "LAN Access"');
     assert.ok(await js('document.querySelectorAll("#quick-selectors .selector-row").length > 0'));
   });
@@ -1459,7 +1460,8 @@ try {
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
     assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
-    assert.equal(await js('document.querySelector("#device-mac").textContent'), "Unavailable");
+    assert.equal(await js('document.querySelector("#identity").innerText'), "Unavailable");
+    assert.equal(await js('document.querySelector("#device-identity").title'), "Direct API connection required");
     assert.equal(await js('document.querySelector("#certificate-panel").hidden'), false);
     assert.equal(await js('document.querySelector("#test-certificate").hidden'), false);
     await js(`
@@ -1693,11 +1695,12 @@ try {
   });
 
   await test("poll failure indicator clears after recovery", async () => {
-    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await call("Emulation.setDeviceMetricsOverride", { width: 280, height: 844, deviceScaleFactor: 1, mobile: true });
     await page();
     fixture.nextRead = { status: 503, started: deferred() };
     await until('document.querySelector("#updated").textContent.includes("failed")');
     assert.equal(await js('document.querySelector("#updated").checkVisibility()'), true, "refresh errors remain visible on small screens");
+    assert.equal(await js('document.querySelector("#page-navigation li:last-child a").getBoundingClientRect().right < document.querySelector("#refresh").getBoundingClientRect().left'), true, "a long status must not cover page links");
     await until('!document.querySelector("#updated").textContent.includes("failed")');
   });
 
@@ -2418,9 +2421,36 @@ try {
   await test("LAN and user access can read global status and browse candidates without administration", async () => {
     for (const role of ["lan", "user_key"] as const) {
       fixture.mode = role;
+      fixture.proxied = role === "user_key";
       await page();
       await until('document.querySelector("#daemon-version").textContent.includes("test-daemon")');
       assert.equal(await js('document.querySelector("#access-title").textContent'), role === "lan" ? "LAN Access" : "User");
+      assert.equal(await js('document.querySelector("#login-form").checkVisibility()'), role === "lan");
+      assert.equal(await js('document.querySelector("#logout").checkVisibility()'), role === "user_key");
+      assert.equal(await js('document.querySelector("#device-identity").checkVisibility()'), true);
+      assert.equal(await js('document.querySelector("#identity").innerText'), role === "lan" ? fixture.device.source_ip : "Unavailable");
+      assert.equal(await js('document.querySelector("#device-mac").innerText'), role === "lan" ? fixture.device.mac : "Unavailable");
+      if (role === "user_key") {
+        assert.equal(await js('document.querySelector("#refresh").innerText'), "Refresh");
+        assert.equal(await js('document.querySelector("#logout").innerText'), "Log out");
+        for (const [width, theme] of [[280, "light"], [320, "light"], [768, "light"], [1440, "dark"]] as const) {
+          await call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
+          await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+          assert.equal(await js(`(() => {
+            const rect = selector => document.querySelector(selector).getBoundingClientRect();
+            const nav = rect("#page-navigation"), refresh = rect("#refresh"), logout = rect("#logout");
+            const title = rect("#access-title"), center = r => (r.top + r.bottom) / 2;
+            const toolsBelow = innerWidth >= 768 && innerWidth < 1024;
+            return (toolsBelow || rect("#page-navigation li:last-child a").right < refresh.left)
+              && (toolsBelow ? nav.bottom < refresh.top : Math.abs(center(nav) - center(refresh)) < 1)
+              && Math.abs(logout.right - rect(".page-header").right) < 1
+              && (innerWidth < 768 ? logout.bottom < refresh.top && title.right < logout.left
+                : nav.left > title.right && nav.left - title.right < 28
+                  && refresh.right < logout.left && Math.abs(center(refresh) - center(logout)) < 1);
+          })()`), true, `navigation fits beside the heading on desktop; text actions fit at ${width}px`);
+          await elementShot(".page-header", `dae-web-user-${width}`);
+        }
+      }
       assert.match(await js('document.querySelector("#daemon-version").textContent'), /test-daemon/);
       assert.equal(await js('document.querySelector("#managed-clients-view").hidden'), true);
       await visit("selector");
@@ -2446,20 +2476,31 @@ try {
     }
   });
 
+  await test("API key login fits the LAN toolbar across viewport sizes", async () => {
+    fixture.mode = "lan";
+    await page();
+    await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    for (const width of [320, 768, 1024, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `guest controls fit at ${width}px`);
+      assert.equal(await js(`(() => {
+        const rect = selector => document.querySelector(selector).getBoundingClientRect();
+        const input = rect("#api-key"), login = rect("#login"), header = rect(".page-header"), refresh = rect("#refresh");
+        const center = r => (r.top + r.bottom) / 2;
+        return input.width > 0 && input.left >= header.left && input.right < login.left && Math.abs(login.right - header.right) < 1
+          && Math.abs(center(input) - center(login)) < 1
+          && (innerWidth < 768 ? input.top > rect(".device-identity").bottom
+            : refresh.right < input.left && Math.abs(center(login) - center(refresh)) < 1)
+          && (innerWidth < 1280 || Math.abs(center(login) - center(rect("#page-navigation"))) < 1);
+      })()`), true, `login stays together at the toolbar edge at ${width}px`);
+      await elementShot(".page-header", `dae-web-login-${width}`);
+    }
+  });
+
   await test("Cookie login, expired session and delayed reads after logout", async () => {
     fixture.mode = "admin_key";
     await page();
     assert.equal(await js('document.querySelector("#login-form").hidden'), false);
-    for (const width of [320, 1280]) {
-      await call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
-      await page();
-      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `guest controls fit at ${width}px`);
-      assert.equal(await js('[...document.querySelectorAll("#login-form input, #login-form button")].every(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= document.documentElement.clientWidth; })'), true);
-      if (process.env.SCREENSHOT_DIR) {
-        const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
-        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-login-${width}.png`), Buffer.from(image.data, "base64"));
-      }
-    }
     await js('document.querySelector("#api-key").value = "wrong"; document.querySelector("#login-form").requestSubmit()');
     await ready();
     assert.equal(await js('document.querySelector("#message").dataset.tone'), "error");
@@ -2468,6 +2509,8 @@ try {
     await ready();
     assert.equal(await js('document.querySelector("#access-title").textContent'), "Administrator");
     assert.equal(await js('document.querySelector("#api-key").value'), "");
+    assert.equal(await js('document.querySelector("#login-form").checkVisibility()'), false);
+    assert.equal(await js('document.querySelector("#logout").checkVisibility()'), true);
     assert.equal(await js('document.activeElement.id'), "refresh");
     assert.equal(await js('document.cookie'), "", "HttpOnly session is not script-readable");
     assert.equal(await js('localStorage.length + sessionStorage.length'), 0, "no credentials or target in browser storage");
@@ -2488,6 +2531,7 @@ try {
     assert.equal(await js('document.querySelectorAll(".selector-row").length'), 0);
     assert.equal(await js('document.querySelector("#login-form").hidden'), false);
     assert.equal(await js('document.activeElement.id'), "api-key");
+    assert.equal(await js('document.querySelector("#logout").checkVisibility()'), false);
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
     fixture.sessionExpired = true;

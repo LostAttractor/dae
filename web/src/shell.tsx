@@ -22,32 +22,30 @@ function Shell() {
     <div className="shell flex min-h-dvh flex-col" data-view="overview">
       <fieldset id="controls" className="min-w-0" aria-label="Network controls">
         <div className={`border-b border-kumo-line bg-kumo-base ${gutter}`}>
-          <header className={`page-header ${frame} flex flex-wrap items-center gap-x-6 gap-y-3 py-3`}>
-            <div className="page-heading min-w-0 basis-full md:flex-[0_1_17.5rem]">
-              <div className="page-title-row flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+          <header className={`page-header ${frame} grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-3 py-3 md:flex md:flex-wrap md:gap-x-4`}>
+            <div className="page-heading col-start-1 row-start-1 min-w-0 md:w-min md:flex-none">
+              <div className="page-title-row flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 md:w-max md:flex-nowrap">
                 <h1 id="page-title" className="text-lg font-semibold outline-none" tabIndex={-1}>Network Panel</h1>
                 <Badge variant="secondary"><span id="access-title">Guest</span></Badge>
               </div>
               <p id="access-description" className="mt-0.5 text-xs text-kumo-subtle">Checking access…</p>
-              <Button id="logout" type="button" variant="ghost" size="sm" className="mt-1" hidden>Logout</Button>
               {!loginAvailable && <p className="mt-3 text-sm text-kumo-subtle">Open this page over HTTPS to log in. HTTP only supports anonymous setup.</p>}
-              <form id="login-form" className="login-form mt-3 flex max-w-[480px] flex-wrap items-end gap-2" hidden={!loginAvailable}>
-                <div className="key-field min-w-0 flex-1">
-                  <Input id="api-key" name="api-key" type="password" label="API Key" autoComplete="current-password" spellCheck={false} placeholder="Enter your API key" required disabled={!loginAvailable} className="w-full" />
-                </div>
-                <Button id="login" type="submit" disabled={!loginAvailable}>Login</Button>
-              </form>
             </div>
-            <nav id="page-navigation" className="order-2 min-w-0 max-w-full md:order-none" aria-label="Pages"></nav>
-            <div className="page-tools contents md:flex md:min-w-0 md:max-w-full md:flex-[1_1_24rem] md:flex-wrap md:items-center md:justify-end md:gap-x-5 md:gap-y-3">
-              <dl className="device-identity order-4 flex min-w-0 max-w-full basis-full flex-wrap items-baseline gap-x-4 gap-y-1 text-xs md:order-none md:basis-auto" aria-label="This device">
-                <div className="flex min-w-0 items-baseline gap-1.5"><dt className="whitespace-nowrap text-kumo-subtle">IP</dt><dd id="identity" className="min-w-0 font-mono">Identifying…</dd></div>
+            <nav id="page-navigation" className="col-start-1 row-start-2 min-w-0 max-w-full justify-self-start" aria-label="Pages"></nav>
+            <div className="page-tools contents md:flex md:min-w-0 md:max-w-full md:flex-auto md:flex-wrap md:items-center md:justify-end md:gap-x-3 md:gap-y-3 md:max-lg:basis-full">
+              <dl id="device-identity" className="device-identity col-start-1 row-start-3 flex min-w-0 max-w-full flex-wrap items-baseline gap-x-4 gap-y-1 text-xs md:max-xl:mr-auto" aria-label="This device">
+                <div className="flex min-w-0 items-baseline gap-1.5"><dt className="whitespace-nowrap text-kumo-subtle">IP</dt><dd id="identity" className="min-w-0 break-all font-mono">Identifying…</dd></div>
                 <div className="flex min-w-0 items-baseline gap-1.5"><dt className="whitespace-nowrap text-kumo-subtle">MAC</dt><dd id="device-mac" className="min-w-0 font-mono">Identifying…</dd></div>
               </dl>
-              <div className="refresh-status order-3 ml-auto flex min-w-0 max-w-full items-center justify-end gap-2.5 md:order-none md:ml-0">
-                <span id="updated" className="min-w-0 max-w-48 text-xs text-kumo-subtle"></span>
-                <Button id="refresh" type="button">Refresh</Button>
+              <div className="refresh-status contents md:flex md:min-w-0 md:max-w-full md:items-center md:justify-end md:gap-2">
+                <span id="updated" className="col-start-2 row-start-3 min-w-0 max-w-16 justify-self-end text-right text-xs text-kumo-subtle md:max-w-48"></span>
+                <Button id="refresh" type="button" className="col-start-2 row-start-2 justify-self-end">Refresh</Button>
               </div>
+              <Button id="logout" type="button" className="col-start-2 row-start-1 justify-self-end" hidden>Log out</Button>
+              <form id="login-form" className="col-span-2 flex w-full min-w-0 items-center gap-2 md:w-64" hidden>
+                <Input id="api-key" name="api-key" type="password" aria-label="API key" placeholder="API key" autoComplete="current-password" spellCheck={false} required disabled={!loginAvailable} className="min-w-0 flex-1" />
+                <Button id="login" type="submit" disabled={!loginAvailable}>Login</Button>
+              </form>
             </div>
           </header>
         </div>

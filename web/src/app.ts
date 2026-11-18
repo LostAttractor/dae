@@ -16,7 +16,7 @@ import { createUpdatedLabel } from "./updated.tsx";
 const accessDenied = (error: unknown) => errorStatus(error) === 401 || errorStatus(error) === 403;
 const accessLabels = {
   admin_key: { title: "Administrator", description: "Full management access" },
-  user_key: { title: "User", description: "Status and device settings" },
+  user_key: { title: "User", description: "Signed in with a user key" },
   lan: { title: "LAN Access", description: "Verified LAN ingress · User access without a key" },
   unix: { title: "Local access", description: "Authorized by local socket permissions" },
 };
@@ -96,7 +96,7 @@ async function run(action: () => Promise<unknown>, success = "", pending = "Savi
 function setAccess(mode: AuthMode | null, error?: unknown) {
   const authorized = mode !== null;
   const admin = mode === "admin_key" || mode === "unix";
-  const signedIn = mode === "admin_key" || mode === "user_key";
+  const signedIn = mode === "user_key" || mode === "admin_key";
   const { title, description } = authorized ? accessLabels[mode] : { title: "Guest", description: loginAvailable ? "Log in with your API key to manage the network." : "HTTPS is required to log in. HTTP supports anonymous setup only." };
   const denied = errorStatus(error) === 403;
   if (authMode !== mode) certificateAccessChanged();
@@ -107,11 +107,12 @@ function setAccess(mode: AuthMode | null, error?: unknown) {
   managedClients.setAccess(admin);
   byId("managed-clients-view").hidden = !admin;
   byId("devices-locked").hidden = admin;
-  byId("devices-login-hint").textContent = denied ? errorMessage(error) : loginAvailable ? "Log in above to manage other devices." : "Open this page over HTTPS to log in and manage other devices.";
-  byId<HTMLFormElement>("login-form").hidden = admin || !loginAvailable;
+  byId("devices-login-hint").textContent = denied ? errorMessage(error) : mode === "user_key" ? "Log out and use an administrator key to manage other devices." : loginAvailable ? "Log in with an administrator key to manage other devices." : "Open this page over HTTPS to log in and manage other devices.";
+  byId("login-form").hidden = !loginAvailable || signedIn || mode === "unix";
   if (authorized) status.allowGlobal();
   byId("access-title").textContent = title;
   byId("access-description").textContent = denied ? errorMessage(error) : description;
+  byId("access-description").hidden = signedIn;
   const logout = byId("logout");
   logout.textContent = signedIn ? "Log out" : "Clear session";
   logout.hidden = !signedIn && !(loginAvailable && error instanceof HTTPError && error.invalidSession);
@@ -133,14 +134,19 @@ function setAccess(mode: AuthMode | null, error?: unknown) {
   }
 }
 
+function setDeviceIdentity(ip: string, mac: string, reason = "") {
+  byId("identity").textContent = ip || "Unavailable";
+  byId("device-mac").textContent = mac || "Unavailable";
+  byId("device-identity").title = reason;
+}
+
 function renderDevice(device: DeviceState) {
   certificateDevice(device);
   const key = JSON.stringify(device);
   if (key === deviceStateKey) return;
   deviceStateKey = key;
   diagnostics.setDevice(JSON.stringify([device.mac, device.source_ip, device.sets, device.mitm]));
-  byId("identity").textContent = device.source_ip;
-  byId("device-mac").textContent = device.mac;
+  setDeviceIdentity(device.source_ip, device.mac);
   clientSets.show(device);
   mitm.show(device.mitm);
 }
@@ -151,8 +157,7 @@ function clearDevice(reason: string) {
   status.deviceError(reason, true);
   diagnostics.setDevice("");
   certificateDevice(null);
-  byId("identity").textContent = "Unavailable";
-  byId("device-mac").textContent = "Unavailable";
+  setDeviceIdentity("", "", reason);
   clientSets.unavailable(reason);
   mitm.unavailable();
 }
@@ -218,8 +223,8 @@ async function loadDevice({ background = false } = {}) {
         deviceStateKey = key;
         diagnostics.setDevice(key);
         certificateDevice(null);
-        byId("identity").textContent = connection.context.source_ip || "Unavailable";
-        byId("device-mac").textContent = "Unavailable (IP-only connection)";
+        const ip = connection.context.source_ip;
+        setDeviceIdentity(ip || "", ip ? "Unavailable (IP-only connection)" : "");
         clientSets.unavailable(reason, "warning");
         mitm.unavailable();
       }

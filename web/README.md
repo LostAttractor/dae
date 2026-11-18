@@ -294,9 +294,11 @@ Advanced request JSON overrides matching fields recursively, keeping other form
 values; explicit nulls and arrays replace their corresponding values.
 
 The page header shows the visiting device's IP and MAC directly, with explicit
-labels. Device settings address this MAC. An IP-only connection shows its IP and
-an unavailable MAC; MAC-scoped controls remain unavailable. The daemon version
-appears in the footer when administrator status is available.
+labels. Connections without a verified device identity mark both fields as
+unavailable; they never show the proxy's addresses. Device settings address the
+displayed MAC. An IP-only connection shows its IP and an unavailable MAC;
+MAC-scoped controls remain unavailable. The daemon version appears in the footer
+when global status is available.
 
 **HTTPS Modules** offers one choice among **Router default (On/Off)**, **On** and
 **Off**; the API reports the router default, and choosing it clears the device
@@ -454,12 +456,15 @@ mutations are never retried automatically.
 ## UI conventions
 
 The shared “Network Panel” heading has a neutral access badge on its right,
-with the access explanation and login controls below. The header is a full-width
-surface bar above the page canvas. On wide screens, the heading, navigation,
-IP/MAC and refresh controls form one horizontal row.
+with an explanation below while checking access or when no key session is active.
+The header spans the page. On wide screens, the heading, navigation,
+device identity and toolbar actions form one horizontal row. Guests and anonymous
+LAN users can enter an API key on HTTPS. A signed-in user or administrator sees
+a log-out button instead of the login form. On desktop, navigation follows the
+title and access badge; refresh and log out sit together at the right edge.
 The device identity and refresh controls wrap together when space is limited.
-Below 768px, navigation and refresh share a row below the title,
-followed by the device identity.
+Below 768px, log out aligns to the right of the heading. Navigation and refresh
+share the next row; the device identity and update status follow below.
 
 Overview / Setting navigation uses ordinary links with Kumo's segmented styling
 and `aria-current="page"`. Direct addresses, Back/Forward, opening a new tab and
