@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const {promiseHooks} = require("node:v8");
 const vm = require("node:vm");
 const maxFrame = Number(process.argv[1]);
 
@@ -96,6 +97,19 @@ const prelude = new vm.Script(`
 
 let context, bootstrap;
 
+// Node 26 can settle a VM promise on the outer queue (e.g. a rejected import).
+// Alternate checkpoints until the private queue is idle before acknowledging Go.
+const checkpoint = new vm.Script("");
+let ranPromiseJob;
+promiseHooks.onBefore(() => { ranPromiseJob = true; });
+async function drainContext() {
+  do {
+    await new Promise(resolve => setImmediate(resolve));
+    ranPromiseJob = false;
+    checkpoint.runInContext(context);
+  } while (ranPromiseJob);
+}
+
 // Like QuickJS, rejected promises do not complete an invocation; it still needs
 // $done. Drain Node's rejection bookkeeping between commands so its pending
 // rejection map cannot retain retired script contexts indefinitely.
@@ -125,6 +139,7 @@ async function serve() {
         case "reset": context = undefined; break;
         default: throw new Error("Invalid Node worker command");
       }
+      if (command.op === "eval" || command.op === "dispatch") await drainContext();
       write({kind: "ok"});
     } catch (error) {
       write({kind: "error", error: String(error)});
