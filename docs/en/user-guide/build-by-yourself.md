@@ -113,7 +113,7 @@ CI checks these separate scopes:
 | Go Test | Native Linux x86_64: `make test` (`go test ./...`) for QuickJS and Node with default and all-plugin selections, package boundaries, standalone API clients, the API server without cgo, backend isolation, pinned QuickJS/QUIC contracts, generated parser consistency and standalone Web tests. |
 | BPF Test | Clang 15–23 test executables are built on Ubuntu 24.04 and run natively on one Ubuntu 26.04 x86_64 runner, including BIG TCP and live bridge metadata. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
 | eBPF Audit | Clang 23 objects are loaded and inspected in a Linux 6.18 VM; verifier and dump artifacts are retained. |
-| Kernel Test | Linux x86_64, Linux 6.18 VM: startup/verifier, netkit/veth and TCX integration, splice, and LAN/WAN IPv4/IPv6 TCP/UDP proxy paths. |
+| Kernel Test | Privileged control and daemon tests on Linux 6.18 LTS and the latest kernel in `flake.lock`; a separate NixOS network tests LAN and WAN forwarding against an official sing-box release. |
 | Musl Static Test | Native x86_64: QuickJS AddressSanitizer tests; musl-linked daemon and full Surge/QuickJS package tests execute in Alpine without host shared libraries. |
 | PR/Next/daily/release builds | Each release target: static ELF checks, daemon `--version`, and five QuickJS smoke tests, executed natively or through QEMU user mode. |
 | Docker | Build and static-link verification for `arm/v7`, `arm64`, `amd64` and `386`; this does not run the daemon's network integration suite on those architectures. |
@@ -127,6 +127,19 @@ QEMU user-mode success does not establish eBPF verifier or network behavior
 on a target device's kernel. Full Go tests and kernel integration do not run
 on every release architecture, and the compiler matrix does not cover every
 Clang patch release or every possible `CC` implementation.
+
+To reproduce Kernel Test on an x86_64 Linux host with KVM, run:
+
+```sh
+nix build -L --no-link --keep-going .#checks.x86_64-linux.{kernel-control-lts,kernel-control-latest,kernel-proxy}
+```
+
+Each check also runs independently. The proxy network has its own client, dae
+gateway and sing-box peer. The peer drops direct requests to the test services:
+only proxied IPv4/IPv6 TCP and UDP can return the expected payload. A local DNS
+listener on the gateway exercises UDP port 53 contention. No public DNS server,
+Internet destination or host network configuration is needed for these probes.
+The two tested kernels are not a certification of every release back to 6.13.
 
 `make ebpf-test-build` generates BPF objects and builds the static test executable
 at `build/ebpf-test/kernel.test` without requiring root. `sudo make ebpf-test`

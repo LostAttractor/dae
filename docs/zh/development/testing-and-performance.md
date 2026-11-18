@@ -30,6 +30,16 @@ go test -race github.com/buke/quickjs-go/...
 
 Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` 指定浏览器路径，`openssl` 和 NSS `certutil` 须位于 PATH。证书测试使用临时 HOME、浏览器配置和 NSS 信任库，不修改现有信任设置；不使用忽略 TLS 错误的启动参数。额外的 `pnpm --dir web run test:certificate` 需要 Go 工具链，单独运行生产 Go API、CSP 与浏览器请求函数的集成检查，覆盖安装 CA、未安装 CA、手动接受 HTTPS 警告，以及 HTTP/HTTPS 页面。除 IPv4/IPv6 回环地址外，存在私有 IPv4 网卡时也从该地址测试普通 LAN HTTP；没有该网卡时明确报告跳过。普通 Go 测试不替代需要 root 的 `make ebpf-test`。
 
+## Kernel Test
+
+在支持 KVM 的 x86_64 Linux 主机上可以复现 CI，也可单独运行任一检查：
+
+```sh
+nix build -L --no-link --keep-going .#checks.x86_64-linux.{kernel-control-lts,kernel-control-latest,kernel-proxy}
+```
+
+前两项分别在 6.18 LTS 和 `flake.lock` 中的最新内核上运行需要特权的 control、daemon 测试，不代表已验证从 6.13 起的每个内核版本。代理测试使用独立的客户端、dae 网关和 sing-box 节点。目标服务拒绝直连，LAN 和 WAN 的 IPv4/IPv6 TCP、UDP 请求必须通过真实代理才能收到预期响应；网关同时监听 DNS，以覆盖 UDP 53 端口冲突。探测不依赖公网服务，也不改宿主机网络。
+
 ## 持久内核状态与阻断防护
 
 跨进程保留的 TCP 连接属性表为 `tcp_flow_map`（LRU hash，40 字节键、24 字节值），以及对应的原子门数组（4 字节键、8 字节值）。`socket_owner_map` 使用 socket-local storage（4 字节键、20 字节值），`daemon_identity_map` 保存显式登记的进程身份，`fallback_sequence_map` 保存单调发行序号（均为 4 字节键、8 字节值）。设备策略 outer/inner maps 同样保留设备版本。普通 restart 按表比较元数据，复用兼容的 canonical pins；替换不兼容的连接属性表会丢掉连接的 mark 和代次约束，但不中断连接。同进程 reload 使用 Runtime 的共享表。
