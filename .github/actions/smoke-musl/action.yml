@@ -21,3 +21,13 @@ runs:
         timeout 180s scripts/run-target.sh "$test_binary" \
           -test.run '^(TestRuntimeRewrite|TestRuntimeBinaryAndText|TestRuntimeResultPresenceAndSyntheticResponse|TestRuntimePromisesAndTimers|TestRuntimeAtomics64)$' \
           -test.timeout 2m
+    - name: Reject mixed MIPS floating-point objects at link time
+      if: env.GOARCH == 'mips64le' && env.GOMIPS64 != 'softfloat'
+      shell: bash
+      run: |
+        obj="$RUNNER_TEMP/softfloat.o"
+        echo 'int main(void) { return 0; }' | "$CC" -msoft-float -x c -c - -o "$obj"
+        if "$CC" -static "$obj" -o "$RUNNER_TEMP/mixed-abi"; then
+          echo "Hard-float toolchain accepted a soft-float object" >&2
+          exit 1
+        fi

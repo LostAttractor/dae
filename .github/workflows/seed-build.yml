@@ -67,7 +67,7 @@ jobs:
   build:
     name: Build and validate (${{ matrix.name }})
     needs: prepare
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.name == 'linux-armv5' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}

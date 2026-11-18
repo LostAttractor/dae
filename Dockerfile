@@ -10,14 +10,12 @@ RUN ln -s ../lib/node_modules/corepack/dist/pnpm.js /usr/local/bin/pnpm
 ARG LLVM_VERSION=23
 ENV PATH="/usr/local/go/bin:${PATH}" \
     CLANG=clang-${LLVM_VERSION} STRIP=llvm-strip-${LLVM_VERSION} LLVM_OBJDUMP=llvm-objdump-${LLVM_VERSION} \
-    CC=/build/scripts/zig-cc.sh CGO_ENABLED=1
+    CC=/usr/local/bin/dae-musl-cc CGO_ENABLED=1
 WORKDIR /build/
-COPY scripts/setup-llvm.sh scripts/setup-zig.sh scripts/
+COPY scripts/setup-llvm.sh scripts/
 RUN scripts/setup-llvm.sh "$LLVM_VERSION" \
     && apt-get install -y git make xz-utils binutils libatomic1 \
     && rm -rf /var/lib/apt/lists/*
-RUN zig=$(scripts/setup-zig.sh /opt/dae-zig) \
-    && ln -s "$zig" /usr/local/bin/zig
 COPY go.mod go.sum ./
 # Initialize submodules in the build context before running docker build.
 COPY third_party ./third_party
@@ -25,9 +23,12 @@ RUN go mod download
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY web/package.json ./web/package.json
 RUN pnpm install --frozen-lockfile
-COPY . .
 ARG TARGETARCH
 ARG TARGETVARIANT
+COPY scripts/setup-musl.sh scripts/setup-mips64-softfloat.sh scripts/musl-cross.sha256 scripts/
+RUN cc=$(GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" scripts/setup-musl.sh /opt/dae-musl) \
+    && ln -s "$cc" "$CC"
+COPY . .
 ARG VERSION=unstable-0.nogit
 RUN export GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
     && GOWORK=off make OUTPUT=dae VERSION="$VERSION" GOFLAGS="-buildvcs=false" STATIC=y PLUGINS_CONFIG=plugins.cfg.example \

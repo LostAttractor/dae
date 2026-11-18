@@ -99,12 +99,12 @@ including direct `go generate` builds. This warning remains non-fatal under
 the default `-Werror`; older compilers may still fail on unsupported code.
 The MIPS64 minimum is enforced in the QuickJS binding,
 including direct `go build` and `go test` commands. Selecting a newer eBPF
-`CLANG` does not update the compiler behind `CC` or `zig cc`.
+`CLANG` does not by itself change the target compiler selected through `CC`.
 
 CI's `setup-llvm` action installs Clang 23 by default and exports matching
 `CLANG`, `STRIP` and `LLVM_OBJDUMP` tools. Native Go and AddressSanitizer tests
-select that compiler through `CC`; `setup-musl` instead configures the pinned
-Zig cross-compiler for static builds.
+select that compiler through `CC`; `setup-musl` prepares a target musl toolchain
+for static builds.
 
 CI checks these separate scopes:
 
@@ -249,31 +249,28 @@ with musl and verifies the executable before copying it into Alpine.
 
 ## Cross-compilation
 
-Release cgo builds use the Zig development snapshot
-`0.18.0-dev.146+35accc06e`, which supplies Clang 23.1.2 and target musl headers,
-startup objects and libraries. Its version and archive SHA256 are fixed in
-`scripts/setup-zig.sh`. The installer runs on Linux x86_64 and aarch64;
-other hosts can install the same snapshot and set `DAE_ZIG` to its executable.
-Zig is a build-time tool, not a daemon runtime dependency.
+Set the Go target before running `scripts/setup-musl.sh`. It installs only the
+requested toolchain and prints the compiler path to use as `CC`.
+The release uses the `20261001` cross-tools/musl-cross archives
+(GCC 16.2.0, musl 1.2.6), pinned in `scripts/musl-cross.sha256`.
+On x86_64 Linux the installer uses the archive's GCC when the host can run it.
+On aarch64, or on x86_64 without a compatible glibc loader, host Clang 23
+and LLD use the same target headers, startup objects and static libraries.
 
 ```sh
-export DAE_ZIG=$(scripts/setup-zig.sh /tmp/dae-zig)
-GOARCH=arm64 make STATIC=y CC="$PWD/scripts/zig-cc.sh"
+export GOOS=linux GOARCH=arm GOARM=5 CGO_ENABLED=1
+cc=$(scripts/setup-musl.sh /tmp/dae-musl)
+make STATIC=y CC="$cc"
 scripts/check-static.sh dae
-
-GOARCH=arm GOARM=7 make STATIC=y CC="$PWD/scripts/zig-cc.sh"
-GOARCH=mipsle GOMIPS=hardfloat make STATIC=y CC="$PWD/scripts/zig-cc.sh"
-GOARCH=mips64le make STATIC=y CC="$PWD/scripts/zig-cc.sh"
 ```
 
-The wrapper covers `amd64`, `386`, `arm64`, ARM 5/6/7, `mipsle`, `mips64le`,
-`riscv64`, `loong64` and `ppc64le`. Set the correct ARM/MIPS floating-point ABI
-for the target CPU; big-endian targets are unsupported.
-
-ARMv5 also needs `gcc-arm-linux-gnueabi` (Debian/Ubuntu), or a target `libgcc.a`
-supplied through `DAE_ARM_LIBGCC`, for static atomic support. The wrapper retains
-musl as libc. Keep `-w` when linking MIPS test executables with LLD to avoid
-incompatible Go/C DWARF sections.
+The installer covers `amd64`, `386`, `arm64`, ARM 5/6/7, `mipsle`, `mips64le`,
+`riscv64`, `loong64` and `ppc64le`. Select the floating-point ABI through
+`GOARM`, `GOMIPS` or `GOMIPS64`. ARMv5 uses the target kit's atomic runtime;
+no distribution cross-GCC is needed. The optional `GOMIPS64=softfloat` path
+builds musl and compiler-rt from pinned sources with host LLVM 23, CMake and
+Make: the default N64 archives use hard float. Keep `-w` when linking MIPS
+test executables with LLD to avoid incompatible Go/C DWARF sections.
 
 You can instead pass an existing target musl compiler as `CC`. Setting only
 `GOARCH` is insufficient for cgo: the compiler, libc, ABI and headers must all
@@ -282,7 +279,7 @@ of that compiler.
 
 ### Docker
 
-Docker uses a host Ubuntu/Clang 23 build stage and the same Zig cross-compiler
+Docker uses a host Ubuntu/Clang 23 build stage and the same musl installer
 to produce static binaries for its target platforms. Toolchain installation
 is cached independently of application sources.
 The final Alpine image adds only the daemon executable. Configuration files,
