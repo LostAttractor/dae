@@ -78,18 +78,18 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 所有文本状态模式都在底部显示统一的 `Traffic` 表：
 
 ```text
-GROUP / DIALER       UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
-ALL                  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
-direct              ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
-proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
+GROUP / DIALER                UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
+ALL                           ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
+direct                        ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
+proxy_jp (total) [lightsail]  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
 ```
 
-- 普通 status 显示有活动连接或累计有效载荷字节的 group，组内列出当前选中、有活动连接或累计字节的 dialer。`--recent` 只显示最近一分钟上传或下载样本非零的 group/dialer；仅有当前选择、活动连接或历史累计量不会保留该行。筛选后只有一个 dialer 时合并为 `group(dialer)`；多个时显示 `group (total)` 和缩进明细。同名但不同 ID 的 dialer 分开统计。`--verbose` 展开全部 group，并包含空闲 dialer。
+- 普通 status 显示有活动连接或累计有效载荷字节的 group，组内列出当前选中、有活动连接或累计字节的 dialer。`--recent` 只显示最近一分钟上传或下载样本非零的 group/dialer；仅有当前选择、活动连接或历史累计量不会保留该行。筛选后只有一个 dialer 时合并为 `group (total) [dialer]`，方括号只标记可见节点，数据仍是整组统计；多个时显示 `group (total)` 和缩进明细。同名但不同 ID 的 dialer 分开统计。`--verbose` 展开全部 group，并包含空闲 dialer。
 - 内置 direct 在各模式下都使用一行 `direct` 展示组级总量，不重复展开同名节点。
 - `ALL` 始终显示并使用全局统计；group 行（包括合并行）使用 API 的 group 统计，包含已退休路径。同一 dialer 在不同 group 中分别计量，各统计层级不应相加。`TOTAL ↑`、`TOTAL ↓` 是累计上传、下载的有效载荷字节数，跨 reload 保留，重启清零。
 - `UPLOAD 1M`、`DOWNLOAD 1M` 使用最近十二个已完成的五秒吞吐样本，时间从左到右。同一行上下行共用高度尺度，各行分别缩放；没有历史时显示 `-`。
 - `AVG/MAX` 位于趋势图之后、`TOTAL ↑/↓` 之前，显示同一窗口内已有样本的平均和最大比特率。完整表格超出终端宽度时，普通和 recent 视图隐藏这两个速率列；`--verbose` 始终包含它们。剩余溢出从右缘截断。
-- `GROUP / DIALER` 标签列最多占 52 个显示列，超长以 `…` 省略；名称内部的空白统一为空格，确保每个条目只占一行。
+- `GROUP / DIALER` 标签列最多占 52 个显示列，超长以 `…` 省略，空间不足时省去方括号内的名称。名称内部的空白统一为空格，确保每个条目只占一行。
 
 ## 近期状态视图
 

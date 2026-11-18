@@ -106,19 +106,21 @@ For `selector` groups, the API's `nodes` includes only selected, continuously mo
 All text status modes end with a shared `Traffic` table:
 
 ```text
-GROUP / DIALER       UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
-ALL                  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
-direct              ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
-proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
+GROUP / DIALER                UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
+ALL                           ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
+direct                        ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
+proxy_jp (total) [lightsail]  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
 ```
 
 - Ordinary status shows groups with active connections or cumulative payload bytes,
   including their selected or active/data-bearing dialers. `--recent` shows only
   groups and dialers with a nonzero upload or download sample in the last minute;
   selection, active connections and historical totals alone do not keep a row visible.
-  After filtering, one dialer gives a `group(dialer)` row; multiple dialers give
-  `group (total)` followed by indented rows. Distinct IDs remain separate even if
-  their names match. `--verbose` expands all groups and includes idle dialers.
+  After filtering, one dialer gives a `group (total) [dialer]` row. The bracketed
+  name identifies the visible dialer; the figures still describe the whole group.
+  Multiple dialers give `group (total)` followed by indented rows. Distinct IDs
+  remain separate even if their names match. `--verbose` expands all groups
+  and includes idle dialers.
   Built-in direct uses one `direct` row with its group totals in every mode.
 - `ALL` is always shown and uses daemon statistics; group rows, including collapsed
   rows, use group statistics from the API, including retired paths. Dialers are accounted for
@@ -134,8 +136,8 @@ proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂
   width. `--verbose` always includes
   them; remaining overflow is clipped at the right edge.
 - The shared `GROUP / DIALER` label uses at most 52 display columns. Long labels
-  are elided with `…`, and whitespace within names is normalized so each entry
-  occupies one row.
+  are elided with `…`, and the bracketed name is omitted if it does not fit.
+  Whitespace within names is normalized so each entry occupies one row.
 
 ## Recent status view
 

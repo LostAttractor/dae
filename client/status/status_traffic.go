@@ -22,6 +22,8 @@ const (
 	trafficVerbose
 )
 
+const trafficLabelWidth = 52
+
 func trafficRateCell(average, maximum uint64) clitable.Cell {
 	averageValue, averageUnit := formatBitRateParts(average)
 	maximumValue, maximumUnit := formatBitRateParts(maximum)
@@ -80,19 +82,22 @@ func renderTraffic(snapshot *api.StatusSnapshot, mode trafficMode) string {
 				nodes = append(nodes, i)
 			}
 		}
-		label := colorize(strings.Join(strings.Fields(group.Name), " "), text.Bold)
+		const totalSuffix = " (total)"
+		name := strings.Join(strings.Fields(group.Name), " ")
+		label := colorize(truncateStatusCell(name, trafficLabelWidth-len(totalSuffix)), text.Bold) + totalSuffix
 		if mode != trafficVerbose && len(nodes) == 1 {
-			index := nodes[0]
-			rows = append(rows, trafficRow(label+"("+trafficNodeLabel(group, index)+")", group.Stats))
-			continue
+			if remaining := trafficLabelWidth - text.StringWidthWithoutEscSequences(label) - len(" []"); remaining > 0 {
+				label += " [" + truncateStatusCell(trafficNodeLabel(group, nodes[0]), remaining) + "]"
+			}
+			nodes = nil
 		}
-		rows = append(rows, trafficRow(label+" (total)", group.Stats))
+		rows = append(rows, trafficRow(label, group.Stats))
 		for _, index := range nodes {
 			rows = append(rows, trafficRow("  "+trafficNodeLabel(group, index), group.Nodes[index].Stats))
 		}
 	}
 	configs := []table.ColumnConfig{
-		{Number: 1, WidthMax: 52, WidthMaxEnforcer: truncateStatusCell},
+		{Number: 1, WidthMax: trafficLabelWidth, WidthMaxEnforcer: truncateStatusCell},
 	}
 	width := getStatusTerminalWidth()
 	if mode == trafficVerbose {

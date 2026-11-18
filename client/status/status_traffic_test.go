@@ -21,7 +21,7 @@ func trafficTestSnapshot() *api.StatusSnapshot {
 		History: api.TrafficHistory{UploadBytesPerSecond: []uint64{100, 300}, DownloadBytesPerSecond: []uint64{500, 1500}}}
 	first.Nodes[1].Name = "idle-node"
 	first.Nodes[1].Stats.History = api.TrafficHistory{UploadBytesPerSecond: []uint64{0, 0}, DownloadBytesPerSecond: []uint64{0, 0}}
-	second := api.GroupStatus{Name: "proxy_hk", Stats: api.PathStats{UploadBytes: 16384, DownloadBytes: 8192}, Nodes: []api.NodeStatus{
+	second := api.GroupStatus{Name: "proxy_hk", Policy: "selector", Stats: api.PathStats{UploadBytes: 16384, DownloadBytes: 8192}, Nodes: []api.NodeStatus{
 		{ID: "hk", Name: "日本高级 IEPL 专线 1", Stats: api.PathStats{DownloadBytes: 4096}},
 	}}
 	return &api.StatusSnapshot{StartedAt: time.Now(),
@@ -46,8 +46,8 @@ func TestTrafficTableRowsAndTotals(t *testing.T) {
 	}
 	for i, want := range map[int][]string{
 		1: {"ALL", "64.0K", "128K"},
-		2: {"proxy_jp(日本高级 IEPL 专线 1)", "2.93K", "3.91K"},
-		3: {"proxy_hk(日本高级 IEPL 专线 1)", "16.0K", "8.00K"},
+		2: {"proxy_jp (total) [日本高级 IEPL 专线 1]", "2.93K", "3.91K"},
+		3: {"proxy_hk (total) [日本高级 IEPL 专线 1]", "16.0K", "8.00K"},
 	} {
 		for _, label := range want {
 			if !strings.Contains(lines[i], label) {
@@ -56,7 +56,7 @@ func TestTrafficTableRowsAndTotals(t *testing.T) {
 		}
 	}
 	verbose := text.StripEscape(renderTraffic(snapshot, trafficVerbose))
-	if len(strings.Split(verbose, "\n")) != 8 || strings.Contains(verbose, "proxy_jp(") ||
+	if len(strings.Split(verbose, "\n")) != 8 || strings.Contains(verbose, "proxy_jp (total) [") ||
 		!strings.Contains(verbose, "proxy_jp (total)") || !strings.Contains(verbose, "idle-node") || !strings.Contains(verbose, "idle-group") {
 		t.Fatalf("verbose lost expanded or idle traffic rows:\n%s", verbose)
 	}
@@ -132,8 +132,16 @@ func TestTrafficTableSingleLineNamesAndNarrowWidths(t *testing.T) {
 				if len(strings.Split(got, "\n")) != wantRows || text.LongestLineLen(got) > width {
 					t.Fatalf("width=%d color=%v mode=%v: dialers wrapped or overflowed:\n%s", width, color, mode, got)
 				}
+				if !strings.Contains(text.StripEscape(got), "proxy jp (total)") {
+					t.Fatalf("width=%d color=%v mode=%v: group lost its total marker:\n%s", width, color, mode, got)
+				}
 			}
 		}
+	}
+	withStatusTerminalWidth(t, 0)
+	snapshot.Groups[0].Name = strings.Repeat("组", 30)
+	if got := text.StripEscape(renderTraffic(snapshot, trafficOrdinary)); !strings.Contains(got, "… (total)") {
+		t.Fatalf("long group name hid total marker:\n%s", got)
 	}
 }
 
@@ -250,7 +258,7 @@ func TestTrafficKeepsActiveAndHistoricalDialers(t *testing.T) {
 	clear(group.Nodes[4].Stats.History.DownloadBytesPerSecond)
 	clear(group.Stats.History.DownloadBytesPerSecond)
 	recent = renderTraffic(snapshot, trafficRecent)
-	if len(strings.Split(recent, "\n")) != 3 || !strings.Contains(recent, "proxy(recent)") ||
+	if len(strings.Split(recent, "\n")) != 3 || !strings.Contains(recent, "proxy (total) [recent]") ||
 		!strings.Contains(recent, "4.00K") || !strings.Contains(recent, "8.00K") {
 		t.Fatalf("recent did not collapse the filtered singleton with group totals:\n%s", recent)
 	}
@@ -297,7 +305,7 @@ func TestTrafficCollapsesUniqueRelevantDialer(t *testing.T) {
 			if tc.collapsed {
 				wantRows = 3
 			}
-			if len(lines) != wantRows || strings.Contains(got, "proxy_jp(lightsail)") != tc.collapsed {
+			if len(lines) != wantRows || strings.Contains(got, "proxy_jp (total) [lightsail]") != tc.collapsed {
 				t.Fatalf("wrong singleton decision:\n%s", got)
 			}
 			if !strings.Contains(lines[2], "4.00K") || !strings.Contains(lines[2], "8.00K") {
