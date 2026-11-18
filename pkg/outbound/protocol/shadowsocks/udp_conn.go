@@ -114,7 +114,11 @@ func (c *UdpConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 		return 0, nil, err
 	}
 
-	return copy(b, payload[len(payload)-reader.Len():]), addr, nil
+	n = copy(b, payload[len(payload)-reader.Len():])
+	if n < reader.Len() {
+		return n, addr, io.ErrShortBuffer
+	}
+	return n, addr, nil
 }
 
 // CanTryWrite reports the carrier capability without bypassing this layer.

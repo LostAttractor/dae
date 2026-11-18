@@ -528,7 +528,7 @@ func TestUDPShortCallerBufferStillAuthenticatesWholePacket(t *testing.T) {
 	go func() { _, err := server.Write(wire); done <- err }()
 	c := NewUdpConn(client, conf, key, &fixedSaltGenerator{salt: salt})
 	tiny := make([]byte, 2)
-	if n, addr, err := c.ReadFrom(tiny); err != nil || n != 2 || string(tiny) != "lo" || addr.String() != "127.0.0.1:53" {
+	if n, addr, err := c.ReadFrom(tiny); !errors.Is(err, io.ErrShortBuffer) || n != 2 || string(tiny) != "lo" || addr.String() != "127.0.0.1:53" {
 		t.Fatalf("ReadFrom=%d %v %v", n, addr, err)
 	}
 	if err := <-done; err != nil {
