@@ -69,18 +69,29 @@ func (c *ControlPlane) tableStatuses() []api.TableUsage {
 	if c.core != nil && c.core.domainRegistry != nil {
 		usage := c.core.domainRegistry.Usage()
 		tables = append(tables,
-			api.TableUsage{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: usage.KernelUsed, Limit: usage.KernelMax, Candidates: usage.KernelCandidates, Pending: usage.KernelPending},
+			api.TableUsage{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: int64(usage.KernelUsed), Limit: int64(usage.KernelMax), Candidates: usage.KernelCandidates, Pending: usage.KernelPending},
 			api.TableUsage{
-				Name: "domain-registry", Scope: "userspace", OnFull: "unlimited",
-				Used: usage.UserUsed,
+				Name: "domain-registry", Scope: "userspace", OnFull: "omit",
+				Used: usage.MemoryUsed, Limit: usage.MemoryLimit,
 				Breakdown: &api.TableUsageBreakdown{
-					Domains: usage.Domains, IPs: usage.IPs, IPv4: usage.IPv4, IPv6: usage.IPv6, GC: usage.GC,
+					Pairs: usage.UserUsed, Domains: usage.Domains, IPs: usage.IPs, IPv4: usage.IPv4, IPv6: usage.IPv6, GC: usage.GC,
+					IncompleteBuckets: usage.IncompleteBuckets, OmittedPairs: usage.OmittedPairs,
 				},
 			},
 		)
 	}
 	tables = append(tables, c.kernelTableStatuses()...)
 	return append(tables, c.userspaceTableStatuses()...)
+}
+
+func (r *Runtime) DomainRegistryUsage() (RegistryUsage, bool) {
+	r.mu.Lock()
+	c := r.current
+	r.mu.Unlock()
+	if c == nil || c.core == nil || c.core.domainRegistry == nil {
+		return RegistryUsage{}, false
+	}
+	return c.core.domainRegistry.Usage(), true
 }
 
 func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *api.NodeAnnotationStatus {

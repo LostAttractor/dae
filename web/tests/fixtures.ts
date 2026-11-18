@@ -43,6 +43,7 @@ export interface Fixture {
   nextRead: DeferredRead | null;
   nextDeviceRead: DeferredRead | null;
   nextGlobalRead: DeferredRead | null;
+  statusSchema?: number;
   nextContextRead?: DeferredRead | null;
   generation?: number;
   nextImpact?: DeferredRead | null;

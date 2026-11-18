@@ -55,7 +55,7 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 		}
 		if mode == "--json" {
 			var snapshot api.StatusSnapshot
-			if err := json.Unmarshal(output.Bytes(), &snapshot, jsonv1.FormatDurationAsNano(true)); err != nil || snapshot.Schema != 15 || !reflect.DeepEqual(snapshot.Tables, tables) {
+			if err := json.Unmarshal(output.Bytes(), &snapshot, jsonv1.FormatDurationAsNano(true)); err != nil || snapshot.Schema != api.StatusSchemaVersion || !reflect.DeepEqual(snapshot.Tables, tables) {
 				t.Fatalf("JSON changed table usage: %+v, %v", snapshot.Tables, err)
 			}
 		} else {

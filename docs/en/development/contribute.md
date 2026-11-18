@@ -29,6 +29,9 @@ For documentation changes, run `pnpm install --frozen-lockfile`,
 run `make -C web test` with Chromium installed. Both use the root pnpm lockfile;
 commit manifest and lockfile changes together when changing dependencies.
 
+For DNS registry tests and direct activity benchmarks, see the [testing and
+performance guide (Chinese)](../../zh/development/testing-and-performance.md).
+
 Queueing changes use the [scenario-specific validation goals](queueing-tests.md),
 including matched build conditions and loss-aware latency interpretation.
 

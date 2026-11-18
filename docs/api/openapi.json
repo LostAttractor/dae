@@ -1463,7 +1463,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 15,
+            "const": 16,
             "format": "int64",
             "type": "integer"
           },
@@ -1506,7 +1506,7 @@
         "type": "object"
       },
       "TableUsage": {
-        "description": "Shared snapshot of kernel tables and userspace resource pools, including the unbounded domain registry. A full evicting table is normal; reject means new entries cannot be admitted.",
+        "description": "Shared snapshot of kernel tables and userspace resource pools, including the domain registry. A full evicting table is normal; reject means new entries cannot be admitted.",
         "properties": {
           "scope": {
             "type": "string",
@@ -1524,7 +1524,7 @@
               "omit",
               "unlimited"
             ],
-            "description": "Capacity behavior: evict existing entries (LRU), reject new entries, omit excess kernel projection candidates, or retain without a capacity limit."
+            "description": "Capacity behavior: evict existing entries (LRU), reject new entries, omit excess registry pairs or kernel projection candidates, or retain without a capacity limit."
           },
           "error": {
             "type": "string",
@@ -1535,7 +1535,7 @@
             "description": "Pending kernel projection updates or removals."
           },
           "candidates": {
-            "description": "IP states with a nonzero domain bitmap before capacity selection. candidates - used is the number excluded by kernel capacity.",
+            "description": "Complete IP states with a nonzero domain bitmap before kernel capacity selection. Incomplete registry buckets are not included.",
             "format": "int64",
             "type": "integer"
           },
@@ -1550,7 +1550,7 @@
             ]
           },
           "limit": {
-            "description": "Maximum entries or resources; zero means no capacity limit.",
+            "description": "Capacity in the same units as used: an estimated retention memory budget in bytes for domain-registry, entries or resources otherwise. Zero means no capacity limit.",
             "format": "int64",
             "type": "integer"
           },
@@ -1558,7 +1558,7 @@
             "type": "string"
           },
           "used": {
-            "description": "Current entries or resources; resident IPs for domain-kernel and retained domain-IP pairs for domain-registry. Unavailable when error is nonempty.",
+            "description": "Estimated retained history bytes (not RSS) for domain-registry, resident IP entries for domain-kernel, and current entries or resources otherwise. Unavailable when error is nonempty.",
             "format": "int64",
             "type": "integer"
           }
@@ -1574,6 +1574,12 @@
       },
       "TableUsageBreakdown": {
         "properties": {
+          "pairs": {
+            "description": "Retained domain-IP pairs, independently of their estimated memory use.",
+            "minimum": 0,
+            "format": "int64",
+            "type": "integer"
+          },
           "domains": {
             "description": "Distinct retained domain names, including evidence not projected into the kernel.",
             "minimum": 0,
@@ -1602,14 +1608,27 @@
             "description": "Pairs removed by time-based GC, cumulative across reload and reset on cold start. Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
             "minimum": 0,
             "type": "integer"
+          },
+          "incomplete_buckets": {
+            "description": "Current registry buckets with incomplete DNS pair history.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "omitted_pairs": {
+            "description": "Pair omission events, including repeated omissions of the same pair, cumulative across reload and reset on cold start. Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
+          "pairs",
           "domains",
           "ips",
           "ipv4",
           "ipv6",
-          "gc"
+          "gc",
+          "incomplete_buckets",
+          "omitted_pairs"
         ],
         "type": "object"
       },
@@ -1849,7 +1868,7 @@
     }
   },
   "info": {
-    "description": "Status schema 15. Tables report kernel and userspace capacity, full-table behavior and optional usage errors; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. User and administrator APIs on api.listen, disabled by default. A port binds configured LAN interfaces; an explicit IP:port binds that address. The mode-0600 Unix socket always provides local administration. Administrator credentials include user privileges. Device identity is independent of privileges and requires verified LAN ingress. Mutations require X-Dae-API: 1. JSON APIs reject query parameters. web_origins restricts all browser origins, defaulting to same-origin; cross-site management requests are rejected. Browsers use HttpOnly session cookies, tools use raw keys. Reverse proxies require HTTPS upstream, the literal upstream Host, preserved Origin and X-Dae-Proxy: 1. Forwarding headers only remove LAN/self and browser-trust-proof capabilities; they never grant identity. Plain HTTP is limited to CA bootstrap operations. A challenge proof requires HTTPS. Unix peer credentials authorize local administration independently of TCP security schemes.",
+    "description": "Status schema 16. Tables report kernel and userspace capacity, full-table behavior and optional usage errors; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report the estimated retained history bytes and its budget, domain/IP and pair counts, kernel candidates and time-based GC. User and administrator APIs on api.listen, disabled by default. A port binds configured LAN interfaces; an explicit IP:port binds that address. The mode-0600 Unix socket always provides local administration. Administrator credentials include user privileges. Device identity is independent of privileges and requires verified LAN ingress. Mutations require X-Dae-API: 1. JSON APIs reject query parameters. web_origins restricts all browser origins, defaulting to same-origin; cross-site management requests are rejected. Browsers use HttpOnly session cookies, tools use raw keys. Reverse proxies require HTTPS upstream, the literal upstream Host, preserved Origin and X-Dae-Proxy: 1. Forwarding headers only remove LAN/self and browser-trust-proof capabilities; they never grant identity. Plain HTTP is limited to CA bootstrap operations. A challenge proof requires HTTPS. Unix peer credentials authorize local administration independently of TCP security schemes.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

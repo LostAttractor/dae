@@ -100,7 +100,7 @@ func TestTableUsageRow(t *testing.T) {
 	withoutStatusColors(t)
 	for _, test := range []struct {
 		name, onFull, usageError string
-		used, limit              int
+		used, limit              int64
 		want                     []string
 	}{
 		{"bounded", "omit", "", 2, 4, []string{"bounded", "2", "4", "50.0%", "omit"}},
@@ -134,22 +134,22 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 	withStatusTerminalWidth(t, 80)
 	var out strings.Builder
 	Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
-		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: 161, Limit: 65536, Candidates: 163, Pending: 3},
-		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
+		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Used: 161, Limit: 162, Candidates: 163, Pending: 3},
+		{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Used: 1 << 20, Limit: 64 << 20, Breakdown: &api.TableUsageBreakdown{Pairs: 6896, Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123, IncompleteBuckets: 2, OmittedPairs: 5}},
 	}}, true)
 	output := out.String()
-	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 2; PENDING 3", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
+	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 1; PENDING 3", "domain-registry (on full: omit):", "ESTIMATED MEMORY: 1048576 / 67108864 bytes", "DOMAINS", "GC (PAIRS)", "INCOMPLETE BUCKETS: 2; PAIR OMISSIONS: 5"} {
 		if !strings.Contains(output, label) {
 			t.Fatalf("missing %q:\n%s", label, output)
 		}
 	}
-	if strings.Index(output, "domain-registry (unlimited):") > strings.Index(output, "Kernel tables:") {
+	if strings.Index(output, "domain-registry (on full:") > strings.Index(output, "Kernel tables:") {
 		t.Fatalf("kernel projection appeared before registry evidence:\n%s", output)
 	}
 	kernel, registry := false, false
 	for _, line := range strings.Split(output, "\n") {
 		cells := strings.Join(strings.Fields(line), " ")
-		kernel = kernel || cells == "domain-kernel 161 65536 0.2% omit"
+		kernel = kernel || cells == "domain-kernel 161 162 99.4% omit"
 		registry = registry || cells == "6896 2000 5000 4000 1000 123"
 	}
 	if !kernel || !registry {
@@ -161,7 +161,7 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 		out.Reset()
 		Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
 			{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 65536},
-			{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Breakdown: &api.TableUsageBreakdown{GC: gc}},
+			{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Limit: 64 << 20, Breakdown: &api.TableUsageBreakdown{GC: gc}},
 		}}, true)
 		found := false
 		for _, line := range strings.Split(out.String(), "\n") {
@@ -181,7 +181,7 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 16, Candidates: 3, Pending: 2, Error: "read map: permission denied"},
 		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 4, Limit: 8},
 		{Name: "udp-reply-sockets", Scope: "userspace", OnFull: "reject", Used: 7, Limit: 10},
-		{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Error: "registry unavailable", Breakdown: &api.TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: 2}},
+		{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Limit: 4096, Error: "registry unavailable", Breakdown: &api.TableUsageBreakdown{Pairs: 8, Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: 2}},
 	}}
 	render := func(verbose bool) string {
 		var tables strings.Builder
@@ -217,12 +217,21 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 	if strings.Contains(brief, "tcp_flow_map") || strings.Contains(brief, "udp-sources") {
 		t.Fatalf("ordinary view listed healthy tables:\n%s", attention)
 	}
-	// An unlimited registry needs attention only when its usage is unavailable.
-	registry := api.TableUsage{Name: "domain-registry", Scope: "userspace", OnFull: "unlimited", Used: 8, Breakdown: &api.TableUsageBreakdown{Domains: 3, IPs: 5}}
+	// Past omissions alone do not require attention once capacity has recovered.
+	registry := api.TableUsage{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Used: 2048, Limit: 4096, Breakdown: &api.TableUsageBreakdown{Pairs: 8, Domains: 3, IPs: 5, OmittedPairs: 7}}
 	var healthy strings.Builder
 	printTables(&healthy, []api.TableUsage{snapshot.Tables[0], registry}, false)
 	if healthy.Len() != 0 {
 		t.Fatalf("healthy tables printed a section:\n%s", healthy.String())
+	}
+	registry.Breakdown.IncompleteBuckets = 1
+	if !tableNeedsAttention(registry) {
+		t.Fatal("registry still omitting evidence needs attention")
+	}
+	registry.Breakdown.IncompleteBuckets = 0
+	registry.Used = registry.Limit
+	if !tableNeedsAttention(registry) {
+		t.Fatal("full registry needs attention")
 	}
 	tables := all
 	output := strings.Join(strings.Fields(tables), " ")
@@ -231,7 +240,7 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 		"Userspace tables:", "udp-sources 4 8 50.0% reject",
 		"domain-kernel: unavailable: read map: permission denied",
 		"domain-kernel: CANDIDATES 3; OMITTED unavailable; PENDING 2",
-		"unavailable 3 5 4 1 2", "domain-registry: unavailable: registry unavailable",
+		"ESTIMATED MEMORY: unavailable / 4096 bytes", "8 3 5 4 1 2", "domain-registry: unavailable: registry unavailable",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q:\n%s", want, tables)

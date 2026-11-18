@@ -67,7 +67,7 @@ func TestKernelTableCounters(t *testing.T) {
 					t.Fatalf("LRU count after eviction: %+v", usage)
 				}
 			case "udp_bindings_map":
-				if usage.Used != expected || usage.Limit != 8 || usage.OnFull != "reject" {
+				if usage.Used != int64(expected) || usage.Limit != 8 || usage.OnFull != "reject" {
 					t.Fatalf("hash count: %+v", usage)
 				}
 			default:
@@ -98,7 +98,7 @@ func TestKernelTableCounters(t *testing.T) {
 			want = 2
 		}
 		tables := plane.tableStatuses()
-		if len(tables) != 3 || tables[2].Name != "device_routes_map" || tables[2].Error != "" || tables[2].Used != want {
+		if len(tables) != 3 || tables[2].Name != "device_routes_map" || tables[2].Error != "" || tables[2].Used != int64(want) {
 			t.Fatalf("sampling did not follow the current inner map: %+v", tables)
 		}
 		if len(core.tableReader.ids) != 2 {

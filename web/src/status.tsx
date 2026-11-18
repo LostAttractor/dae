@@ -39,22 +39,26 @@ function Records({ entries }: { entries: [string, ReactNode][] }) {
 
 function TableDetails({ table }: { table: GlobalStatus["tables"][number] }) {
   const detail = table.breakdown;
+  const registry = table.name === "domain-registry";
   return <>
     <span>{table.scope === "kernel" ? "Kernel" : "Userspace"}</span>
-    {table.error ? <InlineNotice tone="error">Unavailable: {table.error}; limit: {table.limit ? table.limit.toLocaleString() : "unlimited"}</InlineNotice> : <span>
-      {table.used.toLocaleString()} / {table.limit ? table.limit.toLocaleString() : "unlimited"} {table.name === "domain-registry" ? "pairs" : "entries"}
+    {table.error ? <InlineNotice tone="error">Unavailable: {table.error}; limit: {table.limit ? table.limit.toLocaleString() : "unlimited"}{registry && " estimated bytes"}</InlineNotice> : <span>
+      {table.used.toLocaleString()} / {table.limit ? table.limit.toLocaleString() : "unlimited"} {registry ? "estimated bytes" : "entries"}
       {table.limit > 0 && ` (${(table.used / table.limit * 100).toFixed(1)}%)`}
     </span>}
     <span>On full: {table.on_full}</span>
     {table.name === "domain-kernel" && <>
       <span>Candidates: {(table.candidates ?? 0).toLocaleString()}</span>
-      <span>Omitted: {table.error ? "unavailable" : Math.max(0, (table.candidates ?? 0) - table.used).toLocaleString()}</span>
+      <span>Omitted: {table.error ? "unavailable" : Math.max(0, (table.candidates ?? 0) - table.limit).toLocaleString()}</span>
       <span>Pending: {(table.pending ?? 0).toLocaleString()}</span>
     </>}
     {detail && <>
+      <span>Pairs: {detail.pairs.toLocaleString()}</span>
       <span>Domains: {detail.domains.toLocaleString()}</span><span>IPs: {detail.ips.toLocaleString()}</span>
       <span>IPv4: {detail.ipv4.toLocaleString()}</span><span>IPv6: {detail.ipv6.toLocaleString()}</span>
       <span>GC (pairs): {detail.gc.toLocaleString()}</span>
+      <span>Incomplete buckets: {detail.incomplete_buckets.toLocaleString()}</span>
+      <span>Pair omissions: {detail.omitted_pairs.toLocaleString()}</span>
     </>}
   </>;
 }

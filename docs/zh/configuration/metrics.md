@@ -31,6 +31,13 @@ Unix 示例：`curl --unix-socket /var/run/dae.sock http://unix/metrics`。插�
 路径重新出现时明细从零开始，查询历史趋势使用 `rate` 或 `increase`。设备统计不作为 Prometheus 标签导出。
 监听变更会先准备所需 socket；任一绑定失败时拒绝配置，保留现有服务。
 
+## DNS 登记表
+
+`dae_domain_registry_estimated_bytes` 报告保留历史的估算字节数，不代表进程 RSS 或内核表内存；
+`dae_domain_registry_memory_limit_bytes` 报告对应的字节预算。
+`dae_domain_registry_pairs` 和 `dae_domain_registry_incomplete_buckets` 分别报告用户态保留配对数和当前不完整 IP 桶数。
+`dae_domain_registry_pair_omissions_total` 统计配对漏记次数，同一配对重复漏记会重复计数；累计值跨 reload 保留，冷启动归零。
+
 ## UDP 丢包
 
 `dae_udp_packet_drops_total{transport,direction,reason}` 是核心指标，名称不带 `dae_plugin_` 前缀。它由丢弃数据报的那一层计数，按进程生命周期累计，重载不清零；全部组合在首次丢包前即以 0 导出。

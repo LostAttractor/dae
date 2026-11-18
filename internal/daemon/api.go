@@ -61,7 +61,7 @@ func (a *application) apiHandler() *apiserver.Handler {
 		ResolveClient: c.ResolveAPIClient, Diagnostics: c, Operations: a.operations,
 		UserKey: policy.UserKey, AdminKey: policy.AdminKey,
 		AllowLANAnonymous: policy.AllowLANAnonymous, WebOrigins: policy.WebOrigins,
-		Certificates: a.certificates.Public(), Metrics: metricsHandler, Pprof: policy.Pprof,
+		Certificates: a.certificates.Public(), Metrics: a.metrics, Pprof: policy.Pprof,
 	}
 	if host := c.MITMHost(); host != nil {
 		options.Scripts = host

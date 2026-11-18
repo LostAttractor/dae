@@ -2054,7 +2054,7 @@ export interface components {
              * Format: int64
              * @constant
              */
-            schema: 15;
+            schema: 16;
             /** Format: date-time */
             started_at: string;
             stats: components["schemas"]["PathStats"];
@@ -2066,24 +2066,24 @@ export interface components {
             uptime: number;
             version: string;
         };
-        /** @description Shared snapshot of kernel tables and userspace resource pools, including the unbounded domain registry. A full evicting table is normal; reject means new entries cannot be admitted. */
+        /** @description Shared snapshot of kernel tables and userspace resource pools, including the domain registry. A full evicting table is normal; reject means new entries cannot be admitted. */
         TableUsage: {
             breakdown?: components["schemas"]["TableUsageBreakdown"] | null;
             /**
              * Format: int64
-             * @description IP states with a nonzero domain bitmap before capacity selection. candidates - used is the number excluded by kernel capacity.
+             * @description Complete IP states with a nonzero domain bitmap before kernel capacity selection. Incomplete registry buckets are not included.
              */
             candidates?: number;
             /** @description When nonempty, used is unavailable and must not be rendered as zero usage or 0%. */
             error?: string;
             /**
              * Format: int64
-             * @description Maximum entries or resources; zero means no capacity limit.
+             * @description Capacity in the same units as used: an estimated retention memory budget in bytes for domain-registry, entries or resources otherwise. Zero means no capacity limit.
              */
             limit: number;
             name: string;
             /**
-             * @description Capacity behavior: evict existing entries (LRU), reject new entries, omit excess kernel projection candidates, or retain without a capacity limit.
+             * @description Capacity behavior: evict existing entries (LRU), reject new entries, omit excess registry pairs or kernel projection candidates, or retain without a capacity limit.
              * @enum {string}
              */
             on_full: "evict" | "reject" | "omit" | "unlimited";
@@ -2096,7 +2096,7 @@ export interface components {
             scope: "kernel" | "userspace";
             /**
              * Format: int64
-             * @description Current entries or resources; resident IPs for domain-kernel and retained domain-IP pairs for domain-registry. Unavailable when error is nonempty.
+             * @description Estimated retained history bytes (not RSS) for domain-registry, resident IP entries for domain-kernel, and current entries or resources otherwise. Unavailable when error is nonempty.
              */
             used: number;
         };
@@ -2108,6 +2108,8 @@ export interface components {
             domains: number;
             /** @description Pairs removed by time-based GC, cumulative across reload and reset on cold start. Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1. */
             gc: number;
+            /** @description Current registry buckets with incomplete DNS pair history. */
+            incomplete_buckets: number;
             /**
              * Format: int64
              * @description Distinct retained IPs across all domains; equals ipv4 + ipv6. A shared IP counts once.
@@ -2123,6 +2125,13 @@ export interface components {
              * @description Distinct retained IPv6 addresses, not domain-IP pairs.
              */
             ipv6: number;
+            /** @description Pair omission events, including repeated omissions of the same pair, cumulative across reload and reset on cold start. Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1. */
+            omitted_pairs: number;
+            /**
+             * Format: int64
+             * @description Retained domain-IP pairs, independently of their estimated memory use.
+             */
+            pairs: number;
         };
         TrafficHistory: {
             /** @description Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0–12 samples. */

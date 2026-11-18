@@ -42,6 +42,7 @@ type application struct {
 	workerClient            *http.Client
 	geoDirs                 []string
 	localAPI, managementAPI *apiserver.Server
+	metrics                 http.Handler
 	progress                func(string)
 	resources               resource.RefreshStore
 	operations              *operations
@@ -64,7 +65,7 @@ func (a *application) publishAPI() {
 		tests.Invalidate()
 	}
 	handler := a.apiHandler()
-	a.localAPI.SetLocalServices(apiserver.LocalServices{Operations: a.operations, Metrics: metricsHandler, Pprof: a.conf.API.Pprof})
+	a.localAPI.SetLocalServices(apiserver.LocalServices{Operations: a.operations, Metrics: a.metrics, Pprof: a.conf.API.Pprof})
 	a.localAPI.SetHandler(handler)
 	var targets []netip.AddrPort
 	if tests := a.plane.MITMTests(); tests != nil {

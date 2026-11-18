@@ -10,7 +10,7 @@
 | Surge 脚本存储（默认启用） | `/var/lib/dae/plugins/<实例 ID>/surge-store.json` |
 | HTTP(S) 模块及依赖缓存 | `/var/lib/dae/resources/surge/` |
 | HTTP(S) 订阅缓存 | `/var/lib/dae/resources/subscriptions/` |
-| 域名–IP 映射证据（[DNS](dns.md#持久化和诊断)） | `/var/lib/dae/domain-registry.base`、`domain-registry.journal` |
+| 域名–IP 映射证据及超限隔离（[DNS](dns.md#持久化和诊断)） | `/var/lib/dae/domain-registry.base`、`domain-registry.journal`；发生遗漏时另有 `domain-registry.capacity` |
 
 目录包含 CA 私钥和脚本存储，不能整体当作临时缓存清空。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`；daemon 准备配置时，若未显式指定 CA 且 `pki` 不存在，会自动初始化该目录，使 Unix API 也可导出证书，不依赖 TCP API 或 MITM 开关；也可用 [generate 命令](certificate.md)预生成。已有目录异常不会自动修复或更换身份；显式 CA 路径只读取，绝不自动覆盖。
 

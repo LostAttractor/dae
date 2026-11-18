@@ -162,6 +162,7 @@ Applications may ignore TTLs or retain resolved IPs outside their DNS cache.
 ```dae
 global {
     dns_retention_window: 168h
+    dns_registry_memory_limit: 67108864
 }
 ```
 
@@ -186,7 +187,7 @@ to the address RRset. A TTL with its high bit set means zero (RFC 2181), only fo
 the retention calculation; forwarded bytes are unchanged. Updates never shorten an existing deadline. GC runs on
 updates and on a one-minute check, so quiet entries may be collected up to one
 sweep later. Each domain keeps a lower bound on its address deadlines in a
-min-heap, so collection visits only domains whose bound has passed. The first implementation has **no userspace entry or memory limit**.
+min-heap, so collection visits only domains whose bound has passed.
 Kernel capacity eviction leaves userspace evidence intact; time GC removes both
 verification evidence and kernel contributions. `Verify` itself never refreshes
 retention. Once collected, a pair needs a new valid DNS observation to return.
@@ -194,6 +195,35 @@ retention. Once collected, a pair needs a new valid DNS observation to return.
 `retain_until` is a collection deadline, not a new DNS trust-validity deadline.
 Activity arriving before actual collection can still refresh an existing pair.
 Evidence is shared across clients; any client's activity can refresh that pair.
+
+### Userspace memory budget
+
+`global.dns_registry_memory_limit` is a positive byte budget per configuration
+generation (default 64 MiB), independent of kernel table slots. The estimate
+charges 128 bytes per pair, 384 per distinct IP, and 384 per distinct domain plus
+the canonical name's byte length rounded up to a multiple of 16 and its nonzero
+bitmap (`4 × words` bytes). An IP with any nonzero bitmap additionally reserves
+four full bitmap vectors (`16 × words` bytes) once. This bounds the accounted live
+index, not process RSS, reload copies, queues, or temporary cold-start decoding.
+GC also shrinks large per-domain and per-IP maps when at most a quarter of
+their peak membership remains, so a few live pairs do not keep a large index.
+After GC, known pairs can still renew; dae omits new pairs whose incremental
+cost exceeds the remaining budget, without rewriting or rejecting the DNS
+response or evicting a live pair. A zero-rule name still supplies DNS verification
+and can clear the AND of a shared IP without allocating its own bitmap.
+
+A missed pair makes the IP's history incomplete. dae hashes IPs into 256 fixed
+buckets and withdraws the whole bucket from the kernel selection, including
+already-resident IPs. Collisions reduce coverage, not the byte budget. Retained
+DNS evidence remains available for verification. The kernel uses ordinary map
+miss semantics, **not fail-closed**: a negated domain predicate can match.
+As with other map changes, a failed removal leaves the old entry pending retry.
+The bucket stays out until all missed DNS deadlines (including long TTLs) and
+the activity observation grace have passed. Unnamed activity or a name with no
+known exact pair in that bucket can extend the deadline; an exact known name
+does not. Free budget and reload do not clear missing history. Reload is
+rejected if the retained history no longer fits under the candidate budget and
+rules; the old generation keeps serving.
 
 ### DNS evidence
 
@@ -301,7 +331,9 @@ IP's priority leaves the resident set unchanged and needs no bitmap write.
 
 Capacity selection reads the cached IP aggregates. When all possible new
 candidates fit, only changed IPs need processing; capacity competition triggers
-reselection, with sorting only when candidates outnumber slots. Retained index
+reselection, with sorting only when candidates outnumber slots. Between membership
+changes, an omitted IP renewed below the last selection's cutoff cannot enter the
+set and does not trigger reselection. Equal priorities still compete by IP. Retained index
 and aggregate memory grows with the evidence, and capacity selection cost grows
 with the IP count. Queued activity uses space per distinct observation key in a
 batch, and reusable maps retain their allocated capacity. Applying observations
@@ -309,19 +341,38 @@ advances the monotonic watermark and checks for due collection. See
 the [DNS architecture](../design/project-structure.md#dns) for component
 responsibilities and lifecycle.
 
-### CDN tradeoff and observation gaps
+### Kernel-direct activity and CDN tradeoff
 
 Refreshing every pair on unnamed traffic is conservative: traffic to an active
 CDN IP can indefinitely retain obsolete names, including their capture ambiguity.
-The policy prioritizes avoiding missing mappings and cannot simultaneously
-guarantee prompt removal of all obsolete CDN names.
+Named activity renews only its exact pair. IP-only activity cannot distinguish
+two co-hosted names. Renewing only the newest name, or expiring zero-rule
+witnesses sooner, could change an ambiguous IP into a false definite match.
+An absolute age cap would also drop mappings used by active clients that do not
+repeat DNS. The registry therefore keeps these witnesses on unnamed activity.
 
-**Uncaptured kernel-direct traffic does not refresh retention in this version.**
-Domain routing and domain-based MITM/DNAT capture need resident evidence. Missing,
-collected or capacity-omitted IPs follow ordinary routing semantics. Retained
-userspace evidence alone cannot make an uncaptured connection undergo sniffing.
-Capture is never broadened to all traffic to compensate. SSH, unrelated HTTPS
-and ordinary direct connections without evidence remain in the kernel.
+Eligible uncaptured kernel-direct traffic refreshes known pairs as unnamed
+activity. This includes TCP and UDP to port 53 when `must` bypasses DNS
+interception and routing selects `direct`. LAN ingress and WAN egress sample the original destination IP in the
+outbound direction, at most once per IP per five seconds. This does not redirect
+packets, inspect payloads, record replied traffic or change marks or connection
+lifetimes. An observation slot is enabled only after successful bitmap
+publication. Membership changes rotate its token even if the bitmap is unchanged.
+Userspace accepts only currently resident IPs with a current slot token and no pending change.
+No record is created by the observation. When a later rule selects direct after
+`skip_noalive` and the saved TCP state has neither explicit-direct provenance
+nor a fallback token, established packets do not renew it through that fast path.
+
+Notifications travel through a bounded kernel ring buffer. On overflow, the
+reader tries to recover the latest slot timestamps in bounded batches without
+deleting slots. Samples are neither persisted nor reliably delivered; shutdown,
+reload, delayed processing or failed observation can cause gaps. Renewals that
+were applied use the same persistence policy as other activity.
+
+Domain routing and domain-based MITM/DNAT capture still need resident evidence.
+Missing, collected or capacity-omitted IPs follow ordinary routing semantics;
+retained userspace evidence alone does not cause capture to sniff an uncaptured
+connection. Ordinary direct traffic without evidence stays in the kernel.
 Encrypted DNS not handled by a plugin cannot supply passive core observations.
 
 ## Persistence and diagnostics
@@ -334,6 +385,21 @@ Evidence is stored in two binary files under `$DAE_LOCATION_CACHE` (default
   pair's ordinal is its position in the baseline.
 - `domain-registry.journal`: changes since the baseline. Each frame carries a
   length and a CRC32C that binds the baseline's epoch and the frame's offset.
+
+When capacity omissions occur, `domain-registry.capacity` (0600) stores the
+256 bucket deadlines with a checksum independently of the baseline epoch.
+The active writer syncs the guard before delivery, batching one observation
+and reserving ten extra minutes per extended deadline to avoid a sync per
+packet. Recovery can therefore suppress a bucket up to ten minutes longer.
+A damaged guard suppresses all projections; an unreadable guard is not
+overwritten. A failed write is reported and retried without rejecting DNS;
+a crash before a successful write can lose that isolation. Cold restore first
+collects expired pairs, then checks the byte budget with current-rule bitmaps
+before building the reverse index. If pruning is needed, it prefers complete
+previously unsuppressed buckets, then spends the remaining budget across the
+other buckets in a stable order, trying pairs in disk-ordinal order within each.
+Omitted pairs suppress their buckets before projection. Compaction does
+not replace the larger baseline before that isolation is durable.
 
 The writes follow from the registry's data structure: a renewal only moves a
 deadline forward to renewal time plus the window, and pairs are deleted only by
@@ -392,7 +458,10 @@ Restore validates the whole baseline, then replays journal frames of its epoch i
 order up to the first invalid frame; later writes start at that position. There
 is no baseline entry or size cap; format, address/name, duplicate, trailing-data
 and checksum checks remain. Cold restore loads the records before interface
-attachment, collects expired ones and recomputes current-rule bitmaps. Evidence
+attachment, collects expired ones, limits live pairs before installing the
+reverse index, and recomputes current-rule bitmaps. If a lower limit omits
+records, their buckets are suppressed before publication; compaction waits
+until that isolation has been persisted. Evidence
 is written only after activation; before it, startup at most publishes an
 adopted temporary baseline. If the journal is missing or of another epoch, the
 first write after activation rewrites the baseline. If a file exists but cannot
@@ -451,24 +520,29 @@ the caller to retry.
 
 `dae status` / `/api/status` reports:
 
-- `domain-registry`: `used` counts domain-IP pairs; `limit: 0` means unbounded.
+- `domain-registry`: `used` and `limit` are estimated used bytes and the configured
+  budget in bytes. `breakdown.pairs` counts retained domain-IP pairs.
   `breakdown.domains` counts names; `breakdown.ips` counts distinct addresses across
   all names. `breakdown.ipv4` and `ipv6` count distinct addresses by family and sum
   to `ips`. A shared IP counts once even when it belongs to several pairs.
 - `breakdown.gc` counts time-collected pairs (carried across reload, reset on cold
-  startup). Status reads count currently retained records without running GC or
-  refreshing deadlines.
+  startup). Status reads the index and selection counts without scanning records,
+  running GC or refreshing deadlines.
+- `breakdown.incomplete_buckets` counts currently suppressed buckets;
+  `breakdown.omitted_pairs` counts new-pair observation omissions, not distinct
+  names or IPs. The latter carries over on reload and resets on cold startup.
 - `domain-kernel`: `used` counts resident IPs, `limit` is capacity, and `candidates`
-  counts IPs with nonzero domain-rule bitmaps; `candidates - used` counts IPs omitted
-  by capacity. Registry IP totals also include zero-bitmap addresses that need no
+  counts eligible IPs with nonzero domain-rule bitmaps outside incomplete buckets;
+  `max(0, candidates - limit)` counts IPs omitted by kernel capacity regardless
+  of pending writes. Registry IP totals also include zero-bitmap addresses that need no
   kernel entry, so they differ from candidate counts.
 
 The CLI shows `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` in the
-`domain-registry (unlimited)` detail table. `domain-kernel` appears in the compact
+`domain-registry` detail table alongside its byte budget and omission counts. `domain-kernel` appears in the compact
 `Kernel tables` group with `USED`, `LIMIT`, `USAGE%` and `ON FULL` (`omit`), plus
 `CANDIDATES`, `OMITTED` and `PENDING` in a note. `--verbose` always lists both;
 ordinary and `--recent` views list them only when they need attention: the
-registry when its usage is unavailable, `domain-kernel` also with pending
+registry when full, unavailable, or holding incomplete buckets; `domain-kernel` also with pending
 changes or omitted candidates. Pending projection changes await kernel retry. A
 nonempty table `error` makes usage and omissions unavailable, not zero. Ordinary
 and `--recent` views share these statistics.
@@ -544,11 +618,8 @@ or the API's `plugins` status field.
 
 ## TODO
 
-- Observe uncaptured kernel-direct activity while preserving kernel forwarding
-  performance, source addresses and connection lifetimes.
 - Introduce provenance-aware sniff-only pairs; **sniff-only evidence must not
   satisfy verify**.
-- Design userspace memory/entry limits and their interaction with verification.
 - Optimize aggregation, ranking, locking and persistence based on measurements,
   retaining complete shared-IP AND/OR invariants.
 - Improve obsolete CDN retention under unnamed activity while accounting for

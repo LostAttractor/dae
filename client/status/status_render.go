@@ -66,7 +66,8 @@ func tableUsageRow(usage api.TableUsage) table.Row {
 // truncated, or near a capacity that rejects new entries. LRU fullness is
 // ordinary eviction.
 func tableNeedsAttention(usage api.TableUsage) bool {
-	return usage.Error != "" || usage.Pending > 0 || usage.Candidates > usage.Used ||
+	return usage.Error != "" || usage.Pending > 0 || int64(usage.Candidates) > usage.Limit ||
+		usage.Breakdown != nil && (usage.Breakdown.IncompleteBuckets > 0 || usage.Limit > 0 && usage.Used >= usage.Limit) ||
 		usage.OnFull == "reject" && usage.Limit > 0 &&
 			float64(usage.Used)/float64(usage.Limit) >= ampleUsageRatio
 }
@@ -77,18 +78,16 @@ func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
 	// Present retained evidence before its kernel projection.
 	for _, usage := range usages {
 		if detail := usage.Breakdown; detail != nil && (verbose || tableNeedsAttention(usage)) {
-			limit := "unlimited"
-			if usage.Limit > 0 {
-				limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
-			}
-			fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
+			fmt.Fprintf(out, "\n%s (on full: %s):\n", usage.Name, usage.OnFull)
 			used := fmt.Sprint(usage.Used)
 			if usage.Error != "" {
 				used = "unavailable"
 			}
+			fmt.Fprintf(out, "ESTIMATED MEMORY: %s / %d bytes\n", used, usage.Limit)
 			printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
-				{used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
+				{detail.Pairs, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
 			})
+			fmt.Fprintf(out, "INCOMPLETE BUCKETS: %d; PAIR OMISSIONS: %d\n", detail.IncompleteBuckets, detail.OmittedPairs)
 			if usage.Error != "" {
 				fmt.Fprintf(out, "%s: unavailable: %s\n", usage.Name, usage.Error)
 			}
@@ -115,7 +114,7 @@ func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
 			if usage.Name == "domain-kernel" {
 				omitted := "unavailable"
 				if usage.Error == "" {
-					omitted = fmt.Sprint(max(0, usage.Candidates-usage.Used))
+					omitted = fmt.Sprint(max(0, int64(usage.Candidates)-usage.Limit))
 				}
 				fmt.Fprintf(out, "%s: CANDIDATES %d; OMITTED %s; PENDING %d\n", usage.Name, usage.Candidates, omitted, usage.Pending)
 			}

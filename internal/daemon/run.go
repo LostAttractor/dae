@@ -153,6 +153,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		options: options, conf: conf, datapath: datapath,
 		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
 		geoDirs: geoDirs, operations: newOperations(), managementAPI: inheritedAPI,
+		metrics: newRuntimeMetricsHandler(datapath.DomainRegistryUsage),
 	}
 	if incoming != nil {
 		op := incoming.manifest.Operation
@@ -228,7 +229,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	datapath.RefreshTCPIdleTimeouts()
 	refresh.Commit()
 	app.setCertificates(certificates)
-	local.SetLocalServices(apiserver.LocalServices{Operations: app.operations, Metrics: metricsHandler, Pprof: conf.API.Pprof})
+	local.SetLocalServices(apiserver.LocalServices{Operations: app.operations, Metrics: app.metrics, Pprof: conf.API.Pprof})
 	stopOperations := context.AfterFunc(ctx, app.operations.stop)
 	defer stopOperations()
 	defer func() {

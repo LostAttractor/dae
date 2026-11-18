@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 15
+const StatusSchemaVersion = 16
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -31,19 +31,22 @@ type TableUsage struct {
 	Scope      string               `json:"scope"`           // kernel or userspace
 	OnFull     string               `json:"on_full"`         // evict, reject, omit, or unlimited
 	Error      string               `json:"error,omitempty"` // nonempty means Used is unavailable
-	Used       int                  `json:"used"`            // entries or resources; domain-IP pairs for domain-registry
-	Limit      int                  `json:"limit"`
+	Used       int64                `json:"used"`            // entries or resources; estimated bytes for domain-registry
+	Limit      int64                `json:"limit"`           // capacity in the same units as Used
 	Candidates int                  `json:"candidates,omitempty"`
 	Pending    int                  `json:"pending,omitzero"` // desired kernel changes awaiting retry
 	Breakdown  *TableUsageBreakdown `json:"breakdown,omitempty"`
 }
 
 type TableUsageBreakdown struct {
-	Domains int    `json:"domains"` // distinct retained domain names
-	IPs     int    `json:"ips"`     // distinct retained IPs across all domains
-	IPv4    int    `json:"ipv4"`    // distinct IPv4 addresses, not pairs
-	IPv6    int    `json:"ipv6"`    // distinct IPv6 addresses, not pairs
-	GC      uint64 `json:"gc"`      // pairs removed by time-based GC; cumulative across reload
+	Pairs             int    `json:"pairs"`              // retained domain-IP pairs
+	Domains           int    `json:"domains"`            // distinct retained domain names
+	IPs               int    `json:"ips"`                // distinct retained IPs across all domains
+	IPv4              int    `json:"ipv4"`               // distinct IPv4 addresses, not pairs
+	IPv6              int    `json:"ipv6"`               // distinct IPv6 addresses, not pairs
+	GC                uint64 `json:"gc"`                 // pairs removed by time-based GC; cumulative across reload
+	IncompleteBuckets int    `json:"incomplete_buckets"` // active buckets with omitted pair history
+	OmittedPairs      uint64 `json:"omitted_pairs"`      // cumulative pair omission events across reload
 }
 
 type GroupStatus struct {

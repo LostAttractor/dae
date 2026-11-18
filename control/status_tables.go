@@ -38,7 +38,7 @@ func (c *ControlPlane) kernelTableStatuses() []api.TableUsage {
 		if m == nil {
 			return
 		}
-		usage := api.TableUsage{Name: name, Scope: "kernel", Limit: int(m.MaxEntries()), OnFull: "reject"}
+		usage := api.TableUsage{Name: name, Scope: "kernel", Limit: int64(m.MaxEntries()), OnFull: "reject"}
 		if m.Type() == ebpf.LRUHash {
 			usage.OnFull = "evict"
 		}
@@ -62,7 +62,7 @@ func (c *ControlPlane) kernelTableStatuses() []api.TableUsage {
 		} else if !errors.Is(err, ebpf.ErrKeyNotExist) {
 			usage := api.TableUsage{Name: "device_routes_map", Scope: "kernel", OnFull: "reject", Error: err.Error()}
 			if spec, specErr := parsedBPFSpec(); specErr == nil {
-				usage.Limit = int(spec.Maps["device_routes_map"].InnerMap.MaxEntries)
+				usage.Limit = int64(spec.Maps["device_routes_map"].InnerMap.MaxEntries)
 			}
 			tables = append(tables, usage)
 		}
@@ -74,7 +74,7 @@ func (c *ControlPlane) kernelTableStatuses() []api.TableUsage {
 			if err != nil {
 				usage.Error = err.Error()
 			} else if used, ok := counts[id]; ok {
-				usage.Used = used
+				usage.Used = int64(used)
 			} else {
 				usage.Error = "kernel map counter unavailable"
 			}
@@ -83,10 +83,10 @@ func (c *ControlPlane) kernelTableStatuses() []api.TableUsage {
 	// Arrays are allocated in full; report compiled slots, not allocated cells.
 	if m := c.routingMatcher; m != nil && m.routingState != nil {
 		if b.RoutingMap != nil {
-			tables = append(tables, api.TableUsage{Name: "routing_map", Scope: "kernel", Used: m.routing.end, Limit: int(b.RoutingMap.MaxEntries()), OnFull: "reject"})
+			tables = append(tables, api.TableUsage{Name: "routing_map", Scope: "kernel", Used: int64(m.routing.end), Limit: int64(b.RoutingMap.MaxEntries()), OnFull: "reject"})
 		}
 		if b.LpmArrayMap != nil {
-			tables = append(tables, api.TableUsage{Name: "lpm_array_map", Scope: "kernel", Used: m.kernelLpmLen, Limit: int(b.LpmArrayMap.MaxEntries()), OnFull: "reject"})
+			tables = append(tables, api.TableUsage{Name: "lpm_array_map", Scope: "kernel", Used: int64(m.kernelLpmLen), Limit: int64(b.LpmArrayMap.MaxEntries()), OnFull: "reject"})
 		}
 	}
 	return tables
@@ -100,8 +100,8 @@ func (c *ControlPlane) userspaceTableStatuses() []api.TableUsage {
 	used, limit := pool.packetBudget().Usage()
 	replies, replyLimit := DefaultAnyfromPool.usage()
 	return []api.TableUsage{
-		{Name: "udp-sources", Scope: "userspace", Used: int(pool.sources.Load()), Limit: pool.sourceCapacity(), OnFull: "reject"},
-		{Name: "udp-packet-resources", Scope: "userspace", Used: used, Limit: limit, OnFull: "reject"},
-		{Name: "udp-reply-sockets", Scope: "userspace", Used: replies, Limit: replyLimit, OnFull: "reject"},
+		{Name: "udp-sources", Scope: "userspace", Used: int64(pool.sources.Load()), Limit: int64(pool.sourceCapacity()), OnFull: "reject"},
+		{Name: "udp-packet-resources", Scope: "userspace", Used: int64(used), Limit: int64(limit), OnFull: "reject"},
+		{Name: "udp-reply-sockets", Scope: "userspace", Used: int64(replies), Limit: int64(replyLimit), OnFull: "reject"},
 	}
 }

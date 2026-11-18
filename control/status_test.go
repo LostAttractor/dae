@@ -118,8 +118,8 @@ func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
 		pairs, kernel, candidates int
 		counts                    api.TableUsageBreakdown
 	}{
-		{0, 4, 1, 2, api.TableUsageBreakdown{Domains: 3, IPs: 3, IPv4: 2, IPv6: 1}},
-		{61 * time.Second, 2, 1, 1, api.TableUsageBreakdown{Domains: 2, IPs: 2, IPv4: 1, IPv6: 1, GC: 2}},
+		{0, 4, 1, 2, api.TableUsageBreakdown{Pairs: 4, Domains: 3, IPs: 3, IPv4: 2, IPv6: 1}},
+		{61 * time.Second, 2, 1, 1, api.TableUsageBreakdown{Pairs: 2, Domains: 2, IPs: 2, IPv4: 1, IPv6: 1, GC: 2}},
 		{181 * time.Second, 0, 0, 0, api.TableUsageBreakdown{GC: 4}},
 	} {
 		domainRegistry.Sweep(now.Add(test.elapsed))
@@ -132,10 +132,10 @@ func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
 			t.Fatalf("table count = %d, want 2", len(tables))
 		}
 		kernel, history := tables[0], tables[1]
-		if kernel.Used != test.kernel || kernel.Candidates != test.candidates || kernel.Limit != 1 {
+		if kernel.Used != int64(test.kernel) || kernel.Candidates != test.candidates || kernel.Limit != 1 {
 			t.Fatalf("kernel counts = %+v", kernel)
 		}
-		if history.Name != "domain-registry" || history.Used != test.pairs || history.Limit != 0 || history.Breakdown == nil || *history.Breakdown != test.counts {
+		if history.Name != "domain-registry" || history.OnFull != "omit" || history.Used != domainRegistry.Usage().MemoryUsed || (history.Used == 0) != (test.pairs == 0) || history.Limit != consts.DefaultDNSRegistryMemoryLimit || history.Breakdown == nil || *history.Breakdown != test.counts {
 			t.Fatalf("elapsed=%s table=%+v counts=%+v, want %+v", test.elapsed, history, history.Breakdown, test.counts)
 		}
 	}

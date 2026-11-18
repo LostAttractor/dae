@@ -38,6 +38,16 @@ as Prometheus labels. Listener changes prepare the required sockets before
 publication; a binding failure rejects the configuration and preserves the running
 service.
 
+## DNS registry
+
+`dae_domain_registry_estimated_bytes` reports the estimated retained history
+size, not process RSS or kernel map memory.
+`dae_domain_registry_memory_limit_bytes` reports the budget for that estimate.
+`dae_domain_registry_pairs` and `dae_domain_registry_incomplete_buckets` report
+the retained pair count and current incomplete IP buckets.
+`dae_domain_registry_pair_omissions_total` counts pair omission events, including
+repeated omissions of the same pair. It survives reload and resets on cold start.
+
 ## UDP packet drops
 
 `dae_udp_packet_drops_total{transport,direction,reason}` is a core metric; its name has

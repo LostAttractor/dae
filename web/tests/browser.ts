@@ -315,7 +315,7 @@ const httpServer = createServer(async (req, res) => {
       fixture.nextGlobalRead = null;
       const status = override?.status || (fixture.mode === "denied" ? 403 : loginRequired ? 401 : 200);
       const plugins = fixture.plugins.map(plugin => authenticated ? plugin : { ...plugin, details: undefined });
-      const snapshot = { buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", uptime: 600e9, stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins };
+      const snapshot = { schema: fixture.statusSchema ?? 16, buffer_memory: { limit: 67108864, used: 1048576, peak: 2097152, denied: 3 }, version: "test-daemon", started_at: "2026-10-01T00:00:00Z", uptime: 600e9, stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: fixture.tables, compiled_plugins: fixture.compiled_plugins, plugins };
       override?.started.resolve();
       if (override?.release) await override.release.promise;
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
@@ -2659,7 +2659,7 @@ try {
 
   await test("capacity tables distinguish scopes, full behavior and unavailable usage", async () => {
     fixture.tables = [
-      { name: "domain-registry", scope: "userspace", on_full: "unlimited", used: 8, limit: 0, breakdown: { domains: 3, ips: 5, ipv4: 4, ipv6: 1, gc: 2 } },
+      { name: "domain-registry", scope: "userspace", on_full: "omit", used: 2048, limit: 4096, breakdown: { pairs: 8, domains: 3, ips: 5, ipv4: 4, ipv6: 1, gc: 2, incomplete_buckets: 1, omitted_pairs: 4 } },
       { name: "domain-kernel", scope: "kernel", on_full: "omit", used: 2, limit: 4, candidates: 3, pending: 1 },
       { name: "tcp_flow_map", scope: "kernel", on_full: "evict", used: 16, limit: 16 },
       { name: "udp-sources", scope: "userspace", on_full: "reject", used: 0, limit: 8, error: "read pool: unavailable" },
@@ -2669,8 +2669,8 @@ try {
     await setDisclosure("#global-traffic .tables-section");
     const records = await js<string[]>('[...document.querySelectorAll("#global-traffic .tables-section .status-records > div")].map(row => row.textContent)');
     for (const [index, expected] of [
-      ["domain-registry", "Userspace", "8 / unlimited pairs", "On full: unlimited", "Domains: 3", "IPs: 5", "IPv4: 4", "IPv6: 1", "GC (pairs): 2"],
-      ["domain-kernel", "Kernel", "2 / 4 entries (50.0%)", "On full: omit", "Candidates: 3", "Omitted: 1", "Pending: 1"],
+      ["domain-registry", "Userspace", "2,048 / 4,096 estimated bytes (50.0%)", "On full: omit", "Pairs: 8", "Domains: 3", "IPs: 5", "IPv4: 4", "IPv6: 1", "GC (pairs): 2", "Incomplete buckets: 1", "Pair omissions: 4"],
+      ["domain-kernel", "Kernel", "2 / 4 entries (50.0%)", "On full: omit", "Candidates: 3", "Omitted: 0", "Pending: 1"],
       ["tcp_flow_map", "Kernel", "16 / 16 entries (100.0%)", "On full: evict"],
       ["udp-sources", "Userspace", "Unavailable: read pool: unavailable; limit: 8", "On full: reject"],
     ].entries()) for (const value of expected) assert.ok(records[index].includes(value), value);
@@ -2683,12 +2683,21 @@ try {
     const failed = await js<string>('document.querySelectorAll("#global-traffic .tables-section .status-records > div")[1].textContent');
     assert.match(failed, /Unavailable: read map: permission denied/);
     assert.match(failed, /Omitted: unavailable/);
-    assert.doesNotMatch(failed, /50\.0%|Omitted: 1/);
+    assert.doesNotMatch(failed, /50\.0%|Omitted: 0/);
     const registry = await js<string>('document.querySelectorAll("#global-traffic .tables-section .status-records > div")[0].textContent');
     assert.match(registry, /Unavailable: read registry count failed/);
     assert.match(registry, /Domains: 3.*GC \(pairs\): 2/);
-    assert.doesNotMatch(registry, /8 \/ unlimited pairs/);
+    assert.doesNotMatch(registry, /50\.0%|2,048 \/ 4,096 estimated bytes/);
     fixture.tables = [];
+  });
+
+  await test("capacity tables reject the prior registry pair-usage schema", async () => {
+    fixture.statusSchema = 15;
+    await page();
+    assert.match(await js('document.querySelector("#global-status").textContent'), /Global update failed/);
+    fixture.statusSchema = 16;
+    await js('document.querySelector("#refresh").click()');
+    await until('!document.querySelector("#global-status").textContent.includes("Global update failed")');
   });
 
   await test("expanded outbound details preserve focus and scrolling across polls", async () => {

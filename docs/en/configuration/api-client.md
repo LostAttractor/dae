@@ -79,19 +79,25 @@ at the same position across rows. Display widths account for CJK text and ANSI c
 ## Capacity tables
 
 Ordinary, `--verbose` and `--recent` status render the same `tables` snapshot.
-`domain-registry (unlimited)` shows its detailed pair, domain, IP,
-address-family and GC counts. Other tables and resource pools are grouped under
+`domain-registry` reports retained-history estimated bytes and the budget in
+its `used` and `limit` fields. This is not process RSS. Its `breakdown.pairs`
+counts retained pairs separately from memory. Its detailed view also shows
+`omit` behavior, domain, IP, address-family and GC counts, current incomplete
+buckets, and cumulative pair omission events. Other tables and resource pools are grouped under
 `Kernel tables` and `Userspace tables`, with `NAME`, `USED`, `LIMIT`, `USAGE%` and
 `ON FULL` columns. These include dynamic kernel hash/LRU tables and the global
 UDP source, packet-resource and reply-socket pools. `--verbose` lists all of them.
 Ordinary and `--recent` views list only items needing attention, including the
-registry: unavailable usage, pending kernel changes, omitted candidates, or
-`reject` usage of at least 70%; a group with no such item is omitted. The `domain-kernel` note keeps `CANDIDATES`,
-`OMITTED` and `PENDING` visible; pending changes await kernel retry.
+registry: unavailable usage, exhausted registry budget or incomplete buckets, pending
+kernel changes, omitted candidates, or `reject` usage of at least 70%; a group
+with no such item is omitted. The `domain-kernel` note keeps `CANDIDATES`,
+`OMITTED` and `PENDING` visible. Capacity omissions are
+`max(0, candidates - limit)`; pending changes await kernel retry and do not
+affect that count. Incomplete buckets are not kernel capacity omissions.
 
 Each item identifies its `scope` (`kernel` or `userspace`) and capacity behavior
 in `on_full`: `evict` replaces existing LRU entries, `reject` refuses new entries,
-`omit` leaves excess domain candidates out of the kernel projection, and
+`omit` leaves excess pairs out of the registry or excess IPs out of the kernel projection, and
 `unlimited` has no capacity limit. `limit: 0` always means unlimited. A full LRU
 table is normal eviction, not hard exhaustion; only `reject` usage receives
 capacity-warning colors. A nonempty `error` makes `used` unavailable: text views
@@ -370,7 +376,7 @@ Proof GET allows only its initiating Origin. Ordinary metadata follows user auth
 
 ## Snapshot semantics and TUI integration
 
-The current status schema is `15`. Top-level `direct_fallback_connections` contains the single direct fallback counter; `PathStats` contains active/total connections, payload totals and history without fallback fields. Prometheus exports `dae_fallback_connections_total` as one unlabeled process counter. `tables` covers kernel tables and userspace resource pools with `scope`, `on_full` and optional `error`; `limit: 0` means unlimited and a nonempty `error` makes `used` unavailable. Domain `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. The top-level `buffer_memory` object reports the process-wide body buffer budget even with no active plugins. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
+The current status schema is `16`. Top-level `direct_fallback_connections` contains the single direct fallback counter; `PathStats` contains active/total connections, payload totals and history without fallback fields. Prometheus exports `dae_fallback_connections_total` as one unlabeled process counter. `tables` covers kernel tables and userspace resource pools with `scope`, `on_full` and optional `error`; `limit: 0` means unlimited and a nonempty `error` makes `used` unavailable. Domain `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. The top-level `buffer_memory` object reports the process-wide body buffer budget even with no active plugins. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
 
 Node latency statistics contain successful probes only. Automatic selection exposes `selection` with the group-local role (selected, monitoring or standby), effective priority, signed score, verified recovery duration and measurement time. Failed nodes show `[degraded]`; `[recover 5s/30s verified]` appears after the first recovery success and advances only on successful probes. The state column also shows active verification, queueing or the actual next recheck countdown during recovery observation. Node `dormant` denotes physical sleep. The state column shows it once, with historical latency age, unless the latest observation failed: a failed node shows `unavailable` with its retry time instead. Standby paths may share monitoring from other groups; `recovery` reports actual check/retry progress. See [outbound selection](outbound-selection.md).
 

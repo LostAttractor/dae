@@ -267,6 +267,7 @@ async function loadGlobalStatus({ background = false } = {}) {
   try {
     const snapshot = await request<GlobalStatus>("/api/status");
     if (version !== globalRequestVersion || authMode == null) return;
+    if (snapshot.schema !== 16) throw new Error("Unsupported daemon status schema. Use matching Web and daemon versions.");
     status.setGlobal(snapshot);
     byId("daemon-version").textContent = `dae · ${snapshot.version}`;
     byId("daemon-version").hidden = !snapshot.version;

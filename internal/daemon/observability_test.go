@@ -14,8 +14,11 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
+
+var metricsHandler = newRuntimeMetricsHandler(func() (control.RegistryUsage, bool) { return control.RegistryUsage{}, false })
 
 func freeLocalPort(t *testing.T) uint16 {
 	t.Helper()
@@ -68,5 +71,45 @@ func TestMetricsServerContinuesAfterExternalCounterFailure(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "dae_external_counter_read_errors_total") {
 		t.Fatalf("metrics response omitted external counter errors: %s", response.Body.String())
+	}
+}
+
+func TestMetricsReportsCurrentDNSRegistryUsage(t *testing.T) {
+	usage := control.RegistryUsage{UserUsed: 3, MemoryUsed: 300, MemoryLimit: 800, IncompleteBuckets: 1, OmittedPairs: 4}
+	available := false
+	handler := newRuntimeMetricsHandler(func() (control.RegistryUsage, bool) { return usage, available })
+	scrape := func() string {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost/metrics", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("metrics status = %d, body = %s", response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	if strings.Contains(scrape(), "dae_domain_registry_") {
+		t.Fatal("unavailable registry had metric samples")
+	}
+	available = true
+	body := scrape()
+	for _, want := range []string{
+		"dae_domain_registry_pairs 3\n",
+		"dae_domain_registry_estimated_bytes 300\n",
+		"dae_domain_registry_memory_limit_bytes 800\n",
+		"dae_domain_registry_incomplete_buckets 1\n",
+		"# TYPE dae_domain_registry_pair_omissions_total counter\n",
+		"dae_domain_registry_pair_omissions_total 4\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics response omitted %q", want)
+		}
+	}
+	usage.MemoryLimit = 1600
+	usage.IncompleteBuckets = 0
+	body = scrape()
+	if !strings.Contains(body, "dae_domain_registry_memory_limit_bytes 1600\n") ||
+		!strings.Contains(body, "dae_domain_registry_incomplete_buckets 0\n") ||
+		!strings.Contains(body, "dae_domain_registry_pair_omissions_total 4\n") {
+		t.Fatal("metrics did not use the current registry usage snapshot")
 	}
 }
