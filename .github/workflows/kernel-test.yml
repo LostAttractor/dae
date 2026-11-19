@@ -19,9 +19,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  kernel:
+  kernel-check:
+    name: Kernel check (${{ matrix.check }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [kernel-control-lts, kernel-control-latest, kernel-proxy]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,19 +37,23 @@ jobs:
         run: |
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
-          # Leave room for two guest kernels and the Go/LLVM build closure.
+          # Leave room for the guest kernel and the Go/LLVM build closure.
           sudo rm -rf /usr/local/lib/android/sdk
 
-      - id: nix
-        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
 
-      - name: Privileged tests on the LTS kernel
-        run: nix build -L --no-link .#checks.x86_64-linux.kernel-control-lts
+      - name: Run NixOS VM check
+        env:
+          CHECK: ${{ matrix.check }}
+        run: nix build -L --no-link ".#checks.x86_64-linux.$CHECK"
 
-      - name: Privileged tests on the latest pinned kernel
-        if: ${{ !cancelled() && steps.nix.outcome == 'success' }}
-        run: nix build -L --no-link .#checks.x86_64-linux.kernel-control-latest
-
-      - name: Dual-stack LAN and WAN via sing-box
-        if: ${{ !cancelled() && steps.nix.outcome == 'success' }}
-        run: nix build -L --no-link .#checks.x86_64-linux.kernel-proxy
+  # Retain the existing check name for branch protection.
+  kernel:
+    needs: kernel-check
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all kernel checks to pass
+        env:
+          RESULT: ${{ needs.kernel-check.result }}
+        run: test "$RESULT" = success
