@@ -1,0 +1,41 @@
+name: Classify pull request changes
+
+on:
+  workflow_call:
+    outputs:
+      web-tests-only:
+        value: ${{ jobs.scope.outputs.web-tests-only }}
+
+permissions:
+  contents: read
+
+jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    outputs:
+      web-tests-only: ${{ steps.paths.outputs.web-tests-only }}
+    steps:
+      - uses: actions/checkout@v6
+        continue-on-error: true
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: paths
+        name: Detect changes limited to Web tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          web_tests_only=false
+          # Compare the tested merge commit to its base; uncertain diffs run all jobs.
+          if [[ -n "$BASE_SHA" && "$(git rev-parse HEAD^1)" == "$BASE_SHA" ]] &&
+             changed=$(git diff --no-ext-diff --no-renames --name-only "$BASE_SHA" HEAD --) &&
+             [[ -n "$changed" ]]; then
+            web_tests_only=true
+            while IFS= read -r path; do
+              if [[ "$path" != web/tests/* ]]; then
+                web_tests_only=false
+                break
+              fi
+            done <<< "$changed"
+          fi
+          echo "web-tests-only=$web_tests_only" >> "$GITHUB_OUTPUT"

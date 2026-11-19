@@ -21,6 +21,7 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
+      - ".github/workflows/ci-scope.yml"
       - "Makefile"
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
@@ -54,6 +55,7 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
+      - ".github/workflows/ci-scope.yml"
       - "Makefile"
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
@@ -68,8 +70,18 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  scope:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/ci-scope.yml
+
   config-parser:
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.result != 'success' || needs.scope.outputs.web-tests-only != 'true') }}
     name: Config grammar and generated parser
     runs-on: ubuntu-24.04
     steps:
@@ -99,6 +111,8 @@ jobs:
         run: make -C web test
 
   http-protocols:
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.result != 'success' || needs.scope.outputs.web-tests-only != 'true') }}
     name: HTTP protocol contracts (Go ${{ matrix.go }})
     runs-on: ubuntu-24.04
     strategy:
@@ -128,6 +142,8 @@ jobs:
         run: go test -race . ./http3 -count=1
 
   api-contracts:
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.result != 'success' || needs.scope.outputs.web-tests-only != 'true') }}
     name: Standalone API and client contracts
     runs-on: ubuntu-24.04
     env:
@@ -148,6 +164,8 @@ jobs:
         run: CGO_ENABLED=0 go test ./internal/apiserver
 
   go-test:
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.result != 'success' || needs.scope.outputs.web-tests-only != 'true') }}
     name: Go Unit Test (${{ matrix.surge-runtime }}, ${{ matrix.plugins }})
     runs-on: ubuntu-24.04
     strategy:

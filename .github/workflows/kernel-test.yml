@@ -19,7 +19,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/ci-scope.yml
+
   kernel-check:
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.result != 'success' || needs.scope.outputs.web-tests-only != 'true') }}
     name: Kernel check (${{ matrix.check }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -49,11 +55,18 @@ jobs:
 
   # Retain the existing check name for branch protection.
   kernel:
-    needs: kernel-check
+    needs: [scope, kernel-check]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require all kernel checks to pass
         env:
           RESULT: ${{ needs.kernel-check.result }}
-        run: test "$RESULT" = success
+          SCOPE: ${{ needs.scope.result }}
+          WEB_TESTS_ONLY: ${{ needs.scope.outputs.web-tests-only }}
+        run: |
+          if [[ "$SCOPE" == success && "$WEB_TESTS_ONLY" == true ]]; then
+            test "$RESULT" = skipped
+          else
+            test "$RESULT" = success
+          fi
