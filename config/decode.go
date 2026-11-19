@@ -6,11 +6,35 @@
 package config
 
 import (
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 )
+
+func parseRegistryMemoryLimit(value string) (int64, bool) {
+	if bytes, err := strconv.ParseInt(value, 0, 64); err == nil {
+		return bytes, bytes > 0
+	}
+	units := [...]string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "B"}
+	for i, unit := range units {
+		amount, ok := strings.CutSuffix(value, unit)
+		if !ok {
+			continue
+		}
+		shift := (i + 1) * 10
+		if unit == "B" {
+			shift = 0
+		}
+		n, err := strconv.ParseInt(amount, 10, 64)
+		if err != nil || n <= 0 || n > math.MaxInt64>>shift {
+			return 0, false
+		}
+		return n << shift, true
+	}
+	return 0, false
+}
 
 func FuzzyDecode(to any, val string) bool {
 	v := reflect.Indirect(reflect.ValueOf(to))

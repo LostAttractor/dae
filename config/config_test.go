@@ -121,10 +121,26 @@ func TestDNSRegistryMemoryLimit(t *testing.T) {
 	}{
 		{name: "default", want: consts.DefaultDNSRegistryMemoryLimit},
 		{name: "custom", value: "dns_registry_memory_limit: 4294967296", want: 4294967296},
+		{name: "bytes", value: "dns_registry_memory_limit: 64B", want: 64},
+		{name: "kibibytes", value: "dns_registry_memory_limit: 16KiB", want: 16 << 10},
+		{name: "mebibytes", value: "dns_registry_memory_limit: 64MiB", want: 64 << 20},
+		{name: "gibibytes", value: "dns_registry_memory_limit: 4GiB", want: 4 << 30},
+		{name: "tebibytes", value: "dns_registry_memory_limit: '2TiB'", want: 2 << 40},
+		{name: "pebibytes", value: "dns_registry_memory_limit: 1PiB", want: 1 << 50},
+		{name: "exbibytes", value: "dns_registry_memory_limit: 7EiB", want: 7 << 60},
+		{name: "max-bytes", value: "dns_registry_memory_limit: 9223372036854775807B", want: 1<<63 - 1},
+		{name: "bare-hex", value: "dns_registry_memory_limit: 0xAB", want: 0xab},
 		{name: "zero", value: "dns_registry_memory_limit: 0"},
+		{name: "zero-with-unit", value: "dns_registry_memory_limit: 0B"},
 		{name: "negative", value: "dns_registry_memory_limit: -1"},
+		{name: "negative-with-unit", value: "dns_registry_memory_limit: -1MiB"},
 		{name: "fractional", value: "dns_registry_memory_limit: 1.5"},
+		{name: "fractional-with-unit", value: "dns_registry_memory_limit: 1.5MiB"},
+		{name: "unknown-unit", value: "dns_registry_memory_limit: 64MB"},
+		{name: "lowercase-unit", value: "dns_registry_memory_limit: 64mib"},
+		{name: "unit-with-space", value: "dns_registry_memory_limit: '64 MiB'"},
 		{name: "overflow", value: "dns_registry_memory_limit: 9223372036854775808"},
+		{name: "overflow-after-scaling", value: "dns_registry_memory_limit: 8388608TiB"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sections, err := config_parser.Parse("global { " + test.value + " } routing { fallback: direct }")
@@ -149,6 +165,16 @@ func TestDNSRegistryMemoryLimit(t *testing.T) {
 				t.Fatalf("limit changed in round trip: %d", got)
 			}
 		})
+	}
+}
+
+func TestDNSRegistryMemoryUnitsDoNotApplyToOtherFields(t *testing.T) {
+	sections, err := config_parser.Parse("global { tproxy_port: 64KiB } routing { fallback: direct }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(sections); err == nil || !strings.Contains(err.Error(), "tproxy_port") {
+		t.Fatalf("integer field accepted memory units: %v", err)
 	}
 }
 

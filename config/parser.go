@@ -150,6 +150,14 @@ func ParamParser(to reflect.Value, section *config_parser.Section) error {
 				if itemVal.AndFunctions != nil {
 					return fmt.Errorf("failed to parse %q: functions cannot be converted to %v", itemVal.Key, field.Val.Type())
 				}
+				if itemVal.Key == "dns_registry_memory_limit" && tot == reflect.TypeFor[Global]() {
+					bytes, ok := parseRegistryMemoryLimit(itemVal.Val)
+					if !ok {
+						return fmt.Errorf("%s must be a positive integer byte count, optionally with an IEC unit", itemVal.Key)
+					}
+					field.Val.SetInt(bytes)
+					break
+				}
 				// String value.
 				switch field.Val.Kind() {
 				case reflect.Interface:

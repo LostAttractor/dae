@@ -162,7 +162,7 @@ Applications may ignore TTLs or retain resolved IPs outside their DNS cache.
 ```dae
 global {
     dns_retention_window: 168h
-    dns_registry_memory_limit: 67108864
+    dns_registry_memory_limit: 64MiB
 }
 ```
 
@@ -199,7 +199,9 @@ Evidence is shared across clients; any client's activity can refresh that pair.
 ### Userspace memory budget
 
 `global.dns_registry_memory_limit` is a positive byte budget per configuration
-generation (default 64 MiB), independent of kernel table slots. The estimate
+generation, independent of kernel table slots. The default is `64MiB`, equivalent
+to `67108864` bytes. Use a positive integer alone for bytes, or append a
+case-sensitive IEC unit without a space (e.g. `512KiB`, `64MiB`, `4GiB`). The estimate
 charges 128 bytes per pair, 384 per distinct IP, and 384 per distinct domain plus
 the canonical name's byte length rounded up to a multiple of 16 and its nonzero
 bitmap (`4 × words` bytes). An IP with any nonzero bitmap additionally reserves

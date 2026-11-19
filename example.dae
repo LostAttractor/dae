@@ -67,7 +67,7 @@ global {
 
     # Estimated bytes for retained userspace domain-IP history, not process RSS.
     # New pairs are omitted when they would exceed this budget (64 MiB by default).
-    dns_registry_memory_limit: 67108864
+    dns_registry_memory_limit: 64MiB
 
     # Optional DNS server for dae's internal lookups; IP or IP:port (default 53).
     # Unset uses Go's system resolver. Bootstrap is direct; after startup, DNS
