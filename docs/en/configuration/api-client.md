@@ -320,7 +320,7 @@ Runtime and client code use `api` types directly. `internal/apiserver` owns the 
 
 The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds independently within this repository; Go owns embedding and routing. API contracts, clients and generated frontend types are updated and verified in the same change.
 
-`make client-test` runs tests with CGO disabled, checks OpenAPI against the Go wire types and rejects transitive imports of daemon implementation packages. CI runs it before installing clang or generating eBPF. TUI navigation, sorting, polling and presentation belong in client packages; only new runtime data or operations require daemon changes.
+`make client-test` runs tests with CGO disabled, checks OpenAPI against the Go wire types and rejects transitive imports of daemon implementation packages. CI runs it in a standalone job that needs neither Clang nor generated eBPF. TUI navigation, sorting, polling and presentation belong in client packages; only new runtime data or operations require daemon changes.
 
 ## API reference
 

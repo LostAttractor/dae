@@ -127,6 +127,26 @@ jobs:
         working-directory: third_party/quic-go
         run: go test -race . ./http3 -count=1
 
+  api-contracts:
+    name: Standalone API and client contracts
+    runs-on: ubuntu-24.04
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v6
+        with:
+          cache-dependency-path: |
+            go.mod
+            go.sum
+          go-version: '>=1.27.2'
+      - name: Test standalone API clients
+        run: make client-test
+      - name: Test API server without daemon dependencies
+        run: CGO_ENABLED=0 go test ./internal/apiserver
+
   go-test:
     name: Go Unit Test (${{ matrix.surge-runtime }}, ${{ matrix.plugins }})
     runs-on: ubuntu-24.04
@@ -179,12 +199,6 @@ jobs:
             go.sum
           go-version: '>=1.27.2'
 
-      - name: Test standalone API clients
-        run: make client-test
-
-      - name: Test API server without daemon dependencies
-        run: CGO_ENABLED=0 go test ./internal/apiserver
-
       - name: Install host LLVM
         uses: ./.github/actions/setup-llvm
 
@@ -195,14 +209,21 @@ jobs:
           node-version: '22.13.0'
 
       - name: Run tests
+        env:
+          PLUGIN_SELECTION: ${{ matrix.plugins }}
         run: |
+          test_args=(-count=1)
+          # The real TCP timer does not depend on either matrix axis.
+          if [[ "$SURGE_RUNTIME" != quickjs || "$PLUGIN_SELECTION" != example ]]; then
+            test_args+=(-skip '^TestDirectDialerPreservesLiveZeroWindow$')
+          fi
           sudo systemd-run --wait --pipe --collect --uid="$(id -u)" \
             --property=Delegate=memory --property=DelegateSubgroup=daemon \
             --working-directory="$PWD" \
             env "PATH=$PATH" "HOME=$HOME" "CC=$CLANG" \
             "CLANG=$CLANG" "STRIP=$STRIP" "LLVM_OBJDUMP=$LLVM_OBJDUMP" \
             "SURGE_RUNTIME=$SURGE_RUNTIME" "PLUGINS_CONFIG=$PLUGINS_CONFIG" \
-            GOWORK=off make -o web-assets test TEST_ARGS=-count=1
+            GOWORK=off make -o web-assets test "TEST_ARGS=${test_args[*]}"
 
       - name: Test pinned QuickJS binding
         if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'

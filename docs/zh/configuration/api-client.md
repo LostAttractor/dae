@@ -257,7 +257,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 前端与 dae 的边界是公开构建产物和 HTTP API 契约。`web/` 在同一仓库内保留独立构建，嵌入、静态托管与端口分发由 Go 宿主负责。API 契约、客户端和前端类型在同一个变更中更新并验证。
 
-`make client-test` 在关闭 CGO 的环境运行客户端测试，检查 OpenAPI 是否与契约一致，并检查传递依赖，阻止客户端引入守护进程实现。CI 在安装 clang 和构建 eBPF 之前执行此目标。
+`make client-test` 在关闭 CGO 的环境运行客户端测试，检查 OpenAPI 是否与契约一致，并检查传递依赖，阻止客户端引入守护进程实现。CI 在独立作业中执行此目标，不需要 Clang 或生成的 eBPF 产物。
 
 ## API 参考
 
