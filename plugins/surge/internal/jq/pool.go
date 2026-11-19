@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -20,17 +19,16 @@ import (
 // The pool is shared by Surge instances and overlapping configuration generations.
 // Capacity includes starting processes and workers being killed/reaped.
 type Pool struct {
-	group      *processgroup.Group
-	executable string
-	ctx        context.Context
-	cancel     context.CancelFunc
-	slots      chan struct{}
-	queue      chan struct{}
-	mu         sync.Mutex
-	idle       []*worker
-	jobs       sync.WaitGroup
-	sequence   atomic.Uint64
-	closed     chan struct{} // closed once the last release finishes close
+	group    *processgroup.Group
+	ctx      context.Context
+	cancel   context.CancelFunc
+	slots    chan struct{}
+	queue    chan struct{}
+	mu       sync.Mutex
+	idle     []*worker
+	jobs     sync.WaitGroup
+	sequence atomic.Uint64
+	closed   chan struct{} // closed once the last release finishes close
 }
 
 var shared struct {
@@ -58,10 +56,6 @@ func Acquire() (*Pool, func() error, error) {
 		shared.pool = nil
 	}
 	if shared.pool == nil {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, nil, err
-		}
 		group, err := processgroup.NewPool("jq", PoolMemory)
 		if err != nil {
 			if group != nil {
@@ -71,7 +65,7 @@ func Acquire() (*Pool, func() error, error) {
 			return nil, nil, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16), closed: make(chan struct{})}
+		shared.pool = &Pool{group: group, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16), closed: make(chan struct{})}
 	}
 	pool := shared.pool
 	if err := pool.group.Check(); err != nil {
@@ -267,7 +261,8 @@ type worker struct {
 
 func (p *Pool) start() (*worker, error) {
 	id := p.sequence.Add(1)
-	command := exec.Command(p.executable, "plugins", "surge", "__jq-worker")
+	// The installed path can point to a different image after deployment.
+	command := exec.Command("/proc/self/exe", "plugins", "surge", "__jq-worker")
 	command.Env = []string{"GOMAXPROCS=1", "GOMEMLIMIT=96MiB", "LANG=C.UTF-8"}
 	process, err := p.group.Start(command, WorkerMemory)
 	if err != nil {

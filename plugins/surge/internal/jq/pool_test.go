@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -35,15 +36,55 @@ func testPool(tb testing.TB) *Pool {
 	if err != nil {
 		tb.Fatalf("jq cgroup unavailable: %v", err)
 	}
-	if executable := os.Getenv("DAE_TEST_JQ_EXECUTABLE"); executable != "" {
-		pool.executable = executable
-	}
 	tb.Cleanup(func() {
 		if err := release(); err != nil {
 			tb.Error(err)
 		}
 	})
 	return pool
+}
+
+func TestPoolStartsWorkerAfterExecutableReplacement(t *testing.T) {
+	const fixture = "DAE_TEST_JQ_REPLACED_IMAGE"
+	if os.Getenv(fixture) == "1" {
+		pool := testPool(t)
+		result, err := pool.Apply(t.Context(), ".value += 1", []byte(`{"value":2}`), 1024, membuffer.NewBudget(4096))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Close()
+		if got := string(result.Bytes()); got != `{"value":3}` {
+			t.Fatalf("worker result: %q", got)
+		}
+		return
+	}
+	path := filepath.Join(t.TempDir(), "jq.test")
+	image, err := os.ReadFile("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, image, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	if err := os.WriteFile(path+".next", []byte("not the running executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".next", path); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/proc/self/fd/3", "-test.run=^TestPoolStartsWorkerAfterExecutableReplacement$")
+	command.ExtraFiles = []*os.File{pinned}
+	command.Env = append(os.Environ(), fixture+"=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("renamed executable fixture: %v\n%s", err, output)
+	}
 }
 
 func workerGroups(t *testing.T, pool *Pool) int {
