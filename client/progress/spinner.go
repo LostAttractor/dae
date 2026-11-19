@@ -4,14 +4,13 @@
 package progress
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
 )
@@ -24,24 +23,36 @@ const (
 
 var frames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Spinner owns one terminal line until Stop returns. Callers must stop it before
-// printing other output to that terminal. The zero value is disabled.
+// Spinner owns one terminal line until Stop returns. Use Println for logs above
+// the animation. The zero value is disabled.
 type Spinner struct {
-	mu      sync.Mutex
-	message string
-	stop    chan struct{}
-	done    chan struct{}
-	once    sync.Once
+	mu       sync.Mutex
+	message  string
+	hasStage bool
+	lines    chan string
+	stop     chan struct{}
+	done     chan struct{}
+	once     sync.Once
 }
 
 // Start animates only when w is a terminal and TERM is not dumb. Quick operations
 // finish without displaying anything. Call Stop on every return path.
 func Start(w io.Writer, message string) *Spinner {
-	f, ok := w.(*os.File)
-	if !ok || os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(f.Fd())) {
+	f, _ := w.(*os.File)
+	return startTerminal(f, message, f.WriteString, showDelay)
+}
+
+// StartLive animates immediately alongside streamed logs. The frame writer
+// targets f and may drop frames under backpressure.
+func StartLive(f *os.File, message string, write func(string) (int, error)) *Spinner {
+	return startTerminal(f, message, write, 0)
+}
+
+func startTerminal(f *os.File, message string, write func(string) (int, error), delay time.Duration) *Spinner {
+	if f == nil || os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(f.Fd())) {
 		return new(Spinner)
 	}
-	return start(w, message, func() int {
+	return start(write, message, delay, func() int {
 		width, _, err := term.GetSize(int(f.Fd()))
 		if err != nil || width <= 0 {
 			return 80
@@ -50,10 +61,10 @@ func Start(w io.Writer, message string) *Spinner {
 	})
 }
 
-func start(w io.Writer, message string, width func() int) *Spinner {
-	s := &Spinner{stop: make(chan struct{}), done: make(chan struct{})}
-	s.Update(message)
-	go s.run(w, width)
+func start(write func(string) (int, error), message string, delay time.Duration, width func() int) *Spinner {
+	s := &Spinner{lines: make(chan string), stop: make(chan struct{}), done: make(chan struct{})}
+	s.Hint(message)
+	go s.run(write, width, delay)
 	return s
 }
 
@@ -63,14 +74,31 @@ func (s *Spinner) Enabled() bool { return s.done != nil }
 
 // Update replaces the current stage without starting another animation.
 func (s *Spinner) Update(message string) {
+	s.setStage(message, true)
+}
+
+// Hint displays best-effort status until an authoritative Update arrives.
+func (s *Spinner) Hint(message string) {
+	s.setStage(message, false)
+}
+
+func (s *Spinner) setStage(message string, authoritative bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.message = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
+	if authoritative || !s.hasStage {
+		s.hasStage = authoritative
+		s.message = strings.Join(strings.Fields(terminaltext.Line(message)), " ")
+	}
+}
+
+// Println inserts one already-sanitized log line into the terminal scrollback.
+func (s *Spinner) Println(line string) {
+	if s.Enabled() {
+		select {
+		case s.lines <- line:
+		case <-s.done:
 		}
-		return r
-	}, message)), " ")
+	}
 }
 
 // Stop clears the line and waits for the renderer to exit. It is safe to call
@@ -83,31 +111,39 @@ func (s *Spinner) Stop() {
 	<-s.done
 }
 
-func (s *Spinner) run(w io.Writer, width func() int) {
+func (s *Spinner) run(write func(string) (int, error), width func() int, delay time.Duration) {
 	defer close(s.done)
-	delay := time.NewTimer(showDelay)
-	defer delay.Stop()
-	select {
-	case <-s.stop:
-		return
-	case <-delay.C:
-	}
-	ticker := time.NewTicker(frameInterval)
-	defer ticker.Stop()
-	defer io.WriteString(w, clearLine)
-	for frame := 0; ; frame = (frame + 1) % len(frames) {
-		s.mu.Lock()
-		message := s.message
-		s.mu.Unlock()
-		// Leave the final column unused to avoid wrapping into another line.
-		line := text.Trim(frames[frame]+" "+message, max(0, width()-1))
-		if _, err := fmt.Fprint(w, clearLine, line); err != nil {
-			return
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	frame := -1
+	defer func() {
+		if frame >= 0 {
+			_, _ = write(clearLine)
 		}
+	}()
+	status := func() string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// Leave the final column unused to avoid wrapping into another line.
+		return text.Trim(frames[frame]+" "+s.message, max(0, width()-1))
+	}
+	for {
+		var output string
 		select {
 		case <-s.stop:
 			return
-		case <-ticker.C:
+		case line := <-s.lines:
+			output = line + "\n"
+			if frame >= 0 {
+				output = clearLine + output + status()
+			}
+		case <-timer.C:
+			frame = (frame + 1) % len(frames)
+			output = clearLine + status()
+			timer.Reset(frameInterval)
+		}
+		if _, err := write(output); err != nil {
+			return
 		}
 	}
 }

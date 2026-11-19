@@ -464,6 +464,8 @@ def main(binary, wan=False):
                 if ports == (18080,):
                     assert listener_identity(ports) == initial_listeners
                 if expected:
+                    assert any(log_message(line, "Startup completed") for line in result.stderr.splitlines()), result.stderr
+                    assert "Replaced daemon;" in result.stdout and "Startup completed" not in result.stdout, result.stdout
                     duplicate_run()
                     traffic()
                     window = arrivals[arrival_start:]

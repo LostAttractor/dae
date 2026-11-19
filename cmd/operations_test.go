@@ -54,8 +54,11 @@ func TestOperationWaitProgressAndFailures(t *testing.T) {
 		for _, outcome := range []string{"completed", "failed", "canceled", "running", "missing"} {
 			t.Run(kind+"/"+outcome, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
-					polls, updates := 0, 0
-					opts := operationWaitOptions{id: "mine", kind: kind, timeout: 5 * time.Second, pollInterval: time.Second, onProgress: func(string) { updates++ }}
+					polls := 0
+					var stages strings.Builder
+					display := newReloadProgress(io.Discard, &stages, kind)
+					defer display.Stop()
+					opts := operationWaitOptions{id: "mine", kind: kind, timeout: 5 * time.Second, pollInterval: time.Second, onStatus: display.observe}
 					opts.poll = func(ctx context.Context, id string) (*api.Operation, error) {
 						if id != "mine" {
 							t.Fatal(id)
@@ -74,8 +77,8 @@ func TestOperationWaitProgressAndFailures(t *testing.T) {
 						return &api.Operation{ID: id, Kind: kind, State: state, Progress: "publishing", Result: "done", Error: "rejected"}, nil
 					}
 					result, err := waitForOperation(t.Context(), opts)
-					if updates != 1 {
-						t.Fatalf("progress updates = %d", updates)
+					if stages.String() != "publishing\n" {
+						t.Fatalf("progress updates = %q", stages.String())
 					}
 					if outcome == "completed" {
 						if err != nil || result != "done" {

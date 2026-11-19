@@ -45,10 +45,19 @@ Usage:
 dae reload
 ```
 
-The command waits for the daemon to confirm completion, with a four-minute
-timeout. After 150 ms, terminal stderr shows a spinner with the current stage;
-it clears before the result or error is printed. Redirected stderr and
-`TERM=dumb` disable animation and retain ordinary progress lines on stdout.
+On a terminal, reload and suspend keep one animated status line from API
+setup through submission, queueing and daemon confirmation. A privilege
+prompt takes over the terminal before the elevated command continues.
+During process replacement, preflight and startup logs scroll above it, even
+while the API is unavailable. The status line clears before the final result.
+With stderr redirected or `TERM=dumb`, stages and logs are plain lines without
+animation. If the daemon does not stream logs, stages come from polling the
+operation API. For local reload, stdout contains only the final result. A slow or disconnected
+log reader can miss lines but cannot delay startup. For the complete record,
+use the daemon's usual log destination.
+
+The command waits up to four minutes for the daemon to confirm completion.
+Remote reload and suspend retain their polling-based progress display.
 The command submits an operation through the local Unix API and polls its unique
 ID. Reload, suspend and resource refresh share a serialized queue of up to 16
 pending requests. A full queue rejects new requests. A client timeout does not

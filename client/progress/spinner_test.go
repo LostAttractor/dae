@@ -17,7 +17,7 @@ import (
 func TestSpinnerQuickOperationIsSilent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var output bytes.Buffer
-		spinner := start(&output, "Waiting...", func() int { return 80 })
+		spinner := start(output.WriteString, "Waiting...", showDelay, func() int { return 80 })
 		time.Sleep(showDelay / 2)
 		spinner.Stop()
 		spinner.Stop()
@@ -31,7 +31,7 @@ func TestSpinnerQuickOperationIsSilent(t *testing.T) {
 func TestSpinnerUpdatesAndStopsBeforeResults(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var output bytes.Buffer
-		spinner := start(&output, "Waiting...", func() int { return 80 })
+		spinner := start(output.WriteString, "Waiting...", showDelay, func() int { return 80 })
 		defer spinner.Stop()
 		time.Sleep(showDelay)
 		synctest.Wait()
@@ -57,10 +57,29 @@ func TestSpinnerUpdatesAndStopsBeforeResults(t *testing.T) {
 	})
 }
 
+func TestLiveSpinnerKeepsAuthoritativeStage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var output bytes.Buffer
+		spinner := start(output.WriteString, "Connecting...", 0, func() int { return 80 })
+		defer spinner.Stop()
+		synctest.Wait()
+		if got := output.String(); got != clearLine+frames[0]+" Connecting..." {
+			t.Fatalf("initial frame = %q", got)
+		}
+		spinner.Update("Initializing...")
+		spinner.Hint("Queued...")
+		time.Sleep(frameInterval)
+		synctest.Wait()
+		if got := output.String(); !strings.HasSuffix(got, frames[1]+" Initializing...") {
+			t.Fatalf("fallback overwrote live stage: %q", got)
+		}
+	})
+}
+
 func TestSpinnerKeepsStagesOnOneTerminalLine(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var output bytes.Buffer
-		spinner := start(&output, "准备\n路由\r\t\x1b[31m"+strings.Repeat("网络", 20), func() int { return 12 })
+		spinner := start(output.WriteString, "准备\n路由\r\t\x1b[31m"+strings.Repeat("网络", 20), showDelay, func() int { return 12 })
 		time.Sleep(showDelay + frameInterval)
 		spinner.Stop()
 		lines := strings.Split(output.String(), clearLine)

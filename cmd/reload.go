@@ -16,7 +16,6 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/client/cli"
-	"github.com/daeuniverse/dae/client/progress"
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/internal/handoff"
 	"github.com/spf13/cobra"
@@ -31,7 +30,7 @@ type operationWaitOptions struct {
 	id, kind              string
 	timeout, pollInterval time.Duration
 	poll                  func(context.Context, string) (*api.Operation, error)
-	onProgress            func(string)
+	onStatus              func(*api.Operation)
 	replacing             bool
 }
 
@@ -56,11 +55,11 @@ func waitForOperation(ctx context.Context, opts operationWaitOptions) (string, e
 			if status == nil || status.ID != opts.id || status.Kind != opts.kind {
 				return "", fmt.Errorf("daemon returned a different %s operation", opts.kind)
 			}
-			if status.Progress != "" && status.Progress != lastProgress {
+			if status.Progress != "" {
 				lastProgress = status.Progress
-				if opts.onProgress != nil {
-					opts.onProgress(lastProgress)
-				}
+			}
+			if opts.onStatus != nil {
+				opts.onStatus(status)
 			}
 			switch status.State {
 			case "completed":
@@ -137,6 +136,8 @@ func newReloadCommand(suspend bool) *cobra.Command {
 
 func runReloadCommand(cmd *cobra.Command, connection *cli.Connection, kind string, abort, force bool, binary string) error {
 	cmd.SilenceUsage = true
+	display := newReloadProgress(cmd.ErrOrStderr(), cmd.OutOrStdout(), kind)
+	defer display.Stop()
 	request := api.OperationRequest{Kind: kind, Abort: abort}
 	remote, err := connection.Open()
 	if err != nil {
@@ -148,9 +149,11 @@ func runReloadCommand(cmd *cobra.Command, connection *cli.Connection, kind strin
 		if remote.Local() {
 			request.ExecutablePID = os.Getpid()
 			if binary != "" {
-				if err := authorizeBinaryReload(cmd, remote, binary); err != nil {
+				display.Hint("Checking local API access...")
+				if err := authorizeBinaryReload(cmd, remote, binary, display.Stop); err != nil {
 					return err
 				}
+				display.Hint("Opening replacement executable...")
 				executable, err := handoff.OpenExecutable(binary)
 				if err != nil {
 					return err
@@ -164,42 +167,46 @@ func runReloadCommand(cmd *cobra.Command, connection *cli.Connection, kind strin
 			return errors.New("--replace requires a local Unix API socket")
 		}
 	}
-	status, err := remote.SubmitOperation(cmd.Context(), request)
+	display.Hint("Submitting " + kind + "...")
+	var status *api.Operation
+	if request.ExecutablePID != 0 {
+		writer, pipeErr := display.openLogPipe()
+		if pipeErr != nil {
+			return fmt.Errorf("open reload log pipe: %w", pipeErr)
+		}
+		status, err = remote.SubmitReloadWithLogs(cmd.Context(), request, writer)
+		_ = writer.Close()
+	} else {
+		status, err = remote.SubmitOperation(cmd.Context(), request)
+	}
 	if err != nil {
 		// Only a local permission failure needs elevation. Remote APIs use
 		// their configured credentials and must keep the caller's environment.
 		if remote.Local() && binary == "" && errors.Is(err, os.ErrPermission) {
+			display.Stop()
 			if elevateErr := internal.AutoSu(); elevateErr != nil {
 				return elevateErr
 			}
 		}
 		return err
 	}
-	spinner := progress.Start(cmd.ErrOrStderr(), "Waiting for "+kind+"...")
-	defer spinner.Stop()
+	display.observe(status)
 	result, err := waitForOperation(cmd.Context(), operationWaitOptions{
 		id: status.ID, kind: kind, timeout: reloadCommandTimeout, pollInterval: reloadPollInterval,
-		poll:      remote.Operation,
+		poll: remote.Operation, onStatus: display.observe,
 		replacing: request.ExecutablePID != 0,
-		onProgress: func(content string) {
-			if spinner.Enabled() {
-				spinner.Update(content)
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), content)
-			}
-		},
 	})
-	spinner.Stop()
 	if err != nil {
 		return err
 	}
+	display.Stop()
 	fmt.Fprintln(cmd.OutOrStdout(), result)
 	return nil
 }
 
 // Establish socket access before opening the candidate, so elevation never
 // reopens a file the original process has already selected.
-func authorizeBinaryReload(cmd *cobra.Command, remote *client.Client, binary string) error {
+func authorizeBinaryReload(cmd *cobra.Command, remote *client.Client, binary string, beforePrompt func()) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
@@ -227,5 +234,6 @@ func authorizeBinaryReload(cmd *cobra.Command, remote *client.Client, binary str
 	if err := flags.Set("api", flags.Lookup("api").Value.String()); err != nil {
 		return err
 	}
+	beforePrompt()
 	return errors.Join(denied, internal.AutoSu(append([]string{executable}, commandArguments(cmd)...)...))
 }

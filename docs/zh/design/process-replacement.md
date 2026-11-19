@@ -4,6 +4,10 @@
 
 `reload` 是统一入口。通过本地 Unix socket 发起的 CLI 请求带上自己的 PID；daemon 校验 `SO_PEERCRED`，默认打开 `/proc/<peer>/exe` 并按完整文件内容比较。内容相同执行配置热重载，内容不同执行进程替换，`reload --replace` 强制替换。也可以用 `dae reload --binary ./new-dae` 指定可信的新二进制，无须再加 `--replace`。CLI 按自己的工作目录打开文件，daemon 从调用者的文件描述符取得同一文件，不接收服务端路径。路径改名或符号链接改指不会改变选择；替换期间不要原地覆写文件。版本标签不参与判断。未指定 executable PID 的 API 请求只重载配置，TCP API 不接受进程替换。使用方式见[重载与暂停（英文）](../../en/user-guide/reload-and-suspend.md#process-replacement)。
 
+`reload` 和 `suspend` 在交互终端中使用同一条状态行，从连接 API、提交、排队一直显示到 daemon 确认结果。需要提权时先清除状态行，把终端交给密码提示。进程替换期间，新版本的预检和启动日志在状态行上方逐行滚动；即使管理 API 暂时不可用，当前阶段和日志也能通过本次调用的匿名管道到达。若 daemon 不提供日志流，则回退到操作 API 轮询。命令结束时清除状态行。本地 `reload` 的 stdout 只保留最终结果；重定向 stderr 或设置 `TERM=dumb` 时，daemon 阶段和日志均以纯文本逐行输出。
+
+日志不写入操作历史，不向 TCP API 开放。慢速或断开的日志读端不会拖慢启动，完整记录仍以 daemon 原有的日志输出为准。CLI 断开不取消已提交的操作；成功与否由操作状态确认，不以日志内容或管道关闭为准。
+
 ## 进程与资源所有权
 
 `dae run` 直接运行业务，正常运行只有一个 dae 业务进程，没有常驻 supervisor 或主进程/worker 拆分。替换通过关闭旧业务后同 PID exec 已打开的目标 ELF 完成；PID 和 `/proc/<pid>/stat` 的 starttime 不变，但旧 Go heap、goroutine 和用户态连接全部消失。exec 不运行旧映像的 defer，因此 Runtime 关闭、持久化 flush、API 排空和插件子进程回收必须在 exec 前显式完成。
