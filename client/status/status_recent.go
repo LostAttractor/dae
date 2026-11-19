@@ -113,7 +113,8 @@ func renderRecentGroups(groups []api.GroupStatus) string {
 
 func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 	width := getStatusTerminalWidth()
-	health, color := statusHealth(snapshot.Groups), text.FgGreen
+	health, reasons := statusTableHealth(snapshot)
+	color := text.FgGreen
 	switch health {
 	case healthWarning:
 		color = text.FgYellow
@@ -127,6 +128,9 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 		fmt.Sprintf("%d active", snapshot.Stats.ActiveConnections),
 	}
 	writeStatusLine(out, strings.Join(summary, "  "), width)
+	for _, reason := range reasons {
+		writeStatusLine(out, reason, width)
+	}
 
 	printTables(out, snapshot.Tables, false)
 	printBuiltinStatus(out, snapshot, false)

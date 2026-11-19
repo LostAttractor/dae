@@ -211,7 +211,7 @@ dae registry dump | jq -r '.records[] | [.domain, .ip, .retain_until] | @tsv'
 - `breakdown.gc` 是累计按时间回收的配对数，跨 reload 延续，冷启动重新统计。查询状态直接读取索引和容量选择的计数，不扫描记录，也不触发 GC 或续期。
 - `domain-kernel`：`used` 是已驻留 IP 数，`limit` 是容量，`candidates` 只统计非隔离桶内具有非零位图的候选 IP。因内核容量落选的 IP 数是 `max(0, candidates - limit)`，不受待重试写入影响。
 
-CLI 在 `domain-registry` 明细中列出字节预算、配对数、GC、隔离桶和漏记次数；`domain-kernel` 列出驻留、容量、候选、遗漏和待重试的内核变更。`--verbose` 始终列出二者；普通和 `--recent` 视图在 registry 满额、存在隔离桶或用量不可用时列出 registry；有待重试变更、遗漏候选或用量不可用时列出内核表。非空表 `error` 表示使用量和遗漏量不可用，不是零。
+CLI 和 Web 全局状态页按 IEC 单位显示 registry 内存（例如 `1 MiB / 64 MiB`），内核容量仍按 IP 槽位计。两张表遵循相同的[容量告警规则](api-client.md#容量表)：内存预算或内核槽位使用率超过 80%、内核变更待重试或域名表不可读时，会给出预警。当前存在隔离桶或内核槽位不足导致候选 IP 落选时，提示域名路由覆盖已下降；仅有历史累计漏记不会触发提醒。表中非空的 `error` 表示使用量和遗漏量未知，不是零。健康时可用 `dae status --verbose` 查看两张表的明细；普通和 `--recent` 视图自动列出需要关注的表。
 
 启动日志列出窗口及观察范围。容量不足时限频输出候选/驻留/容量摘要；无法对未观察到的 direct 连接逐条报告续期遗漏。
 

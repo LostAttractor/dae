@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 16
+const StatusSchemaVersion = 17
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -36,6 +36,13 @@ type TableUsage struct {
 	Candidates int                  `json:"candidates,omitempty"`
 	Pending    int                  `json:"pending,omitzero"` // desired kernel changes awaiting retry
 	Breakdown  *TableUsageBreakdown `json:"breakdown,omitempty"`
+	Alert      *TableAlert          `json:"alert,omitempty"`
+}
+
+// TableAlert reports the highest-priority current capacity or observation issue.
+type TableAlert struct {
+	Level   GroupHealth `json:"level"` // warning or degraded
+	Message string      `json:"message"`
 }
 
 type TableUsageBreakdown struct {

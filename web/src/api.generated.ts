@@ -2056,7 +2056,7 @@ export interface components {
              * Format: int64
              * @constant
              */
-            schema: 16;
+            schema: 17;
             /** Format: date-time */
             started_at: string;
             stats: components["schemas"]["PathStats"];
@@ -2068,8 +2068,15 @@ export interface components {
             uptime: number;
             version: string;
         };
+        /** @description The highest-priority current issue for a table, computed by the server from the same status snapshot. */
+        TableAlert: {
+            /** @enum {string} */
+            level: "warning" | "degraded";
+            message: string;
+        };
         /** @description Shared snapshot of kernel tables and userspace resource pools, including the domain registry. A full evicting table is normal; reject means new entries cannot be admitted. */
         TableUsage: {
+            alert?: components["schemas"]["TableAlert"];
             breakdown?: components["schemas"]["TableUsageBreakdown"] | null;
             /**
              * Format: int64

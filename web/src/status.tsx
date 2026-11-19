@@ -40,10 +40,11 @@ function Records({ entries }: { entries: [string, ReactNode][] }) {
 function TableDetails({ table }: { table: GlobalStatus["tables"][number] }) {
   const detail = table.breakdown;
   const registry = table.name === "domain-registry";
+  const limit = table.limit ? registry ? bytes(table.limit) : table.limit.toLocaleString() : "unlimited";
   return <>
     <span>{table.scope === "kernel" ? "Kernel" : "Userspace"}</span>
-    {table.error ? <InlineNotice tone="error">Unavailable: {table.error}; limit: {table.limit ? table.limit.toLocaleString() : "unlimited"}{registry && " estimated bytes"}</InlineNotice> : <span>
-      {table.used.toLocaleString()} / {table.limit ? table.limit.toLocaleString() : "unlimited"} {registry ? "estimated bytes" : "entries"}
+    {table.error ? <InlineNotice tone="error">Unavailable: {table.error}; limit: {limit}</InlineNotice> : <span>
+      {registry ? `Estimated memory: ${bytes(table.used)}` : table.used.toLocaleString()} / {limit}{!registry && " entries"}
       {table.limit > 0 && ` (${(table.used / table.limit * 100).toFixed(1)}%)`}
     </span>}
     <span>On full: {table.on_full}</span>
@@ -61,6 +62,13 @@ function TableDetails({ table }: { table: GlobalStatus["tables"][number] }) {
       <span>Pair omissions: {detail.omitted_pairs.toLocaleString()}</span>
     </>}
   </>;
+}
+
+function TableAlerts({ tables }: { tables: GlobalStatus["tables"] }) {
+  return tables.map(({ name, alert }) => alert && <div key={name} className="table-alert">
+    <StatusBanner tone={alert.level === "degraded" ? "error" : "warning"}
+      title={`${alert.level === "degraded" ? "Degraded" : "Warning"}: ${name}`} description={alert.message} />
+  </div>);
 }
 
 function GroupEntry({ group }: { group: GroupStatus }) {
@@ -140,6 +148,7 @@ function ScopeStatus({ state, scope, visible, labelledBy }: { state: ScopeState<
     <div id={`${prefix}-traffic`}>
       {state.snapshot && visible ? <TrafficPanel stats={state.snapshot.stats} /> : !state.snapshot && (state.tone
         ? <StatusBanner tone={state.tone} title={state.message || ""} /> : <p className={muted}>{state.message}</p>)}
+      {visible && !state.error && scope === "global" && state.snapshot && "tables" in state.snapshot && <TableAlerts tables={state.snapshot.tables} />}
       {state.snapshot && ("groups" in state.snapshot ? <StatusDetails snapshot={state.snapshot} global prefix={prefix} /> : <StatusDetails snapshot={state.snapshot} global={false} prefix={prefix} />)}
     </div>
     <div className="status-updated mt-3 text-xs text-kumo-subtle empty:hidden">

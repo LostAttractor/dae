@@ -4,6 +4,7 @@ package control
 
 import (
 	"errors"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -12,8 +13,42 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
+
+func TestTableAlert(t *testing.T) {
+	const warning, degraded = api.GroupHealthWarning, api.GroupHealthDegraded
+	for _, test := range []struct {
+		name  string
+		usage api.TableUsage
+		want  api.TableAlert
+	}{
+		{"usage error wins", api.TableUsage{Name: "domain-kernel", Error: "read failed", Limit: 1, Candidates: 2, Pending: 1}, api.TableAlert{Level: warning, Message: "Usage unavailable"}},
+		{"incomplete buckets win", api.TableUsage{OnFull: "omit", Used: 1, Limit: 1, Pending: 1, Breakdown: &api.TableUsageBreakdown{IncompleteBuckets: 1}}, api.TableAlert{Level: degraded, Message: "Incomplete domain history reduces routing coverage"}},
+		{"kernel omissions win", api.TableUsage{Name: "domain-kernel", OnFull: "omit", Used: 1, Limit: 1, Candidates: 2, Pending: 1}, api.TableAlert{Level: degraded, Message: "Eligible IPs omitted by kernel capacity"}},
+		{"pending wins", api.TableUsage{Name: "domain-kernel", OnFull: "omit", Used: 1, Limit: 1, Candidates: 1, Pending: 1}, api.TableAlert{Level: warning, Message: "Projection changes awaiting retry"}},
+		{"full is only warning", api.TableUsage{Name: "domain-kernel", OnFull: "omit", Used: 1, Limit: 1, Candidates: 1}, api.TableAlert{Level: warning, Message: "Capacity reached"}},
+		{"high reject", api.TableUsage{OnFull: "reject", Used: 81, Limit: 100}, api.TableAlert{Level: warning, Message: "Usage above 80% of capacity"}},
+		{"exact threshold", api.TableUsage{OnFull: "omit", Used: 8, Limit: 10}, api.TableAlert{}},
+		{"high MaxInt64", api.TableUsage{OnFull: "omit", Used: 7378697629483820646, Limit: math.MaxInt64}, api.TableAlert{Level: warning, Message: "Usage above 80% of capacity"}},
+		{"low MaxInt64", api.TableUsage{OnFull: "omit", Used: 7378697629483820645, Limit: math.MaxInt64}, api.TableAlert{}},
+		{"full evict", api.TableUsage{OnFull: "evict", Used: 5, Limit: 5}, api.TableAlert{}},
+		{"unlimited", api.TableUsage{Name: "domain-kernel", OnFull: "unlimited", Used: 9, Candidates: 9}, api.TableAlert{}},
+		{"historical omissions", api.TableUsage{OnFull: "omit", Used: 1, Limit: 5, Breakdown: &api.TableUsageBreakdown{OmittedPairs: 99}}, api.TableAlert{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := tableAlert(test.usage)
+			if test.want == (api.TableAlert{}) {
+				if got != nil {
+					t.Fatalf("unexpected alert %+v", got)
+				}
+			} else if got == nil || *got != test.want {
+				t.Fatalf("alert = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestKernelTableCounters(t *testing.T) {
 	if os.Geteuid() != 0 {

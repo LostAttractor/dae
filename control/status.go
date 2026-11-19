@@ -81,7 +81,37 @@ func (c *ControlPlane) tableStatuses() []api.TableUsage {
 		)
 	}
 	tables = append(tables, c.kernelTableStatuses()...)
-	return append(tables, c.userspaceTableStatuses()...)
+	tables = append(tables, c.userspaceTableStatuses()...)
+	for i := range tables {
+		tables[i].Alert = tableAlert(tables[i])
+	}
+	return tables
+}
+
+func tableAlert(usage api.TableUsage) *api.TableAlert {
+	level := api.GroupHealthWarning
+	var message string
+	switch {
+	case usage.Error != "":
+		message = "Usage unavailable"
+	case usage.Breakdown != nil && usage.Breakdown.IncompleteBuckets > 0:
+		level, message = api.GroupHealthDegraded, "Incomplete domain history reduces routing coverage"
+	case usage.Name == "domain-kernel" && usage.Limit > 0 && int64(usage.Candidates) > usage.Limit:
+		level, message = api.GroupHealthDegraded, "Eligible IPs omitted by kernel capacity"
+	case usage.Pending > 0:
+		message = "Projection changes awaiting retry"
+	case usage.Limit > 0 && (usage.OnFull == "reject" || usage.OnFull == "omit"):
+		if usage.Used >= usage.Limit {
+			message = "Capacity reached"
+		} else if usage.Used >= 0 && usage.Limit-usage.Used <= (usage.Limit-1)/5 {
+			// Less than one fifth free without overflowing or rounding the percentage.
+			message = "Usage above 80% of capacity"
+		}
+	}
+	if message == "" {
+		return nil
+	}
+	return &api.TableAlert{Level: level, Message: message}
 }
 
 func (r *Runtime) DomainRegistryUsage() (RegistryUsage, bool) {

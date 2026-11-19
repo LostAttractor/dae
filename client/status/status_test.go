@@ -117,14 +117,19 @@ func TestTableUsageRow(t *testing.T) {
 		})
 	}
 	colorsEnabled = true
-	for _, onFull := range []string{"evict", "reject", "omit"} {
-		ratio := fmt.Sprint(tableUsageRow(api.TableUsage{Used: 4, Limit: 4, OnFull: onFull})[3])
-		want := "100.0%"
-		if onFull == "reject" {
-			want = colorize(want, text.FgRed)
-		}
-		if ratio != want {
-			t.Errorf("full %s usage = %q, want %q", onFull, ratio, want)
+	for _, test := range []struct {
+		full  string
+		alert *api.TableAlert
+		want  string
+	}{
+		{"evict", nil, "table"},
+		{"reject", nil, "table"},
+		{"reject", new(api.TableAlert{Level: healthWarning, Message: "attention"}), colorize("table", text.FgYellow)},
+		{"omit", new(api.TableAlert{Level: healthDegraded, Message: "attention"}), colorize("table", text.FgRed)},
+	} {
+		row := tableUsageRow(api.TableUsage{Name: "table", Used: 4, Limit: 4, OnFull: test.full, Alert: test.alert})
+		if row[0] != test.want || row[3] != "100.0%" {
+			t.Errorf("full %s usage = %v, want name %q and plain usage", test.full, row, test.want)
 		}
 	}
 }
@@ -138,7 +143,7 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 		{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Used: 1 << 20, Limit: 64 << 20, Breakdown: &api.TableUsageBreakdown{Pairs: 6896, Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123, IncompleteBuckets: 2, OmittedPairs: 5}},
 	}}, true)
 	output := out.String()
-	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 1; PENDING 3", "domain-registry (on full: omit):", "ESTIMATED MEMORY: 1048576 / 67108864 bytes", "DOMAINS", "GC (PAIRS)", "INCOMPLETE BUCKETS: 2; PAIR OMISSIONS: 5"} {
+	for _, label := range []string{"Kernel tables:", "NAME", "USED", "LIMIT", "USAGE%", "ON FULL", "domain-kernel: CANDIDATES 163; OMITTED 1; PENDING 3", "domain-registry (on full: omit):", "ESTIMATED MEMORY: 1 MiB / 64 MiB", "DOMAINS", "GC (PAIRS)", "INCOMPLETE BUCKETS: 2; PAIR OMISSIONS: 5"} {
 		if !strings.Contains(output, label) {
 			t.Fatalf("missing %q:\n%s", label, output)
 		}
@@ -178,10 +183,10 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 	withStatusTerminalWidth(t, 80)
 	snapshot := &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
 		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 16, Limit: 16},
-		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 16, Candidates: 3, Pending: 2, Error: "read map: permission denied"},
+		{Name: "domain-kernel", Scope: "kernel", OnFull: "omit", Limit: 16, Candidates: 3, Pending: 2, Error: "read map: permission denied", Alert: new(api.TableAlert{Level: healthWarning, Message: "usage unavailable"})},
 		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 4, Limit: 8},
-		{Name: "udp-reply-sockets", Scope: "userspace", OnFull: "reject", Used: 7, Limit: 10},
-		{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Limit: 4096, Error: "registry unavailable", Breakdown: &api.TableUsageBreakdown{Pairs: 8, Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: 2}},
+		{Name: "udp-reply-sockets", Scope: "userspace", OnFull: "reject", Used: 7, Limit: 10, Alert: new(api.TableAlert{Level: healthWarning, Message: "capacity pressure"})},
+		{Name: "domain-registry", Scope: "userspace", OnFull: "omit", Limit: 4096, Error: "registry unavailable", Alert: new(api.TableAlert{Level: healthWarning, Message: "usage unavailable"}), Breakdown: &api.TableUsageBreakdown{Pairs: 8, Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: 2}},
 	}}
 	render := func(verbose bool) string {
 		var tables strings.Builder
@@ -224,15 +229,6 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 	if healthy.Len() != 0 {
 		t.Fatalf("healthy tables printed a section:\n%s", healthy.String())
 	}
-	registry.Breakdown.IncompleteBuckets = 1
-	if !tableNeedsAttention(registry) {
-		t.Fatal("registry still omitting evidence needs attention")
-	}
-	registry.Breakdown.IncompleteBuckets = 0
-	registry.Used = registry.Limit
-	if !tableNeedsAttention(registry) {
-		t.Fatal("full registry needs attention")
-	}
 	tables := all
 	output := strings.Join(strings.Fields(tables), " ")
 	for _, want := range []string{
@@ -240,7 +236,7 @@ func TestCapacityTablesSharedAcrossStatusModes(t *testing.T) {
 		"Userspace tables:", "udp-sources 4 8 50.0% reject",
 		"domain-kernel: unavailable: read map: permission denied",
 		"domain-kernel: CANDIDATES 3; OMITTED unavailable; PENDING 2",
-		"ESTIMATED MEMORY: unavailable / 4096 bytes", "8 3 5 4 1 2", "domain-registry: unavailable: registry unavailable",
+		"ESTIMATED MEMORY: unavailable / 4 KiB", "8 3 5 4 1 2", "domain-registry: unavailable: registry unavailable",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q:\n%s", want, tables)
@@ -437,6 +433,80 @@ func TestHealthUsesServerState(t *testing.T) {
 	}
 	if got := nodeHealth(api.NodeStatus{Health: api.NodeHealthUnknown, Healthy: true}); got != nodeHealthUnknown {
 		t.Fatalf("client overrode server observation: %q", got)
+	}
+}
+
+func TestStatusModesUseServerTableAlerts(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 80)
+	for _, tt := range []struct {
+		name    string
+		tables  []api.TableUsage
+		groups  []api.GroupStatus
+		want    healthStatus
+		reasons []string
+	}{
+		{
+			name: "no inferred alerts",
+			tables: []api.TableUsage{
+				{Name: "domain-registry", Scope: "userspace", Used: 91, Limit: 100, Breakdown: &api.TableUsageBreakdown{OmittedPairs: 100}},
+				{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 5, Limit: 5},
+				{Name: "domain-kernel", Scope: "kernel", Error: "read failed"},
+			},
+			want: healthHealthy,
+		},
+		{
+			name: "server policy and reasons",
+			tables: []api.TableUsage{
+				{Name: "domain-kernel", Scope: "kernel", Limit: 4, Candidates: 5, Error: "read failed", Alert: new(api.TableAlert{Level: healthWarning, Message: "check kernel"})},
+				{Name: "domain-registry", Scope: "userspace", Used: 1, Limit: 100, Alert: new(api.TableAlert{Level: healthDegraded, Message: "check domain coverage"})},
+			},
+			want:    healthDegraded,
+			reasons: []string{"domain-kernel: check kernel", "domain-registry: check domain coverage"},
+		},
+		{
+			name:    "degraded group outranks a warning",
+			tables:  []api.TableUsage{{Name: "tcp_flow_map", Scope: "kernel", Error: "read failed", Alert: new(api.TableAlert{Level: healthWarning, Message: "check flow table"})}},
+			groups:  []api.GroupStatus{{Name: "proxy", Health: healthDegraded}},
+			want:    healthDegraded,
+			reasons: []string{"tcp_flow_map: check flow table"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := &api.StatusSnapshot{Version: "test", StartedAt: time.Now(), Tables: tt.tables, Groups: tt.groups}
+			for _, mode := range []struct {
+				verbose bool
+				render  func(io.Writer)
+			}{
+				{false, func(out io.Writer) { Print(out, snapshot, false) }},
+				{true, func(out io.Writer) { Print(out, snapshot, true) }},
+				{false, func(out io.Writer) { PrintRecent(out, snapshot) }},
+			} {
+				var out strings.Builder
+				mode.render(&out)
+				output := out.String()
+				head, _, _ := strings.Cut(output, "\n\n")
+				if !strings.Contains(strings.ToLower(head), string(tt.want)) {
+					t.Fatalf("expected %s in summary:\n%s", tt.want, head)
+				}
+				for _, reason := range tt.reasons {
+					if strings.Count(output, reason) != 1 || !strings.Contains(head, reason) {
+						t.Fatalf("expected one %q in summary:\n%s", reason, output)
+					}
+				}
+				if want := len(tt.reasons) != 0 || mode.verbose; strings.Contains(output, "read failed") != want {
+					t.Fatalf("raw error visibility = %t, want %t:\n%s", !want, want, output)
+				}
+			}
+		})
+	}
+}
+
+func TestDomainRegistryErrorWithoutBreakdownUsesIEC(t *testing.T) {
+	var out strings.Builder
+	printTables(&out, []api.TableUsage{{Name: "domain-registry", Scope: "userspace", Limit: 64 << 20, Error: "read failed", Alert: new(api.TableAlert{Level: healthWarning, Message: "usage unavailable"})}}, false)
+	if output := out.String(); !strings.Contains(output, "ESTIMATED MEMORY: unavailable / 64 MiB") || strings.Contains(output, "GC (PAIRS)") {
+		t.Fatalf("registry read error lost its byte unit or rendered missing details:\n%s", output)
 	}
 }
 

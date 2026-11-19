@@ -216,7 +216,7 @@ func TestClientDoesNotDependOnDefaultTransport(t *testing.T) {
 	defer func() { http.DefaultTransport = previous }()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"schema":16}`)
+		_, _ = io.WriteString(w, `{"schema":17}`)
 	}))
 	defer server.Close()
 	c, err := New(Options{Endpoint: server.URL, RootCAs: testutil.TLSRoots(server)})
@@ -251,18 +251,19 @@ func TestStatusAcceptsChangingHealthAndRejectsInvalidEnvelope(t *testing.T) {
 		name, body string
 		wantError  bool
 	}{
-		{"health transition", `{"schema":16,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
-		{"unavailable table usage", `{"schema":16,"tables":[{"name":"tcp_flow_map","scope":"kernel","on_full":"evict","used":0,"limit":16,"error":"read map: permission denied"}]}`, false},
+		{"health transition", `{"schema":17,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
+		{"unavailable table usage", `{"schema":17,"tables":[{"name":"tcp_flow_map","scope":"kernel","on_full":"evict","used":0,"limit":16,"error":"read map: permission denied","alert":{"level":"warning","message":"Usage unavailable"}}]}`, false},
 		{"unsupported schema", `{"schema":99}`, true},
 		{"registry counts unavailable", `{"schema":9,"tables":[{"name":"domain-registry","used":6896,"limit":0,"breakdown":{"gc":0}}]}`, true},
 		{"missing schema", `{}`, true},
 		{"null", `null`, true},
 		{"old per-path fallback schema", `{"schema":10}`, true},
-		{"duplicate key", `{"schema":16,"schema":16}`, true},
-		{"trailing JSON", `{"schema":16} {}`, true},
+		{"duplicate key", `{"schema":17,"schema":17}`, true},
+		{"trailing JSON", `{"schema":17} {}`, true},
 		{"old domain-only tables schema", `{"schema":14}`, true},
 		{"old registry pair usage schema", `{"schema":15,"tables":[{"name":"domain-registry","used":6896,"limit":0}]}`, true},
-		{"wrong type", `{"schema":"16"}`, true},
+		{"schema before table alerts", `{"schema":16}`, true},
+		{"wrong type", `{"schema":"17"}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, test.body) }))

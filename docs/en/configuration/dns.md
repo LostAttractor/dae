@@ -539,15 +539,15 @@ the caller to retry.
   of pending writes. Registry IP totals also include zero-bitmap addresses that need no
   kernel entry, so they differ from candidate counts.
 
-The CLI shows `PAIRS / DOMAINS / IPs / IPv4 / IPv6 / GC (PAIRS)` in the
-`domain-registry` detail table alongside its byte budget and omission counts. `domain-kernel` appears in the compact
-`Kernel tables` group with `USED`, `LIMIT`, `USAGE%` and `ON FULL` (`omit`), plus
-`CANDIDATES`, `OMITTED` and `PENDING` in a note. `--verbose` always lists both;
-ordinary and `--recent` views list them only when they need attention: the
-registry when full, unavailable, or holding incomplete buckets; `domain-kernel` also with pending
-changes or omitted candidates. Pending projection changes await kernel retry. A
-nonempty table `error` makes usage and omissions unavailable, not zero. Ordinary
-and `--recent` views share these statistics.
+The CLI and the global Web status page show registry memory in IEC units (e.g.
+`1 MiB / 64 MiB`); kernel capacity stays in IP slots. Both tables follow the
+[table alert policy](api-client.md#capacity-tables): more than 80% of budget or
+slots used, pending kernel updates, or unavailable usage warrants a warning.
+Incomplete registry buckets or kernel candidates omitted for lack
+of slots mean domain routing coverage is reduced; past omission events alone do
+not. A nonempty table `error` means usage and omissions are unknown, not zero.
+Use `dae status --verbose` to see both tables even when healthy. Ordinary and
+`--recent` views show an affected table automatically.
 
 Startup logs state the window and observation coverage. Capacity exclusions emit
 rate-limited summaries. Unobserved direct flows cannot receive per-flow omission

@@ -1468,7 +1468,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 16,
+            "const": 17,
             "format": "int64",
             "type": "integer"
           },
@@ -1510,9 +1510,26 @@
         ],
         "type": "object"
       },
+      "TableAlert": {
+        "description": "The highest-priority current issue for a table, computed by the server from the same status snapshot.",
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": ["warning", "degraded"]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["level", "message"]
+      },
       "TableUsage": {
         "description": "Shared snapshot of kernel tables and userspace resource pools, including the domain registry. A full evicting table is normal; reject means new entries cannot be admitted.",
         "properties": {
+          "alert": {
+            "$ref": "#/components/schemas/TableAlert"
+          },
           "scope": {
             "type": "string",
             "enum": [
@@ -1873,7 +1890,7 @@
     }
   },
   "info": {
-    "description": "Status schema 16. Tables report kernel and userspace capacity, full-table behavior and optional usage errors; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report the estimated retained history bytes and its budget, domain/IP and pair counts, kernel candidates and time-based GC. User and administrator APIs on api.listen, disabled by default. A port binds configured LAN interfaces; an explicit IP:port binds that address. The mode-0600 Unix socket always provides local administration. Administrator credentials include user privileges. Device identity is independent of privileges and requires verified LAN ingress. Mutations require X-Dae-API: 1. JSON APIs reject query parameters. web_origins restricts all browser origins, defaulting to same-origin; cross-site management requests are rejected. Browsers use HttpOnly session cookies, tools use raw keys. Reverse proxies require HTTPS upstream, the literal upstream Host, preserved Origin and X-Dae-Proxy: 1. Forwarding headers only remove LAN/self and browser-trust-proof capabilities; they never grant identity. Plain HTTP is limited to CA bootstrap operations. A challenge proof requires HTTPS. Unix peer credentials authorize local administration independently of TCP security schemes.",
+    "description": "Status schema 17. Tables report kernel and userspace capacity, full-table behavior, optional usage errors and server-computed alerts; a full LRU table normally evicts rather than rejecting new entries. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report the estimated retained history bytes and its budget, domain/IP and pair counts, kernel candidates and time-based GC. User and administrator APIs on api.listen, disabled by default. A port binds configured LAN interfaces; an explicit IP:port binds that address. The mode-0600 Unix socket always provides local administration. Administrator credentials include user privileges. Device identity is independent of privileges and requires verified LAN ingress. Mutations require X-Dae-API: 1. JSON APIs reject query parameters. web_origins restricts all browser origins, defaulting to same-origin; cross-site management requests are rejected. Browsers use HttpOnly session cookies, tools use raw keys. Reverse proxies require HTTPS upstream, the literal upstream Host, preserved Origin and X-Dae-Proxy: 1. Forwarding headers only remove LAN/self and browser-trust-proof capabilities; they never grant identity. Plain HTTP is limited to CA bootstrap operations. A challenge proof requires HTTPS. Unix peer credentials authorize local administration independently of TCP security schemes.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

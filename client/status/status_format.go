@@ -140,8 +140,6 @@ const (
 	degradedUpRatio = 0.9
 	fastLatencyMs   = 200
 	slowLatencyMs   = 500
-	ampleUsageRatio = 0.7
-	tightUsageRatio = 0.9
 )
 
 func colorize(value string, colors ...text.Color) string {
@@ -220,17 +218,6 @@ func colorLatency(latencyMs float64, value string) string {
 	case latencyMs < fastLatencyMs:
 		return colorize(value, text.FgGreen)
 	case latencyMs < slowLatencyMs:
-		return colorize(value, text.FgYellow)
-	default:
-		return colorize(value, text.FgRed)
-	}
-}
-
-func colorUsage(ratio float64, value string) string {
-	switch {
-	case ratio < ampleUsageRatio:
-		return colorize(value, text.FgGreen)
-	case ratio < tightUsageRatio:
 		return colorize(value, text.FgYellow)
 	default:
 		return colorize(value, text.FgRed)
@@ -322,6 +309,16 @@ func formatAgoWithChecks(timestamp time.Time, checks int64) string {
 
 func formatFailure(startedAt time.Time, duration time.Duration) string {
 	return failureCell(startedAt, duration).String()
+}
+
+func formatIECBytes(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := [...]string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	power := (bits.Len64(uint64(n)) - 1) / 10
+	size := float64(n) / float64(uint64(1)<<(10*power))
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", size), "0"), ".") + " " + units[power]
 }
 
 func formatBytes(bytes uint64) string {

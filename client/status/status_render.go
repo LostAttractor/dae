@@ -49,27 +49,41 @@ func tableUsageRow(usage api.TableUsage) table.Row {
 	if usage.Limit > 0 {
 		limit = fmt.Sprint(usage.Limit)
 		if usage.Error == "" {
-			fraction := float64(usage.Used) / float64(usage.Limit)
-			ratio = formatRatio(fraction)
-			if usage.OnFull == "reject" {
-				ratio = colorUsage(fraction, ratio)
-			}
+			ratio = formatRatio(float64(usage.Used) / float64(usage.Limit))
 		}
 	}
 	if usage.Error != "" {
 		used = "unavailable"
 	}
-	return table.Row{usage.Name, used, limit, ratio, usage.OnFull}
+	return table.Row{tableName(usage), used, limit, ratio, usage.OnFull}
 }
 
-// tableNeedsAttention reports a table whose usage is unknown, deferred,
-// truncated, or near a capacity that rejects new entries. LRU fullness is
-// ordinary eviction.
-func tableNeedsAttention(usage api.TableUsage) bool {
-	return usage.Error != "" || usage.Pending > 0 || int64(usage.Candidates) > usage.Limit ||
-		usage.Breakdown != nil && (usage.Breakdown.IncompleteBuckets > 0 || usage.Limit > 0 && usage.Used >= usage.Limit) ||
-		usage.OnFull == "reject" && usage.Limit > 0 &&
-			float64(usage.Used)/float64(usage.Limit) >= ampleUsageRatio
+func tableName(usage api.TableUsage) string {
+	if usage.Alert != nil {
+		switch usage.Alert.Level {
+		case healthWarning:
+			return colorize(usage.Name, text.FgYellow)
+		case healthDegraded:
+			return colorize(usage.Name, text.FgRed)
+		}
+	}
+	return usage.Name
+}
+
+func statusTableHealth(snapshot *api.StatusSnapshot) (healthStatus, []string) {
+	health := statusHealth(snapshot.Groups)
+	var reasons []string
+	for _, usage := range snapshot.Tables {
+		alert := usage.Alert
+		if alert == nil {
+			continue
+		}
+		reasons = append(reasons, usage.Name+": "+alert.Message)
+		if alert.Level == healthDegraded || alert.Level == healthWarning && health == healthHealthy {
+			health = alert.Level
+		}
+	}
+	return health, reasons
 }
 
 // printTables lists every table when verbose; otherwise only tables needing
@@ -77,17 +91,19 @@ func tableNeedsAttention(usage api.TableUsage) bool {
 func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
 	// Present retained evidence before its kernel projection.
 	for _, usage := range usages {
-		if detail := usage.Breakdown; detail != nil && (verbose || tableNeedsAttention(usage)) {
-			fmt.Fprintf(out, "\n%s (on full: %s):\n", usage.Name, usage.OnFull)
-			used := fmt.Sprint(usage.Used)
+		if usage.Name == "domain-registry" && (verbose || usage.Alert != nil) {
+			fmt.Fprintf(out, "\n%s (on full: %s):\n", tableName(usage), usage.OnFull)
+			used := formatIECBytes(usage.Used)
 			if usage.Error != "" {
 				used = "unavailable"
 			}
-			fmt.Fprintf(out, "ESTIMATED MEMORY: %s / %d bytes\n", used, usage.Limit)
-			printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
-				{detail.Pairs, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
-			})
-			fmt.Fprintf(out, "INCOMPLETE BUCKETS: %d; PAIR OMISSIONS: %d\n", detail.IncompleteBuckets, detail.OmittedPairs)
+			fmt.Fprintf(out, "ESTIMATED MEMORY: %s / %s\n", used, formatIECBytes(usage.Limit))
+			if detail := usage.Breakdown; detail != nil {
+				printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
+					{detail.Pairs, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
+				})
+				fmt.Fprintf(out, "INCOMPLETE BUCKETS: %d; PAIR OMISSIONS: %d\n", detail.IncompleteBuckets, detail.OmittedPairs)
+			}
 			if usage.Error != "" {
 				fmt.Fprintf(out, "%s: unavailable: %s\n", usage.Name, usage.Error)
 			}
@@ -97,7 +113,7 @@ func printTables(out io.Writer, usages []api.TableUsage, verbose bool) {
 		var shown []api.TableUsage
 		var rows []table.Row
 		for _, usage := range usages {
-			if usage.Scope == scope && usage.Breakdown == nil && (verbose || tableNeedsAttention(usage)) {
+			if usage.Scope == scope && usage.Name != "domain-registry" && (verbose || usage.Alert != nil) {
 				shown = append(shown, usage)
 				rows = append(rows, tableUsageRow(usage))
 			}
@@ -494,9 +510,13 @@ func statusSummary(snapshot *api.StatusSnapshot) string {
 		details = append(details, "warning groups: "+strings.Join(warningGroups, ", "))
 	}
 
-	summary := colorHealth(statusHealth(snapshot.Groups))
+	health, tableReasons := statusTableHealth(snapshot)
+	summary := colorHealth(health)
 	if len(details) > 0 {
 		summary += " (" + strings.Join(details, "; ") + ")"
+	}
+	if len(tableReasons) > 0 {
+		summary += "\n" + strings.Join(tableReasons, "\n")
 	}
 	return summary
 }

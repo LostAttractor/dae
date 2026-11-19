@@ -21,8 +21,8 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 	t.Setenv("DAE_API_KEY", "cli-secret")
 	requests := 0
 	tables := []api.TableUsage{
-		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 3, Limit: 16, Error: "read map: permission denied"},
-		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 6, Limit: 8},
+		{Name: "tcp_flow_map", Scope: "kernel", OnFull: "evict", Used: 3, Limit: 16, Error: "read map: permission denied", Alert: new(api.TableAlert{Level: api.GroupHealthWarning, Message: "usage unavailable"})},
+		{Name: "udp-sources", Scope: "userspace", OnFull: "reject", Used: 6, Limit: 8, Alert: new(api.TableAlert{Level: api.GroupHealthWarning, Message: "capacity pressure"})},
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
