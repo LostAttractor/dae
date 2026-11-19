@@ -63,6 +63,22 @@ jobs:
             echo "version=$version"
             echo "matrix=$matrix"
           } >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '26'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Build embedded Web assets once
+        run: make -C web DIST="$PWD/internal/webui/assets"
+      - name: Save embedded Web assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: embedded-web-assets
+          path: internal/webui/assets/
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
 
   build:
     name: Build and validate (${{ matrix.name }})
@@ -87,12 +103,11 @@ jobs:
         with:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit }}
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v5
+      - name: Download embedded Web assets
+        uses: actions/download-artifact@v8
         with:
-          node-version: '26'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          name: embedded-web-assets
+          path: internal/webui/assets/
       - uses: actions/setup-go@v6
         with:
           cache-dependency-path: |
@@ -108,7 +123,9 @@ jobs:
       - name: Download Go dependencies
         run: go mod download
       - name: Build dae
-        run: make
+        run: |
+          test -s internal/webui/assets/index.html
+          make -o web-assets
       - name: Validate static binary and QuickJS on target
         uses: ./.github/actions/smoke-musl
         with:
