@@ -46,7 +46,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 	runCmd := &cobra.Command{
 		Use:   "run",
 		Short: "To run dae in the foreground.",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			cmd.SilenceUsage = true
 			log.SetFormatter(logger.NewTextFormatter(disableTimestamp))
 			if disableAuthSudo && os.Geteuid() != 0 {
@@ -63,6 +63,8 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 				return err
 			}
 			defer startup.Close()
+			defer func() { startup.ReportInitializationError(runErr) }()
+			startup.MirrorLogs()
 			if cfgFile == "" {
 				return errors.New("argument --config or -c is required")
 			}
@@ -98,6 +100,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 				}
 			}
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
+			startup.MirrorLogs()
 
 			log.WithField("files", includes).Debug("Loaded configuration files")
 			err = daemon.Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver, daemon.Options{
@@ -105,6 +108,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 				LaunchArgs: commandArguments(cmd), Startup: startup,
 			})
 			if err != nil {
+				startup.ReportInitializationError(err)
 				// Let Cobra report the error if the configured log level hides it.
 				cmd.SilenceErrors = log.IsLevelEnabled(log.ErrorLevel)
 				err = resource.RedactError(err)

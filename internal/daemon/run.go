@@ -77,6 +77,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			return err
 		}
 	}
+	startup.stage("Initializing plugins and runtime services...")
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
@@ -132,7 +133,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 			runErr = errors.Join(runErr, closeErr)
 		}
 	}()
-	defer exitOnPanic()
+	defer exitOnPanic(startup)
 	if incoming != nil {
 		files, err := incoming.takeLinks(len(incoming.manifest.Links))
 		if err != nil {
@@ -161,6 +162,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		app.operations.active = op.ID
 		app.operations.replacing = true
 	}
+	startup.stage("Preparing routing and listeners...")
 	loadCtx, refresh := app.resources.Begin(startup.InitializationContext(), conf.Global.ResourceUpdateInterval, false)
 	inputs, err := loadControlInputs(loadCtx, conf, false, geoDirs, options.ConfigFile, nil)
 	var candidate *preparedPlane
@@ -242,9 +244,10 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		resolver.SetRoute(nil)
 		runErr = errors.Join(runErr, exit(datapath, app.localAPI, app.managementAPI))
 	}()
-	defer exitOnPanic()
+	defer exitOnPanic(startup)
 	app.publishAPI()
 	if incoming != nil {
+		startup.stage("Activating replacement datapath...")
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -270,6 +273,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	log.WithFields(log.Fields{"duration": time.Since(started), "targets": len(plane.GroupsStatus()), "plugins": len(plane.MITMStatus().Plugins)}).Info("Startup completed")
 	if incoming != nil {
+		startup.closeLogPipe()
 		app.operations.finish(incoming.manifest.Operation.ID, fmt.Sprintf("Replaced daemon; PID %d, version %s", os.Getpid(), options.Version), nil)
 		app.operations.endReplacement()
 	}
@@ -360,8 +364,11 @@ func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func())
 // exitOnPanic makes a panic on the daemon goroutine an unexpected exit: like
 // SIGKILL, it skips cleanup, so unexpected_exit_behavior governs the retained
 // datapath. Defer it after each cleanup it must skip.
-func exitOnPanic() {
+func exitOnPanic(startup *Startup) {
 	if recovered := recover(); recovered != nil {
+		if startup != nil && startup.logPipe != nil {
+			writeReplacementError(startup.logPipe, "Initialization failed", fmt.Errorf("panic: %v", recovered))
+		}
 		fmt.Fprintf(os.Stderr, "panic: %v\n\n%s", recovered, debug.Stack())
 		os.Exit(2)
 	}

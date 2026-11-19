@@ -17,6 +17,9 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,7 +136,7 @@ func (c *Client) request[T any](ctx context.Context, method, path string, body a
 	return c.requestStatus[T](ctx, method, path, body, fingerprint, http.StatusOK)
 }
 
-func (c *Client) requestStatus[T any](ctx context.Context, method, path string, body any, fingerprint string, status int) (*T, error) {
+func (c *Client) requestStatus[T any](ctx context.Context, method, path string, body any, fingerprint string, status int, configureHeaders ...func(http.Header)) (*T, error) {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -155,6 +158,9 @@ func (c *Client) requestStatus[T any](ctx context.Context, method, path string, 
 	}
 	if fingerprint != "" {
 		req.Header.Set("X-Dae-MITM", fingerprint)
+	}
+	for _, configure := range configureHeaders {
+		configure(req.Header)
 	}
 	response, err := c.send(req)
 	if err != nil {
@@ -270,6 +276,24 @@ func (c *Client) RefreshResources(ctx context.Context) (*api.Operation, error) {
 
 func (c *Client) SubmitOperation(ctx context.Context, request api.OperationRequest) (*api.Operation, error) {
 	return c.requestStatus[api.Operation](ctx, "POST", "/api/operations", request, "", http.StatusAccepted)
+}
+
+// SubmitReloadWithLogs supplies the write end of an anonymous pipe for
+// best-effort output. The caller owns both ends; keep the writer open until
+// submission returns and use Operation to obtain the result.
+func (c *Client) SubmitReloadWithLogs(ctx context.Context, request api.OperationRequest, logPipe *os.File) (*api.Operation, error) {
+	if !c.local || request.Kind != "reload" || request.ExecutablePID != os.Getpid() || logPipe == nil {
+		return nil, fmt.Errorf("reload logs require a local reload with the caller's PID and a log pipe")
+	}
+	fd := int(logPipe.Fd())
+	if fd < 3 {
+		return nil, fmt.Errorf("invalid reload log pipe descriptor")
+	}
+	status, err := c.requestStatus[api.Operation](ctx, "POST", "/api/operations", request, "", http.StatusAccepted, func(headers http.Header) {
+		headers.Set(api.ReloadLogFDHeader, strconv.Itoa(fd))
+	})
+	runtime.KeepAlive(logPipe)
+	return status, err
 }
 
 func (c *Client) Operation(ctx context.Context, id string) (*api.Operation, error) {

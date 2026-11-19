@@ -141,7 +141,7 @@ func testReplacementKernel(t *testing.T, mode string) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	blocked := false
-	closeErr := errors.New("fixture shared state close failed")
+	closeErr := errors.New("fixture shared state close failed: https://example.test/private-token")
 	state := &replacementFailureState{}
 	failClose := mode == "close"
 	if failClose {
@@ -399,7 +399,7 @@ func testReplacementKernel(t *testing.T, mode string) {
 		defer cancelProbe()
 		op := newOperation()
 		finished := make(chan error, 1)
-		go func() { _, err := app.replace(probeCtx, op.ID, executable); finished <- err }()
+		go func() { _, err := app.replace(probeCtx, op.ID, executable, nil); finished <- err }()
 		if err := listener.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			t.Fatal(err)
 		}
@@ -455,7 +455,7 @@ func testReplacementKernel(t *testing.T, mode string) {
 	app.operations.mu.Lock()
 	app.operations.records[oversized.ID].status.Trigger = strings.Repeat("x", 64<<10)
 	app.operations.mu.Unlock()
-	_, err = app.replace(ctx, oversized.ID, executable)
+	_, err = app.replace(ctx, oversized.ID, executable, nil)
 	if err == nil || !strings.Contains(err.Error(), "handoff state exceeds 64 KiB") || blocked {
 		t.Fatalf("manifest failure retired the old runtime: blocked=%v error=%v", blocked, err)
 	}
@@ -486,12 +486,25 @@ func testReplacementKernel(t *testing.T, mode string) {
 		}
 	}
 	op := newOperation()
-	_, err = app.replace(ctx, op.ID, executable)
+	logReader, logWriter := replacementLogPipe(t)
+	_, err = app.replace(ctx, op.ID, executable, logWriter)
 	if _, fatal := errors.AsType[*activationError](err); !blocked || !fatal {
 		t.Fatalf("blocked=%v, replacement error=%v", blocked, err)
 	}
 	if failClose && !errors.Is(err, closeErr) || !failClose && !errors.Is(err, context.Canceled) {
 		t.Fatalf("replacement lost the post-Block failure: %v", err)
+	}
+	_ = logWriter.Close()
+	if err := logReader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(logReader)
+	want := "context canceled"
+	if failClose {
+		want = "fixture shared state close failed: https://example.test"
+	}
+	if err != nil || !strings.Contains(string(output), "Replacement failed after blocking captured traffic: ") || !strings.Contains(string(output), want) || strings.Contains(string(output), "private-token") {
+		t.Fatalf("post-Block diagnostic = %q, %v", output, err)
 	}
 	if !readyToBlock {
 		t.Fatal("replacement did not reach the pre-Block API barrier")

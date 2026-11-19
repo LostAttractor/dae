@@ -20,7 +20,9 @@ import (
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/handoff"
 	"github.com/daeuniverse/dae/internal/testutil"
+	"golang.org/x/sys/unix"
 )
 
 func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
@@ -49,17 +51,37 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 		}
 	}
 	for _, complete := range []bool{false, true} {
-		status, err := remote.SubmitOperation(t.Context(), api.OperationRequest{Kind: "reload", ExecutablePID: os.Getpid(), Replace: true})
+		reader, writer, err := os.Pipe()
 		if err != nil {
 			t.Fatal(err)
 		}
-		file := o.records[status.ID].executable
+		defer reader.Close()
+		defer writer.Close()
+		fd := int(writer.Fd())
+		status, err := remote.SubmitReloadWithLogs(t.Context(), api.OperationRequest{
+			Kind: "reload", ExecutablePID: os.Getpid(), Replace: true,
+		}, writer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.SetNonblock(fd, false); err != nil {
+			t.Fatal(err)
+		}
+		writer.Close()
+		<-o.requests
+		record := o.records[status.ID]
+		file, logPipe := record.executable, record.logPipe
 		if replace, err := needsReplacement(file, false); replace || err != nil {
 			t.Fatalf("wrong peer executable: %v, %v", replace, err)
 		}
-		<-o.requests
+		if err := handoff.ValidateLogPipe(logPipe); err != nil {
+			t.Fatalf("wrong peer log pipe: %v", err)
+		}
+		want := ""
 		if complete {
 			o.start(status.ID)
+			o.progress(status.ID, "Preparing routing...")
+			want = handoff.StagePrefix + "Preparing routing...\n"
 			o.finish(status.ID, "ok", nil)
 		} else {
 			o.stop()
@@ -69,6 +91,12 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 		}
 		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
 			t.Fatalf("FD not closed on completion/cancel: %v", err)
+		}
+		if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := io.ReadAll(reader); err != nil || string(output) != want {
+			t.Fatalf("log stream after completion/cancel: %q, %v", output, err)
 		}
 	}
 	path = filepath.Join(t.TempDir(), "candidate")
@@ -117,6 +145,22 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 	}
 	if _, err := remote.SubmitOperation(t.Context(), request); err == nil {
 		t.Fatal("accepted interpreter script as replacement executable")
+	}
+	logRequest := api.OperationRequest{Kind: "reload", ExecutablePID: os.Getpid()}
+	if _, err := remote.SubmitReloadWithLogs(t.Context(), logRequest, invalid); err == nil {
+		t.Fatal("accepted a regular file as a log pipe")
+	}
+	fifoPath := filepath.Join(t.TempDir(), "named-pipe")
+	if err := unix.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fifo, err := os.OpenFile(fifoPath, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fifo.Close()
+	if _, err := remote.SubmitReloadWithLogs(t.Context(), logRequest, fifo); err == nil {
+		t.Fatal("accepted a named FIFO as a log pipe")
 	}
 	if err := o.beginReplacement(); err != nil {
 		t.Fatal(err)

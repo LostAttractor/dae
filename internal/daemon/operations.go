@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
+	"github.com/daeuniverse/dae/internal/handoff"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -23,6 +24,7 @@ type operationRecord struct {
 	status     api.Operation
 	request    api.OperationRequest
 	executable *os.File
+	logPipe    *os.File
 }
 
 // All ingress shares this bounded queue. Only the daemon loop runs work, and
@@ -51,18 +53,18 @@ func (o *operations) SubmitOperation(request api.OperationRequest) (api.Operatio
 }
 
 // Ownership transfers only after the request has been accepted.
-func (o *operations) SubmitExecutableOperation(request api.OperationRequest, executable *os.File) (api.Operation, error) {
+func (o *operations) SubmitExecutableOperation(request api.OperationRequest, executable, logPipe *os.File) (api.Operation, error) {
 	if request.Kind != "reload" || executable == nil || request.ExecutablePID <= 0 {
 		return api.Operation{}, api.ErrOperationInvalid
 	}
-	return o.enqueue(request, "api", executable)
+	return o.enqueue(request, "api", executable, logPipe)
 }
 
 func (o *operations) submit(request api.OperationRequest, trigger string) (api.Operation, error) {
-	return o.enqueue(request, trigger, nil)
+	return o.enqueue(request, trigger, nil, nil)
 }
 
-func (o *operations) enqueue(request api.OperationRequest, trigger string, executable *os.File) (api.Operation, error) {
+func (o *operations) enqueue(request api.OperationRequest, trigger string, executable, logPipe *os.File) (api.Operation, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
@@ -78,7 +80,7 @@ func (o *operations) enqueue(request api.OperationRequest, trigger string, execu
 		return api.Operation{}, api.ErrOperationsBusy
 	}
 	status := api.Operation{ID: rand.Text(), Kind: request.Kind, State: "queued", Trigger: trigger, QueuedAt: time.Now()}
-	record := &operationRecord{status: status, request: request, executable: executable}
+	record := &operationRecord{status: status, request: request, executable: executable, logPipe: logPipe}
 	o.records[status.ID] = record
 	if request.Kind == "refresh" {
 		o.refresh = record
@@ -130,6 +132,9 @@ func (o *operations) progress(id, message string) {
 	defer o.mu.Unlock()
 	if record := o.records[id]; record != nil && o.active == id {
 		record.status.Progress = message
+		if record.logPipe != nil {
+			handoff.WriteStage(record.logPipe, message)
+		}
 	}
 }
 
@@ -153,6 +158,10 @@ func (o *operations) complete(record *operationRecord) {
 	if record.executable != nil {
 		_ = record.executable.Close()
 		record.executable = nil
+	}
+	if record.logPipe != nil {
+		_ = record.logPipe.Close()
+		record.logPipe = nil
 	}
 	record.status.FinishedAt = time.Now()
 	o.completed = append(o.completed, record.status.ID)
@@ -208,13 +217,17 @@ func (a *application) executeOperation(ctx context.Context, id string) error {
 	var err error
 	o := a.operations
 	o.mu.Lock()
-	executable := o.records[id].executable
+	record := o.records[id]
+	executable, logPipe := record.executable, record.logPipe
 	o.mu.Unlock()
+	if executable != nil {
+		a.report("Comparing daemon executables...")
+	}
 	replace, err := needsReplacement(executable, request.Replace)
 	if err != nil {
 		// Keep the accepted configuration when the executable cannot be verified.
 	} else if replace {
-		result, err = a.replace(ctx, id, executable)
+		result, err = a.replace(ctx, id, executable, logPipe)
 	} else if request.Kind == "refresh" {
 		result, err = a.apply(ctx, a.conf, false, false, status.Trigger == "automatic")
 	} else {

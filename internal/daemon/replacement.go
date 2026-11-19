@@ -59,6 +59,7 @@ func readReplacement(value string) (_ *replacementState, resultErr error) {
 	state := &replacementState{files: make(map[string]*os.File)}
 	defer func() {
 		if resultErr != nil {
+			writeReplacementError(state.files["logs"], "Initialization failed", resultErr)
 			state.close()
 		}
 	}()
@@ -66,14 +67,35 @@ func readReplacement(value string) (_ *replacementState, resultErr error) {
 		return nil, err
 	}
 	m := state.manifest
-	if m.Protocol != handoff.Protocol || m.PID != os.Getpid() || !m.Deadline.After(time.Now()) || m.CutoverAt.IsZero() || m.CutoverAt.After(time.Now()) {
-		return nil, errors.New("invalid replacement identity or deadline")
+	if m.Protocol != handoff.Protocol || m.PID != os.Getpid() {
+		return nil, errors.New("invalid replacement identity")
 	}
 	if m.Operation.ID == "" || m.Operation.Kind != "reload" || m.Operation.State != "running" || m.HostIndex <= 0 || m.PeerIndex <= 0 || m.HostIndex == m.PeerIndex {
 		return nil, errors.New("invalid replacement operation or topology")
 	}
 	used := map[int]bool{fd: true}
+	if logFD, present := m.Files["logs"]; present {
+		if used[logFD] {
+			return nil, errors.New("duplicate inherited log descriptor")
+		}
+		logs, err := inheritLogPipe(logFD)
+		if err != nil {
+			return nil, fmt.Errorf("inherited logs: %w", err)
+		}
+		state.files["logs"], used[logFD] = logs, true
+	}
+	// An expired handoff can still report its error before the API is available.
+	now := time.Now()
+	if !m.Deadline.After(now) {
+		return nil, errors.New("replacement startup deadline expired")
+	}
+	if m.CutoverAt.IsZero() || m.CutoverAt.After(now) {
+		return nil, errors.New("invalid replacement cutover time")
+	}
 	for name, resourceFD := range m.Files {
+		if name == "logs" {
+			continue
+		}
 		if used[resourceFD] || !replacementResource(name, len(m.Links)) {
 			return nil, errors.New("invalid inherited resource descriptor")
 		}
@@ -217,7 +239,7 @@ func (s *replacementState) takeManagement(policy config.API, patterns []string) 
 	return apiserver.FromTCPFile(single, address)
 }
 
-func (a *application) replace(ctx context.Context, id string, executable *os.File) (_ string, resultErr error) {
+func (a *application) replace(ctx context.Context, id string, executable, logPipe *os.File) (_ string, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, replacementTimeout)
 	defer cancel()
 	if a.options.Startup == nil || a.options.Startup.lock == nil {
@@ -227,16 +249,18 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 		return "", err
 	}
 	defer a.operations.endReplacement()
-	a.report("Checking replacement executable...")
-	preparedInputs, err := a.preflightReplacement(ctx, executable)
+	a.report("Running replacement preflight...")
+	prepared, err := a.preflightReplacement(ctx, executable, logPipe)
 	if err != nil {
 		return "", err
 	}
+	preparedInputs := prepared.inputs
 	defer func() {
 		if preparedInputs != nil {
 			_ = preparedInputs.Close()
 		}
 	}()
+	a.report("Preparing process handoff...")
 	snapshot, err := a.datapath.ExportReplacement(ctx)
 	if err != nil {
 		return "", err
@@ -268,6 +292,11 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 			add(name, file)
 		}
 		return err
+	}
+	if logPipe != nil && prepared.startupLogs {
+		if err := duplicate("logs", int(logPipe.Fd())); err != nil {
+			return "", err
+		}
 	}
 	if err := duplicate("lock", int(a.options.Startup.lock.Fd())); err != nil {
 		return "", err
@@ -314,6 +343,7 @@ func (a *application) replace(ctx context.Context, id string, executable *os.Fil
 	blocked := false
 	defer func() {
 		if blocked {
+			writeReplacementError(logPipe, "Replacement failed after blocking captured traffic", resultErr)
 			resultErr = &activationError{errors.Join(resultErr, errors.New("replacement failed after blocking captured traffic"))}
 		}
 	}()
@@ -384,7 +414,7 @@ func (a *application) finishStartup(ctx context.Context) error {
 func replacementEnvironment(marker string, fd int) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		key, _, _ := strings.Cut(entry, "=")
-		return key == replacementEnv || key == preflightEnv
+		return key == replacementEnv || key == preflightEnv || key == preflightLogEnv
 	})
 	return append(env, marker+"="+strconv.Itoa(fd))
 }
@@ -394,7 +424,12 @@ type exemptionError struct{ error }
 
 func (e *exemptionError) Unwrap() error { return e.error }
 
-func (a *application) preflightReplacement(ctx context.Context, executable *os.File) (_ *os.File, resultErr error) {
+type preparedReplacement struct {
+	inputs      *os.File
+	startupLogs bool
+}
+
+func (a *application) preflightReplacement(ctx context.Context, executable, logPipe *os.File) (_ *preparedReplacement, resultErr error) {
 	started := time.Now()
 	inputs, err := handoff.NewSealableFile("dae-prepared-inputs")
 	if err != nil {
@@ -418,6 +453,10 @@ func (a *application) preflightReplacement(ctx context.Context, executable *os.F
 	command := exec.CommandContext(ctx, "/proc/self/fd/3", a.options.LaunchArgs...)
 	command.ExtraFiles = []*os.File{executable, childSocket, a.options.Startup.lock, inputs}
 	command.Env = replacementEnvironment(preflightEnv, 4)
+	if logPipe != nil {
+		command.ExtraFiles = append(command.ExtraFiles, logPipe)
+		command.Env = append(command.Env, preflightLogEnv+"="+strconv.Itoa(preflightLogFD))
+	}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	allowed := false
@@ -476,7 +515,7 @@ func (a *application) preflightReplacement(ctx context.Context, executable *os.F
 		return nil, err
 	}
 	log.WithFields(log.Fields{"duration": time.Since(started), "bytes": size}).Info("Replacement inputs prepared")
-	return inputs, nil
+	return &preparedReplacement{inputs: inputs, startupLogs: hello.StartupLogs}, nil
 }
 
 // Revocation precedes Wait: an exempt PID must not be reused by another process.

@@ -114,13 +114,18 @@ func (f *textFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return rendered, nil
 }
 
-func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
+// SetLevel applies the configured level without replacing log output or formatting.
+func SetLevel(logLevel string) {
 	level, err := log.ParseLevel(logLevel)
 	if err != nil {
 		level = log.InfoLevel
 	}
 
 	log.SetLevel(level)
+}
+
+func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
+	SetLevel(logLevel)
 	log.SetFormatter(NewTextFormatter(disableTimestamp))
 	if logFileOpt != nil {
 		log.SetOutput(logFileOpt)

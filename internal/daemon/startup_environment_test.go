@@ -15,13 +15,14 @@ func TestReplacementEnvironmentKeepsDaemonValues(t *testing.T) {
 	t.Setenv("DAE_LOCATION_CACHE", "/daemon/cache")
 	t.Setenv(replacementEnv, "obsolete-exec")
 	t.Setenv(preflightEnv, "obsolete-preflight")
+	t.Setenv(preflightLogEnv, "obsolete-pipe")
 	before := os.Environ()
 	for _, marker := range []string{replacementEnv, preflightEnv} {
 		t.Run(marker, func(t *testing.T) {
 			var want []string
 			for _, entry := range before {
 				key, _, _ := strings.Cut(entry, "=")
-				if key != replacementEnv && key != preflightEnv {
+				if key != replacementEnv && key != preflightEnv && key != preflightLogEnv {
 					want = append(want, entry)
 				}
 			}

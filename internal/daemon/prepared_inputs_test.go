@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -19,7 +21,45 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/handoff"
+	log "github.com/sirupsen/logrus"
 )
+
+func TestReplacementPreparationAppliesLogLevel(t *testing.T) {
+	standard := log.StandardLogger()
+	level, output, formatter := standard.GetLevel(), standard.Out, standard.Formatter
+	t.Cleanup(func() {
+		standard.SetLevel(level)
+		standard.SetOutput(output)
+		standard.SetFormatter(formatter)
+	})
+	standard.SetLevel(log.InfoLevel)
+	var logs bytes.Buffer
+	standard.SetOutput(&logs)
+	json := &log.JSONFormatter{}
+	standard.SetFormatter(json)
+	path := filepath.Join(t.TempDir(), "config.dae")
+	if err := os.WriteFile(path, []byte("global { log_level: debug }\nplugins { fixture {} }\nrouting { fallback: direct }"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stop := errors.New("stop before kernel checks")
+	definitions := map[string]plugin.Definition{"fixture": {
+		Configure: func(plugin.Spec) (plugin.Factory, error) {
+			return func(context.Context, plugin.Services) (plugin.Plugin, error) {
+				return nil, errors.New("unexpected plugin construction")
+			}, nil
+		},
+		Preflight: func(context.Context, plugin.Spec) error {
+			log.Debug("fixture debug message")
+			return stop
+		},
+	}}
+	if _, err := prepareReplacementInputs(t.Context(), path, preflightRequest{}, definitions); !errors.Is(err, stop) {
+		t.Fatalf("preflight returned %v, want fixture error", err)
+	}
+	if standard.Formatter != json || !strings.Contains(logs.String(), `"msg":"fixture debug message"`) {
+		t.Fatalf("preflight did not send debug logs through the original formatter and writer: %s", &logs)
+	}
+}
 
 func TestPreparedInputsRebuildWithoutLiveSources(t *testing.T) {
 	// Linux paths are byte strings, including across the sealed input transport.

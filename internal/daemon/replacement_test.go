@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -18,8 +19,119 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/handoff"
+	"github.com/daeuniverse/dae/pkg/logger"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
+
+func replacementLogPipe(t *testing.T) (reader, writer *os.File) {
+	t.Helper()
+	var fds [2]int
+	if err := unix.Pipe2(fds[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
+		t.Fatal(err)
+	}
+	reader = os.NewFile(uintptr(fds[0]), "replacement-log-reader")
+	writer = os.NewFile(uintptr(fds[1]), "replacement-log-writer")
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	return reader, writer
+}
+
+func TestStartupLogMirrorStopsBeforeDaemonWork(t *testing.T) {
+	reader, writer := replacementLogPipe(t)
+	if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	startup := &Startup{logPipe: writer}
+	defer startup.closeLogPipe()
+	standard := log.StandardLogger()
+	oldOutput, oldFormatter, oldLevel := standard.Out, standard.Formatter, standard.Level
+	t.Cleanup(func() {
+		standard.SetOutput(oldOutput)
+		standard.SetFormatter(oldFormatter)
+		standard.SetLevel(oldLevel)
+	})
+	var regular bytes.Buffer
+	standard.SetOutput(&regular)
+	standard.SetLevel(log.InfoLevel)
+	standard.SetFormatter(logger.NewTextFormatter(true))
+	startup.MirrorLogs()
+	log.WithField("stage", "routing").Info("Preparing control plane")
+	startup.ReportInitializationError(errors.New("read settings: denied"))
+	log.Info("ordinary daemon log")
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const line = "level=info msg=Preparing control plane stage=routing\n"
+	if string(data) != line+"Initialization failed: read settings: denied\n" || regular.String() != line+"level=info msg=ordinary daemon log\n" {
+		t.Fatalf("startup mirror = %q, regular log = %q", data, &regular)
+	}
+}
+
+func TestStartupErrorThroughExec(t *testing.T) {
+	const fixture = "DAE_TEST_STARTUP_ERROR_EXEC"
+	failures := map[string]struct {
+		message string
+		change  func(*replacementManifest)
+	}{
+		"missing-lock":   {"missing inherited lock", func(*replacementManifest) {}},
+		"expired":        {"replacement startup deadline expired", func(m *replacementManifest) { m.Deadline = time.Now().Add(-time.Second) }},
+		"future-cutover": {"invalid replacement cutover time", func(m *replacementManifest) { m.CutoverAt = time.Now().Add(time.Minute) }},
+	}
+	if mode := os.Getenv(fixture); mode != "" {
+		failure, ok := failures[mode]
+		if !ok {
+			t.Fatalf("unknown fixture mode %q", mode)
+		}
+		if os.Getenv(replacementEnv) != "" {
+			if s, err := OpenStartup(); err == nil || !strings.Contains(err.Error(), failure.message) {
+				s.Close()
+				t.Fatalf("unexpected startup result: %v", err)
+			}
+			return
+		}
+		pipe, err := inheritLogPipe(3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pipe.Close()
+		manifest := replacementManifest{
+			Protocol: handoff.Protocol, PID: os.Getpid(), Deadline: time.Now().Add(time.Minute), CutoverAt: time.Now(),
+			Operation: api.Operation{ID: "fixture", Kind: "reload", State: "running"}, HostIndex: 1, PeerIndex: 2,
+			Files: map[string]int{"logs": int(pipe.Fd())},
+		}
+		failure.change(&manifest)
+		state, err := handoff.SealState(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer state.Close()
+		self, err := os.Open("/proc/self/exe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer self.Close()
+		t.Fatal(handoff.Exec(self, os.Args, replacementEnvironment(replacementEnv, int(state.Fd())), []*os.File{state, pipe}))
+	}
+	for name, failure := range failures {
+		t.Run(name, func(t *testing.T) {
+			reader, writer := replacementLogPipe(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStartupErrorThroughExec$")
+			command.Env = append(os.Environ(), fixture+"="+name)
+			command.ExtraFiles = []*os.File{writer}
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("exec fixture: %v\n%s", err, output)
+			}
+			_ = writer.Close()
+			data, err := io.ReadAll(reader)
+			if err != nil || string(data) != "Initialization failed: "+failure.message+"\n" {
+				t.Fatalf("startup error = %q, %v", data, err)
+			}
+		})
+	}
+}
 
 func TestReplacementPreflightProcess(t *testing.T) {
 	if os.Getenv(preflightEnv) == "" {
@@ -162,10 +274,10 @@ func TestReadReplacementRejectsInvalidState(t *testing.T) {
 		name, message string
 		change        func(*replacementManifest)
 	}{
-		{name: "protocol", message: "identity or deadline", change: func(m *replacementManifest) { m.Protocol++ }},
-		{name: "pid", message: "identity or deadline", change: func(m *replacementManifest) { m.PID++ }},
-		{name: "expired", message: "identity or deadline", change: func(m *replacementManifest) { m.Deadline = time.Now().Add(-time.Second) }},
-		{name: "future-block", message: "identity or deadline", change: func(m *replacementManifest) { m.CutoverAt = time.Now().Add(time.Hour) }},
+		{name: "protocol", message: "invalid replacement identity", change: func(m *replacementManifest) { m.Protocol++ }},
+		{name: "pid", message: "invalid replacement identity", change: func(m *replacementManifest) { m.PID++ }},
+		{name: "expired", message: "replacement startup deadline expired", change: func(m *replacementManifest) { m.Deadline = time.Now().Add(-time.Second) }},
+		{name: "future-block", message: "invalid replacement cutover time", change: func(m *replacementManifest) { m.CutoverAt = time.Now().Add(time.Hour) }},
 		{name: "operation", message: "operation or topology", change: func(m *replacementManifest) { m.Operation.State = "completed" }},
 		{name: "topology", message: "operation or topology", change: func(m *replacementManifest) { m.PeerIndex = m.HostIndex }},
 		{name: "missing-lock", message: "missing inherited lock", change: func(*replacementManifest) {}},

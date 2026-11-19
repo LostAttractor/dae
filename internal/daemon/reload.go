@@ -89,6 +89,7 @@ func (a *application) accept(conf *config.Config, inputs *controlInputs, server 
 }
 
 func (a *application) reload(ctx context.Context, suspend, abort bool) (string, error) {
+	a.report("Reading configuration...")
 	next, includes, err := LoadReloadConfig(a.options.ConfigFile, a.conf, suspend)
 	if err != nil {
 		return "", fmt.Errorf("load configuration: %w", err)

@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/handoff"
+	"github.com/daeuniverse/dae/pkg/logger"
 	"golang.org/x/sys/unix"
 )
 
@@ -45,6 +46,7 @@ func prepareReplacementInputs(ctx context.Context, path string, request prefligh
 	if err != nil {
 		return nil, err
 	}
+	logger.SetLevel(conf.Global.LogLevel)
 	if !slices.Equal(conf.Global.LanInterface, request.LAN) || !slices.Equal(conf.Global.WanInterface, request.WAN) {
 		return nil, errors.New("interception interfaces changed; reload configuration before replacing the executable")
 	}

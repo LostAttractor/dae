@@ -4,6 +4,9 @@ package api
 
 import "time"
 
+// ReloadLogFDHeader names the optional local reload log pipe descriptor.
+const ReloadLogFDHeader = "X-Dae-Reload-Log-FD"
+
 // Operation identifies one daemon-owned configuration transaction. IDs are
 // unique across daemon restarts; polling never aliases a later transaction.
 type Operation struct {

@@ -4,12 +4,15 @@ package client
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -301,5 +304,52 @@ func TestUnixDoesNotSendRemoteAPIKey(t *testing.T) {
 	defer c.Close()
 	if _, err := c.Certificate(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReloadLogHeaderKeepsLegacyRequestBody(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	path := filepath.Join(t.TempDir(), "api.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logFD := strconv.Itoa(int(writer.Fd()))
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/operations" || r.Header.Get("X-Dae-API") != "1" || r.Header.Get(api.ReloadLogFDHeader) != logFD {
+			t.Errorf("unexpected reload request: %s %s %v", r.Method, r.URL.Path, r.Header)
+		}
+		var legacy struct {
+			Kind          string `json:"kind"`
+			Abort         bool   `json:"abort"`
+			ExecutablePID int    `json:"executable_pid"`
+			Replace       bool   `json:"replace"`
+		}
+		if err := json.UnmarshalRead(r.Body, &legacy, json.RejectUnknownMembers(true)); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if legacy.Kind != "reload" || legacy.ExecutablePID != os.Getpid() {
+			t.Errorf("legacy request: %+v", legacy)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		io.WriteString(w, `{"id":"legacy","kind":"reload","state":"queued"}`)
+	})}
+	go server.Serve(ln)
+	defer server.Close()
+	c, err := New(Options{Endpoint: "unix://" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	result, err := c.SubmitReloadWithLogs(t.Context(), api.OperationRequest{Kind: "reload", ExecutablePID: os.Getpid()}, writer)
+	if err != nil || result.ID != "legacy" {
+		t.Fatalf("legacy server rejected reload with an optional log header: %+v, %v", result, err)
 	}
 }

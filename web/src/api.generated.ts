@@ -2440,6 +2440,8 @@ export interface operations {
             query?: never;
             header: {
                 "X-Dae-API": "1";
+                /** @description Local reload only. Stream stages and replacement startup logs to an anonymous pipe opened by the authenticated Unix peer. Requires executable_pid. Keep the descriptor open until submission returns. Read newline-delimited records: a leading ASCII record separator (0x1e) marks a stage update; other lines are logs. Output is best effort; poll the operation for its result. */
+                "X-Dae-Reload-Log-FD"?: number;
             };
             path?: never;
             cookie?: never;

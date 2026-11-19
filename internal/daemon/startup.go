@@ -17,10 +17,14 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/internal/handoff"
+	"github.com/daeuniverse/dae/pkg/terminaltext"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 const preflightEnv = "DAE_PREFLIGHT_FD"
+const preflightLogEnv = "DAE_PREFLIGHT_LOG_FD"
+const preflightLogFD = 7
 
 // Startup owns process resources before configuration or business initialization.
 type Startup struct {
@@ -33,6 +37,8 @@ type Startup struct {
 	incoming           *replacementState
 	preflight          *handoff.Channel
 	preflightInputs    *os.File
+	logPipe            *os.File
+	stopLogMirror      func()
 	inputs             *resource.Inputs
 	preparation        *time.Timer
 	preparationExpired chan struct{}
@@ -53,14 +59,17 @@ func OpenStartup() (_ *Startup, err error) {
 	s := newStartup()
 	defer func() {
 		if err != nil {
+			s.ReportInitializationError(err)
 			s.Close()
 		}
 	}()
 	resume, hasResume := os.LookupEnv(replacementEnv)
 	probe, hasProbe := os.LookupEnv(preflightEnv)
+	probeLog, hasProbeLog := os.LookupEnv(preflightLogEnv)
 	_ = os.Unsetenv(replacementEnv)
 	_ = os.Unsetenv(preflightEnv)
-	if hasResume && hasProbe {
+	_ = os.Unsetenv(preflightLogEnv)
+	if hasResume && hasProbe || hasProbeLog && !hasProbe {
 		return nil, errors.New("conflicting inherited startup descriptors")
 	}
 	switch {
@@ -70,6 +79,8 @@ func OpenStartup() (_ *Startup, err error) {
 			return nil, err
 		}
 		s.lock = s.incoming.take("lock")
+		s.logPipe = s.incoming.take("logs")
+		s.stage("Starting replacement daemon...")
 		s.setPreparationDeadline(s.incoming.manifest.Deadline)
 		if err := restoreProcessName(s.incoming.manifest.ProcessName); err != nil {
 			return nil, err
@@ -97,6 +108,15 @@ func OpenStartup() (_ *Startup, err error) {
 		credentials, credErr := unix.GetsockoptUcred(fd, unix.SOL_SOCKET, unix.SO_PEERCRED)
 		if credErr != nil || credentials.Pid != int32(os.Getppid()) || credentials.Uid != uint32(os.Geteuid()) {
 			return nil, errors.New("preflight channel does not belong to the parent")
+		}
+		if hasProbeLog {
+			if probeLog != strconv.Itoa(preflightLogFD) {
+				return nil, errors.New("invalid preflight log descriptor")
+			}
+			s.logPipe, err = inheritLogPipe(preflightLogFD)
+			if err != nil {
+				return nil, fmt.Errorf("preflight logs: %w", err)
+			}
 		}
 		s.preflight, err = handoff.FromFile(file)
 		if err != nil {
@@ -145,6 +165,72 @@ func (s *Startup) Context() context.Context { return s.ctx }
 
 func (s *Startup) Resuming() bool { return s.incoming != nil }
 
+func (s *Startup) stage(message string) {
+	if s.logPipe != nil {
+		handoff.WriteStage(s.logPipe, message)
+	}
+}
+
+func inheritLogPipe(fd int) (*os.File, error) {
+	file, err := handoff.InheritedFile(fd, "startup-logs")
+	if err != nil {
+		return nil, err
+	}
+	if err := handoff.ValidateLogPipe(file); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+type startupLogFormatter struct {
+	log.Formatter
+	pipe *os.File
+}
+
+func (f startupLogFormatter) Format(entry *log.Entry) ([]byte, error) {
+	data, err := f.Formatter.Format(entry)
+	if err == nil {
+		handoff.WriteLog(f.pipe, data)
+	}
+	return data, err
+}
+
+// MirrorLogs leaves the daemon's regular output writer and formatting intact.
+func (s *Startup) MirrorLogs() {
+	if s.logPipe == nil {
+		return
+	}
+	base := log.StandardLogger().Formatter
+	s.stopLogMirror = func() { log.SetFormatter(base) }
+	log.SetFormatter(startupLogFormatter{Formatter: base, pipe: s.logPipe})
+}
+
+func writeReplacementError(pipe *os.File, stage string, err error) {
+	if pipe != nil && err != nil {
+		handoff.WriteLog(pipe, []byte(stage+": "+terminaltext.Line(resource.RedactError(err).Error())))
+	}
+}
+
+// ReportInitializationError covers failures before the API can serve status.
+func (s *Startup) ReportInitializationError(err error) {
+	if err != nil {
+		writeReplacementError(s.logPipe, "Initialization failed", err)
+		s.closeLogPipe()
+	}
+}
+
+func (s *Startup) closeLogPipe() {
+	if s.stopLogMirror != nil {
+		s.stopLogMirror()
+		s.stopLogMirror = nil
+	}
+	if s.logPipe != nil {
+		_ = s.logPipe.Close()
+		s.logPipe = nil
+	}
+}
+
 func (s *Startup) setPreparationDeadline(deadline time.Time) {
 	expired := make(chan struct{})
 	s.preparationExpired = expired
@@ -170,6 +256,7 @@ func (s *Startup) Close() {
 	if s == nil {
 		return
 	}
+	s.closeLogPipe()
 	s.stopPreparation()
 	s.cancel(context.Canceled)
 	s.signals.Stop()
@@ -200,9 +287,10 @@ type preflightRequest struct {
 }
 
 type preflightHello struct {
-	Protocol  int
-	KernelPID uint32
-	Error     string
+	Protocol    int
+	KernelPID   uint32
+	Error       string
+	StartupLogs bool `json:",omitzero"`
 }
 
 type preflightResult struct {
@@ -217,7 +305,7 @@ func (s *Startup) Preflight(path string, definitions map[string]plugin.Definitio
 	channel := s.preflight
 	_ = channel.SetDeadline(time.Now().Add(replacementTimeout))
 	kernelPID, identityErr := control.KernelProcessID()
-	hello := preflightHello{Protocol: handoff.Protocol, KernelPID: kernelPID}
+	hello := preflightHello{Protocol: handoff.Protocol, KernelPID: kernelPID, StartupLogs: s.logPipe != nil}
 	if identityErr != nil {
 		hello.Error = identityErr.Error()
 	}

@@ -14,7 +14,7 @@ import (
 func TestExitOnPanicSkipsCleanup(t *testing.T) {
 	if os.Getenv("DAE_PANIC_EXIT_CHILD") != "" {
 		defer fmt.Println("cleanup ran")
-		defer exitOnPanic()
+		defer exitOnPanic(nil)
 		panic("boom")
 	}
 	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestExitOnPanicSkipsCleanup$")
