@@ -1776,7 +1776,22 @@ try {
     fixture.selectors[0].nodes[1].checking = true;
     await js('document.querySelector("#refresh").click()');
     await ready();
-    await openPicker();
+    await visit("selector");
+    await js(`window.nodeVisibilityChecks = 0;
+      const checkVisibility = Element.prototype.checkVisibility;
+      Element.prototype.checkVisibility = function (...args) {
+        if (this.matches(".select-node, .test-node")) window.nodeVisibilityChecks++;
+        return checkVisibility.apply(this, args);
+      };
+      document.querySelector(".node-picker").focus();`);
+    try {
+      await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await until('document.activeElement.matches(".node-search input")');
+      assert.equal(await js('window.nodeVisibilityChecks'), 0, "initial focus must not scan node buttons");
+    } finally {
+      await js('Element.prototype.checkVisibility = checkVisibility; void 0');
+    }
     await fillSearch("test");
     await key("Home", 36);
     assert.equal(await js('document.activeElement.matches(".node-search input")'), true);
@@ -1799,6 +1814,19 @@ try {
     await until('document.querySelectorAll(".selector-node").length === 0');
     // The node rows unmount at once; the popover returns focus after its exit transition.
     await until('document.activeElement.matches(".node-picker")');
+  });
+
+  await test("touch opens the node picker without focusing the search field", async () => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await call("Emulation.setTouchEmulationEnabled", { enabled: true });
+    try {
+      const point = await js<{ x: number; y: number }>('(() => { const button = document.querySelector(".node-picker"); button.scrollIntoView({ block: "center" }); const {x, y, width, height} = button.getBoundingClientRect(); return { x: x + width / 2, y: y + height / 2 }; })()');
+      await call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await until('document.activeElement.matches(".node-popover")');
+    } finally {
+      await call("Emulation.setTouchEmulationEnabled", { enabled: false });
+    }
   });
 
   await test("group order, removed nodes and empty results reflect live data", async () => {

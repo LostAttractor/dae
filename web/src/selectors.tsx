@@ -34,6 +34,7 @@ function Health({ node }: { node?: SelectorNode }) {
 function Selector({ selector, actions, administrator, compact = false }: { selector: SelectorState; actions: SelectorControls; administrator: boolean; compact?: boolean }) {
   const id = useId();
   const picker = useRef<HTMLButtonElement>(null), search = useRef<HTMLInputElement>(null), list = useRef<HTMLDivElement>(null);
+  const popup = useRef<HTMLDivElement>(null);
   // The popup spans the picker and its Test button, leaving room for node names.
   const control = useRef<HTMLDivElement>(null), focused = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -120,28 +121,33 @@ function Selector({ selector, actions, administrator, compact = false }: { selec
           aria-label={`${selector.name}: ${name}`} />}>
           <span className="selected-name min-w-0 truncate">{name}</span><CaretUpDownIcon className="shrink-0 text-kumo-subtle" size={16} aria-hidden />
         </Popover.Trigger>
-        <Popover.Content container={actions.layer} anchor={control} side="bottom" align="start" sideOffset={6} positionMethod="fixed"
-          className={`node-popover [&>[data-side]]:hidden max-h-[min(var(--available-height),28rem)] w-[min(var(--anchor-width),calc(100vw-24px))] gap-0 overflow-hidden p-1.5 text-base outline-0 ${floating}`}>
-          <Popover.Title className="sr-only">Select a node in {selector.name}</Popover.Title>
-          <div className="flex min-h-0 flex-col" onKeyDown={navigate} onFocusCapture={(event) => { focused.current = event.target instanceof HTMLElement ? event.target : null; }}>
-            <InputGroup className="node-search w-full flex-none">
-              <InputGroup.Addon><MagnifyingGlassIcon aria-hidden /></InputGroup.Addon>
-              <InputGroup.Input ref={search} role="searchbox" aria-label={`Search nodes in ${selector.name}`} placeholder="Search nodes…" autoComplete="off" spellCheck={false}
-                value={query} onChange={(event) => { setQuery(event.target.value); list.current!.scrollTop = 0; }} />
-              {query && <InputGroup.Addon align="end" className="pr-1">
-                <InputGroup.Button shape="square" icon={XIcon} aria-label="Clear search" onClick={() => { setQuery(""); search.current!.focus(); }} />
-              </InputGroup.Addon>}
-            </InputGroup>
-            <p className="node-results mx-2 mt-2 mb-1 flex-none text-xs text-kumo-subtle" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
-            <div ref={list} className="node-list grid min-h-0 gap-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector} administrator={administrator}
-              hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
-                if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
-                  setOpen(false); picker.current!.focus();
-                } else save("PUT", { node_id: node.id }, `${selector.name}: selection saved.`);
-              }} />)}</div>
-            <p className="no-nodes px-2 py-3 text-kumo-subtle" hidden={visible.length !== 0}>No matching nodes.</p>
-          </div>
-        </Popover.Content>
+        <Popover.Portal container={actions.layer}>
+          <Popover.Positioner anchor={control} side="bottom" align="start" sideOffset={6} positionMethod="fixed">
+            {/* Skip the tabbable scan; touch still focuses the popup to avoid opening the keyboard. */}
+            <Popover.Popup render={<div ref={popup} />} initialFocus={interaction => interaction === "touch" ? popup.current : search.current}
+              className={`node-popover max-h-[min(var(--available-height),28rem)] w-[min(var(--anchor-width),calc(100vw-24px))] gap-0 overflow-hidden p-1.5 text-base outline-0 transition-opacity data-starting-style:scale-none data-ending-style:scale-none ${floating}`}>
+              <Popover.Title className="sr-only">Select a node in {selector.name}</Popover.Title>
+              <div className="flex min-h-0 flex-col" onKeyDown={navigate} onFocusCapture={(event) => { focused.current = event.target instanceof HTMLElement ? event.target : null; }}>
+                <InputGroup className="node-search w-full flex-none">
+                  <InputGroup.Addon><MagnifyingGlassIcon aria-hidden /></InputGroup.Addon>
+                  <InputGroup.Input ref={search} role="searchbox" aria-label={`Search nodes in ${selector.name}`} placeholder="Search nodes…" autoComplete="off" spellCheck={false}
+                    value={query} onChange={(event) => { setQuery(event.target.value); list.current!.scrollTop = 0; }} />
+                  {query && <InputGroup.Addon align="end" className="pr-1">
+                    <InputGroup.Button shape="square" icon={XIcon} aria-label="Clear search" onClick={() => { setQuery(""); search.current!.focus(); }} />
+                  </InputGroup.Addon>}
+                </InputGroup>
+                <p className="node-results mx-2 mt-2 mb-1 flex-none text-xs text-kumo-subtle" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
+                <div ref={list} className="node-list grid min-h-0 gap-0.5 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector} administrator={administrator}
+                  hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
+                    if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
+                      setOpen(false); picker.current!.focus();
+                    } else save("PUT", { node_id: node.id }, `${selector.name}: selection saved.`);
+                  }} />)}</div>
+                <p className="no-nodes px-2 py-3 text-kumo-subtle" hidden={visible.length !== 0}>No matching nodes.</p>
+              </div>
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
       </Popover>
       <Button className="test-selected" type="button" hidden={!administrator || compact || selector.track_all} disabled={!selected || selected.checking}
         aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)}>Test selected</Button>
