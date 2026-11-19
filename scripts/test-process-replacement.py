@@ -447,17 +447,19 @@ def main(binary, wan=False):
             except (OSError, http.client.HTTPException, AssertionError):
                 return False
 
-        def reload(executable, *flags, success=True, replacement=False):
+        def reload(executable, *flags, success=True, replacement=False, binary_path=None):
+            if binary_path is not None:
+                flags += ("--binary", binary_path)
             if success:
                 previous, count = generation(), startups()
                 arrival_start = max(0, len(arrivals) - 1)
             result = subprocess.run([executable, "reload", *flags], capture_output=True, text=True, timeout=30, env=env)
             assert (result.returncode == 0) == success, result.stdout + result.stderr
             if success:
-                expected = replacement or "--replace" in flags
+                expected = replacement or "--replace" in flags or binary_path is not None
                 assert (generation() != previous) == expected, "StartedAt did not match the expected generation change"
                 assert startups() == count + int(expected), "unexpected number of daemon startups"
-                assert_image(executable)
+                assert_image(binary_path or executable)
                 assert identity() == initial
                 if ports == (18080,):
                     assert listener_identity(ports) == initial_listeners
@@ -465,7 +467,8 @@ def main(binary, wan=False):
                     duplicate_run()
                     traffic()
                     window = arrivals[arrival_start:]
-                    exec_dns_gaps.append({"kind": "forced" if "--replace" in flags else "different-ELF", "dns_max_gap_ms": round(max(right - left for left, right in zip(window, window[1:])) * 1000, 1)})
+                    kind = "explicit-path" if binary_path is not None else "forced" if "--replace" in flags else "different-ELF"
+                    exec_dns_gaps.append({"kind": kind, "dns_max_gap_ms": round(max(right - left for left, right in zip(window, window[1:])) * 1000, 1)})
             return result.stdout
 
         write_config(text)
@@ -597,7 +600,7 @@ def main(binary, wan=False):
                 changed_text = text.replace("global {", "global { tproxy_port:12346 so_mark_from_dae:512").replace("listen:'127.0.0.1:18080'", "listen:'127.0.0.1:18081'")
                 write_config(changed_text)
                 ports = (18081,)
-                reload(str(different), "--replace")
+                reload(binary, binary_path=different)
                 traffic()
                 listeners()
                 try:

@@ -44,7 +44,7 @@ func newOperations() *operations {
 }
 
 func (o *operations) SubmitOperation(request api.OperationRequest) (api.Operation, error) {
-	if request.ExecutablePID != 0 || request.Replace {
+	if request.ExecutablePID != 0 || request.ExecutableFD != 0 || request.Replace {
 		return api.Operation{}, api.ErrOperationInvalid
 	}
 	return o.submit(request, "api")

@@ -24,6 +24,8 @@ type OperationRequest struct {
 	Abort bool   `json:"abort,omitempty"`
 	// ExecutablePID is accepted only from the same authenticated Unix peer.
 	// Zero keeps API reloads configuration-only.
-	ExecutablePID int  `json:"executable_pid,omitzero"`
-	Replace       bool `json:"replace,omitzero"`
+	ExecutablePID int `json:"executable_pid,omitzero"`
+	// ExecutableFD selects an opened executable from that same peer and forces replacement.
+	ExecutableFD int  `json:"executable_fd,omitzero"`
+	Replace      bool `json:"replace,omitzero"`
 }

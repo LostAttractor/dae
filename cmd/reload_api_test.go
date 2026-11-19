@@ -5,8 +5,12 @@ package cmd
 import (
 	"bytes"
 	"encoding/json/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,7 +35,7 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 						if err := json.UnmarshalRead(r.Body, &request); err != nil {
 							t.Error(err)
 						}
-						if request.Kind != kind || !request.Abort {
+						if request.Kind != kind || !request.Abort || request.ExecutablePID != 0 || request.ExecutableFD != 0 {
 							t.Errorf("operation request = %+v", request)
 						}
 						w.WriteHeader(http.StatusAccepted)
@@ -64,5 +68,50 @@ func TestReloadCommandsUseConfiguredAPI(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBinaryReloadElevatesBeforeOpeningCandidate(t *testing.T) {
+	const child = "DAE_TEST_RELOAD_ELEVATION"
+	const relative = "current/../release/dae"
+	if os.Getenv(child) == "1" {
+		command := newReloadCommand(false)
+		command.SetArgs([]string{"--abort", "--binary", relative})
+		t.Fatal(command.ExecuteContext(t.Context())) // The helper exits the CLI.
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("requires an unprivileged caller")
+	}
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "dae.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := os.Chmod(socket, 0); err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(dir, "sudo")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(helper, 0755); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := "unix://" + socket
+	t.Setenv(child, "1")
+	t.Setenv("PATH", dir)
+	t.Setenv("DAE_API_ENDPOINT", endpoint)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), self, "-test.run=^TestBinaryReloadElevatesBeforeOpeningCandidate$")
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	want := self + "\nreload\n--abort=true\n--api=" + endpoint + "\n--binary=" + dir + "/" + relative + "\n"
+	if err != nil || !strings.HasSuffix(string(output), want) {
+		t.Fatalf("elevation args = %q, %v; want suffix %q", output, err, want)
 	}
 }

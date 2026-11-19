@@ -13,7 +13,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func AutoSu() error {
+func AutoSu(argv ...string) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
@@ -28,8 +28,11 @@ func AutoSu() error {
 	if path == "" {
 		return nil
 	}
+	if len(argv) == 0 {
+		argv = os.Args
+	}
 	log.WithField("helper", path).Info("Requesting elevated privileges")
-	p, err := os.StartProcess(path, append(arg, os.Args...), &os.ProcAttr{
+	p, err := os.StartProcess(path, append(arg, argv...), &os.ProcAttr{
 		Files: []*os.File{
 			os.Stdin,
 			os.Stdout,

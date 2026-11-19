@@ -33,9 +33,8 @@ var (
 	disableAuthSudo   bool
 )
 
-// runArguments rebuilds parsed scalar flags so the candidate inherits corrected
-// configuration paths rather than the original command line.
-func runArguments(cmd *cobra.Command) []string {
+// commandArguments passes the effective scalar flags to a new process.
+func commandArguments(cmd *cobra.Command) []string {
 	args := []string{cmd.Name()}
 	cmd.Flags().Visit(func(flag *pflag.Flag) {
 		args = append(args, "--"+flag.Name+"="+flag.Value.String())
@@ -103,7 +102,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			log.WithField("files", includes).Debug("Loaded configuration files")
 			err = daemon.Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver, daemon.Options{
 				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp,
-				LaunchArgs: runArguments(cmd), Startup: startup,
+				LaunchArgs: commandArguments(cmd), Startup: startup,
 			})
 			if err != nil {
 				// Let Cobra report the error if the configured log level hides it.

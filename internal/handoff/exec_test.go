@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -165,6 +166,24 @@ func TestInheritedFile(t *testing.T) {
 	file.Close()
 	if file, err := InheritedFile(fds[0], "closed"); err == nil || file != nil {
 		t.Fatal("closed FD accepted")
+	}
+}
+
+func TestOpenExecutableRejectsScripts(t *testing.T) {
+	executable, err := OpenExecutable("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable.Close()
+	path := filepath.Join(t.TempDir(), "candidate")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := OpenExecutable(path); err == nil {
+		file.Close()
+		t.Fatal("accepted interpreter script")
+	} else if !strings.Contains(err.Error(), "not an ELF executable") {
+		t.Fatal(err)
 	}
 }
 

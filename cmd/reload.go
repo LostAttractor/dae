@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -17,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/client/progress"
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/internal/handoff"
 	"github.com/spf13/cobra"
 )
 
@@ -111,24 +113,29 @@ func newReloadCommand(suspend bool) *cobra.Command {
 	var connection cli.Connection
 	var abort bool
 	var replace bool
+	var binary string
 	command := &cobra.Command{
 		Use:   kind,
 		Short: description,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReloadCommand(cmd, args, &connection, kind, abort, replace)
+			if cmd.Flags().Changed("binary") && binary == "" {
+				return errors.New("--binary requires a non-empty path")
+			}
+			return runReloadCommand(cmd, &connection, kind, abort, replace, binary)
 		},
 	}
 	connection.Bind(command.PersistentFlags())
 	command.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
 	if !suspend {
 		command.PersistentFlags().BoolVar(&replace, "replace", false, "Replace the local daemon even when its executable is unchanged.")
+		command.PersistentFlags().StringVar(&binary, "binary", "", "Replace the local daemon with the executable at this path.")
 		command.Short = "Reload configuration, or replace the local daemon when the executable has changed."
 	}
 	return command
 }
 
-func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connection, kind string, abort, force bool) error {
+func runReloadCommand(cmd *cobra.Command, connection *cli.Connection, kind string, abort, force bool, binary string) error {
 	cmd.SilenceUsage = true
 	request := api.OperationRequest{Kind: kind, Abort: abort}
 	remote, err := connection.Open()
@@ -140,6 +147,19 @@ func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connect
 		request.Replace = force
 		if remote.Local() {
 			request.ExecutablePID = os.Getpid()
+			if binary != "" {
+				if err := authorizeBinaryReload(cmd, remote, binary); err != nil {
+					return err
+				}
+				executable, err := handoff.OpenExecutable(binary)
+				if err != nil {
+					return err
+				}
+				defer executable.Close()
+				request.ExecutableFD = int(executable.Fd())
+			}
+		} else if binary != "" {
+			return errors.New("--binary requires a local Unix API socket")
 		} else if request.Replace {
 			return errors.New("--replace requires a local Unix API socket")
 		}
@@ -148,7 +168,7 @@ func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connect
 	if err != nil {
 		// Only a local permission failure needs elevation. Remote APIs use
 		// their configured credentials and must keep the caller's environment.
-		if errors.Is(err, os.ErrPermission) {
+		if remote.Local() && binary == "" && errors.Is(err, os.ErrPermission) {
 			if elevateErr := internal.AutoSu(); elevateErr != nil {
 				return elevateErr
 			}
@@ -175,4 +195,37 @@ func runReloadCommand(cmd *cobra.Command, args []string, connection *cli.Connect
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), result)
 	return nil
+}
+
+// Establish socket access before opening the candidate, so elevation never
+// reopens a file the original process has already selected.
+func authorizeBinaryReload(cmd *cobra.Command, remote *client.Client, binary string) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	_, denied := remote.ResourceRefreshStatus(cmd.Context())
+	if !errors.Is(denied, os.ErrPermission) {
+		return denied
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(binary) {
+		dir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		// Keep ".." after symlinks for the kernel to resolve at selection time.
+		binary = dir + "/" + binary
+	}
+	flags := cmd.Flags()
+	if err := flags.Set("binary", binary); err != nil {
+		return err
+	}
+	// Privilege helpers need not retain DAE_API_ENDPOINT or the working directory.
+	if err := flags.Set("api", flags.Lookup("api").Value.String()); err != nil {
+		return err
+	}
+	return errors.Join(denied, internal.AutoSu(append([]string{executable}, commandArguments(cmd)...)...))
 }

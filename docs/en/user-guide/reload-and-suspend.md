@@ -111,19 +111,27 @@ Block, closing old connections cannot be rolled back; failures keep managed traf
 fail-closed until successful recovery. Direct traffic is not guaranteed to remain
 uninterrupted.
 
-Run the newly installed executable to upgrade the running daemon, or force the
-same executable to rebuild its runtime through same-PID exec:
+Use an installed CLI to select a trusted replacement binary, run the new CLI
+itself for automatic content comparison, or force replacement with the CLI's
+own executable:
 
 ```shell
+dae reload --binary /path/to/new/dae
 /path/to/new/dae reload
 dae reload --replace
 ```
 
-The daemon authenticates the local Unix peer and opens that peer's executable.
+With `--binary`, the path is relative to the CLI's working directory unless
+absolute, including when the CLI needs to elevate before opening the file.
+Selecting it forces replacement even if the contents are identical.
+The CLI pins the selected file, so changing a symlink or renaming the path does
+not change the selection. Do not overwrite the file in place during replacement.
+The daemon authenticates the local Unix peer and opens the selected file
+descriptor, or the peer's own executable when no path was supplied.
 It uses its own effective run arguments, environment and working directory for
 both preflight and exec, not the invoking CLI's environment. No executable path
-is accepted over the API. Remote API reloads remain configuration-only; remote
-`--replace` is rejected.
+is accepted over the API. Remote API reloads remain configuration-only; both
+`--binary` and `--replace` are local-only.
 
 `dae run` takes an exclusive `/var/run/dae.lock` file lock before reading the
 configuration. Another instance using the same runtime directory is rejected,

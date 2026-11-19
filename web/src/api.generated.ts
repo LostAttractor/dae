@@ -1790,7 +1790,9 @@ export interface components {
         OperationRequest: {
             /** @description Abort established connections during reload or suspend; invalid for refresh. */
             abort?: boolean;
-            /** @description Local reload only. Must match the authenticated Unix peer PID. Compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload. */
+            /** @description Local reload only. Select an open executable descriptor of the authenticated Unix peer and force replacement. Requires executable_pid. Keep the descriptor open until submission returns. */
+            executable_fd?: number;
+            /** @description Local reload only. Must match the authenticated Unix peer PID. By default compare that process's executable contents with the daemon; replace the process if different. Omit for configuration-only reload. */
             executable_pid?: number;
             /** @enum {string} */
             kind: "reload" | "suspend" | "refresh";

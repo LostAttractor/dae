@@ -3,8 +3,10 @@
 package daemon
 
 import (
+	"debug/elf"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +41,8 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 		{Kind: "reload", Replace: true},
 		{Kind: "reload", ExecutablePID: os.Getpid() + 1},
 		{Kind: "suspend", ExecutablePID: os.Getpid()},
+		{Kind: "reload", ExecutableFD: 3},
+		{Kind: "reload", ExecutablePID: os.Getpid(), ExecutableFD: -1},
 	} {
 		if _, err := remote.SubmitOperation(t.Context(), request); err == nil {
 			t.Fatalf("accepted invalid request: %+v", request)
@@ -59,11 +63,60 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 			o.finish(status.ID, "ok", nil)
 		} else {
 			o.stop()
+			o.mu.Lock()
 			o.closed = false
+			o.mu.Unlock()
 		}
 		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
 			t.Fatalf("FD not closed on completion/cancel: %v", err)
 		}
+	}
+	path = filepath.Join(t.TempDir(), "candidate")
+	const candidateContents = elf.ELFMAG + "candidate"
+	if err := os.WriteFile(path, []byte(candidateContents), 0700); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.Close()
+	request := api.OperationRequest{Kind: "reload", ExecutablePID: os.Getpid(), ExecutableFD: int(candidate.Fd())}
+	// The submitted descriptor still identifies the chosen inode after the path changes.
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := remote.SubmitOperation(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Close()
+	<-o.requests
+	record := o.records[status.ID]
+	if contents, err := io.ReadAll(record.executable); err != nil || string(contents) != candidateContents {
+		t.Fatalf("wrong candidate: %q, %v", contents, err)
+	}
+	if request, ok := o.start(status.ID); !ok || !request.Replace {
+		t.Fatalf("explicit descriptor must force replacement: %+v", request)
+	}
+	o.finish(status.ID, "ok", nil)
+	invalid, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer invalid.Close()
+	request.ExecutableFD = int(invalid.Fd())
+	if _, err := remote.SubmitOperation(t.Context(), request); err == nil {
+		t.Fatal("accepted non-executable candidate")
+	}
+	if err := os.Chmod(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.SubmitOperation(t.Context(), request); err == nil {
+		t.Fatal("accepted interpreter script as replacement executable")
 	}
 	if err := o.beginReplacement(); err != nil {
 		t.Fatal(err)
@@ -86,10 +139,15 @@ func TestExecutableOperationAuthenticationAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer remoteTCP.Close()
-	_, err = remoteTCP.SubmitOperation(t.Context(), api.OperationRequest{Kind: "reload", Replace: true, ExecutablePID: os.Getpid()})
-	response, ok := errors.AsType[*client.Error](err)
-	if !ok || response.StatusCode != http.StatusForbidden {
-		t.Fatalf("remote replacement accepted: %v", err)
+	for _, request := range []api.OperationRequest{
+		{Kind: "reload", Replace: true, ExecutablePID: os.Getpid()},
+		request,
+	} {
+		_, err := remoteTCP.SubmitOperation(t.Context(), request)
+		response, ok := errors.AsType[*client.Error](err)
+		if !ok || response.StatusCode != http.StatusForbidden {
+			t.Fatalf("remote replacement accepted: %v", err)
+		}
 	}
 }
 

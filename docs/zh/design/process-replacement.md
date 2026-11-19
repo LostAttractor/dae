@@ -2,7 +2,7 @@
 
 进程替换是**带故障防护的进程重启**，不是全局原子或无损交接。Block 前失败保留旧服务；Block 后旧连接关闭不可回滚，失败后保持 fail-closed，直到成功恢复。多 hook 的逐步安装与撤旧是有防护的中间态，不是一个全局原子事务。
 
-`reload` 是统一入口。通过本地 Unix socket 发起的 CLI 请求带上自己的 PID；daemon 校验 `SO_PEERCRED`，打开 `/proc/<peer>/exe` 并按完整文件内容比较。内容相同执行配置热重载，内容不同执行进程替换，`reload --replace` 强制替换。版本标签不参与判断。未指定 executable PID 的 API 请求只重载配置，TCP API 不接受进程替换。使用方式见[重载与暂停（英文）](../../en/user-guide/reload-and-suspend.md#process-replacement)。
+`reload` 是统一入口。通过本地 Unix socket 发起的 CLI 请求带上自己的 PID；daemon 校验 `SO_PEERCRED`，默认打开 `/proc/<peer>/exe` 并按完整文件内容比较。内容相同执行配置热重载，内容不同执行进程替换，`reload --replace` 强制替换。也可以用 `dae reload --binary ./new-dae` 指定可信的新二进制，无须再加 `--replace`。CLI 按自己的工作目录打开文件，daemon 从调用者的文件描述符取得同一文件，不接收服务端路径。路径改名或符号链接改指不会改变选择；替换期间不要原地覆写文件。版本标签不参与判断。未指定 executable PID 的 API 请求只重载配置，TCP API 不接受进程替换。使用方式见[重载与暂停（英文）](../../en/user-guide/reload-and-suspend.md#process-replacement)。
 
 ## 进程与资源所有权
 

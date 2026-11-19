@@ -14,7 +14,7 @@ func TestRunArgumentsAfterConfigRepair(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfgFile = "repaired config.dae"
-			launch := runArguments(command)
+			launch := commandArguments(command)
 			if launch[0] != "run" {
 				t.Fatalf("subcommand: %v", launch)
 			}

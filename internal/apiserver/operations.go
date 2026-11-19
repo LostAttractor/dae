@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/internal/handoff"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,32 +36,11 @@ func (s *Handler) serveOperations(w http.ResponseWriter, r *http.Request, who ca
 	if r.Method == http.MethodPost {
 		var request api.OperationRequest
 		if apiBody(w, r, &request) {
-			if request.ExecutablePID != 0 || request.Replace {
-				peer, _ := r.Context().Value(peerCredentialsKey{}).(*unix.Ucred)
-				if !localAPISocket(r) || peer == nil || peer.Uid != uint32(os.Geteuid()) || request.ExecutablePID <= 0 || int(peer.Pid) != request.ExecutablePID || request.Kind != "reload" {
-					apiError(w, http.StatusForbidden, "executable replacement requires the authenticated local caller's PID")
-					return
-				}
-				store, ok := s.options.Operations.(interface {
-					SubmitExecutableOperation(api.OperationRequest, *os.File) (api.Operation, error)
-				})
-				if !ok {
-					apiError(w, http.StatusServiceUnavailable, "executable replacement is unavailable")
-					return
-				}
-				executable, err := os.Open(fmt.Sprintf("/proc/%d/exe", peer.Pid))
-				if err != nil {
-					apiError(w, http.StatusBadRequest, "cannot open caller executable")
-					return
-				}
-				status, err := store.SubmitExecutableOperation(request, executable)
-				if err != nil {
-					_ = executable.Close()
-				}
-				writeOperationResult(w, status, err)
-				return
+			if request.ExecutablePID != 0 || request.ExecutableFD != 0 || request.Replace {
+				s.submitLocalReload(w, r, request)
+			} else {
+				s.submitOperation(w, request)
 			}
-			s.submitOperation(w, request)
 		}
 		return
 	}
@@ -73,6 +53,42 @@ func (s *Handler) serveOperations(w http.ResponseWriter, r *http.Request, who ca
 		return
 	}
 	writeAPI(w, status)
+}
+
+func (s *Handler) submitLocalReload(w http.ResponseWriter, r *http.Request, request api.OperationRequest) {
+	peer, _ := r.Context().Value(peerCredentialsKey{}).(*unix.Ucred)
+	if !localAPISocket(r) || peer == nil || peer.Uid != uint32(os.Geteuid()) || request.ExecutablePID <= 0 || int(peer.Pid) != request.ExecutablePID || request.Kind != "reload" {
+		apiError(w, http.StatusForbidden, "executable replacement requires the authenticated local caller's PID")
+		return
+	}
+	store, ok := s.options.Operations.(interface {
+		SubmitExecutableOperation(api.OperationRequest, *os.File) (api.Operation, error)
+	})
+	if !ok {
+		apiError(w, http.StatusServiceUnavailable, "local reload with executable selection is unavailable")
+		return
+	}
+	var executable *os.File
+	var err error
+	if request.ExecutableFD != 0 {
+		if request.ExecutableFD < 3 {
+			apiError(w, http.StatusBadRequest, "invalid caller executable descriptor")
+			return
+		}
+		executable, err = handoff.OpenExecutable(fmt.Sprintf("/proc/%d/fd/%d", peer.Pid, request.ExecutableFD))
+		request.Replace = true
+	} else {
+		executable, err = os.Open(fmt.Sprintf("/proc/%d/exe", peer.Pid))
+	}
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "cannot use caller executable: "+err.Error())
+		return
+	}
+	status, err := store.SubmitExecutableOperation(request, executable)
+	if err != nil {
+		_ = executable.Close()
+	}
+	writeOperationResult(w, status, err)
 }
 
 func (s *Handler) submitOperation(w http.ResponseWriter, request api.OperationRequest) {

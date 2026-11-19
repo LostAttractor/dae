@@ -3,12 +3,15 @@
 package handoff
 
 import (
+	"debug/elf"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 
+	"github.com/daeuniverse/dae/common/fileio"
 	"golang.org/x/sys/unix"
 )
 
@@ -120,6 +123,38 @@ func InheritedFile(fd int, name string) (*os.File, error) {
 		return nil, fmt.Errorf("protect %s descriptor: %w", name, err)
 	}
 	return os.NewFile(uintptr(fd), name), nil
+}
+
+// OpenExecutable pins a regular executable and rejects interpreter scripts.
+func OpenExecutable(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	ref := os.NewFile(uintptr(fd), path)
+	defer ref.Close()
+	info, err := fileio.StatRegular(ref)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&0111 == 0 {
+		return nil, fmt.Errorf("%s is not executable", path)
+	}
+	file, err := os.Open(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return nil, fmt.Errorf("open executable %q: %w", path, err)
+	}
+	var magic [len(elf.ELFMAG)]byte
+	_, err = file.ReadAt(magic[:], 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		_ = file.Close()
+		return nil, fmt.Errorf("read executable %q: %w", path, err)
+	}
+	if string(magic[:]) != elf.ELFMAG {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s is not an ELF executable", path)
+	}
+	return file, nil
 }
 
 // Exec replaces this process using an already-open ELF and explicit argv/environment.
