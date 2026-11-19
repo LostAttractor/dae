@@ -17,23 +17,28 @@ if [[ "$ID:$VERSION_ID" != ubuntu:24.04 || "$EUID" != 0 ]]; then
     echo "ERROR: this installer requires root on Ubuntu 24.04" >&2
     exit 1
 fi
-apt-get update -y
-apt-get install -y ca-certificates curl gnupg
-if (( version >= 17 )); then
-    key=$(mktemp)
-    trap 'rm -f "$key"' EXIT
-    curl --fail --show-error --location --retry 3 https://apt.llvm.org/llvm-snapshot.gpg.key -o "$key"
-    fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
-    if [[ "$fingerprint" != 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421 ]]; then
-        echo "ERROR: unexpected LLVM signing key fingerprint: $fingerprint" >&2
-        exit 1
+packages=("clang-$version" "llvm-$version" "lld-$version")
+if ! dpkg-query -W -f='${db:Status-Status}\n' "${packages[@]}" 2>/dev/null | awk '$0 != "installed" { exit 1 }'; then
+    apt=(apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+    "${apt[@]}" update -y
+    "${apt[@]}" install -y ca-certificates curl gnupg
+    if (( version >= 17 )); then
+        key=$(mktemp)
+        trap 'rm -f "$key"' EXIT
+        curl --fail --show-error --location --connect-timeout 15 --max-time 30 --retry 3 --retry-max-time 60 \
+            https://apt.llvm.org/llvm-snapshot.gpg.key -o "$key"
+        fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
+        if [[ "$fingerprint" != 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421 ]]; then
+            echo "ERROR: unexpected LLVM signing key fingerprint: $fingerprint" >&2
+            exit 1
+        fi
+        install -m 644 "$key" /usr/share/keyrings/dae-llvm.asc
+        suite="llvm-toolchain-noble-$version"
+        printf 'deb [signed-by=/usr/share/keyrings/dae-llvm.asc] https://apt.llvm.org/noble/ %s main\n' "$suite" \
+            > /etc/apt/sources.list.d/dae-llvm.list
+        "${apt[@]}" update -y
     fi
-    install -m 644 "$key" /usr/share/keyrings/dae-llvm.asc
-    suite="llvm-toolchain-noble-$version"
-    printf 'deb [signed-by=/usr/share/keyrings/dae-llvm.asc] https://apt.llvm.org/noble/ %s main\n' "$suite" \
-        > /etc/apt/sources.list.d/dae-llvm.list
-    apt-get update -y
+    "${apt[@]}" install -y "${packages[@]}"
 fi
-apt-get install -y "clang-$version" "llvm-$version" "lld-$version"
 "clang-$version" --version
 "llvm-strip-$version" --version
